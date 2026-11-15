@@ -27,17 +27,25 @@
 // - `title` and `subtitle` lines in a view;
 // - a default view block (EDIT-15, `Edit::AddDefaultView`): a view, not
 //   an element, appended as the last view in `views`;
+// - the `views` block itself, when the file has none (a model-only file,
+//   valid Structurizr) and an edit needs one: created as the last block
+//   of the workspace body, indented per DSL-9 (EDIT-15, DSL-13);
 // - string literals of existing statements (DSL-10), including `""`
 //   placeholders for skipped positional arguments;
 // - style property lines (`background`, `color`, `shape`) in an
 //   `element "<tag>"` block;
-// - `element "<tag>"` style blocks and the `styles` block;
+// - `element "<tag>"` style blocks and the `styles` block, which lives
+//   inside `views` as Structurizr has it and, when missing, is created as
+//   the last block of `views` (the `views` block created first if
+//   needed, DSL-13);
 // - a per-box tag (DSL-13) on an existing element: the tag in a `tags`
 //   line, the `tags` line itself, and the element's `{ }` block when the
 //   element had none.
 // Removal exists only so an inverse gives the bytes back (EDIT-19), and
 // a block (`{ }` of an element, `element "<tag>"`, `styles`) or a `tags`
 // line is removed only when it holds nothing but what `edit` wrote there;
+// the same holds for a `views` block that `edit` created: the inverse
+// removes it only when it holds nothing but what `edit` wrote;
 // otherwise only the tag or property goes. Removing an `at` or `size`
 // line sends the box back to auto-placement or its kind's size; the
 // element stays.
@@ -95,7 +103,11 @@
 // creating the block if needed.
 // EDIT-15: the default view (`include *`, key `<scope id>-<kind>`) is
 // written by `edit` on the first write made in it, as
-// `Edit::AddDefaultView`, the first edit of that write's batch.
+// `Edit::AddDefaultView`, the first edit of that write's batch. In a
+// model-only file that edit also creates the `views` block.
+// DECISION: the `<kind>` in a default view key is `ViewKind::keyword`
+// (`api-container`, `api-component`, `web-systemContext`): the DSL
+// spelling of the kind, unambiguous and stable across releases.
 
 use std::fmt;
 
@@ -203,7 +215,10 @@ pub enum TextTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StyleTarget {
     /// `all <tag>`: edit or add the property in that tag's `element`
-    /// block, adding the block at the end of `styles` when there is none.
+    /// block, adding the block at the end of `styles` when there is none;
+    /// a missing `styles` block is created as the last block of `views`,
+    /// and a missing `views` block as the last block of the workspace
+    /// body, indented per DSL-9 (DSL-13).
     /// The change hits every element carrying the tag; that is the
     /// explicit meaning of `all`. The element must carry `tag`, else
     /// `EditErrorKind::InvalidValue`. When a later tag of the element sets
@@ -215,7 +230,8 @@ pub enum StyleTarget {
     /// suffixed `-2`, `-3`... when another element already carries that
     /// tag, added to the element (a `tags` line as the last line of its
     /// block, the block created if needed), and an `element "<tag>"` block
-    /// at the end of `styles` (DSL-13).
+    /// at the end of `styles`, `styles` and `views` created as for `Tag`
+    /// when missing (DSL-13).
     ThisBox,
 }
 
@@ -323,16 +339,28 @@ pub enum Edit {
         element: String,
     },
     /// Write the default view of `scope` (EDIT-15): a `kind` view with key
-    /// `<scope id>-<kind>`, appended as the last view in `views`, holding
-    /// `include *` and no `at` lines. It adds a view, not an element
-    /// (EDIT-21). The editor puts it first in the batch of the first write
-    /// made in a default view (move, resize, style), so that write is one
-    /// step; its inverse removes the view block.
+    /// `<scope id>-<kind>` (`<kind>` is `ViewKind::keyword`), appended as
+    /// the last view in `views` (before a `styles` block that follows the
+    /// views), holding `include *` and no `at` lines. When the file has
+    /// no `views` block (model only), it first creates one as the last
+    /// block of the workspace body, indented per DSL-9. It adds a view,
+    /// not an element (EDIT-21). The editor puts it first in the batch of
+    /// the first write made in a default view (move, resize, style), so
+    /// that write is one step and its `Move`/`Resize` lines land in the
+    /// new view; its inverse removes the view block, and the `views`
+    /// block too when it holds nothing but what `edit` wrote there.
     AddDefaultView {
         /// The scope element key (the bare `model::Element::key` in phase
         /// 1).
         scope: String,
-        /// Container view of a system, component view of a container.
+        /// `ViewKind::Container`: container view of a software system;
+        /// `ViewKind::Component`: component view of a container;
+        /// `ViewKind::SystemContext`: system context view of a software
+        /// system (`systemContext <scope> "<scope id>-systemContext" {
+        /// include * }`), as shown in a model-only file (EDIT-15). A
+        /// scope whose element kind does not fit `kind` (a container
+        /// scope for `Container` or `SystemContext`, a system scope for
+        /// `Component`, a person) is `EditErrorKind::InvalidValue`.
         kind: ViewKind,
     },
 }
@@ -357,7 +385,8 @@ pub struct Applied {
     /// between) they give the same model, not the same bytes. An inverse
     /// never removes a block (`{ }` of an element, `element "<tag>"`,
     /// `styles`) or a `tags` line that holds anything besides what the
-    /// edit wrote there; it then removes only the tag or the property
+    /// edit wrote there, nor a `views` block holding anything besides
+    /// what edits wrote; it then removes only the tag or the property
     /// (EDIT-21). The inverse of a text insertion that added `""`
     /// placeholders also takes those placeholders out.
     pub inverse: Vec<Edit>,
@@ -367,8 +396,12 @@ pub struct Applied {
 /// target by key, and returns the patched text and the inverse edits.
 /// The same call re-applies a user action to a newer text after an
 /// external change (EDIT-24): the caller parses the new file and passes
-/// it. An empty list returns the source unchanged (DSL-11). Serves DSL-9,
-/// DSL-10, DSL-13, EDIT-19, EDIT-24.
+/// it. An empty list returns the source unchanged (DSL-11). When an edit
+/// needs a `views` block (a default view, a style) and the file has none,
+/// `apply` creates it as the last block of the workspace body, indented
+/// per DSL-9, and a missing `styles` block as the last block of `views`
+/// (EDIT-15, DSL-13). Serves DSL-9, DSL-10, DSL-13, EDIT-15, EDIT-19,
+/// EDIT-24.
 ///
 /// # Errors
 ///
@@ -381,7 +414,7 @@ pub struct Applied {
 /// (`EditErrorKind::InvalidValue`: size not `> 0`, an absent element
 /// name, a technology on a person or software system, another control
 /// character in a text value, `StyleTarget::Tag` with a tag the element
-/// does not carry, a style edit in a file with no `views` block).
+/// does not carry, an `AddDefaultView` scope whose kind does not fit).
 pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
     todo!()
 }
@@ -676,6 +709,43 @@ mod tests {
         // AddDefaultView then a Move in one batch: the view (key
         // `<scope id>-<kind>`, `include *`, no `at` lines from it) is the
         // last view in `views`, written first; the inverse removes it.
+        todo!()
+    }
+
+    #[test]
+    fn edit_15_model_only_file_default_view_and_move() {
+        // A file with no `views` block: AddDefaultView (Container) then a
+        // Move in one batch creates `views` as the last block of the
+        // workspace body, indented per DSL-9, holding the new view with
+        // its `at` line; the inverse gives the input bytes back (the
+        // `views` block removed with the view).
+        todo!()
+    }
+
+    #[test]
+    fn dsl_13_model_only_file_set_style_creates_views_and_styles() {
+        // A file with no `views` block: SetStyle (Tag and ThisBox) creates
+        // `views` (last block of the workspace body) holding `styles`
+        // holding the `element "<tag>"` block; the inverse gives the input
+        // bytes back.
+        todo!()
+    }
+
+    #[test]
+    fn edit_15_inverse_keeps_views_block_holding_more() {
+        // A `views` block created by `edit`, then an external change adds
+        // a view to it: the inverse removes only the default view, the
+        // `views` block stays.
+        todo!()
+    }
+
+    #[test]
+    fn edit_15_system_context_default_view() {
+        // AddDefaultView with `ViewKind::SystemContext` on a software
+        // system writes `systemContext <id> "<id>-systemContext"` with
+        // `include *`; on a model-only file, followed by a first Move in
+        // it, the move is written into that view; a container scope is
+        // `InvalidValue`.
         todo!()
     }
 

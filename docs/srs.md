@@ -462,8 +462,13 @@ Writing back
   element, suffixed `-2`, `-3`... when another element already carries
   that tag (a `tags` line as the last line of its block, creating the
   block if needed) and an
-  `element "<id>"` block at the end of `styles`; those are the only
-  bytes changed, and "reset to tag style" removes that tag and block.
+  `element "<id>"` block at the end of `styles`; a missing `styles`
+  block is created as the last block of `views` (styles live inside
+  `views`, as in Structurizr), and a missing `views` block as the last
+  block of the workspace body, both indented per DSL-9; those are the only
+  bytes changed, and "reset to tag style" removes that tag and block
+  (and a `styles` or `views` block only when it holds nothing but what
+  `edit` wrote).
 - **DSL-11** Parse, then write back with no edits, gives a file
   byte-identical to the input, comments and blank lines included, for
   LF and CRLF files, with or without a final newline.
@@ -792,8 +797,15 @@ C4 levels
   when none exists, a default view (`include *`, every box auto-placed)
   opens, and it is written to the file on the first write made in it
   (move, resize, style), appended as the last view in `views` with key
-  `<scope id>-<kind>`; `edit` writes it, as the first patch of that
-  write. Gestures per EDIT-28.
+  `<scope id>-<kind>` (`<kind>` is the view keyword: `container`,
+  `component`, `systemContext`); `edit` writes it, as the first patch of that
+  write. In a file with no `views` block (model only, valid Structurizr)
+  every view shown is a default view (a system context default view of
+  a software system included, key `<system id>-systemContext`), and on
+  the first write in one `edit` first creates the `views` block as the last block of the
+  workspace body, indented per DSL-9; undoing that write removes the
+  `views` block only when it holds nothing but what `edit` wrote.
+  Gestures per EDIT-28.
 - **EDIT-16** The breadcrumb is derived from the open view's scope in
   the model (workspace / system / container), not from click history;
   clicking a crumb opens the first declared view scoped to that
