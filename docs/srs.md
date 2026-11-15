@@ -689,11 +689,8 @@ Speed (checked by the release perf oracle, 5.2)
 
 - **CORE-24** Re-rendering view `c3` of `example/` (the heaviest) after
   a single box move, full route, takes under 100 ms in a release build.
-  `TODO(srs)`: confirm the budget after the first release measurement;
-  the prototype takes about 5 s a view.
 - **CORE-27** Startup path: from file text to the routed scene of view
   `c3` of `example/` takes under 300 ms in a release build.
-  `TODO(srs)`: confirm 300 ms after the first release measurement.
 - **CORE-28** Routing one view needs no other view: a caller can ask
   for one view's scene without the others being routed.
 - **CORE-31** A generated view of 40 boxes and 60 lines (fixed seed,
@@ -713,7 +710,7 @@ long as CORE-24 and EDIT-25 hold.
 
 #### Open holes
 
-CORE-24, CORE-27, CORE-31 numbers (measured when pipeline is built).
+None.
 
 ### 4.3 CLI
 
@@ -1040,6 +1037,20 @@ editor-breadth (ROADMAP row `editor-breadth`, phase 2)
   between views, open an element or relationship `url`, toggle
   descriptions and metadata, tooltips, filter by tags and a
   perspectives view. `TODO(srs)`: one requirement per item.
+- **P2-26** (place-quality) Automatic placement is layered: ranks follow
+  the direction of relationships, order within a rank reduces
+  crossings, people are on top and external elements at the sides; the
+  row and column pitch grows where a label would not fit between two
+  boxes. On `tests/data/example/workspace.dsl` (no `at` lines), all four
+  views have no "no room for label", no label over a box, and crossings
+  and total line length no worse than phase 1 and lower on C3-startup.
+  `TODO(srs)`: the numbers, measured and approved before they freeze.
+- **P2-27** (styles-themes) The key has one entry per relationship
+  style, named by its tag, or a single `Relationship` entry when the
+  styles have no name.
+- **P2-28** (compat-fixtures) Report how many corpus files fail lint on
+  house-style rules alone (L15, crossing budget); the owner rules on
+  defaults then.
 
 ### 4.7 Phase 3
 
