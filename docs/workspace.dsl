@@ -54,6 +54,8 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         // C3 relationships (match the `Depends on:` lines in crates/core/src/*.rs).
         cli -> cPipeline "Builds scenes and lint reports with" "Rust API"
         cli -> cExport "Turns scenes into files with" "Rust API"
+        cli -> cModel "Parses the diagram file with" "Rust API"
+        cli -> cLint "Reads lint findings from" "Rust API"
         editor -> cPipeline "Builds and re-routes scenes with" "Rust API"
         editor -> cEdit "Writes canvas edits back with" "Rust API"
         editor -> cExport "Exports the open view with" "Rust API"
