@@ -760,6 +760,19 @@ pub struct State {
     /// The last read, write or watch failure, in one sentence (EDIT-27),
     /// cleared by the next successful read or write.
     pub io_error: Option<String>,
+    // DECISION: the EDIT-30 camera bookkeeping is private fields, not
+    // pub ones, so the step-4 contract (every pub field of `State`)
+    // stays as it is; only `new` builds a `State`.
+    /// The canvas size in screen px, once the shell reported it
+    /// (EDIT-30 fit).
+    canvas: Option<ScreenPoint>,
+    /// The file and view `camera` belongs to (EDIT-30).
+    camera_of: Option<(PathBuf, ViewRef)>,
+    /// The camera each view shown in this session had when it was left
+    /// (EDIT-30: coming back restores it).
+    view_cameras: BTreeMap<(PathBuf, ViewRef), Camera>,
+    /// True while the view on screen waits for its first fit (EDIT-30).
+    fit_pending: bool,
 }
 
 impl State {
@@ -788,6 +801,10 @@ impl State {
             awaited_drag: None,
             notice: None,
             io_error: None,
+            canvas: None,
+            camera_of: None,
+            view_cameras: BTreeMap::new(),
+            fit_pending: false,
         }
     }
 
@@ -796,6 +813,88 @@ impl State {
     /// events (EDIT-1, 11, 22..24, 27) and worker replies (EDIT-25).
     /// Never blocks and never routes (EDIT-25). Serves EDIT-1..29.
     pub fn handle(&mut self, event: Event) -> Vec<Effect> {
+        let before = self.camera;
+        let effects = self.handle_event(event);
+        self.settle_camera(before);
+        effects
+    }
+
+    /// The canvas size in screen px, reported by the shell each frame; a
+    /// view waiting for its first fit is fitted once it is known
+    /// (EDIT-30).
+    // DECISION: a crate-private method, not an `Event` variant, so the
+    // pub `Event` enum is unchanged; like `io_error`, the shell writes it
+    // directly.
+    pub(crate) fn set_canvas_size(&mut self, size: ScreenPoint) {
+        let old = self.canvas.replace(size);
+        // DECISION: a fitted camera the user has not moved since (it
+        // still equals the fit for the old size) follows a resize: tiling
+        // window managers resize the window right after its first frame,
+        // which would leave the first-show fit stale. Any pan or zoom
+        // makes the camera the user's, and resizes leave it alone.
+        if let (Some(old), Some(scene)) = (old, self.scene())
+            && old != size
+            && self.camera == Camera::fit(scene.bounds, old)
+        {
+            self.camera = Camera::fit(scene.bounds, size);
+            self.remember();
+        }
+        self.settle_camera(self.camera);
+    }
+
+    /// "Fit view": the camera shows the whole scene on screen, drawing,
+    /// title and key, with the fit margin, never above 100% (EDIT-30).
+    /// Nothing happens before a scene and a canvas size exist.
+    pub(crate) fn fit_view(&mut self) {
+        if let (Some(scene), Some(canvas)) = (self.scene(), self.canvas) {
+            self.camera = Camera::fit(scene.bounds, canvas);
+            self.fit_pending = false;
+            self.remember();
+        }
+    }
+
+    /// Keeps one camera per view of the session (EDIT-30): when the file
+    /// or view on screen changed, the old one's camera is kept and the new
+    /// one's restored, or the new one is fitted once its scene and the
+    /// canvas size are known. Reloads keep the view, so they keep the
+    /// camera (EDIT-1). `before` is the camera before the event that may
+    /// have changed the view (an open replaces `camera` itself).
+    // DECISION: the first show of a view in a session fits even when the
+    // per-user state remembers a camera for the file (EDIT-13): that
+    // camera came from another window size, and the EDIT-30 defect was
+    // exactly a remembered origin camera showing one box. Within a
+    // session the per-view camera wins, which keeps EDIT-13's "zoom and
+    // pan per file" on reopening.
+    fn settle_camera(&mut self, before: Camera) {
+        let now = match (&self.doc, &self.view) {
+            (Some(doc), Some(view)) => Some((doc.path.clone(), view.clone())),
+            _ => None,
+        };
+        if now != self.camera_of {
+            if let Some(old) = self.camera_of.take() {
+                self.view_cameras.insert(old, before);
+            }
+            match now.as_ref().and_then(|key| self.view_cameras.get(key)) {
+                Some(camera) => {
+                    self.camera = *camera;
+                    self.fit_pending = false;
+                    self.remember();
+                }
+                None => self.fit_pending = now.is_some(),
+            }
+            self.camera_of = now;
+        }
+        let shown = match (self.scene(), &self.view) {
+            (Some(scene), Some(view)) => scene.key == view.key(),
+            _ => false,
+        };
+        if self.fit_pending && shown {
+            self.fit_view();
+        }
+    }
+
+    /// `handle` before the camera is settled.
+    fn handle_event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::Input(input) => self.input(input),
             Event::Text(text) => {
@@ -2991,7 +3090,7 @@ mod tests {
         Action, Alignment, Axis, Button, Command, Dialog, Effect, Event, Gesture, HIT_TOLERANCE_PX, Input, Key, Mark,
         MarkKind, Modifiers, Problem, Selected, State, enterable, min_size,
     };
-    use crate::camera::{ScreenPoint, ZOOM_STEP};
+    use crate::camera::{Camera, ScreenPoint, ZOOM_STEP};
     use crate::files::{self, FileEvent, UiState, WriteRequest};
     use crate::testutil::{SHOP, TempDir};
     use crate::worker::{self, ExportFormat, Job, Request, ViewRef};
@@ -4747,5 +4846,146 @@ mod tests {
             assert_eq!(scene.key, before.key);
         }
         assert!(worst < Duration::from_millis(200), "worst reload {worst:?}");
+    }
+
+    /// The narrow tiled window of the EDIT-30 report, canvas px.
+    const CANVAS: ScreenPoint = ScreenPoint {
+        x: 848.0,
+        y: 1300.0,
+    };
+
+    /// The camera "Fit view" gives for the scene on screen.
+    fn fitted(h: &H) -> Camera {
+        Camera::fit(h.scene().bounds, CANVAS)
+    }
+
+    /// EDIT-30: the first show of a view fits the whole scene, whether
+    /// the canvas size is known before the build lands or after.
+    #[test]
+    fn edit_30_first_show_fits_scene() {
+        let mut h = H::with_file(SHOP);
+        assert_eq!(
+            h.s.camera,
+            Camera::default(),
+            "no canvas size yet: nothing to fit"
+        );
+        h.s.set_canvas_size(CANVAS);
+        assert_eq!(h.s.camera, fitted(&h));
+        assert!(h.s.camera.zoom <= 1.0);
+
+        let mut h = H::empty();
+        std::fs::write(&h.path, SHOP).expect("write fixture");
+        h.s.set_canvas_size(CANVAS);
+        let path = h.path.clone();
+        h.cmd(Command::Open(path));
+        assert_eq!(
+            h.s.camera,
+            fitted(&h),
+            "size known first, fit when the build lands"
+        );
+    }
+
+    /// EDIT-30: the fit covers the title and the key, not only the boxes.
+    #[test]
+    fn edit_30_fit_covers_title_and_key() {
+        // A canvas smaller than the scene, so only a fit shows it all.
+        let small = pt(360.0, 260.0);
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(small);
+        let scene = h.scene().clone();
+        let inside = |p: Point| {
+            let q = h.s.camera.to_screen(p);
+            q.x >= 19.9 && q.y >= 19.9 && q.x <= small.x - 19.9 && q.y <= small.y - 19.9
+        };
+        let title = scene.title.as_ref().expect("a title");
+        assert!(inside(title.at), "title on screen");
+        assert!(
+            inside(scene.legend.rect.min) && inside(scene.legend.rect.max),
+            "key on screen"
+        );
+    }
+
+    /// EDIT-30, EDIT-1: a reload keeps zoom and pan; it does not fit
+    /// again.
+    #[test]
+    fn edit_30_reload_keeps_zoom_and_pan() {
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(CANVAS);
+        h.input(Input::Wheel {
+            at: pt(100.0, 100.0),
+            notches: 2.0,
+        });
+        let camera = h.s.camera;
+        let text = format!("{SHOP}\n// saved elsewhere\n");
+        std::fs::write(&h.path, &text).expect("save");
+        h.event(Event::File(FileEvent::Changed {
+            hash: files::hash(text.as_bytes()),
+            text,
+        }));
+        assert_eq!(h.scene().key, "context");
+        assert_eq!(h.s.camera, camera);
+        h.s.set_canvas_size(CANVAS);
+        assert_eq!(h.s.camera, camera, "a resize does not fit again");
+    }
+
+    /// EDIT-30: entering a view by a click fits it the first time; going
+    /// back up restores the camera the view had; entering it again
+    /// restores its own camera too.
+    #[test]
+    fn edit_30_return_to_view_restores_its_camera() {
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(CANVAS);
+        h.input(Input::Wheel {
+            at: pt(100.0, 100.0),
+            notches: -1.0,
+        });
+        h.s.camera.pan_by(pt(7.0, 3.0));
+        let context = h.s.camera;
+
+        h.click("shop", Button::Left, NONE);
+        assert_eq!(h.s.view, Some(declared("containers")));
+        assert_eq!(h.s.camera, fitted(&h), "first show of containers fits");
+        h.s.camera.pan_by(pt(-12.0, 5.0));
+        let containers = h.s.camera;
+
+        h.key(Key::Backspace, NONE);
+        assert_eq!(h.s.view, Some(declared("context")));
+        assert_eq!(h.s.camera, context, "back up: the context camera as it was");
+
+        h.cmd(Command::ShowView(declared("containers")));
+        assert_eq!(h.s.camera, containers);
+    }
+
+    /// EDIT-30: a tiling window manager resizes the window right after
+    /// the first frame; a fitted camera the user has not moved follows
+    /// the canvas size, a moved one stays.
+    #[test]
+    fn edit_30_untouched_fit_follows_canvas_resize() {
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(pt(1280.0, 720.0));
+        let wide = h.s.camera;
+        h.s.set_canvas_size(CANVAS);
+        assert_ne!(h.s.camera, wide);
+        assert_eq!(h.s.camera, fitted(&h), "still fitted after the tiling resize");
+
+        h.s.camera.pan_by(pt(5.0, 5.0));
+        let moved = h.s.camera;
+        h.s.set_canvas_size(pt(1280.0, 720.0));
+        assert_eq!(h.s.camera, moved, "a moved camera is the user's");
+    }
+
+    /// EDIT-30: "Fit view" fits the scene on screen on demand.
+    #[test]
+    fn edit_30_fit_view_on_demand() {
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(CANVAS);
+        h.s.camera.pan_by(pt(300.0, -200.0));
+        h.input(Input::Wheel {
+            at: pt(10.0, 10.0),
+            notches: 4.0,
+        });
+        assert_ne!(h.s.camera, fitted(&h));
+        h.s.fit_view();
+        assert_eq!(h.s.camera, fitted(&h));
     }
 }

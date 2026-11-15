@@ -232,12 +232,16 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     out
 }
 
+// DECISION: mark colours are dark enough for 4.5:1 against the white
+// page (EDIT-31): 2px strokes need more than the 3:1 WCAG floor for
+// graphics to read at a glance. Selection 6.4:1, hover 5.3:1,
+// enterable 5.4:1; handles keep their white rim for box fills.
 /// Selection mark colour.
-const SELECTION: [u8; 3] = [0x26, 0x7d, 0xff];
+const SELECTION: [u8; 3] = [0x0b, 0x57, 0xd0];
 /// Hover mark colour.
-const HOVER: [u8; 3] = [0x90, 0x90, 0x90];
+const HOVER: [u8; 3] = [0x6b, 0x6b, 0x6b];
 /// Hover mark colour of an enterable box (EDIT-15).
-const ENTERABLE: [u8; 3] = [0x18, 0xa0, 0x58];
+const ENTERABLE: [u8; 3] = [0x0f, 0x7a, 0x40];
 /// Mark stroke width, screen px.
 const MARK_WIDTH: f32 = 2.0;
 /// Gap between an item and its mark, scene px.
@@ -452,68 +456,99 @@ pub fn text_items(block: &TextBlock, camera: &Camera) -> Vec<Primitive> {
 /// Paints `items` with `painter`, clipped to its rect, whose top-left is
 /// screen 0,0 of the state's coordinates. Serves EDIT-12.
 pub fn paint(painter: &eframe::egui::Painter, items: &[PaintItem]) {
+    for item in items {
+        paint_primitive(painter, &item.primitive);
+    }
+}
+
+/// The page under the scene: `scene.bounds` filled with
+/// `scene.background`, the export's background (EDIT-31), so the canvas
+/// looks like the exported SVG/PNG whatever the window theme. `None`
+/// without a scene.
+// DECISION: core exposes the export background as `Scene::background`
+// (the SVG fills `bounds` with it), so the page takes it from there and
+// no white is hard-coded here. Kept out of `paint_items` so its
+// EDIT-12 contract (scene items and marks only, `Source` unchanged)
+// holds; the shell paints it first.
+pub(crate) fn page(list: &DrawList<'_>) -> Option<Primitive> {
+    let scene = list.scene?;
+    Some(polygon(
+        rect_points(&list.camera, scene.bounds, 0),
+        Some(rgb(scene.background)),
+        None,
+        &list.camera,
+    ))
+}
+
+/// Paints the page of `list` (`page`), if any (EDIT-31).
+pub(crate) fn paint_page(painter: &eframe::egui::Painter, list: &DrawList<'_>) {
+    if let Some(p) = page(list) {
+        paint_primitive(painter, &p);
+    }
+}
+
+/// Paints one primitive; screen 0,0 is the painter's clip rect top-left.
+fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive) {
     use eframe::egui::{Align2, Color32, FontFamily, FontId, Pos2, Shape, Stroke as EStroke};
     let origin = painter.clip_rect().min;
     let pos = |p: &ScreenPoint| Pos2::new(origin.x + p.x, origin.y + p.y);
     let colour = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
-    for item in items {
-        match &item.primitive {
-            Primitive::Polygon { points, fill, stroke, dash } => {
-                let pts: Vec<Pos2> = points.iter().map(pos).collect();
-                if let Some(f) = fill {
-                    painter.add(Shape::convex_polygon(pts.clone(), colour(*f), EStroke::NONE));
-                }
-                if let Some((c, w)) = stroke {
-                    let s = EStroke::new(*w, colour(*c));
-                    let mut closed = pts;
-                    if let Some(&first) = closed.first() {
-                        closed.push(first);
-                    }
-                    match dash {
-                        Some([d, g]) => {
-                            painter.extend(Shape::dashed_line(&closed, s, *d, *g));
-                        }
-                        None => {
-                            painter.add(Shape::line(closed, s));
-                        }
-                    }
-                }
+    match primitive {
+        Primitive::Polygon { points, fill, stroke, dash } => {
+            let pts: Vec<Pos2> = points.iter().map(pos).collect();
+            if let Some(f) = fill {
+                painter.add(Shape::convex_polygon(pts.clone(), colour(*f), EStroke::NONE));
             }
-            Primitive::Path { points, colour: c, width, dash } => {
-                let pts: Vec<Pos2> = points.iter().map(pos).collect();
-                let s = EStroke::new(*width, colour(*c));
+            if let Some((c, w)) = stroke {
+                let s = EStroke::new(*w, colour(*c));
+                let mut closed = pts;
+                if let Some(&first) = closed.first() {
+                    closed.push(first);
+                }
                 match dash {
                     Some([d, g]) => {
-                        painter.extend(Shape::dashed_line(&pts, s, *d, *g));
+                        painter.extend(Shape::dashed_line(&closed, s, *d, *g));
                     }
                     None => {
-                        painter.add(Shape::line(pts, s));
+                        painter.add(Shape::line(closed, s));
                     }
                 }
             }
-            Primitive::Circle { centre, radius, fill } => {
-                painter.circle_filled(pos(centre), *radius, colour(*fill));
-            }
-            Primitive::Text {
-                at: anchor,
-                text,
-                size,
-                bold,
-                centred,
-                colour: c,
-            } => {
-                if *size < 1.0 {
-                    continue;
+        }
+        Primitive::Path { points, colour: c, width, dash } => {
+            let pts: Vec<Pos2> = points.iter().map(pos).collect();
+            let s = EStroke::new(*width, colour(*c));
+            match dash {
+                Some([d, g]) => {
+                    painter.extend(Shape::dashed_line(&pts, s, *d, *g));
                 }
-                let family = if *bold {
-                    FontFamily::Name(BOLD_FAMILY.into())
-                } else {
-                    FontFamily::Proportional
-                };
-                let top = Pos2::new(origin.x + anchor.x, origin.y + anchor.y - ASCENT_EM * size);
-                let align = if *centred { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
-                painter.text(top, align, text, FontId::new(*size, family), colour(*c));
+                None => {
+                    painter.add(Shape::line(pts, s));
+                }
             }
+        }
+        Primitive::Circle { centre, radius, fill } => {
+            painter.circle_filled(pos(centre), *radius, colour(*fill));
+        }
+        Primitive::Text {
+            at: anchor,
+            text,
+            size,
+            bold,
+            centred,
+            colour: c,
+        } => {
+            if *size < 1.0 {
+                return;
+            }
+            let family = if *bold {
+                FontFamily::Name(BOLD_FAMILY.into())
+            } else {
+                FontFamily::Proportional
+            };
+            let top = Pos2::new(origin.x + anchor.x, origin.y + anchor.y - ASCENT_EM * size);
+            let align = if *centred { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
+            painter.text(top, align, text, FontId::new(*size, family), colour(*c));
         }
     }
 }
@@ -846,5 +881,75 @@ mod tests {
             }
         }
         assert_eq!(scene, copy);
+    }
+
+    /// EDIT-31: the page is the scene's bounds filled with the export
+    /// background, through the camera; no scene, no page.
+    #[test]
+    fn edit_31_page_is_bounds_in_export_background() {
+        let scene = scene("containers");
+        let mut l = list(&scene);
+        l.camera.zoom = 0.5;
+        l.camera.pan = crate::camera::ScenePoint { x: -40.0, y: 10.0 };
+        let page = super::page(&l).expect("a page");
+        let b = scene.bounds;
+        let (a, z) = (l.camera.to_screen(b.min), l.camera.to_screen(b.max));
+        let bg = scene.background;
+        match page {
+            Primitive::Polygon {
+                points,
+                fill,
+                stroke,
+                dash,
+            } => {
+                assert_eq!(fill, Some([bg.r, bg.g, bg.b]));
+                assert_eq!((stroke, dash), (None, None));
+                let xs: Vec<f32> = points.iter().map(|p| p.x).collect();
+                let ys: Vec<f32> = points.iter().map(|p| p.y).collect();
+                assert!((xs.iter().copied().fold(f32::INFINITY, f32::min) - a.x).abs() < 1e-3);
+                assert!((xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) - z.x).abs() < 1e-3);
+                assert!((ys.iter().copied().fold(f32::INFINITY, f32::min) - a.y).abs() < 1e-3);
+                assert!((ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) - z.y).abs() < 1e-3);
+            }
+            other => panic!("not a polygon: {other:?}"),
+        }
+        l.scene = None;
+        assert!(super::page(&l).is_none());
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(c: [u8; 3]) -> f32 {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    }
+
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// EDIT-31: every mark colour (selection, hover, enterable hover,
+    /// handles, resize outline, rubber band) stands out from the page by
+    /// at least 4.5:1, so 2px marks stay visible on the white page.
+    #[test]
+    fn edit_31_marks_contrast_with_page() {
+        let scene = scene("containers");
+        let bg = scene.background;
+        let page = [bg.r, bg.g, bg.b];
+        for (name, colour) in [
+            ("selection", super::SELECTION),
+            ("hover", super::HOVER),
+            ("enterable", super::ENTERABLE),
+        ] {
+            let ratio = contrast(colour, page);
+            assert!(ratio >= 4.5, "{name} {colour:?} on {page:?}: {ratio:.2}");
+        }
     }
 }

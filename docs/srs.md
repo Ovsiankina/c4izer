@@ -915,10 +915,14 @@ Working beside a text editor
   fits the whole scene (drawing, title and key) into the canvas with a
   20px margin, never zooming above 100%; "Fit view" (F key and a
   toolbar button) does the same on demand; reloads keep zoom and pan
-  (EDIT-1).
+  (EDIT-1). Entering a view by clicking a box and going back up counts as
+  showing it: coming back to a view already shown in this session
+  restores the zoom and pan it had then.
 - **EDIT-31** The canvas draws the scene on a page the colour of the
   export background (white in phase 1), so the canvas and the exported
-  SVG/PNG look the same whatever the window theme.
+  SVG/PNG look the same whatever the window theme. The area outside the page
+  uses the app's panel colour, and selection marks, resize outlines and
+  lint marks keep enough contrast to stay visible on the page.
 - **EDIT-32** The canvas keeps at least 60% of the window width: side
   panels are resizable and collapsible, and at a window width under
   1000px they start collapsed.

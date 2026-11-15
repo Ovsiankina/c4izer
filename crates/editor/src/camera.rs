@@ -11,7 +11,7 @@
 // `ScenePoint`, so the unit is in the type: screen px are pointer and
 // paint coordinates, scene px are the scene's i32 px unrounded.
 
-use c4rizer_core::geom::Point;
+use c4rizer_core::geom::{Point, Rect};
 
 /// Smallest zoom factor (EDIT-9).
 pub const MIN_ZOOM: f32 = 0.1;
@@ -21,6 +21,9 @@ pub const MAX_ZOOM: f32 = 8.0;
 
 /// Zoom factor per wheel notch (EDIT-9).
 pub const ZOOM_STEP: f32 = 1.1;
+
+/// Margin kept around the scene by "Fit view", screen px (EDIT-30).
+const FIT_MARGIN_PX: f32 = 20.0;
 
 /// A point in screen px, origin at the canvas's top-left corner, y down.
 /// Every pointer event carries one (EDIT-28).
@@ -112,6 +115,38 @@ impl Camera {
         };
     }
 
+    /// The camera that shows all of `bounds` (scene px) centred in a
+    /// canvas of `canvas` screen px, with `FIT_MARGIN_PX` around it,
+    /// never above zoom 1 nor outside `MIN_ZOOM..=MAX_ZOOM`. Serves
+    /// EDIT-30.
+    // DECISION: crate-private, so the step-4 contract gains no pub item;
+    // `state` calls it on first show and on "Fit view".
+    pub(crate) fn fit(bounds: Rect, canvas: ScreenPoint) -> Camera {
+        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+        let (w, h) = (bounds.width() as f32, bounds.height() as f32);
+        let room = |side: f32| (side - 2.0 * FIT_MARGIN_PX).max(0.0);
+        let mut zoom: f32 = 1.0;
+        if w > 0.0 {
+            zoom = zoom.min(room(canvas.x) / w);
+        }
+        if h > 0.0 {
+            zoom = zoom.min(room(canvas.y) / h);
+        }
+        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+        let (cx, cy) = (
+            (bounds.min.x + bounds.max.x) as f32 / 2.0,
+            (bounds.min.y + bounds.max.y) as f32 / 2.0,
+        );
+        Camera {
+            pan: ScenePoint {
+                x: cx - canvas.x / 2.0 / zoom,
+                y: cy - canvas.y / 2.0 / zoom,
+            },
+            zoom,
+        }
+    }
+
     /// Moves the view by `delta` screen px (the diagram follows the
     /// pointer). Serves EDIT-9.
     pub fn pan_by(&mut self, delta: ScreenPoint) {
@@ -181,5 +216,61 @@ mod tests {
         camera.pan_by(ScreenPoint { x: 10.0, y: 5.0 });
         let q = camera.to_screen(Point::new(50, 50));
         assert!(close(q.x - p.x, 10.0) && close(q.y - p.y, 5.0));
+    }
+
+    use c4rizer_core::geom::Rect;
+
+    /// EDIT-30: a scene larger than the canvas is fitted with a 20px
+    /// margin on the tighter axis and centred on the other.
+    #[test]
+    fn edit_30_fit_large_scene_into_canvas_with_margin() {
+        let bounds = Rect::from_corners(Point::new(-100, 50), Point::new(1900, 1050));
+        let canvas = ScreenPoint {
+            x: 848.0,
+            y: 1400.0,
+        };
+        let camera = Camera::fit(bounds, canvas);
+        assert!(close(camera.zoom, (848.0 - 40.0) / 2000.0), "{camera:?}");
+        let a = camera.to_screen(bounds.min);
+        let b = camera.to_screen(bounds.max);
+        assert!(close(a.x, 20.0) && close(b.x, 828.0), "{a:?} {b:?}");
+        assert!(
+            close(a.y + b.y, canvas.y),
+            "centred vertically: {a:?} {b:?}"
+        );
+        assert!(a.y >= 20.0 && b.y <= canvas.y - 20.0);
+    }
+
+    /// EDIT-30: a scene smaller than the canvas is never zoomed above
+    /// 100%; it is centred.
+    #[test]
+    fn edit_30_fit_never_zooms_above_100_percent() {
+        let bounds = Rect::from_corners(Point::new(0, 0), Point::new(300, 200));
+        let canvas = ScreenPoint {
+            x: 1600.0,
+            y: 900.0,
+        };
+        let camera = Camera::fit(bounds, canvas);
+        assert!(close(camera.zoom, 1.0), "{camera:?}");
+        let c = camera.to_screen(bounds.centre());
+        assert!(close(c.x, 800.0) && close(c.y, 450.0), "{c:?}");
+    }
+
+    /// EDIT-30: a canvas too small for the margin still gives a finite
+    /// camera within the zoom limits.
+    #[test]
+    fn edit_30_fit_tiny_canvas_stays_in_zoom_limits() {
+        let bounds = Rect::from_corners(Point::new(0, 0), Point::new(3000, 2000));
+        for canvas in [
+            ScreenPoint { x: 10.0, y: 10.0 },
+            ScreenPoint { x: 0.0, y: 0.0 },
+        ] {
+            let camera = Camera::fit(bounds, canvas);
+            assert!(close(camera.zoom, MIN_ZOOM), "{camera:?}");
+            assert!(camera.pan.x.is_finite() && camera.pan.y.is_finite());
+        }
+        let empty = Rect::from_corners(Point::new(5, 5), Point::new(5, 5));
+        let camera = Camera::fit(empty, ScreenPoint { x: 400.0, y: 300.0 });
+        assert!(close(camera.zoom, 1.0) && camera.pan.x.is_finite());
     }
 }

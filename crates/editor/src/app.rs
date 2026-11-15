@@ -1,5 +1,6 @@
-//! The eframe shell: panel layout (view list and breadcrumb left, canvas
-//! centre, details and style panel plus lint findings right, status bar),
+//! The eframe shell: panel layout (toolbar with "Fit view" and the side
+//! panel toggles on top, view list and breadcrumb left, canvas centre,
+//! details and style panel plus lint findings right, status bar),
 //! turning egui input and panel clicks into `state::Event`s and running
 //! the `state::Effect`s (file I/O, worker requests, dialogs).
 //!
@@ -25,6 +26,7 @@ use c4rizer_core::edit::{StyleProperty, StyleTarget};
 use c4rizer_core::model::{Colour, Shape};
 use eframe::egui;
 
+use crate::camera::ScreenPoint;
 use crate::canvas;
 use crate::files::{self, FileEvent, UiState, Watcher};
 use crate::state::{Alignment, Axis, Command, Dialog, Effect, Event, Problem, State};
@@ -63,6 +65,58 @@ pub struct App {
     pub startup: Startup,
     /// True once the first frame was presented.
     pub presented: bool,
+    // DECISION: the EDIT-32 panel flags are private fields so `App`'s
+    // pub fields (the step-4 contract) stay as they are; only `new`
+    // builds an `App`.
+    /// Left and right side panels open (EDIT-32); `None` until the first
+    /// frame knows the window width.
+    panels: Option<(bool, bool)>,
+}
+
+/// Window width from which the side panels start open (EDIT-32).
+const WIDE_WINDOW_PX: f32 = 1000.0;
+
+/// Share of the window width each side panel may take at most, so the
+/// canvas keeps at least 60% (EDIT-32).
+// DECISION: 19%, not 20%: the last percent absorbs float rounding and
+// the panels' frame so the canvas is never a hair under 60%.
+const SIDE_PANEL_SHARE: f32 = 0.19;
+
+/// Width a side panel adds beyond its size: the separator line and the
+/// resize grip, px (EDIT-32).
+// DECISION: 4px covers egui's 1px separator plus rounding with room to
+// spare; the real-window screenshot is the check.
+const PANEL_CHROME_PX: f32 = 4.0;
+
+/// Smallest width a side panel can be dragged to, px (EDIT-32).
+const SIDE_PANEL_MIN_PX: f32 = 120.0;
+
+/// True when the side panels start open at this window width (EDIT-32).
+fn side_panels_start_open(window_width: f32) -> bool {
+    window_width >= WIDE_WINDOW_PX
+}
+
+/// The drag range of one side panel at this window width, px: both at
+/// their widest still leave the canvas 60% of the width (EDIT-32).
+fn side_panel_range(window_width: f32) -> (f32, f32) {
+    let max = (window_width * SIDE_PANEL_SHARE - PANEL_CHROME_PX).max(0.0);
+    (SIDE_PANEL_MIN_PX.min(max), max)
+}
+
+/// True when F was pressed this frame with no modifier and no text field
+/// has focus: "Fit view" (EDIT-30). The event's own modifiers count,
+/// so Ctrl+F is not a fit.
+// DECISION: read in the shell, not added to `state::Key`, so the pub
+// `Key` enum is unchanged; the text-focus rule is the same as
+// Backspace's (EDIT-16).
+fn fit_key_pressed(ctx: &egui::Context) -> bool {
+    !ctx.text_edit_focused()
+        && ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: egui::Key::F, pressed: true, repeat: false, modifiers, .. }
+                    if !(modifiers.ctrl || modifiers.command || modifiers.alt))
+            })
+        })
 }
 
 impl App {
@@ -85,6 +139,7 @@ impl App {
             ui_state_path,
             startup,
             presented: false,
+            panels: None,
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -216,13 +271,14 @@ impl App {
     }
 
     /// The right panel: details, style panel (with target choice), align
-    /// and distribute buttons, lint findings, export buttons. Serves
+    /// and distribute buttons, lint findings, export buttons. Rows wrap,
+    /// so the panel fits its EDIT-32 width cap. Serves
     /// EDIT-5, EDIT-6, EDIT-7, EDIT-10, EDIT-17, EDIT-20.
     #[must_use]
     pub fn right_panel(&self, ui: &mut egui::Ui) -> Vec<Event> {
         let mut out = Vec::new();
         let mut command = |c: Command| out.push(Event::Command(c));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(self.state.history.can_undo(), egui::Button::new("Undo")).clicked() {
                 command(Command::Undo);
             }
@@ -267,7 +323,7 @@ impl App {
             }
             ui.separator();
             ui.strong("Export");
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("View as SVG").clicked() {
                     command(Command::ExportView(ExportFormat::Svg));
                 }
@@ -275,7 +331,7 @@ impl App {
                     command(Command::ExportView(ExportFormat::Png));
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("All views as SVG").clicked() {
                     command(Command::ExportAll(ExportFormat::Svg));
                 }
@@ -326,6 +382,9 @@ impl App {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let painter = painter.with_clip_rect(response.rect);
         let list = self.state.draw_list();
+        // EDIT-31: the page in the export background first; outside it
+        // the central panel keeps the app's panel colour.
+        canvas::paint_page(&painter, &list);
         canvas::paint(&painter, &canvas::paint_items(&list));
         let mut out: Vec<Event> = canvas::inputs(ui.ctx(), &response).into_iter().map(Event::Input).collect();
         if let (Some(item), Some(scene), Some(edit)) = (list.editing, list.scene, &self.state.text_edit)
@@ -399,7 +458,7 @@ fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mu
     // DECISION: every colour-picker change is written at once (one
     // undo step each): the canvas follows the picker live (EDIT-17).
     let mut colour_row = |ui: &mut egui::Ui, label: &str, value: Option<Colour>, make: fn(Option<Colour>) -> StyleProperty| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(label);
             let mut rgb = value.map_or([128, 128, 128], |c| [c.r, c.g, c.b]);
             if ui.color_edit_button_srgb(&mut rgb).changed() {
@@ -419,7 +478,7 @@ fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mu
     };
     colour_row(ui, "Fill", panel.background, StyleProperty::Background);
     colour_row(ui, "Text", panel.color, StyleProperty::Color);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Shape");
         for shape in [Shape::Box, Shape::Person, Shape::Cylinder] {
             if ui.selectable_label(panel.shape == Some(shape), format!("{shape:?}")).clicked() {
@@ -448,7 +507,7 @@ fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mu
                 }
             }
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Distribute horizontally").clicked() {
                 command(Command::Distribute(Axis::Horizontal));
             }
@@ -543,14 +602,51 @@ impl eframe::App for App {
             }
         }
         let mut events = Vec::new();
+        let width = ctx.content_rect().width();
+        let (mut left, mut right) = *self.panels.get_or_insert_with(|| {
+            let open = side_panels_start_open(width);
+            (open, open)
+        });
+        let mut fit = fit_key_pressed(&ctx);
+        egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.toggle_value(&mut left, "Views");
+                if ui.button("Fit view").on_hover_text("F").clicked() {
+                    fit = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut right, "Details");
+                });
+            });
+        });
+        self.panels = Some((left, right));
         egui::Panel::bottom("c4rizer-status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("c4rizer-left")
-            .default_size(220.0)
-            .show(ui, |ui| events.extend(self.left_panel(ui)));
-        egui::Panel::right("c4rizer-right")
-            .default_size(280.0)
-            .show(ui, |ui| events.extend(self.right_panel(ui)));
-        egui::CentralPanel::default().show(ui, |ui| events.extend(self.canvas(ui)));
+        let (min, max) = side_panel_range(width);
+        if left {
+            egui::Panel::left("c4rizer-left")
+                .resizable(true)
+                .default_size(220.0_f32.clamp(min, max))
+                .size_range(min..=max)
+                .show(ui, |ui| events.extend(self.left_panel(ui)));
+        }
+        if right {
+            egui::Panel::right("c4rizer-right")
+                .resizable(true)
+                .default_size(280.0_f32.clamp(min, max))
+                .size_range(min..=max)
+                .show(ui, |ui| events.extend(self.right_panel(ui)));
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            let size = ui.available_size();
+            self.state.set_canvas_size(ScreenPoint {
+                x: size.x,
+                y: size.y,
+            });
+            if fit {
+                self.state.fit_view();
+            }
+            events.extend(self.canvas(ui));
+        });
         for event in events {
             self.dispatch(&ctx, event);
         }
@@ -676,5 +772,81 @@ mod tests {
         assert_eq!(report_step(true, true, true), Report::Print);
         assert_eq!(report_step(false, true, true), Report::Wait);
         assert_eq!(report_step(false, true, false), Report::Wait, "no report asked");
+    }
+
+    /// One frame of `ctx` with `events`, the UI built by `build`; returns
+    /// what `fit_key_pressed` said during it.
+    fn frame_with(
+        ctx: &eframe::egui::Context,
+        events: Vec<eframe::egui::Event>,
+        build: impl Fn(&mut eframe::egui::Ui),
+    ) -> bool {
+        let mut pressed = false;
+        let input = eframe::egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            build(ui);
+            pressed = super::fit_key_pressed(ui.ctx());
+        });
+        output.textures_delta.clear();
+        pressed
+    }
+
+    fn f_key(modifiers: eframe::egui::Modifiers) -> eframe::egui::Event {
+        eframe::egui::Event::Key {
+            key: eframe::egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// EDIT-30: F fits the view, but not while a text field has focus,
+    /// and not with Ctrl (that chord is not "Fit view").
+    #[test]
+    fn edit_30_f_key_fits_unless_text_field_has_focus() {
+        use eframe::egui::{Context, Id, Modifiers, TextEdit};
+        let ctx = Context::default();
+        assert!(frame_with(&ctx, vec![f_key(Modifiers::NONE)], |_| {}));
+        assert!(!frame_with(&ctx, vec![], |_| {}), "no key, no fit");
+        assert!(!frame_with(&ctx, vec![f_key(Modifiers::CTRL)], |_| {}));
+
+        let id = Id::unique("field");
+        let field = |ui: &mut eframe::egui::Ui| {
+            let mut text = String::new();
+            let r = ui.add(TextEdit::singleline(&mut text).id(id));
+            r.request_focus();
+        };
+        let _ = frame_with(&ctx, vec![], field);
+        assert!(
+            !frame_with(&ctx, vec![f_key(Modifiers::NONE)], field),
+            "typing an F"
+        );
+    }
+
+    /// EDIT-32: under 1000px of window width the side panels start
+    /// collapsed; from 1000px they start open.
+    #[test]
+    fn edit_32_side_panels_start_collapsed_under_1000px() {
+        assert!(!super::side_panels_start_open(848.0));
+        assert!(!super::side_panels_start_open(999.0));
+        assert!(super::side_panels_start_open(1000.0));
+        assert!(super::side_panels_start_open(1920.0));
+    }
+
+    /// EDIT-32: with both side panels at their widest, the canvas keeps at
+    /// least 60% of the window width, at every window width.
+    #[test]
+    fn edit_32_canvas_keeps_60_percent_with_both_panels_wide() {
+        for width in [320.0_f32, 848.0, 999.0, 1000.0, 1280.0, 1920.0, 3840.0] {
+            let (min, max) = super::side_panel_range(width);
+            assert!(min <= max, "{width}: {min} > {max}");
+            assert!(min >= 0.0);
+            let canvas = width - 2.0 * (max + super::PANEL_CHROME_PX);
+            assert!(canvas >= 0.6 * width, "{width}: canvas {canvas}");
+        }
     }
 }
