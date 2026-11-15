@@ -762,6 +762,25 @@ pub enum Selector {
     All,
     /// One element, by id or dotted path.
     Element(ElementId),
+    /// `*?` (P2-323): on a system context, container or component view,
+    /// the elements of `*` with only the relationships to or from the
+    /// scoped element (C1) or the scope's children (C2, C3). Serves
+    /// P2-20, P2-323.
+    // TODO(srs): P2-323, `*?` on any other view kind. Reading taken (B
+    // landscape-filtered 15, Structurizr 6.2.4 `StaticViewContentParser`
+    // calls `addDefaultElements(false)` for every static view): it means
+    // the same as `*`.
+    AllReluctant,
+    /// A named relationship `r = a -> b` (dsl-breadth P2-146) in
+    /// `include` or `exclude`: adds or removes that relationship's line,
+    /// drawn only when both ends are in the view. Serves P2-20, P2-341.
+    Relationship(RelationshipId),
+    /// An element or relationship expression (/dsl/expressions), written
+    /// in double quotes when it holds whitespace (P2-337). Element
+    /// expressions add or remove boxes; relationship expressions act on
+    /// the drawn lines after lifting (CORE-5) and never add a box
+    /// (P2-334). Serves P2-20, P2-324..P2-337.
+    Expression(Expression),
 }
 
 /// `hide <src> -> <dst>`: leave out the line from `source` to
@@ -892,8 +911,112 @@ pub struct ViewSpec {
     /// The whole view statement, block included; `edit` adds a missing
     /// `at` line before its closing brace (DSL-9).
     pub span: Span,
-    /// `properties { ... }` in the view body, in file order (P2-172).
+    /// `properties { ... }` in the view body, in file order (P2-172);
+    /// kept byte for byte, no effect on the scene (P2-339).
     pub properties: Vec<Property>,
+    /// The base key, mode and tags of a `filtered` view; `None` for any
+    /// other kind. Serves P2-9, P2-306..P2-311.
+    pub filter: Option<Filter>,
+    /// The source of an `image` view; `None` for any other kind. Serves
+    /// P2-19, P2-320, P2-321.
+    pub image: Option<ViewImage>,
+    /// The `default` line, if written: the view the editor opens when no
+    /// last-viewed view applies (EDIT-13). Serves P2-20, P2-338.
+    pub default: Option<Span>,
+}
+
+/// The mode of a `filtered` view. Serves P2-9, P2-308.
+// DECISION: closed set (the DSL has exactly these two words), so not
+// #[non_exhaustive].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FilterMode {
+    /// `include`: keep the boxes and lines carrying any listed tag.
+    Include,
+    /// `exclude`: drop the boxes and lines carrying any listed tag.
+    Exclude,
+}
+
+/// `filtered <baseKey> <include|exclude> "<tags>"`: the base view and the
+/// tag filter. Serves P2-9, P2-306..P2-311.
+// TODO(srs): P2-306, base kinds and declaration order. Reading taken (B
+// landscape-filtered 2; Structurizr 6.2.4 `FilteredViewParser`): the base
+// must be a system landscape, system context, container or component
+// view declared earlier in the file, else `InvalidBaseView` or
+// `UnknownView`.
+// TODO(srs): P2-307, c4rizer extensions in a filtered body. Reading taken
+// (B landscape-filtered 1): only `default`, `title`, `description` and
+// `properties`; any other line is an error naming it.
+// TODO(srs): P2-310, a lifted line merging several relationships. Reading
+// taken (B landscape-filtered 3): kept when at least one merged
+// relationship passes, drawn re-merged from the survivors only.
+// TODO(srs): P2-311, options of a filtered view. Reading taken (B
+// landscape-filtered 4): the base view's c4rizer options.
+// TODO(srs): P2-312, unplaced boxes. Reading taken (B landscape-filtered
+// 1): exactly where the base view places them, auto-placed centres
+// included.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Filter {
+    /// The base view's key, as written.
+    pub base: Literal,
+    /// `include` or `exclude`, as written.
+    pub mode: Spanned<FilterMode>,
+    /// The tags argument, as written (comma-separated).
+    pub tags: Literal,
+}
+
+impl Filter {
+    /// The tags of `self.tags`, split on `,` and trimmed, empty entries
+    /// dropped, in written order. Serves P2-308.
+    pub fn tags(&self) -> Vec<&str> {
+        todo!()
+    }
+}
+
+/// Where an `image` view's picture comes from (the body's source line).
+/// Serves P2-19, P2-320, P2-321.
+// TODO(srs): P2-322, image views. Readings taken (B landscape-filtered
+// 10): (a) a file path is relative to the diagram file's directory and
+// must stay under it (`PathOutsideRoot`); (b) a missing file is
+// `FileRead`, bytes neither PNG nor SVG are `FileFormat`, both naming the
+// path; (c) drawn at intrinsic size in px (SVG `width`/`height`, else
+// `viewBox`) under the title; (d) an `https://` source draws a
+// placeholder naming the URL and adds a P2-3 notice (no network in phase
+// 2); (e) `image *` has no scope, `image <element>` is scoped to it; (f)
+// an element-scoped image view makes its element enterable (EDIT-15) when
+// no container or component view of it exists.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    /// `image <file>`: a local PNG or SVG file.
+    File(Literal),
+    /// `image <https url>`.
+    Url(Literal),
+    /// `plantuml <file|url|view key>`: drawn as a placeholder (P2-321).
+    PlantUml(Literal),
+    /// `mermaid <file|url|view key>`: drawn as a placeholder (P2-321).
+    Mermaid(Literal),
+    /// `kroki <format> <source>`: parsed, draws nothing, P2-3 notice
+    /// (P2-321).
+    Kroki {
+        /// The Kroki diagram format.
+        format: Literal,
+        /// The file, URL or view key.
+        source: Literal,
+    },
+}
+
+/// The picture of an `image` view. Serves P2-19, P2-320, P2-321.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ViewImage {
+    /// The source line, as written.
+    pub source: ImageSource,
+    /// The bytes of a local PNG or SVG file, read at parse time through
+    /// the `Loader` (O3); `None` for every other source.
+    pub asset: Option<Asset>,
+    /// The whole source line.
+    pub span: Span,
 }
 
 impl ViewSpec {
@@ -1615,6 +1738,9 @@ impl Model {
                 Selector::Element(id) => {
                     set.insert(id);
                 }
+                Selector::AllReluctant | Selector::Relationship(_) | Selector::Expression(_) => {
+                    todo!()
+                }
             }
         }
         for selector in &view.exclude {
@@ -1622,6 +1748,9 @@ impl Model {
                 Selector::All => set.clear(),
                 Selector::Element(id) => {
                     set.remove(&id);
+                }
+                Selector::AllReluctant | Selector::Relationship(_) | Selector::Expression(_) => {
+                    todo!()
                 }
             }
         }
@@ -1704,6 +1833,34 @@ impl Model {
     /// The relationships a relationship expression selects, sorted by id.
     /// Serves P2-168 (and landscape-filtered's view expressions).
     pub fn select_relationships(&self, _expression: &Expression) -> Vec<RelationshipId> {
+        todo!()
+    }
+
+    /// The base view of a `filtered` view: the view whose key is
+    /// `view.filter.base`; `None` for any other kind or an unknown key.
+    /// Serves P2-9, P2-306.
+    pub fn base_view(&self, _view: &ViewSpec) -> Option<&ViewSpec> {
+        todo!()
+    }
+
+    /// The keys of the views that are the base of at least one `filtered`
+    /// view, in declaration order, each once: the editor leaves them out
+    /// of its view list (EDIT-8). Serves P2-314.
+    // TODO(srs): P2-314, `render` and EDIT-15/16 on a base view. Reading
+    // taken (B landscape-filtered 5): `c4rizer render` still writes
+    // `<baseKey>.svg`; EDIT-15 and EDIT-16 may open it, and it then shows
+    // in the list until another view is opened.
+    pub fn filtered_bases(&self) -> Vec<&str> {
+        todo!()
+    }
+
+    /// The key of the view the editor opens when no last-viewed view
+    /// applies (EDIT-13): the view carrying `default`; `None` when no view
+    /// does. Serves P2-338.
+    // TODO(srs): P2-338, several `default` views. Reading taken (B
+    // landscape-filtered 16, Structurizr: each `default` sets the view
+    // set's default key): the last one declared wins.
+    pub fn default_view_key(&self) -> Option<&str> {
         todo!()
     }
 
@@ -1998,6 +2155,26 @@ pub enum ModelErrorKind {
         /// The expression as written.
         expression: String,
     },
+    /// A `filtered` view whose base key names no view declared before it
+    /// (P2-306, DSL-5).
+    UnknownView {
+        /// The base key as written.
+        key: String,
+    },
+    /// A `filtered` view whose base is not a system landscape, system
+    /// context, container or component view (P2-306).
+    InvalidBaseView {
+        /// The base key as written.
+        key: String,
+        /// The base view's kind.
+        kind: ViewKind,
+    },
+    /// An element other than a custom element (`element`, P2-17) in a
+    /// custom view's `include` (P2-317).
+    NotCustomElement {
+        /// The id as written.
+        id: String,
+    },
 }
 
 /// A model error: what, where, and its line and column (DSL-4, DSL-5).
@@ -2134,7 +2311,10 @@ impl fmt::Display for ModelError {
             | ModelErrorKind::UnknownArchetype { .. }
             | ModelErrorKind::NestedGroupNeedsSeparator
             | ModelErrorKind::ScopeViolation { .. }
-            | ModelErrorKind::MixedOperators { .. } => todo!(),
+            | ModelErrorKind::MixedOperators { .. }
+            | ModelErrorKind::UnknownView { .. }
+            | ModelErrorKind::InvalidBaseView { .. }
+            | ModelErrorKind::NotCustomElement { .. } => todo!(),
         }
     }
 }
@@ -3022,6 +3202,9 @@ impl Builder<'_> {
             sizes: Vec::new(),
             span: statement.span,
             properties: Vec::new(),
+            filter: None,
+            image: None,
+            default: None,
         };
         let mut seen_description = false;
         for inner in self.block(statement, head)? {

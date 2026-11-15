@@ -595,6 +595,9 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         sizes: Vec::new(),
         span: none,
         properties: Vec::new(),
+        filter: None,
+        image: None,
+        default: None,
     })
 }
 

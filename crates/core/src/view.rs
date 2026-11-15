@@ -71,7 +71,7 @@ use std::collections::BTreeMap;
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
     ElementId, ElementKind, GroupId, Mode, Model, RelationshipId, ResolvedBoundaryStyle,
-    ResolvedRelationshipStyle, ResolvedStyle, ViewKind, ViewOptions, ViewScope, ViewSpec,
+    ResolvedRelationshipStyle, ResolvedStyle, ViewImage, ViewKind, ViewOptions, ViewScope, ViewSpec,
 };
 
 /// Index of a box in `ViewPlan::boxes`, valid for one plan only. It is
@@ -275,6 +275,10 @@ pub struct ViewPlan {
     /// The mode styles were resolved in; `scene` draws its defaults
     /// (P2-431). Serves P2-430.
     pub mode: Mode,
+    /// The picture of an `image` view, which holds no boxes, edges or
+    /// boundaries; `None` for every other kind. Serves P2-19, P2-320,
+    /// P2-321.
+    pub image: Option<ViewImage>,
 }
 
 impl ViewPlan {
@@ -370,6 +374,7 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
         edges,
         boundaries,
         mode: Mode::Light,
+        image: None,
     }
 }
 

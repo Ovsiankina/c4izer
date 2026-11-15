@@ -90,7 +90,7 @@ use crate::label::{
 };
 use crate::model::{
     Asset, Colour, ElementId, ElementKind, Mode, RelationshipId, Shape, ViewKind, ViewOptions,
-    ViewScope,
+    ViewImage, ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
@@ -360,6 +360,27 @@ pub struct SceneIcon {
     pub rect: Rect,
     /// The image file.
     pub asset: Asset,
+}
+
+/// The picture of an `image` view, drawn under the title (P2-320), or
+/// the placeholder of a source c4rizer does not draw (P2-321). Serves
+/// P2-19, P2-320, P2-321, P2-340.
+// TODO(srs): P2-340, an SVG source holding a script or an external
+// reference. Reading taken (B landscape-filtered 11): embedded as
+// `<image href="data:image/svg+xml;base64,...">`, which browsers render
+// without running scripts or loading references; the EXP-1 scan checks
+// the exported document, not the bytes inside the data URI.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneImage {
+    /// Where the picture (or placeholder) is drawn, in px.
+    pub rect: Rect,
+    /// The view's source line and, for a local file, its bytes.
+    pub image: ViewImage,
+    /// The placeholder text naming the source kind and the file, URL or
+    /// view key as written (`plantuml`, `mermaid`, an `https://` image);
+    /// `None` when the picture itself is drawn.
+    pub placeholder: Option<String>,
 }
 
 /// One box (CORE-2): an element drawn with its shape, fill, name, type
@@ -651,6 +672,9 @@ pub struct Scene {
     // box fill #333333, line and boundary #aaaaaa; every other default
     // unchanged.
     pub mode: Mode,
+    /// The picture of an `image` view, from `plan.image`; `None` for
+    /// every other kind. Serves P2-19, P2-320, P2-321.
+    pub image: Option<SceneImage>,
 }
 
 impl Scene {
@@ -1009,6 +1033,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
         legend,
         crossings: routes.crossings,
         mode: plan.mode,
+        image: None,
     }
 }
 
