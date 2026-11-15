@@ -56,7 +56,27 @@ use c4rizer_core::lint::{Finding, Report};
 ///
 /// The first error of `out`.
 pub(crate) fn view(out: &mut impl Write, report: &Report, title: Option<&str>) -> io::Result<()> {
-    todo!()
+    let s = &report.stats;
+    writeln!(out, "== {}: {}", report.view, title.unwrap_or(""))?;
+    writeln!(
+        out,
+        "   {} boxes, {} lines, {} crossings (budget {})",
+        s.boxes, s.lines, s.crossings, s.budget
+    )?;
+    // DECISION: `for <n> boxes` is `stats.boxes`; the prototype counts the
+    // same boxes it placed, and `Stats` keeps no second box count.
+    writeln!(
+        out,
+        "   alignment: {} rows, {} columns for {} boxes",
+        s.rows, s.columns, s.boxes
+    )?;
+    for w in report.warnings() {
+        writeln!(out, "   warning: {w}")?;
+    }
+    for e in report.errors() {
+        writeln!(out, "   ERROR: {e}")?;
+    }
+    Ok(())
 }
 
 /// Writes `   wrote <path>` for one file just written (CLI-1, CLI-4).
@@ -65,7 +85,7 @@ pub(crate) fn view(out: &mut impl Write, report: &Report, title: Option<&str>) -
 ///
 /// The first error of `out`.
 pub(crate) fn wrote(out: &mut impl Write, path: &Path) -> io::Result<()> {
-    todo!()
+    writeln!(out, "   wrote {}", path.display())
 }
 
 /// Writes one unindented `ERROR: <text>` per L22 finding, in the order
@@ -76,7 +96,10 @@ pub(crate) fn wrote(out: &mut impl Write, path: &Path) -> io::Result<()> {
 ///
 /// The first error of `out`.
 pub(crate) fn coverage(out: &mut impl Write, findings: &[Finding]) -> io::Result<()> {
-    todo!()
+    for f in findings {
+        writeln!(out, "ERROR: {f}")?;
+    }
+    Ok(())
 }
 
 /// Writes `no views` for a file without views (pipeline plan: the CLI
@@ -86,11 +109,59 @@ pub(crate) fn coverage(out: &mut impl Write, findings: &[Finding]) -> io::Result
 ///
 /// The first error of `out`.
 pub(crate) fn no_views(out: &mut impl Write) -> io::Result<()> {
-    todo!()
+    writeln!(out, "no views")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+
+    use c4rizer_core::model;
+    use c4rizer_core::pipeline::{self, AllViews};
+
+    use super::{coverage, no_views, view, wrote};
+
+    const EXAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/example.dsl");
+
+    /// One container whose only component view hides two relationships
+    /// between its components: two L22 findings, in relationship order.
+    // DECISION: `hide` takes the relationships off the only component
+    // view, the smallest file that gives L22 through the pipeline.
+    const HIDDEN: &str = r#"workspace {
+  model {
+    operator = person "Operator" "Places orders."
+    shop = softwareSystem "Shop" "Sells goods." {
+      front = container "Front" "Shows pages." "Rust" {
+        pages = component "Pages" "Renders pages." "Rust"
+        cart = component "Cart" "Holds the cart." "Rust"
+        tally = component "Tally" "Sums the cart." "Rust"
+      }
+    }
+    operator -> pages "Browses"
+    pages -> cart "Fills"
+    cart -> tally "Asks totals from"
+  }
+  views {
+    component front "front" "Front components" {
+      include *
+      hide pages -> cart
+      hide cart -> tally
+    }
+  }
+}
+"#;
+
+    fn build(source: &str) -> AllViews {
+        let parsed = model::parse(source).expect("fixture parses");
+        pipeline::build_all(&parsed.model, &AtomicBool::new(false)).expect("never stopped")
+    }
+
+    fn text(bytes: Vec<u8>) -> String {
+        String::from_utf8(bytes).expect("report is UTF-8")
+    }
+
     /// CLI-1: on `tests/data/example.dsl` (read from
     /// `concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/example.dsl")`,
     /// through `pipeline::build_all`),
@@ -100,21 +171,100 @@ mod tests {
     /// all views: the same line shapes as the prototype's output.
     #[test]
     fn cli_1_report_matches_prototype_format() {
-        todo!()
+        let source = std::fs::read_to_string(EXAMPLE).expect("example readable");
+        let all = build(&source);
+        let mut out = Vec::new();
+        for v in &all.views {
+            view(&mut out, &v.report, v.plan.title.as_deref()).unwrap();
+            wrote(
+                &mut out,
+                &Path::new("out").join(format!("{}.svg", v.plan.key)),
+            )
+            .unwrap();
+        }
+        coverage(&mut out, &all.coverage).unwrap();
+        let got = text(out);
+
+        // The expected text, built line by line from the prototype's
+        // f-strings (c4.py `main` and `lint`).
+        let mut want = String::new();
+        for v in &all.views {
+            let s = &v.report.stats;
+            let title = v.plan.title.as_deref().unwrap_or("");
+            writeln!(want, "== {}: {title}", v.plan.key).unwrap();
+            writeln!(
+                want,
+                "   {} boxes, {} lines, {} crossings (budget {})",
+                s.boxes, s.lines, s.crossings, s.budget
+            )
+            .unwrap();
+            writeln!(
+                want,
+                "   alignment: {} rows, {} columns for {} boxes",
+                s.rows, s.columns, s.boxes
+            )
+            .unwrap();
+            for w in v.report.warnings() {
+                writeln!(want, "   warning: {}", w.message).unwrap();
+            }
+            for e in v.report.errors() {
+                writeln!(want, "   ERROR: {}", e.message).unwrap();
+            }
+            writeln!(want, "   wrote out/{}.svg", v.plan.key).unwrap();
+        }
+        for f in &all.coverage {
+            writeln!(want, "ERROR: {}", f.message).unwrap();
+        }
+        assert_eq!(got, want);
+
+        // Fixed facts of the example, independent of the builder above.
+        let keys: Vec<&str> = got
+            .lines()
+            .filter_map(|l| l.strip_prefix("== "))
+            .map(|l| l.split(':').next().unwrap())
+            .collect();
+        assert_eq!(keys, ["C1", "C2", "C3-serving", "C3-startup"]);
+        assert!(got.starts_with("== C1: System Context diagram for Atomanja\n   "));
+        for line in got.lines() {
+            assert!(
+                line.starts_with("== ") || line.starts_with("   ") || line.starts_with("ERROR: "),
+                "unexpected line shape: {line:?}"
+            );
+        }
     }
 
     /// Header DECISION: a view without a title prints `== <key>: ` and
     /// nothing else on that line.
     #[test]
     fn cli_1_untitled_view_header() {
-        todo!()
+        let all = build(HIDDEN);
+        let mut out = Vec::new();
+        view(&mut out, &all.views[0].report, None).unwrap();
+        let got = text(out);
+        assert_eq!(got.lines().next(), Some("== front: "));
     }
 
     /// CLI-1: `coverage` of an empty slice writes nothing; of two findings
     /// writes two unindented `ERROR: ` lines in the given order.
     #[test]
     fn cli_1_coverage_lines_unindented() {
-        todo!()
+        let mut out = Vec::new();
+        coverage(&mut out, &[]).unwrap();
+        assert!(out.is_empty());
+
+        let all = build(HIDDEN);
+        assert_eq!(all.coverage.len(), 2, "{:?}", all.coverage);
+        coverage(&mut out, &all.coverage).unwrap();
+        let got = text(out);
+        let want = format!(
+            "ERROR: {}\nERROR: {}\n",
+            all.coverage[0].message, all.coverage[1].message
+        );
+        assert_eq!(got, want);
+        let mut reversed = Vec::new();
+        let swapped = [all.coverage[1].clone(), all.coverage[0].clone()];
+        coverage(&mut reversed, &swapped).unwrap();
+        assert_ne!(text(reversed), got, "order follows the slice");
     }
 
     /// CLI-1: on an inline fixture with a container that has a component
@@ -126,6 +276,21 @@ mod tests {
     /// renders them: element names (CORE-16, CORE-21).
     #[test]
     fn cli_1_coverage_line_exact_text() {
-        todo!()
+        let source = HIDDEN.replace("      hide cart -> tally\n", "");
+        let all = build(&source);
+        let mut out = Vec::new();
+        coverage(&mut out, &all.coverage).unwrap();
+        assert_eq!(
+            text(out),
+            "ERROR: Pages -> Cart is in the model but on no component view of \"Front\"\n"
+        );
+    }
+
+    /// Pipeline plan: a file without views reports `no views`.
+    #[test]
+    fn cli_1_no_views_line() {
+        let mut out = Vec::new();
+        no_views(&mut out).unwrap();
+        assert_eq!(text(out), "no views\n");
     }
 }
