@@ -5,9 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-png = []
+# EXP-2: PNG through resvg, bundled font only, so no system-fonts or
+# memmap-fonts; no raster-images (a scene embeds no image).
+png = ["dep:resvg"]
 
 [dependencies]
+resvg = { version = "0.50", optional = true, default-features = false, features = ["text"] }
 
 [lints]
 workspace = true

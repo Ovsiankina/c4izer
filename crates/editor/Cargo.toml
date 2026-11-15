@@ -10,6 +10,12 @@ path = "src/main.rs"
 
 [dependencies]
 c4rizer-core = { path = "../core" }
+# HLD §2: window, canvas, input (egui) [delegated].
+eframe = "0.37"
+# HLD §2: directory watching for EDIT-1, EDIT-23 [approved 2026-11-15].
+notify = "8.2"
+# HLD §2: native Open and Save dialogs for EDIT-13, EDIT-7 [approved 2026-11-15].
+rfd = "0.18"
 
 [lints]
 workspace = true
