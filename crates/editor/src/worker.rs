@@ -36,14 +36,16 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
-use c4rizer_core::model::{Parsed, ViewKind};
-use c4rizer_core::pipeline::ViewBuild;
+use c4rizer_core::model::{Model, Parsed, ViewKind};
+use c4rizer_core::pipeline::{
+    BuildError, PREVIEW_ROUTE, ViewBuild, build_spec, build_view, default_view, rebuild_after_move,
+};
 use c4rizer_core::place::Keep;
 use c4rizer_core::view::BoxId;
 
@@ -60,7 +62,7 @@ impl Generation {
     /// The next generation (`self.0 + 1`, saturating). Serves EDIT-25.
     #[must_use]
     pub fn next(self) -> Generation {
-        todo!()
+        Generation(self.0.saturating_add(1))
     }
 }
 
@@ -89,7 +91,10 @@ impl ViewRef {
     /// export file (EDIT-7). Serves EDIT-7, EDIT-15.
     #[must_use]
     pub fn key(&self) -> String {
-        todo!()
+        match self {
+            ViewRef::Declared(key) => key.clone(),
+            ViewRef::Default { scope, kind } => format!("{scope}-{}", kind.keyword()),
+        }
     }
 }
 
@@ -108,7 +113,10 @@ impl ExportFormat {
     /// `svg` or `png`, the file extension (EDIT-7).
     #[must_use]
     pub const fn extension(self) -> &'static str {
-        todo!()
+        match self {
+            ExportFormat::Svg => "svg",
+            ExportFormat::Png => "png",
+        }
     }
 }
 
@@ -213,6 +221,9 @@ pub enum Reply {
     /// error as one status-bar sentence (SRS 5.1).
     Exported {
         /// The request's generation.
+        // DECISION: exports are never stale (EDIT-7), so `state` reads
+        // only the result; the generation stays for symmetry and tests.
+        #[allow(dead_code, reason = "exports are never dropped as stale")]
         generation: Generation,
         /// Paths written, in target order, or the error.
         result: Result<Vec<PathBuf>, String>,
@@ -228,6 +239,9 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 #[derive(Debug, Clone)]
 pub struct Running {
     /// The running job's generation.
+    // DECISION: `stops` decides on the jobs alone; the generation is
+    // published for a debugger and kept for later stop rules.
+    #[allow(dead_code, reason = "published for inspection; `stops` reads the jobs")]
     pub generation: Generation,
     /// The running job (a cheap clone: its parse and builds are `Arc`s).
     pub job: Job,
@@ -258,7 +272,20 @@ impl Worker {
     /// a stopped job) and calls `wake`. Serves EDIT-25.
     #[must_use]
     pub fn spawn(wake: Wake) -> Worker {
-        todo!()
+        let (requests, inbox) = mpsc::channel::<Request>();
+        let (outbox, replies) = mpsc::channel::<Reply>();
+        let running: Arc<Mutex<Option<Running>>> = Arc::new(Mutex::new(None));
+        let shared = Arc::clone(&running);
+        let thread = std::thread::Builder::new()
+            .name("c4rizer-worker".to_owned())
+            .spawn(move || run_thread(&inbox, &outbox, &shared, &wake))
+            .ok();
+        Worker {
+            requests,
+            replies,
+            thread,
+            running,
+        }
     }
 
     /// Queues `request`; never blocks (EDIT-25). When `request` is a
@@ -268,21 +295,39 @@ impl Worker {
     /// is never stopped. A closed thread is ignored: the status bar
     /// learns it from the missing replies.
     pub fn send(&self, request: Request) {
-        todo!()
+        if let Ok(running) = self.running.lock()
+            && let Some(running) = running.as_ref()
+            && stops(&running.job, &request.job)
+        {
+            running.stop.store(true, Ordering::Relaxed);
+        }
+        let _ = self.requests.send(request);
     }
 
     /// Every reply received since the last call, in arrival order; never
     /// blocks. Serves EDIT-25.
     #[must_use]
     pub fn drain(&self) -> Vec<Reply> {
-        todo!()
+        self.replies.try_iter().collect()
     }
 }
 
 impl Drop for Worker {
     /// Closes the request channel and joins the thread.
     fn drop(&mut self) {
-        todo!()
+        // Closing the channel ends the thread's loop; stopping the running
+        // job makes that quick.
+        let (closed, _) = mpsc::channel();
+        drop(std::mem::replace(&mut self.requests, closed));
+        if let Ok(running) = self.running.lock()
+            && let Some(running) = running.as_ref()
+            && !matches!(running.job, Job::Export { .. })
+        {
+            running.stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -296,7 +341,43 @@ impl Drop for Worker {
 /// ones are re-sent by `state` when it next idles).
 #[must_use]
 pub fn latest(queued: Vec<Request>) -> Vec<Request> {
-    todo!()
+    let last_shown = queued
+        .iter()
+        .rposition(|r| matches!(r.job, Job::Build { shown: true, .. }));
+    let last_drag = queued.iter().rposition(|r| matches!(r.job, Job::Drag { .. }));
+    let keep_drag = match (last_drag, last_shown) {
+        (Some(d), Some(b)) => (d > b).then_some(d),
+        (d, _) => d,
+    };
+    let foreground = last_shown.is_some() || keep_drag.is_some();
+    let newest_shown = queued
+        .iter()
+        .filter(|r| matches!(r.job, Job::Build { shown: true, .. }))
+        .map(|r| r.generation)
+        .max();
+    // The newest background build per view, at or after the newest shown
+    // build's generation.
+    let mut background: BTreeMap<ViewRef, usize> = BTreeMap::new();
+    if !foreground {
+        for (i, r) in queued.iter().enumerate() {
+            if let Job::Build { view, shown: false, .. } = &r.job
+                && newest_shown.is_none_or(|g| r.generation >= g)
+            {
+                background.insert(view.clone(), i);
+            }
+        }
+    }
+    queued
+        .into_iter()
+        .enumerate()
+        .filter(|(i, r)| match &r.job {
+            Job::Export { .. } => true,
+            Job::Build { shown: true, .. } => Some(*i) == last_shown,
+            Job::Drag { .. } => Some(*i) == keep_drag,
+            Job::Build { view, shown: false, .. } => background.get(view) == Some(i),
+        })
+        .map(|(_, r)| r)
+        .collect()
 }
 
 /// True when a newly arrived `incoming` job must stop the `running` one
@@ -308,7 +389,25 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
 /// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
 #[must_use]
 pub fn stops(running: &Job, incoming: &Job) -> bool {
-    todo!()
+    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. }) {
+        return false;
+    }
+    if matches!(running, Job::Export { .. }) {
+        return false;
+    }
+    // DECISION: the rule is `latest` itself on the pair, so the two never
+    // disagree; the clones are `Arc` copies.
+    let pair = vec![
+        Request {
+            generation: Generation(0),
+            job: running.clone(),
+        },
+        Request {
+            generation: Generation(1),
+            job: incoming.clone(),
+        },
+    ];
+    !latest(pair).iter().any(|r| r.generation == Generation(0))
 }
 
 /// Runs one request synchronously and returns its reply: the thread's
@@ -320,15 +419,259 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
 /// EDIT-1, EDIT-2, EDIT-7, EDIT-14, EDIT-25.
 #[must_use]
 pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
-    todo!()
+    let generation = request.generation;
+    match request.job {
+        Job::Build {
+            parsed,
+            view,
+            keep,
+            shown,
+        } => match build(&parsed.model, &view, &keep, stop) {
+            Built::Done(build) => Some(Reply::Built {
+                generation,
+                view,
+                build: Arc::new(*build),
+                shown,
+            }),
+            Built::NoView => Some(Reply::NoView { generation, view }),
+            Built::Stopped => None,
+        },
+        Job::Drag {
+            parsed,
+            previous,
+            moved,
+        } => rebuild_after_move(&parsed.model, &previous, &moved, &PREVIEW_ROUTE, stop)
+            .ok()
+            .map(|build| Reply::Dragged {
+                generation,
+                build: Arc::new(build),
+            }),
+        Job::Export {
+            parsed,
+            targets,
+            format,
+            png_width,
+        } => Some(Reply::Exported {
+            generation,
+            result: export(&parsed.model, &targets, format, png_width),
+        }),
+    }
+}
+
+/// The outcome of one full build.
+enum Built {
+    /// The build, boxed: the other variants are empty.
+    Done(Box<ViewBuild>),
+    /// The view does not exist or no longer opens.
+    NoView,
+    /// The stop flag was set.
+    Stopped,
+}
+
+/// Builds `view` of `model` with `keep`: a declared view by key, a default
+/// view through `pipeline::default_view` (EDIT-15).
+fn build(model: &Model, view: &ViewRef, keep: &Keep, stop: &AtomicBool) -> Built {
+    let result = match view {
+        ViewRef::Declared(key) => match build_view(model, key, keep, stop) {
+            Ok(b) => Ok(b),
+            Err(BuildError::Stopped(_)) => return Built::Stopped,
+            Err(_) => return Built::NoView,
+        },
+        ViewRef::Default { scope, kind } => {
+            let Some(spec) = model.find(scope).and_then(|id| default_view(model, id, *kind)) else {
+                return Built::NoView;
+            };
+            build_spec(model, &spec, keep, stop)
+        }
+    };
+    match result {
+        Ok(b) => Built::Done(Box::new(b)),
+        Err(_) => Built::Stopped,
+    }
+}
+
+/// Writes every target of an export job (EDIT-7); the first failure ends
+/// it as one sentence.
+fn export(
+    model: &Model,
+    targets: &[ExportTarget],
+    format: ExportFormat,
+    png_width: Option<u32>,
+) -> Result<Vec<PathBuf>, String> {
+    // An export is never stopped: its flag is never set.
+    let never = AtomicBool::new(false);
+    let mut written = Vec::with_capacity(targets.len());
+    for target in targets {
+        let Built::Done(build) = build(model, &target.view, &target.keep, &never) else {
+            return Err(format!(
+                "cannot export view \"{}\": it is no longer in the file",
+                target.view.key()
+            ));
+        };
+        let bytes = match format {
+            ExportFormat::Svg => c4rizer_core::export::svg(&build.scene).into_bytes(),
+            ExportFormat::Png => {
+                let width = png_width.unwrap_or_else(|| {
+                    u32::try_from(build.scene.bounds.width()).unwrap_or(0).saturating_mul(2)
+                });
+                c4rizer_core::export::png(&build.scene, width).map_err(|e| {
+                    format!("cannot export view \"{}\" as PNG: {e}", target.view.key())
+                })?
+            }
+        };
+        std::fs::write(&target.path, bytes)
+            .map_err(|e| format!("cannot write {}: {e}", target.path.display()))?;
+        written.push(target.path.clone());
+    }
+    Ok(written)
+}
+
+/// The worker thread's loop: wait for a request, take every queued one,
+/// keep `latest` of them, run the first with a fresh stop flag published
+/// in `running`, send its reply, repeat until the request channel closes.
+fn run_thread(
+    inbox: &Receiver<Request>,
+    outbox: &Sender<Reply>,
+    running: &Mutex<Option<Running>>,
+    wake: &Wake,
+) {
+    let mut pending: Vec<Request> = Vec::new();
+    loop {
+        if pending.is_empty() {
+            match inbox.recv() {
+                Ok(r) => pending.push(r),
+                Err(_) => return,
+            }
+        }
+        pending.extend(inbox.try_iter());
+        // DECISION: `latest` runs again before every job, so a request
+        // that arrived while the previous job ran can still drop the
+        // queued ones it supersedes.
+        pending = latest(std::mem::take(&mut pending));
+        if pending.is_empty() {
+            continue;
+        }
+        let request = pending.remove(0);
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Ok(mut slot) = running.lock() {
+            *slot = Some(Running {
+                generation: request.generation,
+                job: request.job.clone(),
+                stop: Arc::clone(&stop),
+            });
+        }
+        let reply = serve(request, &stop);
+        if let Ok(mut slot) = running.lock() {
+            *slot = None;
+        }
+        if let Some(reply) = reply {
+            if outbox.send(reply).is_err() {
+                return;
+            }
+            wake();
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use c4rizer_core::geom::Point;
+    use c4rizer_core::model::{Parsed, ViewKind, parse};
+    use c4rizer_core::pipeline::{PREVIEW_ROUTE, ViewBuild, rebuild_after_move};
+    use c4rizer_core::place::Keep;
+    use c4rizer_core::view::BoxId;
+
+    use super::{
+        ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef, Worker, latest,
+        serve, stops,
+    };
+    use crate::testutil::{SHOP, TempDir, heavy};
+
     /// Size pin for the hot `Generation` (EDIT-25).
     #[test]
     fn generation_is_8_bytes() {
         assert_eq!(std::mem::size_of::<super::Generation>(), 8);
+    }
+
+    fn shop() -> Arc<Parsed> {
+        Arc::new(parse(SHOP).expect("fixture parses"))
+    }
+
+    fn declared(key: &str) -> ViewRef {
+        ViewRef::Declared(key.to_owned())
+    }
+
+    fn built(parsed: &Parsed, key: &str) -> Arc<ViewBuild> {
+        let reply = serve(
+            Request {
+                generation: Generation(1),
+                job: build_job(parsed, key, true),
+            },
+            &AtomicBool::new(false),
+        );
+        match reply {
+            Some(Reply::Built { build, .. }) => build,
+            other => panic!("expected Built, got {other:?}"),
+        }
+    }
+
+    fn build_job(parsed: &Parsed, key: &str, shown: bool) -> Job {
+        Job::Build {
+            parsed: Arc::new(parsed.clone()),
+            view: declared(key),
+            keep: Keep::default(),
+            shown,
+        }
+    }
+
+    fn drag_job(parsed: &Arc<Parsed>, previous: &Arc<ViewBuild>, x: i32) -> Job {
+        let mut moved = BTreeMap::new();
+        moved.insert(BoxId(0), Point::new(x, 10));
+        Job::Drag {
+            parsed: Arc::clone(parsed),
+            previous: Arc::clone(previous),
+            moved,
+        }
+    }
+
+    fn export_job(parsed: &Arc<Parsed>) -> Job {
+        Job::Export {
+            parsed: Arc::clone(parsed),
+            targets: Vec::new(),
+            format: ExportFormat::Svg,
+            png_width: None,
+        }
+    }
+
+    fn req(generation: u64, job: Job) -> Request {
+        Request {
+            generation: Generation(generation),
+            job,
+        }
+    }
+
+    fn gens(requests: &[Request]) -> Vec<u64> {
+        requests.iter().map(|r| r.generation.0).collect()
+    }
+
+    #[test]
+    fn view_ref_key_and_extension() {
+        assert_eq!(declared("context").key(), "context");
+        let d = ViewRef::Default {
+            scope: "web".to_owned(),
+            kind: ViewKind::Component,
+        };
+        assert_eq!(d.key(), "web-component");
+        assert_eq!(ExportFormat::Svg.extension(), "svg");
+        assert_eq!(ExportFormat::Png.extension(), "png");
+        assert_eq!(Generation(u64::MAX).next(), Generation(u64::MAX));
+        assert_eq!(Generation(4).next(), Generation(5));
     }
 
     /// EDIT-25 (plan editor-02): of three queued drags and a shown build
@@ -336,14 +679,59 @@ mod tests {
     /// only the newest.
     #[test]
     fn edit_25_stale_requests_dropped() {
-        todo!()
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let drags = |from: u64| (0..3).map(|i| req(from + i, drag_job(&parsed, &previous, 10 + i32::try_from(i).unwrap()))).collect::<Vec<_>>();
+        let mut queue = drags(1);
+        queue.push(req(4, build_job(&parsed, "containers", true)));
+        assert_eq!(gens(&latest(queue)), vec![4]);
+        assert_eq!(gens(&latest(drags(1))), vec![3]);
+        // A drag after the build is kept beside it.
+        let mut queue = vec![req(1, build_job(&parsed, "containers", true))];
+        queue.extend(drags(2));
+        assert_eq!(gens(&latest(queue)), vec![1, 4]);
+        // Two shown builds: only the newest.
+        let queue = vec![
+            req(1, build_job(&parsed, "containers", true)),
+            req(2, build_job(&parsed, "context", true)),
+        ];
+        assert_eq!(gens(&latest(queue)), vec![2]);
     }
 
     /// EDIT-14: background builds are dropped while a shown build or a
     /// drag is queued, and never run before it.
     #[test]
     fn edit_14_background_builds_never_delay_shown_view() {
-        todo!()
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let queue = vec![
+            req(1, build_job(&parsed, "context", false)),
+            req(2, build_job(&parsed, "containers", true)),
+            req(2, build_job(&parsed, "context", false)),
+        ];
+        assert_eq!(gens(&latest(queue)), vec![2], "only the shown build");
+        let queue = vec![
+            req(1, build_job(&parsed, "context", false)),
+            req(2, drag_job(&parsed, &previous, 30)),
+        ];
+        assert_eq!(gens(&latest(queue)), vec![2]);
+        // Alone: one per view, the newest, none older than a shown build.
+        let queue = vec![
+            req(1, build_job(&parsed, "context", false)),
+            req(3, build_job(&parsed, "context", false)),
+            req(3, build_job(&parsed, "containers", false)),
+        ];
+        assert_eq!(gens(&latest(queue)), vec![3, 3]);
+        // A running background build stops for a drag or a shown build.
+        let bg = build_job(&parsed, "context", false);
+        assert!(stops(&bg, &drag_job(&parsed, &previous, 30)));
+        assert!(stops(&bg, &build_job(&parsed, "containers", true)));
+        assert!(!stops(&bg, &build_job(&parsed, "containers", false)));
+        let shown = build_job(&parsed, "containers", true);
+        assert!(!stops(&shown, &drag_job(&parsed, &previous, 30)));
+        assert!(stops(&shown, &build_job(&parsed, "context", true)));
+        let drag = drag_job(&parsed, &previous, 30);
+        assert!(stops(&drag, &drag_job(&parsed, &previous, 40)));
     }
 
     /// EDIT-25: `serve` of a drag job re-routes only lines touching the
@@ -351,14 +739,38 @@ mod tests {
     /// generation.
     #[test]
     fn edit_25_drag_reply_keeps_generation() {
-        todo!()
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let x = previous.routes.centres[0].x + 40;
+        let reply = serve(req(17, drag_job(&parsed, &previous, x)), &AtomicBool::new(false));
+        let Some(Reply::Dragged { generation, build }) = reply else {
+            panic!("expected Dragged, got {reply:?}");
+        };
+        assert_eq!(generation, Generation(17));
+        let mut moved = BTreeMap::new();
+        moved.insert(BoxId(0), Point::new(x, 10));
+        let expected = rebuild_after_move(&parsed.model, &previous, &moved, &PREVIEW_ROUTE, &AtomicBool::new(false)).unwrap();
+        assert_eq!(*build, expected);
+        assert_eq!(build.scene.centres[0], Point::new(x, 10));
+        // A stopped drag gives no reply.
+        let stopped = AtomicBool::new(true);
+        assert!(serve(req(18, drag_job(&parsed, &previous, x + 10)), &stopped).is_none());
     }
 
     /// EDIT-7: an export job is never dropped by `latest`, whatever
     /// follows it.
     #[test]
     fn edit_7_export_never_dropped() {
-        todo!()
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let queue = vec![
+            req(1, export_job(&parsed)),
+            req(2, drag_job(&parsed, &previous, 20)),
+            req(3, export_job(&parsed)),
+            req(4, build_job(&parsed, "containers", true)),
+            req(5, build_job(&parsed, "context", false)),
+        ];
+        assert_eq!(gens(&latest(queue)), vec![1, 3, 4]);
     }
 
     /// EDIT-25: with a background build of a heavy view running on the
@@ -367,7 +779,42 @@ mod tests {
     /// sets the build's stop flag, the build gives no reply.
     #[test]
     fn edit_25_drag_served_without_waiting_for_background_build() {
-        todo!()
+        let heavy = Arc::new(parse(&heavy(12)).expect("heavy parses"));
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let worker = Worker::spawn(Arc::new(|| {}));
+        worker.send(req(1, Job::Build {
+            parsed: Arc::clone(&heavy),
+            view: declared("heavy"),
+            keep: Keep::default(),
+            shown: false,
+        }));
+        // Wait until the thread runs it.
+        let start = Instant::now();
+        loop {
+            if worker.running.lock().unwrap().as_ref().is_some_and(|r| r.generation == Generation(1)) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "background build never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let flag = Arc::clone(&worker.running.lock().unwrap().as_ref().unwrap().stop);
+        let sent = Instant::now();
+        worker.send(req(2, drag_job(&parsed, &previous, previous.routes.centres[0].x + 30)));
+        assert!(flag.load(Ordering::Relaxed), "send set the stop flag");
+        let mut replies = Vec::new();
+        while !replies.iter().any(|r| matches!(r, Reply::Dragged { .. })) {
+            assert!(sent.elapsed() < Duration::from_secs(10), "drag not served: {replies:?}");
+            replies.extend(worker.drain());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Give a stray Built time to show up; there must be none.
+        std::thread::sleep(Duration::from_millis(50));
+        replies.extend(worker.drain());
+        assert!(
+            replies.iter().all(|r| matches!(r, Reply::Dragged { generation: Generation(2), .. })),
+            "{replies:?}"
+        );
     }
 
     /// EDIT-7, EDIT-25: an `Export` is never stopped: `stops` is false for
@@ -375,7 +822,33 @@ mod tests {
     /// set flag still writes its files and replies `Exported`.
     #[test]
     fn edit_7_export_never_stopped() {
-        todo!()
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let export = export_job(&parsed);
+        assert!(!stops(&export, &drag_job(&parsed, &previous, 30)));
+        assert!(!stops(&export, &build_job(&parsed, "containers", true)));
+        assert!(!stops(&export, &export_job(&parsed)));
+        let dir = TempDir::new("export-stop");
+        let path = dir.join("containers.svg");
+        let job = Job::Export {
+            parsed: Arc::clone(&parsed),
+            targets: vec![ExportTarget {
+                view: declared("containers"),
+                keep: Keep::default(),
+                path: path.clone(),
+            }],
+            format: ExportFormat::Svg,
+            png_width: None,
+        };
+        let reply = serve(req(9, job), &AtomicBool::new(true));
+        let Some(Reply::Exported { generation, result }) = reply else {
+            panic!("expected Exported, got {reply:?}");
+        };
+        assert_eq!(generation, Generation(9));
+        assert_eq!(result, Ok(vec![path.clone()]));
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(svg, c4rizer_core::export::svg(&previous.scene));
+        let _: PathBuf = path;
     }
 
     /// EDIT-15: `serve` builds a default view through
@@ -383,6 +856,32 @@ mod tests {
     /// opens.
     #[test]
     fn edit_15_default_view_built_or_no_view() {
-        todo!()
+        let parsed = shop();
+        let view = ViewRef::Default {
+            scope: "web".to_owned(),
+            kind: ViewKind::Component,
+        };
+        let job = |view: &ViewRef| Job::Build {
+            parsed: Arc::clone(&parsed),
+            view: view.clone(),
+            keep: Keep::default(),
+            shown: true,
+        };
+        let reply = serve(req(3, job(&view)), &AtomicBool::new(false));
+        let Some(Reply::Built { build, view: v, .. }) = reply else {
+            panic!("expected Built, got {reply:?}");
+        };
+        assert_eq!(v, view);
+        assert_eq!(build.scene.key, "web-component");
+        assert!(build.scene.boxes.len() >= 2);
+        // `shop` already has a container view: its default does not open.
+        let gone = ViewRef::Default {
+            scope: "shop".to_owned(),
+            kind: ViewKind::Container,
+        };
+        let reply = serve(req(4, job(&gone)), &AtomicBool::new(false));
+        assert!(matches!(reply, Some(Reply::NoView { generation: Generation(4), .. })), "{reply:?}");
+        let reply = serve(req(5, job(&declared("nope"))), &AtomicBool::new(false));
+        assert!(matches!(reply, Some(Reply::NoView { .. })), "{reply:?}");
     }
 }

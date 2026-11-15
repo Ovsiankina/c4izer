@@ -50,59 +50,122 @@ impl History {
     /// oldest dropped beyond `MAX_STEPS`), `redo` cleared. An empty step
     /// (no edit) is not recorded. Serves EDIT-19.
     pub fn record(&mut self, step: Step) {
-        todo!()
+        if step.edits.is_empty() {
+            return;
+        }
+        self.undo.push(step);
+        if self.undo.len() > MAX_STEPS {
+            let extra = self.undo.len() - MAX_STEPS;
+            self.undo.drain(..extra);
+        }
+        self.redo.clear();
     }
 
     /// Takes the newest undo step, `None` when there is none. Serves
     /// EDIT-19.
     pub fn pop_undo(&mut self) -> Option<Step> {
-        todo!()
+        self.undo.pop()
     }
 
     /// Takes the newest redo step, `None` when there is none. Serves
     /// EDIT-19.
     pub fn pop_redo(&mut self) -> Option<Step> {
-        todo!()
+        self.redo.pop()
     }
 
     /// Pushes the inverse of an applied undo step on `redo`. Serves
     /// EDIT-19.
     pub fn push_undone(&mut self, step: Step) {
-        todo!()
+        if step.edits.is_empty() {
+            return;
+        }
+        self.redo.push(step);
+        if self.redo.len() > MAX_STEPS {
+            let extra = self.redo.len() - MAX_STEPS;
+            self.redo.drain(..extra);
+        }
     }
 
     /// Pushes the inverse of an applied redo step on `undo`, keeping
     /// `redo`. Serves EDIT-19.
     pub fn push_redone(&mut self, step: Step) {
-        todo!()
+        if step.edits.is_empty() {
+            return;
+        }
+        self.undo.push(step);
+        if self.undo.len() > MAX_STEPS {
+            let extra = self.undo.len() - MAX_STEPS;
+            self.undo.drain(..extra);
+        }
     }
 
     /// True when `undo` is not empty (menu state). Serves EDIT-19.
     #[must_use]
     pub fn can_undo(&self) -> bool {
-        todo!()
+        !self.undo.is_empty()
     }
 
     /// True when `redo` is not empty (menu state). Serves EDIT-19.
     #[must_use]
     pub fn can_redo(&self) -> bool {
-        todo!()
+        !self.redo.is_empty()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{History, MAX_STEPS, Step};
+    use c4rizer_core::edit::Edit;
+
+    fn step(i: usize) -> Step {
+        Step {
+            edits: vec![Edit::Move {
+                view: "v".to_owned(),
+                element: "box".to_owned(),
+                centre: Some((i32::try_from(i).unwrap_or(0) * 10, 0)),
+            }],
+        }
+    }
+
     /// EDIT-19: 100 recorded steps can all be undone, then all redone,
     /// in order; a new record clears redo.
     #[test]
     fn edit_19_stacks_hold_100_steps() {
-        todo!()
+        let mut h = History::default();
+        for i in 0..100 {
+            h.record(step(i));
+        }
+        assert!(h.can_undo() && !h.can_redo());
+        for i in (0..100).rev() {
+            let s = h.pop_undo().expect("undo step");
+            assert_eq!(s, step(i));
+            h.push_undone(s);
+        }
+        assert!(!h.can_undo() && h.can_redo());
+        for i in 0..100 {
+            let s = h.pop_redo().expect("redo step");
+            assert_eq!(s, step(i));
+            h.push_redone(s);
+        }
+        assert_eq!(h.undo.len(), 100);
+        h.pop_undo();
+        h.push_undone(step(7));
+        h.record(step(200));
+        assert!(!h.can_redo(), "a new record clears redo");
     }
 
     /// EDIT-19: beyond `MAX_STEPS` the oldest step is dropped; an empty
     /// step is not recorded.
     #[test]
     fn edit_19_cap_drops_oldest() {
-        todo!()
+        let mut h = History::default();
+        for i in 0..=MAX_STEPS {
+            h.record(step(i));
+        }
+        assert_eq!(h.undo.len(), MAX_STEPS);
+        assert_eq!(h.undo[0], step(1), "the oldest went");
+        h.record(Step { edits: Vec::new() });
+        assert_eq!(h.undo.len(), MAX_STEPS);
+        assert_eq!(h.undo.last(), Some(&step(MAX_STEPS)));
     }
 }

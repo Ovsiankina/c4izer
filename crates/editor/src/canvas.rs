@@ -17,10 +17,13 @@
 // is drawn line by line as `TextBlock::lines` gives it, never re-wrapped
 // by egui (CORE-30: the scene already wrapped it), at `size_px * zoom`.
 
-use c4rizer_core::scene::{ItemKey, TextBlock};
+use c4rizer_core::geom::{Point, Rect};
+use c4rizer_core::label::Weight;
+use c4rizer_core::model::Colour;
+use c4rizer_core::scene::{Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Stroke, Swatch, TextBlock, Tip};
 
 use crate::camera::{Camera, ScreenPoint};
-use crate::state::{DrawList, Input, MarkKind};
+use crate::state::{Button, DrawList, HANDLE_PX, Input, Key, MarkKind, Modifiers};
 
 /// What one painted item stands for: a scene item, or a mark; nothing
 /// else is ever painted (EDIT-12).
@@ -105,8 +108,323 @@ pub struct PaintItem {
 /// (EDIT-12). Empty when the list has no scene. Serves EDIT-12, EDIT-9,
 /// EDIT-15, EDIT-18.
 #[must_use]
+#[expect(clippy::too_many_lines, reason = "one flat pass in the scene's paint order")]
 pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
-    todo!()
+    let Some(scene) = list.scene else {
+        return Vec::new();
+    };
+    let cam = &list.camera;
+    let mut out = Vec::new();
+    let mut push = |source: Source, primitive: Primitive| out.push(PaintItem { source, primitive });
+
+    for (i, b) in scene.boundaries.iter().enumerate() {
+        let source = Source::Scene(ItemKey::Boundary(u32::try_from(i).unwrap_or(u32::MAX)));
+        push(source, polygon(rect_points(cam, b.rect, 0), None, Some(&b.stroke), cam));
+        for t in text_items(&b.tag, cam) {
+            push(source, t);
+        }
+    }
+    for l in &scene.lines {
+        let source = Source::Scene(ItemKey::Line(l.edge));
+        let colour = rgb(l.stroke.colour);
+        let width = px(l.stroke.width_px) * cam.zoom;
+        push(source, Primitive::Path {
+            points: l.points.iter().map(|&p| cam.to_screen(p)).collect(),
+            colour,
+            width,
+            dash: dash(&l.stroke, cam),
+        });
+        for c in &l.chevrons {
+            push(source, Primitive::Path {
+                points: c.points.iter().map(|&p| cam.to_screen(p)).collect(),
+                colour,
+                width,
+                dash: None,
+            });
+        }
+        push(source, tip(&l.tip, colour, cam));
+    }
+    for b in &scene.boxes {
+        let source = Source::Scene(ItemKey::Box(b.id));
+        for primitive in outline(&b.outline, Some(rgb(b.fill)), Some(&b.stroke), cam) {
+            push(source, primitive);
+        }
+        for t in text_items(&b.name, cam)
+            .into_iter()
+            .chain(text_items(&b.type_line, cam))
+            .chain(b.description.iter().flat_map(|d| text_items(d, cam)))
+        {
+            push(source, t);
+        }
+    }
+    for l in &scene.labels {
+        let source = Source::Scene(ItemKey::Label(l.edge));
+        if let Some(fill) = l.fill {
+            push(source, polygon(rect_points(cam, l.rect, 0), Some(rgb(fill)), None, cam));
+        }
+        for t in text_items(&l.text, cam) {
+            push(source, t);
+        }
+    }
+    if let Some(title) = &scene.title {
+        for t in text_items(title, cam) {
+            push(Source::Scene(ItemKey::Title), t);
+        }
+    }
+    if let Some(subtitle) = &scene.subtitle {
+        for t in text_items(subtitle, cam) {
+            push(Source::Scene(ItemKey::Subtitle), t);
+        }
+    }
+    for entry in &scene.legend.entries {
+        let source = Source::Scene(ItemKey::Legend);
+        match &entry.swatch {
+            Swatch::Box { outline: o, fill, stroke } => {
+                for primitive in outline(o, Some(rgb(*fill)), Some(stroke), cam) {
+                    push(source, primitive);
+                }
+            }
+            Swatch::Line { from, to, stroke, tip: t } => {
+                let colour = rgb(stroke.colour);
+                push(source, Primitive::Path {
+                    points: vec![cam.to_screen(*from), cam.to_screen(*to)],
+                    colour,
+                    width: px(stroke.width_px) * cam.zoom,
+                    dash: dash(stroke, cam),
+                });
+                push(source, tip(t, colour, cam));
+            }
+            _ => {}
+        }
+        for t in text_items(&entry.text, cam) {
+            push(source, t);
+        }
+    }
+
+    for mark in &list.marks {
+        let Some(rect) = scene.item_bounds(mark.item) else {
+            continue;
+        };
+        let source = Source::Mark(mark.item, mark.kind);
+        let (colour, dashed) = match mark.kind {
+            MarkKind::Selected | MarkKind::SelectedWithHandles => (SELECTION, false),
+            MarkKind::Hover => (HOVER, false),
+            MarkKind::Enterable => (ENTERABLE, true),
+        };
+        push(source, Primitive::Polygon {
+            points: rect_points(cam, rect.inflate(MARK_GAP_PX), 0),
+            fill: None,
+            stroke: Some((colour, MARK_WIDTH)),
+            dash: dashed.then_some([6.0, 4.0]),
+        });
+        if mark.kind == MarkKind::SelectedWithHandles && !list.read_only {
+            for centre in handle_centres(rect, cam) {
+                push(source, square(centre, HANDLE_PX, SELECTION));
+            }
+        }
+    }
+    if let Some((a, b)) = list.resize_outline {
+        push(Source::ResizeOutline, screen_rect(a, b, SELECTION, None));
+    }
+    if let Some((a, b)) = list.rubber_band {
+        push(Source::RubberBand, screen_rect(a, b, SELECTION, Some([4.0, 3.0])));
+    }
+    out
+}
+
+/// Selection mark colour.
+const SELECTION: [u8; 3] = [0x26, 0x7d, 0xff];
+/// Hover mark colour.
+const HOVER: [u8; 3] = [0x90, 0x90, 0x90];
+/// Hover mark colour of an enterable box (EDIT-15).
+const ENTERABLE: [u8; 3] = [0x18, 0xa0, 0x58];
+/// Mark stroke width, screen px.
+const MARK_WIDTH: f32 = 2.0;
+/// Gap between an item and its mark, scene px.
+const MARK_GAP_PX: i32 = 3;
+/// Inter's ascender in em (hhea ascender 2728 / 2816): from a baseline to
+/// the top egui places text at.
+// DECISION: a constant of the bundled face rather than a font query, so
+// `paint` needs no font lookup per text line.
+const ASCENT_EM: f32 = 0.969;
+
+/// `i32` px to `f32`.
+#[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+fn px(v: i32) -> f32 {
+    v as f32
+}
+
+/// A colour as `[r, g, b]`.
+fn rgb(c: Colour) -> [u8; 3] {
+    [c.r, c.g, c.b]
+}
+
+/// The stroke's dash scaled to the screen.
+fn dash(stroke: &Stroke, cam: &Camera) -> Option<[f32; 2]> {
+    stroke.dash_px.map(|[d, g]| [px(d) * cam.zoom, px(g) * cam.zoom])
+}
+
+/// A scene point given in `f32` scene px, through the camera.
+fn at(cam: &Camera, x: f32, y: f32) -> ScreenPoint {
+    ScreenPoint {
+        x: (x - cam.pan.x) * cam.zoom,
+        y: (y - cam.pan.y) * cam.zoom,
+    }
+}
+
+/// Points of `rect` (scene px) with rounded corners of `radius` px.
+fn rect_points(cam: &Camera, rect: Rect, radius: i32) -> Vec<ScreenPoint> {
+    let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+    let r = px(radius).min((x1 - x0) / 2.0).min((y1 - y0) / 2.0).max(0.0);
+    if r == 0.0 {
+        return vec![at(cam, x0, y0), at(cam, x1, y0), at(cam, x1, y1), at(cam, x0, y1)];
+    }
+    let mut points = Vec::with_capacity(4 * (CORNER_STEPS + 1));
+    // Corners clockwise from top right, each a quarter arc.
+    let corners = [
+        (x1 - r, y0 + r, -90.0_f32),
+        (x1 - r, y1 - r, 0.0),
+        (x0 + r, y1 - r, 90.0),
+        (x0 + r, y0 + r, 180.0),
+    ];
+    for (cx, cy, start) in corners {
+        for k in 0..=CORNER_STEPS {
+            #[expect(clippy::cast_precision_loss, reason = "small step count")]
+            let a = (start + 90.0 * k as f32 / CORNER_STEPS as f32).to_radians();
+            points.push(at(cam, cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    points
+}
+
+/// Segments per rounded corner.
+const CORNER_STEPS: usize = 4;
+/// Segments per full ellipse.
+const ELLIPSE_STEPS: usize = 32;
+
+/// Points of an elliptic arc from `from` to `to` degrees (y down).
+#[expect(clippy::too_many_arguments, reason = "an arc is centre, radii, angles and steps")]
+fn arc(cam: &Camera, centre: (f32, f32), radii: (f32, f32), from: f32, to: f32, steps: usize) -> Vec<ScreenPoint> {
+    (0..=steps)
+        .map(|k| {
+            #[expect(clippy::cast_precision_loss, reason = "small step count")]
+            let a = (from + (to - from) * k as f32 / steps as f32).to_radians();
+            at(cam, centre.0 + radii.0 * a.cos(), centre.1 + radii.1 * a.sin())
+        })
+        .collect()
+}
+
+/// A closed outline primitive.
+fn polygon(points: Vec<ScreenPoint>, fill: Option<[u8; 3]>, stroke: Option<&Stroke>, cam: &Camera) -> Primitive {
+    Primitive::Polygon {
+        points,
+        fill,
+        stroke: stroke.map(|s| (rgb(s.colour), px(s.width_px) * cam.zoom)),
+        dash: stroke.and_then(|s| dash(s, cam)),
+    }
+}
+
+/// The primitives of a box outline (CORE-2), as the SVG draws it.
+fn outline(o: &Outline, fill: Option<[u8; 3]>, stroke: Option<&Stroke>, cam: &Camera) -> Vec<Primitive> {
+    match *o {
+        Outline::Rect { rect, radius_px } => vec![polygon(rect_points(cam, rect, radius_px), fill, stroke, cam)],
+        Outline::Person {
+            head_centre,
+            head_radius_px,
+            body,
+            body_radius_px,
+        } => {
+            let r = px(head_radius_px);
+            let head = arc(cam, (px(head_centre.x), px(head_centre.y)), (r, r), 0.0, 360.0, ELLIPSE_STEPS);
+            vec![
+                polygon(rect_points(cam, body, body_radius_px), fill, stroke, cam),
+                polygon(head, fill, stroke, cam),
+            ]
+        }
+        Outline::Cylinder { rect, cap_ry_px } => {
+            let (x0, x1) = (px(rect.min.x), px(rect.max.x));
+            let (y0, y1) = (px(rect.min.y), px(rect.max.y));
+            let (cx, rx, ry) = (f32::midpoint(x0, x1), (x1 - x0) / 2.0, px(cap_ry_px));
+            let half = ELLIPSE_STEPS / 2;
+            // Body: top cap's upper half, right side, bottom cap's lower
+            // half, left side.
+            let mut body = arc(cam, (cx, y0 + ry), (rx, ry), 180.0, 360.0, half);
+            body.extend(arc(cam, (cx, y1 - ry), (rx, ry), 0.0, 180.0, half));
+            let rim = arc(cam, (cx, y0 + ry), (rx, ry), 0.0, 180.0, half);
+            let mut out = vec![polygon(body, fill, stroke, cam)];
+            if let Some(s) = stroke {
+                out.push(Primitive::Path {
+                    points: rim,
+                    colour: rgb(s.colour),
+                    width: px(s.width_px) * cam.zoom,
+                    dash: dash(s, cam),
+                });
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A line's arrowhead or join dot.
+fn tip(t: &Tip, colour: [u8; 3], cam: &Camera) -> Primitive {
+    match *t {
+        Tip::Dot { at: centre, radius_px } => Primitive::Circle {
+            centre: cam.to_screen(centre),
+            radius: px(radius_px) * cam.zoom,
+            fill: colour,
+        },
+        Tip::Arrow(points) => Primitive::Polygon {
+            points: points.iter().map(|&p| cam.to_screen(p)).collect(),
+            fill: Some(colour),
+            stroke: None,
+            dash: None,
+        },
+        _ => Primitive::Path {
+            points: Vec::new(),
+            colour,
+            width: 0.0,
+            dash: None,
+        },
+    }
+}
+
+/// The eight handle centres of `rect` (scene px), screen px (EDIT-18).
+fn handle_centres(rect: Rect, cam: &Camera) -> Vec<ScreenPoint> {
+    let a = cam.to_screen(rect.min);
+    let b = cam.to_screen(rect.max);
+    let (mx, my) = (f32::midpoint(a.x, b.x), f32::midpoint(a.y, b.y));
+    [(a.x, a.y), (mx, a.y), (b.x, a.y), (b.x, my), (b.x, b.y), (mx, b.y), (a.x, b.y), (a.x, my)]
+        .into_iter()
+        .map(|(x, y)| ScreenPoint { x, y })
+        .collect()
+}
+
+/// A filled square of half side `half` around `centre`, screen px.
+fn square(centre: ScreenPoint, half: f32, colour: [u8; 3]) -> Primitive {
+    let p = |dx: f32, dy: f32| ScreenPoint {
+        x: centre.x + dx,
+        y: centre.y + dy,
+    };
+    Primitive::Polygon {
+        points: vec![p(-half, -half), p(half, -half), p(half, half), p(-half, half)],
+        fill: Some(colour),
+        stroke: Some(([0xff, 0xff, 0xff], 1.0)),
+        dash: None,
+    }
+}
+
+/// An outlined rectangle between two screen corners.
+fn screen_rect(a: ScreenPoint, b: ScreenPoint, colour: [u8; 3], dash: Option<[f32; 2]>) -> Primitive {
+    let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+    let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+    let p = |x: f32, y: f32| ScreenPoint { x, y };
+    Primitive::Polygon {
+        points: vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)],
+        fill: None,
+        stroke: Some((colour, MARK_WIDTH)),
+        dash,
+    }
 }
 
 /// The text lines of `block` as `Primitive::Text`s through `camera`,
@@ -114,14 +432,94 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
 /// the zoom. Serves EDIT-12, CORE-30.
 #[must_use]
 pub fn text_items(block: &TextBlock, camera: &Camera) -> Vec<Primitive> {
-    todo!()
+    let bold = matches!(block.weight, Weight::Bold);
+    let centred = matches!(block.align, Align::Middle);
+    block
+        .lines
+        .iter()
+        .zip(0_i32..)
+        .map(|(line, i)| Primitive::Text {
+            at: camera.to_screen(Point::new(block.at.x, block.at.y + i * block.line_px)),
+            text: line.clone(),
+            size: px(block.size_px) * camera.zoom,
+            bold,
+            centred,
+            colour: rgb(block.colour),
+        })
+        .collect()
 }
 
 /// Paints `items` with `painter`, clipped to its rect, whose top-left is
 /// screen 0,0 of the state's coordinates. Serves EDIT-12.
 pub fn paint(painter: &eframe::egui::Painter, items: &[PaintItem]) {
-    todo!()
+    use eframe::egui::{Align2, Color32, FontFamily, FontId, Pos2, Shape, Stroke as EStroke};
+    let origin = painter.clip_rect().min;
+    let pos = |p: &ScreenPoint| Pos2::new(origin.x + p.x, origin.y + p.y);
+    let colour = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    for item in items {
+        match &item.primitive {
+            Primitive::Polygon { points, fill, stroke, dash } => {
+                let pts: Vec<Pos2> = points.iter().map(pos).collect();
+                if let Some(f) = fill {
+                    painter.add(Shape::convex_polygon(pts.clone(), colour(*f), EStroke::NONE));
+                }
+                if let Some((c, w)) = stroke {
+                    let s = EStroke::new(*w, colour(*c));
+                    let mut closed = pts;
+                    if let Some(&first) = closed.first() {
+                        closed.push(first);
+                    }
+                    match dash {
+                        Some([d, g]) => {
+                            painter.extend(Shape::dashed_line(&closed, s, *d, *g));
+                        }
+                        None => {
+                            painter.add(Shape::line(closed, s));
+                        }
+                    }
+                }
+            }
+            Primitive::Path { points, colour: c, width, dash } => {
+                let pts: Vec<Pos2> = points.iter().map(pos).collect();
+                let s = EStroke::new(*width, colour(*c));
+                match dash {
+                    Some([d, g]) => {
+                        painter.extend(Shape::dashed_line(&pts, s, *d, *g));
+                    }
+                    None => {
+                        painter.add(Shape::line(pts, s));
+                    }
+                }
+            }
+            Primitive::Circle { centre, radius, fill } => {
+                painter.circle_filled(pos(centre), *radius, colour(*fill));
+            }
+            Primitive::Text {
+                at: anchor,
+                text,
+                size,
+                bold,
+                centred,
+                colour: c,
+            } => {
+                if *size < 1.0 {
+                    continue;
+                }
+                let family = if *bold {
+                    FontFamily::Name(BOLD_FAMILY.into())
+                } else {
+                    FontFamily::Proportional
+                };
+                let top = Pos2::new(origin.x + anchor.x, origin.y + anchor.y - ASCENT_EM * size);
+                let align = if *centred { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
+                painter.text(top, align, text, FontId::new(*size, family), colour(*c));
+            }
+        }
+    }
 }
+
+/// The egui family name of the bundled bold face.
+pub(crate) const BOLD_FAMILY: &str = "Inter Bold";
 
 /// The `state::Input`s of this frame over the canvas `response`: pointer
 /// down, move, up (relative to the canvas's top-left), leave, wheel, and
@@ -129,7 +527,100 @@ pub fn paint(painter: &eframe::egui::Painter, items: &[PaintItem]) {
 /// egui text field has focus. Serves EDIT-9, EDIT-28.
 #[must_use]
 pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) -> Vec<Input> {
-    todo!()
+    use eframe::egui::{Event as E, Key as K, MouseWheelUnit, PointerButton};
+    let rect = response.rect;
+    let text_focus = ctx.egui_wants_keyboard_input();
+    let rel = |p: eframe::egui::Pos2| ScreenPoint {
+        x: p.x - rect.min.x,
+        y: p.y - rect.min.y,
+    };
+    let mods = |m: eframe::egui::Modifiers| Modifiers {
+        shift: m.shift,
+        ctrl: m.command || m.ctrl,
+        alt: m.alt,
+    };
+    let hovered = response.hovered() || response.contains_pointer();
+    let mut out = Vec::new();
+    ctx.input(|i| {
+        for event in &i.events {
+            match event {
+                E::PointerMoved(p) => {
+                    if rect.contains(*p) || i.pointer.any_down() {
+                        out.push(Input::PointerMove { at: rel(*p) });
+                    }
+                }
+                E::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers,
+                } => {
+                    let button = match button {
+                        PointerButton::Primary => Button::Left,
+                        PointerButton::Middle => Button::Middle,
+                        PointerButton::Secondary => Button::Right,
+                        _ => continue,
+                    };
+                    if *pressed {
+                        if rect.contains(*pos) && hovered {
+                            out.push(Input::PointerDown {
+                                at: rel(*pos),
+                                button,
+                                mods: mods(*modifiers),
+                            });
+                        }
+                    } else {
+                        out.push(Input::PointerUp { at: rel(*pos), button });
+                    }
+                }
+                E::PointerGone => out.push(Input::PointerLeft),
+                E::MouseWheel { unit, delta, .. } => {
+                    if let Some(p) = i.pointer.latest_pos().filter(|p| rect.contains(*p)) {
+                        // DECISION: a line or page counts as one notch, 50
+                        // points of a touchpad's smooth scroll as one.
+                        let notches = match unit {
+                            MouseWheelUnit::Point => delta.y / 50.0,
+                            MouseWheelUnit::Line | MouseWheelUnit::Page => delta.y,
+                        };
+                        if notches != 0.0 {
+                            out.push(Input::Wheel { at: rel(p), notches });
+                        }
+                    }
+                }
+                E::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    let key = match key {
+                        K::Enter => Key::Enter,
+                        K::F2 => Key::F2,
+                        K::Tab => Key::Tab,
+                        K::Escape => Key::Escape,
+                        K::Backspace => Key::Backspace,
+                        K::ArrowLeft => Key::ArrowLeft,
+                        K::Space => Key::Space,
+                        K::Z => Key::Z,
+                        K::Y => Key::Y,
+                        _ => continue,
+                    };
+                    if *pressed && !*repeat {
+                        out.push(Input::KeyDown {
+                            key,
+                            mods: mods(*modifiers),
+                            text_focus,
+                        });
+                    } else if !*pressed {
+                        out.push(Input::KeyUp { key });
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    out
 }
 
 /// Registers the bundled font (`scene::FONT_REGULAR` and
@@ -138,24 +629,147 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
 /// scene measured and the SVG names. No fallback face is part of this
 /// contract. Serves EDIT-12, CORE-30.
 pub fn install_fonts(ctx: &eframe::egui::Context) {
-    todo!()
+    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+    use std::sync::Arc;
+    let mut fonts = FontDefinitions::default();
+    fonts
+        .font_data
+        .insert(REGULAR_NAME.to_owned(), Arc::new(FontData::from_static(FONT_REGULAR)));
+    fonts
+        .font_data
+        .insert(BOLD_NAME.to_owned(), Arc::new(FontData::from_static(FONT_BOLD)));
+    fonts
+        .families
+        .insert(FontFamily::Proportional, vec![REGULAR_NAME.to_owned()]);
+    fonts
+        .families
+        .insert(FontFamily::Name(BOLD_FAMILY.into()), vec![BOLD_NAME.to_owned()]);
+    ctx.set_fonts(fonts);
 }
+
+/// The egui font-data name of the bundled regular face.
+const REGULAR_NAME: &str = "Inter-Regular";
+/// The egui font-data name of the bundled bold face.
+const BOLD_NAME: &str = "Inter-Bold";
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use c4rizer_core::model::parse;
+    use c4rizer_core::pipeline::build_view;
+    use c4rizer_core::place::Keep;
+    use c4rizer_core::scene::{ItemKey, Scene};
+    use c4rizer_core::view::BoxId;
+
+    use super::{PaintItem, Primitive, Source, install_fonts, paint_items};
+    use crate::camera::{Camera, ScreenPoint};
+    use crate::state::{DrawList, Mark, MarkKind};
+    use crate::testutil::SHOP;
+
+    fn scene(key: &str) -> Scene {
+        let parsed = parse(SHOP).expect("fixture parses");
+        build_view(&parsed.model, key, &Keep::default(), &AtomicBool::new(false))
+            .expect("builds")
+            .scene
+    }
+
+    fn list(scene: &Scene) -> DrawList<'_> {
+        DrawList {
+            scene: Some(scene),
+            camera: Camera::default(),
+            marks: Vec::new(),
+            rubber_band: None,
+            resize_outline: None,
+            editing: None,
+            read_only: false,
+        }
+    }
+
+    /// Paint-order rank of a source (scene.rs header), marks after.
+    fn rank(source: Source) -> u8 {
+        match source {
+            Source::Scene(ItemKey::Boundary(_)) => 0,
+            Source::Scene(ItemKey::Line(_)) => 1,
+            Source::Scene(ItemKey::Box(_)) => 2,
+            Source::Scene(ItemKey::Label(_)) => 3,
+            Source::Scene(ItemKey::Title) => 4,
+            Source::Scene(ItemKey::Subtitle) => 5,
+            Source::Scene(ItemKey::Legend) => 6,
+            Source::Scene(_) => 7,
+            Source::Mark(..) => 8,
+            Source::ResizeOutline => 9,
+            Source::RubberBand => 10,
+        }
+    }
+
+    /// Every scene item of `scene`.
+    fn scene_items(scene: &Scene) -> Vec<ItemKey> {
+        let mut keys: Vec<ItemKey> = Vec::new();
+        keys.extend((0..scene.boundaries.len()).map(|i| ItemKey::Boundary(u32::try_from(i).unwrap())));
+        keys.extend(scene.lines.iter().map(|l| ItemKey::Line(l.edge)));
+        keys.extend(scene.boxes.iter().map(|b| ItemKey::Box(b.id)));
+        keys.extend(scene.labels.iter().map(|l| ItemKey::Label(l.edge)));
+        if scene.title.is_some() {
+            keys.push(ItemKey::Title);
+        }
+        if scene.subtitle.is_some() {
+            keys.push(ItemKey::Subtitle);
+        }
+        if !scene.legend.entries.is_empty() {
+            keys.push(ItemKey::Legend);
+        }
+        keys
+    }
+
     /// EDIT-12 (plan editor-02): every `PaintItem` comes from a scene item
     /// (`Source::Scene`, one or more per box, line, label, boundary,
     /// title, subtitle, key) or a mark; every scene item is painted; the
     /// scene items are in the scene's paint order.
     #[test]
     fn edit_12_canvas_items_match_scene() {
-        todo!()
+        for key in ["context", "containers"] {
+            let scene = scene(key);
+            let mut l = list(&scene);
+            l.marks.push(Mark {
+                item: ItemKey::Box(BoxId(0)),
+                kind: MarkKind::SelectedWithHandles,
+            });
+            let items = paint_items(&l);
+            let expected = scene_items(&scene);
+            for item in &items {
+                match item.source {
+                    Source::Scene(k) => assert!(expected.contains(&k), "{k:?} not in the scene"),
+                    Source::Mark(k, _) => assert_eq!(k, ItemKey::Box(BoxId(0))),
+                    other => panic!("unexpected source {other:?}"),
+                }
+            }
+            for k in &expected {
+                assert!(items.iter().any(|i| i.source == Source::Scene(*k)), "{k:?} not painted");
+            }
+            let ranks: Vec<u8> = items.iter().map(|i| rank(i.source)).collect();
+            assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "paint order: {ranks:?}");
+            // Each box's text lines are painted as the scene wrapped them.
+            let b = &scene.boxes[0];
+            for line in &b.name.lines {
+                assert!(items.iter().any(|i| i.source == Source::Scene(ItemKey::Box(b.id))
+                    && matches!(&i.primitive, Primitive::Text { text, bold: true, .. } if text == line)));
+            }
+        }
     }
 
     /// EDIT-12: a draw list without scene paints nothing.
     #[test]
     fn edit_12_no_scene_paints_nothing() {
-        todo!()
+        let scene = scene("context");
+        let mut l = list(&scene);
+        l.scene = None;
+        l.marks.push(Mark {
+            item: ItemKey::Box(BoxId(0)),
+            kind: MarkKind::Selected,
+        });
+        l.rubber_band = Some((ScreenPoint::default(), ScreenPoint { x: 5.0, y: 5.0 }));
+        assert!(paint_items(&l).is_empty());
     }
 
     /// EDIT-18: while resizing, the outline is painted as
@@ -163,7 +777,20 @@ mod tests {
     /// added.
     #[test]
     fn edit_18_resize_outline_painted_as_mark() {
-        todo!()
+        let scene = scene("containers");
+        let mut l = list(&scene);
+        l.marks.push(Mark {
+            item: ItemKey::Box(BoxId(1)),
+            kind: MarkKind::Selected,
+        });
+        let before = paint_items(&l);
+        l.resize_outline = Some((ScreenPoint { x: 10.0, y: 10.0 }, ScreenPoint { x: 90.0, y: 70.0 }));
+        let after = paint_items(&l);
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(&after[..before.len()], &before[..]);
+        let last: &PaintItem = after.last().unwrap();
+        assert_eq!(last.source, Source::ResizeOutline);
+        assert!(matches!(&last.primitive, Primitive::Polygon { points, fill: None, .. } if points.len() == 4));
     }
 
     /// EDIT-12, CORE-30: after `install_fonts`, egui's proportional
@@ -171,13 +798,53 @@ mod tests {
     /// `scene::FONT_BOLD`), no other face.
     #[test]
     fn edit_12_canvas_uses_bundled_font() {
-        todo!()
+        use eframe::egui::{Context, FontFamily, RawInput};
+        let ctx = Context::default();
+        install_fonts(&ctx);
+        let mut output = ctx.run_ui(RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let defs = ctx.fonts(|f| f.definitions().clone());
+        let proportional = &defs.families[&FontFamily::Proportional];
+        assert_eq!(proportional.len(), 1, "{proportional:?}");
+        let bold = &defs.families[&FontFamily::Name(super::BOLD_FAMILY.into())];
+        assert_eq!(bold.len(), 1, "{bold:?}");
+        let bytes = |name: &str| (*defs.font_data[name].font).as_ref().to_vec();
+        assert_eq!(bytes(&proportional[0]), c4rizer_core::scene::FONT_REGULAR);
+        assert_eq!(bytes(&bold[0]), c4rizer_core::scene::FONT_BOLD);
+    }
+
+    /// Every screen point of a primitive, plus its sizes.
+    fn numbers(p: &Primitive) -> Vec<f32> {
+        match p {
+            Primitive::Polygon { points, stroke, .. } => points
+                .iter()
+                .flat_map(|q| [q.x, q.y])
+                .chain(stroke.map(|s| s.1))
+                .collect(),
+            Primitive::Path { points, width, .. } => points.iter().flat_map(|q| [q.x, q.y]).chain([*width]).collect(),
+            Primitive::Circle { centre, radius, .. } => vec![centre.x, centre.y, *radius],
+            Primitive::Text { at, size, .. } => vec![at.x, at.y, *size],
+        }
     }
 
     /// EDIT-9: zoom 2 doubles every screen distance between painted
     /// points and changes no scene value.
     #[test]
     fn edit_9_zoom_scales_paint_only() {
-        todo!()
+        let scene = scene("containers");
+        let copy = scene.clone();
+        let one = paint_items(&list(&scene));
+        let mut l = list(&scene);
+        l.camera.zoom = 2.0;
+        let two = paint_items(&l);
+        assert_eq!(one.len(), two.len());
+        for (a, b) in one.iter().zip(&two) {
+            let (na, nb) = (numbers(&a.primitive), numbers(&b.primitive));
+            assert_eq!(na.len(), nb.len());
+            for (x, y) in na.iter().zip(&nb) {
+                assert!((x * 2.0 - y).abs() < 1e-3, "{x} vs {y} in {:?}", a.source);
+            }
+        }
+        assert_eq!(scene, copy);
     }
 }

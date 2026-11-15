@@ -64,34 +64,59 @@ pub struct Camera {
 impl Default for Camera {
     /// Pan 0,0, zoom 1 (EDIT-9).
     fn default() -> Self {
-        todo!()
+        Camera {
+            pan: ScenePoint { x: 0.0, y: 0.0 },
+            zoom: 1.0,
+        }
     }
 }
 
 impl Camera {
     /// Scene px to screen px. Serves EDIT-9, EDIT-12.
     #[must_use]
+    #[expect(clippy::wrong_self_convention, reason = "contract signature")]
     pub fn to_screen(&self, scene_px: Point) -> ScreenPoint {
-        todo!()
+        // DECISION: scene px are small integers (a few thousand), exact in
+        // f32, so the cast loses nothing.
+        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+        let (x, y) = (scene_px.x as f32, scene_px.y as f32);
+        ScreenPoint {
+            x: (x - self.pan.x) * self.zoom,
+            y: (y - self.pan.y) * self.zoom,
+        }
     }
 
     /// Screen px to scene px, unrounded. Serves EDIT-9, EDIT-28.
     #[must_use]
+    #[expect(clippy::wrong_self_convention, reason = "contract signature")]
     pub fn to_scene(&self, screen: ScreenPoint) -> ScenePoint {
-        todo!()
+        ScenePoint {
+            x: screen.x / self.zoom + self.pan.x,
+            y: screen.y / self.zoom + self.pan.y,
+        }
     }
 
     /// Multiplies the zoom by `factor`, clamped to
     /// `MIN_ZOOM..=MAX_ZOOM`, keeping the scene point under
     /// `cursor` under it. Serves EDIT-9.
     pub fn zoom_at(&mut self, cursor: ScreenPoint, factor: f32) {
-        todo!()
+        let under = self.to_scene(cursor);
+        let zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        if !zoom.is_finite() {
+            return;
+        }
+        self.zoom = zoom;
+        self.pan = ScenePoint {
+            x: under.x - cursor.x / zoom,
+            y: under.y - cursor.y / zoom,
+        };
     }
 
     /// Moves the view by `delta` screen px (the diagram follows the
     /// pointer). Serves EDIT-9.
     pub fn pan_by(&mut self, delta: ScreenPoint) {
-        todo!()
+        self.pan.x -= delta.x / self.zoom;
+        self.pan.y -= delta.y / self.zoom;
     }
 }
 
@@ -112,5 +137,49 @@ mod tests {
     #[test]
     fn camera_is_12_bytes() {
         assert_eq!(std::mem::size_of::<super::Camera>(), 12);
+    }
+
+    use super::{Camera, MAX_ZOOM, MIN_ZOOM, ScreenPoint};
+    use c4rizer_core::geom::Point;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    /// EDIT-9: screen and scene px convert both ways through pan and zoom.
+    #[test]
+    fn edit_9_round_trip_through_camera() {
+        let mut camera = Camera::default();
+        camera.pan_by(ScreenPoint { x: 30.0, y: -10.0 });
+        camera.zoom_at(ScreenPoint { x: 100.0, y: 50.0 }, 2.0);
+        let s = camera.to_screen(Point::new(240, 130));
+        let back = camera.to_scene(s);
+        assert!(close(back.x, 240.0) && close(back.y, 130.0), "{back:?}");
+    }
+
+    /// EDIT-9: the scene point under the cursor stays under it; zoom is
+    /// clamped.
+    #[test]
+    fn edit_9_zoom_at_keeps_cursor_point() {
+        let mut camera = Camera::default();
+        let cursor = ScreenPoint { x: 120.0, y: 80.0 };
+        let before = camera.to_scene(cursor);
+        camera.zoom_at(cursor, 1.1);
+        let after = camera.to_scene(cursor);
+        assert!(close(before.x, after.x) && close(before.y, after.y));
+        camera.zoom_at(cursor, 1000.0);
+        assert!(close(camera.zoom, MAX_ZOOM));
+        camera.zoom_at(cursor, 0.000_01);
+        assert!(close(camera.zoom, MIN_ZOOM));
+    }
+
+    /// EDIT-9: panning moves the diagram with the pointer.
+    #[test]
+    fn edit_9_pan_follows_pointer() {
+        let mut camera = Camera::default();
+        let p = camera.to_screen(Point::new(50, 50));
+        camera.pan_by(ScreenPoint { x: 10.0, y: 5.0 });
+        let q = camera.to_screen(Point::new(50, 50));
+        assert!(close(q.x - p.x, 10.0) && close(q.y - p.y, 5.0));
     }
 }
