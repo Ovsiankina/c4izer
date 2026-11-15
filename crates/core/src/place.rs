@@ -291,8 +291,11 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
         base.ranked.below[s].push(d);
     }
     base.ranked.top_row = i32::from(plan.boxes.iter().any(|b| b.kind == ElementKind::Person));
+    base.ranked.pinned = if pq2_mode() == "A" { facing(plan) } else { vec![false; n] };
     let never = AtomicBool::new(false);
     let mut best: Option<((usize, usize, i64), Vec<Point>)> = None;
+    let mut best_l: Option<Layout> = None;
+    let hc_on = std::env::var_os("PQ2_HC").is_some();
     for (k, fam) in FAMILIES.iter().enumerate() {
         if fam.sink && sunk == rank {
             continue;
@@ -313,6 +316,45 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
         let score = routed_score(plan, &centres, &never);
         if best.as_ref().is_none_or(|(bs, _)| score < *bs) {
             best = Some((score, centres));
+            best_l = Some(l.clone());
+        }
+    }
+    if std::env::var_os("PQ2_HC").is_some() {
+        if let (Some(mut l), Some((_, mut bc))) = (best_l, best.clone()) {
+            let mut bs = hc_score(plan, &bc, &never);
+            let (c0, r0, c1, r1) = l.window;
+            l.window = (c0 - 1, r0, c1 + 1, r1 + 1);
+            let passes: usize = std::env::var("PQ2_HC").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+            for _ in 0..passes {
+                let mut improved = false;
+                for b in 0..n {
+                    let (c0, _, c1, _) = l.window;
+                    let (lo, hi) = l.row_range(b);
+                    for r in lo..=hi {
+                        for c in c0..=c1 {
+                            let Some(from) = l.slot_of[b] else { continue };
+                            let s = (c, r);
+                            if s == from { continue; }
+                            let other = l.occupant.get(&s).copied();
+                            let m: Vec<usize> = other.map_or_else(|| vec![b], |o| vec![b, o]);
+                            l.swap(b, from, s, other);
+                            if !l.valid(&m) || !m.iter().all(|&x| l.rank_ok(x)) || other.is_some_and(|o| !l.rank_ok(o)) {
+                                l.swap(b, s, from, other);
+                                continue;
+                            }
+                            let cs = l.finish_layered();
+                            let sc = hc_score(plan, &cs, &never);
+                            if sc < bs {
+                                bs = sc; bc = cs; improved = true;
+                            } else {
+                                l.swap(b, s, from, other);
+                            }
+                        }
+                    }
+                }
+                if !improved { break; }
+            }
+            return bc;
         }
     }
     best.map(|(_, c)| c).unwrap_or_default()
@@ -347,6 +389,30 @@ fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usiz
     (routes.unroutable().len(), labels.no_room().len(), weighted)
 }
 
+fn envi(k: &str, d: i64) -> i64 {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+
+/// Scratch: full-route score for the hill climb.
+fn hc_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usize, usize, i64) {
+    let Ok(routes) = route::route(plan, centres, &RouteConfig::DEFAULT, never) else {
+        return (usize::MAX, usize::MAX, i64::MAX);
+    };
+    let labels = label::place_labels(plan, &routes);
+    let mut milli = 0_i64;
+    for line in routes.lines.iter().flatten() {
+        for w in line.points.windows(2) {
+            let (dx, dy) = ((w[1].x - w[0].x).abs(), (w[1].y - w[0].y).abs());
+            let steps = i64::from(dx.max(dy));
+            milli += if dx != 0 && dy != 0 { steps * 14_142 } else { steps * 10_000 };
+        }
+    }
+    let over = i64::try_from(labels.over_lines().len()).unwrap_or(0);
+    let weighted = envi("PQ2_WX", SCORE_CROSSING_PX) * i64::from(routes.crossings)
+        + envi("PQ2_WO", SCORE_OVER_LINE_PX) * over + milli / 1000;
+    (routes.unroutable().len(), labels.no_room().len(), weighted)
+}
+
 /// Moves every box outside a boundary that has no edge to a non-person
 /// (a sink, e.g. a database or an external system called from inside)
 /// to the row under the boundary's lowest member, so it never has to
@@ -376,8 +442,29 @@ fn lower_outside_sinks(plan: &ViewPlan, rank: &mut [i32]) {
 
 /// The edges between two boxes that are not people, as box indices, in
 /// plan order: the edges ranks are taken over.
-fn inner_edges(plan: &ViewPlan) -> Vec<(usize, usize)> {
+fn pq2_mode() -> String {
+    std::env::var("PQ2_MODE").unwrap_or_default()
+}
+
+/// Scratch: external non-person boxes whose every outgoing edge ends on a
+/// person (at least one), e.g. Push services.
+fn facing(plan: &ViewPlan) -> Vec<bool> {
+    let n = plan.boxes.len();
     let person = |b: usize| plan.boxes[b].kind == ElementKind::Person;
+    let mut to_person = vec![false; n];
+    let mut to_other = vec![false; n];
+    for e in &plan.edges {
+        let (s, d) = (e.source.0 as usize, e.destination.0 as usize);
+        if s == d { continue; }
+        if person(d) { to_person[s] = true; } else { to_other[s] = true; }
+    }
+    let on = !pq2_mode().is_empty();
+    (0..n).map(|b| on && plan.boxes[b].external && !person(b) && to_person[b] && !to_other[b]).collect()
+}
+
+fn inner_edges(plan: &ViewPlan) -> Vec<(usize, usize)> {
+    let face = facing(plan);
+    let person = |b: usize| plan.boxes[b].kind == ElementKind::Person || face[b];
     plan.edges
         .iter()
         .map(|e| (e.source.0 as usize, e.destination.0 as usize))
@@ -430,12 +517,14 @@ fn ranks(plan: &ViewPlan) -> Vec<i32> {
         }
     }
     let layer = layers(n, &inner_edges(plan));
+    let face = facing(plan);
+    let mode = pq2_mode();
     let top = i32::from(person.iter().any(|&p| p));
     let mut rank = vec![0_i32; n];
     let mut width = BTreeMap::<i32, usize>::new();
     let mut loose = Vec::new();
     for b in 0..n {
-        if person[b] {
+        if person[b] || (face[b] && mode == "A") {
             rank[b] = 0;
         } else if degree[b] == 0 {
             loose.push(b);
@@ -444,6 +533,14 @@ fn ranks(plan: &ViewPlan) -> Vec<i32> {
             rank[b] = top + i32::try_from(layer[b]).unwrap_or(i32::MAX / 2);
         }
         *width.entry(rank[b]).or_default() += 1;
+    }
+    if mode == "C" {
+        for b in (0..n).filter(|&b| face[b]) {
+            let r = plan.edges.iter()
+                .filter(|e| e.destination.0 as usize == b && !person[e.source.0 as usize])
+                .map(|e| rank[e.source.0 as usize]).min();
+            if let Some(r) = r { rank[b] = r; }
+        }
     }
     if loose.is_empty() {
         return rank;
@@ -612,6 +709,8 @@ struct Ranked {
     /// The first row a non-person may use (1 when the view has a person,
     /// P2-103).
     top_row: i32,
+    /// Scratch: boxes pinned to row 0 like people.
+    pinned: Vec<bool>,
 }
 
 /// Settings of the threshold-accepting search.
@@ -1003,7 +1102,7 @@ impl<'a> Layout<'a> {
     fn row_range(&self, b: usize) -> (i32, i32) {
         let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
         let (_, r0, _, r1) = self.window;
-        if self.is_person(b) {
+        if self.is_person(b) || self.ranked.pinned.get(b).copied().unwrap_or(false) {
             return (0, 0);
         }
         let lo = self.ranked.above[b]
@@ -1024,7 +1123,7 @@ impl<'a> Layout<'a> {
     fn rank_ok(&self, b: usize) -> bool {
         let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
         let r = row(b);
-        if self.is_person(b) {
+        if self.is_person(b) || self.ranked.pinned.get(b).copied().unwrap_or(false) {
             return r == 0;
         }
         r >= self.ranked.top_row
