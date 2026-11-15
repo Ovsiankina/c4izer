@@ -59,6 +59,13 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         editor -> cPipeline "Builds and re-routes scenes with" "Rust API"
         editor -> cEdit "Writes canvas edits back with" "Rust API"
         editor -> cExport "Exports the open view with" "Rust API"
+        editor -> cModel "Reads elements and views from" "Rust API"
+        editor -> cView "Plans the first write of a default view with" "Rust API"
+        editor -> cPlace "Keeps positions across reloads with" "Rust API"
+        editor -> cScene "Paints and hit-tests scenes from" "Rust API"
+        editor -> cLint "Shows findings from" "Rust API"
+        editor -> cLabel "Measures text with" "Rust API"
+        editor -> cGeom "Snaps drags to the grid of" "Rust API"
 
         cPipeline -> cModel "Parses the file with"
         cPipeline -> cView "Resolves views with"
