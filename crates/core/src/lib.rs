@@ -6,8 +6,8 @@
 pub mod geom;
 pub mod text;
 pub mod model;
-mod edit;
-mod view;
+pub mod edit;
+pub mod view;
 mod place;
 mod route;
 mod label;
