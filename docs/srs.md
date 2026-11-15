@@ -2524,6 +2524,22 @@ Note after it is not part of the sentence.
   extension lines of P2-701 and P2-708..P2-710), never to a workspace
   JSON, a side file or the per-user state (EDIT-13), and no command of
   this row creates or deletes an element or relationship (EDIT-21).
+- **P2-734** The breadcrumb names each crumb's C4 level with its
+  element, e.g. `Context: Atomanja › Container: Atomanja server ›
+  Component: web`, so two crumbs with the same element name are told
+  apart and the current level is always visible.
+- **P2-735** Resize handles of a selected box never cover a line end or
+  arrowhead: a handle that would is drawn outside the box edge.
+- **P2-736** The style panel's shape choice is a single drop-down, never
+  wrapped over lines.
+- **P2-737** The view list shows each view on one line (title truncated
+  with an ellipsis, then the key); the full title is a tooltip.
+- **P2-738** A fitted view keeps box and label text at least 9px high on
+  screen: when fitting would go smaller, the fit stops at that zoom and
+  the view can be panned. `TODO(srs)`: confirm 9px after measuring.
+- **P2-739** In the details panel, the name, description and technology
+  fields show an edit affordance (a pencil mark and a hover outline);
+  a double click or Enter edits them in place (EDIT-5).
 
 ### 4.7 Phase 3
 
