@@ -339,9 +339,9 @@ pub struct Labels {
     /// the edge is unroutable, has empty `label_lines`, or is listed in
     /// `shared`.
     pub labels: Vec<Option<Label>>,
-    /// `(joined, trunk)` pairs, ascending: a joined line whose trunk has
-    /// the same `description` and the same `technology` (as written, not
-    /// `shown_technology`), so it has no label of its own (CORE-14).
+    /// `(joined, trunk)` pairs, ascending: a joined line whose trunk's
+    /// drawn label (`label_lines` under the view's options) equals its
+    /// own, so it has no label of its own (CORE-14).
     pub shared: Vec<(EdgeId, EdgeId)>,
 }
 
