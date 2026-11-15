@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2010 1322" width="2010" height="1322" font-family="Helvetica, Arial, sans-serif">
+<rect width="2010" height="1322" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">Component diagram for the Atomanja server: serving and polling</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">What runs on every request and every poll. cli, config and devdata are on the startup diagram.</text>
+<defs>
+<marker id="a00796b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#006055"/></marker>
+<marker id="a0b3c6f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#083058"/></marker>
+<marker id="a1e88e5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#186cb7"/></marker>
+<marker id="a2e7d32" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#246428"/></marker>
+<marker id="a5d5a6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a4855"/></marker>
+<marker id="ac2410c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9b3409"/></marker>
+</defs>
+<rect x="350" y="380" width="1300" height="780" rx="10" fill="#f6f8fa" stroke="#666666" stroke-width="1.5" stroke-dasharray="8 6"/>
+<text x="362" y="1148" font-size="12.5" fill="#444444" font-weight="bold" text-anchor="start">Atomanja server [Container]</text>
+<path d="M1000,280 L1000,420" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M590,760 L730,760" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1610,760 L1750,760" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M1410,760 L1270,760" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M390,760 L250,760" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M1610,480 L1750,480" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M390,1040 L250,1040" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M930,540 L930,650 L910,670 L910,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1070,980 L1070,870 L1090,850 L1090,820" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1070,540 L1070,650 L1090,670 L1090,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1100,480 L1410,480" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M900,1040 L590,1040" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M1180,260 L1160,260 L1080,340 L1080,420" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M820,260 L840,260 L920,340 L920,420" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M1590,820 L1590,860 L1720,990 L1750,990" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M1410,740 L1340,740 L1240,640 L930,640" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="930" cy="640" r="4.5" fill="#246428"/>
+<path d="M590,780 L660,780 L750,870 L1070,870" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="1070" cy="870" r="4.5" fill="#246428"/>
+<path d="M900,1020 L860,1020 L640,800 L590,800" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M900,520 L880,520 L660,740 L590,740" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M1100,1000 L1120,1000 L1340,780 L1410,780" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M1100,500 L1140,500 L1360,720 L1410,720" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M1285.1,685.1 L1298.5,690.0 L1290.0,698.5 z" fill="#246428"/>
+<path d="M1078.0,640.0 L1091.0,634.0 L1091.0,646.0 z" fill="#246428"/>
+<path d="M709.9,829.9 L696.5,825.0 L705.0,816.5 z" fill="#246428"/>
+<path d="M917.0,870.0 L904.0,876.0 L904.0,864.0 z" fill="#246428"/>
+<path d="M997.0,870.0 L984.0,876.0 L984.0,864.0 z" fill="#246428"/>
+<rect x="620" y="150" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="720.0" cy="130" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="720" y="183" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Worker</text><text x="720" y="198" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="720" y="218" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">The one person whose tasks</text><text x="720" y="232" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">are tracked. Sees own tasks</text><text x="720" y="246" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">and debts, marks debts as</text><text x="720" y="260" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">sent.</text>
+<rect x="900" y="150" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="1000.0" cy="130" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="1000" y="190" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Witness</text><text x="1000" y="205" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="1000" y="225" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Accountability partner. Sees</text><text x="1000" y="239" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">late tasks, claims debts,</text><text x="1000" y="253" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">marks them received.</text>
+<rect x="1180" y="150" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="1280.0" cy="130" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="1280" y="190" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Admin witness</text><text x="1280" y="205" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="1280" y="225" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Maintainer. Troubleshoots</text><text x="1280" y="239" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">the witness view on fake</text><text x="1280" y="253" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">data.</text>
+<rect x="900" y="420" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="1000" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">web</text><text x="1000" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, axum, htmx]</text><text x="1000" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">HTTP layer: both views,</text><text x="1000" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">login flows, debt actions,</text><text x="1000" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push subscription.</text>
+<rect x="1410" y="420" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="1510" y="462" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">mail</text><text x="1510" y="477" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, SMTP client]</text><text x="1510" y="497" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Sends invite and</text><text x="1510" y="511" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">password-reset emails.</text>
+<rect x="1750" y="410" width="200" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="1850" y="462" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Mail server</text><text x="1850" y="477" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="1850" y="497" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Delivers invite and</text><text x="1850" y="511" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">password-reset emails.</text>
+<rect x="50" y="690" width="200" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="150" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Push services</text><text x="150" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="150" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Browser vendors&#x27; endpoints</text><text x="150" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">that deliver notifications</text><text x="150" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">to installed apps.</text>
+<rect x="390" y="700" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="490" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">notify</text><text x="490" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, Web Push]</text><text x="490" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Turns ledger changes into</text><text x="490" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push notifications. Owns the</text><text x="490" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push keys.</text>
+<rect x="730" y="700" width="200" height="120" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="830" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">auth</text><text x="830" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="830" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Pure account rules: roles,</text><text x="830" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">password hashing, tokens,</text><text x="830" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">permission checks.</text>
+<rect x="1070" y="700" width="200" height="120" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="1170" y="728" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">ledger</text><text x="1170" y="743" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1170" y="763" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Pure domain rules:</text><text x="1170" y="777" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">deadlines, met or late,</text><text x="1170" y="791" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">debts, claims, marks,</text><text x="1170" y="805" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">amount.</text>
+<rect x="1410" y="700" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="1510" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">store</text><text x="1510" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, SQLite]</text><text x="1510" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Persistence for ledger and</text><text x="1510" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">dev databases. Ledger is</text><text x="1510" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">insert-only.</text>
+<path d="M1750,702 a100.0,12 0 0 1 200,0 v116 a100.0,12 0 0 1 -200,0 z" fill="#00796b" stroke="#00574d"/><path d="M1750,702 a100.0,12 0 0 0 200,0" fill="none" stroke="#00574d"/><text x="1850" y="741" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Ledger database</text><text x="1850" y="756" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: SQLite file]</text><text x="1850" y="776" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Append-only record of</text><text x="1850" y="790" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">deadlines, debts, claims,</text><text x="1850" y="804" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">marks and accounts.</text>
+<rect x="50" y="970" width="200" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="150" y="1015" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Vikunja</text><text x="150" y="1030" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="150" y="1050" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Existing task manager.</text><text x="150" y="1064" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Source of tasks and</text><text x="150" y="1078" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">deadlines. Never modified.</text>
+<rect x="390" y="980" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="490" y="1015" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">vikunja</text><text x="490" y="1030" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, HTTP client]</text><text x="490" y="1050" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Read-only Vikunja client.</text><text x="490" y="1064" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Maps tasks to snapshot</text><text x="490" y="1078" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">records.</text>
+<rect x="900" y="980" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="1000" y="1022" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">sync</text><text x="1000" y="1037" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, tokio]</text><text x="1000" y="1057" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Poll loop: fetch, apply to</text><text x="1000" y="1071" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">ledger, persist, notify.</text>
+<path d="M1750,982 a100.0,12 0 0 1 200,0 v116 a100.0,12 0 0 1 -200,0 z" fill="#00796b" stroke="#00574d"/><path d="M1750,982 a100.0,12 0 0 0 200,0" fill="none" stroke="#00574d"/><text x="1850" y="1021" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Dev database</text><text x="1850" y="1036" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: SQLite file]</text><text x="1850" y="1056" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Fake tasks and debts for the</text><text x="1850" y="1070" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">admin witness. Isolated from</text><text x="1850" y="1084" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">the real ledger.</text>
+<rect x="595" y="744" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="650" y="758" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Picks recipients</text>
+<text x="650" y="771" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">by role with</text>
+<rect x="1637" y="738" width="66" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1670" y="752" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Reads and</text>
+<text x="1670" y="764" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">appends</text>
+<text x="1670" y="778" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[SQL]</text>
+<rect x="1302" y="744" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1350" y="758" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Persists state</text>
+<text x="1350" y="771" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">of</text>
+<rect x="285" y="731" width="91" height="58" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="330" y="745" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Sends</text>
+<text x="330" y="758" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">notifications</text>
+<text x="330" y="771" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">through</text>
+<text x="330" y="784" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">[Web Push]</text>
+<rect x="1628" y="458" width="84" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1670" y="472" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Sends emails</text>
+<text x="1670" y="484" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">through</text>
+<text x="1670" y="498" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">[SMTP]</text>
+<rect x="285" y="1018" width="91" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="330" y="1032" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Fetches tasks</text>
+<text x="330" y="1044" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">from</text>
+<text x="330" y="1058" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">[HTTPS/JSON]</text>
+<rect x="955" y="311" width="91" height="58" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1000" y="325" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Claims debts,</text>
+<text x="1000" y="338" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">marks them</text>
+<text x="1000" y="351" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">received</text>
+<text x="1000" y="364" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">[HTTPS]</text>
+<rect x="878" y="588" width="103" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="930" y="602" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Checks sessions</text>
+<text x="930" y="614" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">and permissions</text>
+<text x="930" y="628" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">with</text>
+<rect x="1015" y="894" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1070" y="908" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Applies snapshot</text>
+<text x="1070" y="921" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">to</text>
+<rect x="1034" y="594" width="72" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1070" y="608" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Runs debt</text>
+<text x="1070" y="621" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">actions on</text>
+<rect x="1045" y="298" width="109" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1100" y="312" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Troubleshoots on</text>
+<text x="1100" y="324" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">fake data</text>
+<text x="1100" y="338" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">[HTTPS]</text>
+<rect x="845" y="298" width="109" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="900" y="312" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Views tasks,</text>
+<text x="900" y="324" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">marks debts sent</text>
+<text x="900" y="338" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">[HTTPS]</text>
+<rect x="1585" y="894" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1640" y="908" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Reads and writes</text>
+<text x="1640" y="921" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[SQL]</text>
+<rect x="1205" y="458" width="91" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1250" y="472" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Sends invites</text>
+<text x="1250" y="484" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">and resets</text>
+<text x="1250" y="498" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">through</text>
+<rect x="695" y="900" width="109" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="750" y="914" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Hands changes to</text>
+<rect x="695" y="628" width="109" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="750" y="642" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Stores</text>
+<text x="750" y="654" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">subscriptions,</text>
+<text x="750" y="668" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">notifies through</text>
+<rect x="1198" y="854" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1250" y="868" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Appends changes</text>
+<text x="1250" y="881" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">through</text>
+<rect x="1198" y="594" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1250" y="608" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Loads and saves</text>
+<text x="1250" y="621" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">through</text>
+<rect x="695" y="1024" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="750" y="1038" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Fetches snapshot</text>
+<text x="750" y="1051" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">through</text>
+<rect x="1111" y="624" width="78" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1150" y="638" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Persists</text>
+<text x="1150" y="651" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">accounts of</text>
+<rect x="798" y="854" width="84" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="840" y="868" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads change</text>
+<text x="840" y="881" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">types from</text>
+<line x1="30" y1="1248" x2="1980" y2="1248" stroke="#dddddd"/>
+<text x="30" y="1268" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<circle cx="93" cy="1257" r="5" fill="#0b3c6f"/><rect x="83" y="1262" width="20" height="12" rx="4" fill="#0b3c6f"/>
+<text x="116" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Person</text>
+<rect x="181.8" y="1255" width="26" height="18" rx="3" fill="#5d5a6b"/>
+<text x="218" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System, external</text>
+<ellipse cx="416.3" cy="1258" rx="11" ry="4" fill="#00796b"/><rect x="405.3" y="1258" width="22" height="14" fill="#00796b"/><ellipse cx="416.3" cy="1272" rx="11" ry="4" fill="#00796b"/>
+<text x="439" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Container, database</text>
+<rect x="587.0" y="1255" width="26" height="18" rx="3" fill="#1e88e5"/>
+<text x="623" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, adapter</text>
+<rect x="764.4" y="1255" width="26" height="18" rx="3" fill="#2e7d32"/>
+<text x="800" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, core</text>
+<rect x="922.9" y="1255" width="26" height="18" rx="3" fill="#c2410c"/>
+<text x="959" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, entry</text>
+<path d="M1087.7,1268 L1097.7,1268 L1105.7,1260 L1113.7,1260" fill="none" stroke="#444444" stroke-width="2"/><path d="M1117.7,1260 l-7,-4 v8 z" fill="#444444"/>
+<text x="1124" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+<path d="M1643.1,1264 L1671.1,1264 M1647.1,1255 L1656.1,1264" fill="none" stroke="#444444" stroke-width="2"/><circle cx="1656.1" cy="1264" r="4" fill="#444444"/>
+<text x="1679" y="1268" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Lines joining on their way to the same box</text>
+<rect x="80" y="1281" width="26" height="18" rx="3" fill="#f6f8fa" stroke="#666666" stroke-dasharray="4 3"/>
+<text x="116" y="1294" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Boundary of the system or container in scope</text>
+</svg>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2060 1016" width="2060" height="1016" font-family="Helvetica, Arial, sans-serif">
+<rect width="2060" height="1016" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">Component diagram for the Atomanja server: startup, settings and dev data</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">What cli starts, who reads config, and what devdata seeds. Only lines touching those three are drawn here.</text>
+<defs>
+<marker id="a1e88e5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#186cb7"/></marker>
+<marker id="a2e7d32" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#246428"/></marker>
+<marker id="ac2410c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9b3409"/></marker>
+</defs>
+<rect x="60" y="100" width="1980" height="780" rx="10" fill="#f6f8fa" stroke="#666666" stroke-width="1.5" stroke-dasharray="8 6"/>
+<text x="72" y="868" font-size="12.5" fill="#444444" font-weight="bold" text-anchor="start">Atomanja server [Container]</text>
+<path d="M1150,240 L1180,240 L1380,440 L1460,440" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M300,760 L440,760" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M780,760 L640,760" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M950,240 L920,240 L720,440 L640,440" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M1150,220 L1200,220 L1380,400 L1730,400 L1770,440 L1800,440" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M300,520 L320,520 L460,660 L460,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1120,260 L1120,370 L1140,390 L1140,420" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M950,220 L900,220 L720,400 L370,400 L330,440 L300,440" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M1900,540 L1900,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1800,460 L1660,460" fill="none" stroke="#186cb7" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1e88e5)"/>
+<path d="M540,540 L540,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1800,480 L1750,480 L1670,560 L1390,560 L1350,520 L1320,520" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M980,260 L980,370 L960,390 L960,420" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M780,520 L760,520 L620,660 L620,700" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M1284.9,344.9 L1271.5,340.0 L1280.0,331.5 z" fill="#186cb7"/>
+<path d="M815.1,344.9 L820.0,331.5 L828.5,340.0 z" fill="#186cb7"/>
+<path d="M1294.9,314.9 L1281.5,310.0 L1290.0,301.5 z" fill="#9b3409"/>
+<path d="M1562.0,400.0 L1549.0,406.0 L1549.0,394.0 z" fill="#9b3409"/>
+<path d="M1649.5,400.0 L1636.5,406.0 L1636.5,394.0 z" fill="#9b3409"/>
+<path d="M805.1,314.9 L810.0,301.5 L818.5,310.0 z" fill="#9b3409"/>
+<path d="M538.0,400.0 L551.0,394.0 L551.0,406.0 z" fill="#9b3409"/>
+<path d="M450.5,400.0 L463.5,394.0 L463.5,406.0 z" fill="#9b3409"/>
+<path d="M1705.1,524.9 L1710.0,511.5 L1718.5,520.0 z" fill="#246428"/>
+<rect x="950" y="140" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="1050" y="175" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">cli</text><text x="1050" y="190" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust binary]</text><text x="1050" y="210" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Command line: serve, create</text><text x="1050" y="224" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">accounts, generate push</text><text x="1050" y="238" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">keys, seed dev data.</text>
+<rect x="100" y="420" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="200" y="462" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">sync</text><text x="200" y="477" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, tokio]</text><text x="200" y="497" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Poll loop: fetch, apply to</text><text x="200" y="511" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">ledger, persist, notify.</text>
+<rect x="440" y="420" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="540" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">notify</text><text x="540" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, Web Push]</text><text x="540" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Turns ledger changes into</text><text x="540" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push notifications. Owns the</text><text x="540" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push keys.</text>
+<rect x="780" y="420" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="880" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">web</text><text x="880" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, axum, htmx]</text><text x="880" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">HTTP layer: both views,</text><text x="880" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">login flows, debt actions,</text><text x="880" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">push subscription.</text>
+<rect x="1120" y="420" width="200" height="120" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="1220" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">auth</text><text x="1220" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1220" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Pure account rules: roles,</text><text x="1220" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">password hashing, tokens,</text><text x="1220" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">permission checks.</text>
+<rect x="1460" y="420" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="1560" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">store</text><text x="1560" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, SQLite]</text><text x="1560" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Persistence for ledger and</text><text x="1560" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">dev databases. Ledger is</text><text x="1560" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">insert-only.</text>
+<rect x="1800" y="420" width="200" height="120" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="1900" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">devdata</text><text x="1900" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1900" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Fills the dev database with</text><text x="1900" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">fake data through the real</text><text x="1900" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">ledger rules.</text>
+<rect x="100" y="700" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="200" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">vikunja</text><text x="200" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, HTTP client]</text><text x="200" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Read-only Vikunja client.</text><text x="200" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Maps tasks to snapshot</text><text x="200" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">records.</text>
+<rect x="440" y="700" width="200" height="120" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="540" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">config</text><text x="540" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="540" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Loads every setting from</text><text x="540" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">environment variables at</text><text x="540" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">startup.</text>
+<rect x="780" y="700" width="200" height="120" rx="6" fill="#1e88e5" stroke="#1561a4"/><text x="880" y="742" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">mail</text><text x="880" y="757" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust, SMTP client]</text><text x="880" y="777" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Sends invite and</text><text x="880" y="791" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">password-reset emails.</text>
+<rect x="1800" y="700" width="200" height="120" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="1900" y="728" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">ledger</text><text x="1900" y="743" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1900" y="763" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Pure domain rules:</text><text x="1900" y="777" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">deadlines, met or late,</text><text x="1900" y="791" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">debts, claims, marks,</text><text x="1900" y="805" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">amount.</text>
+<rect x="672" y="744" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="720" y="758" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads settings</text>
+<text x="720" y="771" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">from</text>
+<rect x="312" y="744" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="360" y="758" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads settings</text>
+<text x="360" y="771" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">from</text>
+<rect x="1688" y="444" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1740" y="458" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Writes dev data</text>
+<text x="1740" y="471" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">through</text>
+<rect x="1065" y="314" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1120" y="328" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Creates accounts</text>
+<text x="1120" y="341" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">with</text>
+<rect x="492" y="594" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="540" y="608" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads settings</text>
+<text x="540" y="621" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">from</text>
+<rect x="1861" y="594" width="78" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1900" y="608" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Builds fake</text>
+<text x="1900" y="621" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">debts with</text>
+<rect x="941" y="314" width="78" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="980" y="328" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Starts HTTP</text>
+<text x="980" y="341" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">server</text>
+<rect x="342" y="574" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="390" y="588" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads settings</text>
+<text x="390" y="601" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">from</text>
+<rect x="642" y="574" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="690" y="588" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Reads settings</text>
+<text x="690" y="601" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">from</text>
+<rect x="672" y="424" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="720" y="438" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Generates push</text>
+<text x="720" y="451" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">keys with</text>
+<rect x="1328" y="424" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1380" y="438" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">Opens databases</text>
+<text x="1380" y="451" font-size="11" fill="#12548d" font-weight="normal" text-anchor="middle">with</text>
+<rect x="1525" y="544" width="91" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1570" y="558" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Builds fake</text>
+<text x="1570" y="571" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">accounts with</text>
+<rect x="1428" y="390" width="84" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1470" y="404" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Runs seeding</text>
+<rect x="575" y="390" width="109" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="630" y="404" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Starts poll loop</text>
+<line x1="30" y1="942" x2="2030" y2="942" stroke="#dddddd"/>
+<text x="30" y="962" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<rect x="80" y="949" width="26" height="18" rx="3" fill="#1e88e5"/>
+<text x="116" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, adapter</text>
+<rect x="257.4" y="949" width="26" height="18" rx="3" fill="#2e7d32"/>
+<text x="293" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, core</text>
+<rect x="415.9" y="949" width="26" height="18" rx="3" fill="#c2410c"/>
+<text x="452" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, entry</text>
+<path d="M580.7,962 L590.7,962 L598.7,954 L606.7,954" fill="none" stroke="#444444" stroke-width="2"/><path d="M610.7,954 l-7,-4 v8 z" fill="#444444"/>
+<text x="617" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+<path d="M1136.1,958 L1164.1,958 M1140.1,949 L1149.1,958" fill="none" stroke="#444444" stroke-width="2"/><circle cx="1149.1" cy="958" r="4" fill="#444444"/>
+<text x="1172" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Lines joining on their way to the same box</text>
+<rect x="1464.6999999999998" y="949" width="26" height="18" rx="3" fill="#f6f8fa" stroke="#666666" stroke-dasharray="4 3"/>
+<text x="1501" y="962" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Boundary of the system or container in scope</text>
+</svg>

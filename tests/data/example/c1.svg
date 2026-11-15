@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 966" width="1180" height="966" font-family="Helvetica, Arial, sans-serif">
+<rect width="1180" height="966" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">System Context diagram for Atomanja</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">Who uses Atomanja and which other systems it depends on.</text>
+<defs>
+<marker id="a0b3c6f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#083058"/></marker>
+<marker id="a1565c0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#105099"/></marker>
+<marker id="a5d5a6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a4855"/></marker>
+</defs>
+<path d="M620,550 L620,690" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M620,260 L620,410" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M920,240 L880,240 L740,380 L740,410" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M320,240 L360,240 L500,380 L500,410" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<rect x="120" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="220.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="220" y="163" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Worker</text><text x="220" y="178" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="220" y="198" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">The one person whose tasks</text><text x="220" y="212" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">are tracked. Sees own tasks</text><text x="220" y="226" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">and debts, marks debts as</text><text x="220" y="240" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">sent.</text>
+<rect x="520" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="620.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="620" y="170" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Witness</text><text x="620" y="185" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="620" y="205" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Accountability partner. Sees</text><text x="620" y="219" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">late tasks, claims debts,</text><text x="620" y="233" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">marks them received.</text>
+<rect x="920" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="1020.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="1020" y="170" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Admin witness</text><text x="1020" y="185" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="1020" y="205" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Maintainer. Troubleshoots</text><text x="1020" y="219" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">the witness view on fake</text><text x="1020" y="233" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">data.</text>
+<rect x="480" y="410" width="280" height="140" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="620" y="455" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Atomanja</text><text x="620" y="470" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Software System]</text><text x="620" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Records task deadlines, turns missed</text><text x="620" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">ones into debts, and tracks their</text><text x="620" y="518" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">settlement.</text>
+<rect x="500" y="690" width="240" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="620" y="735" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Vikunja</text><text x="620" y="750" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="620" y="770" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Existing task manager. Source of</text><text x="620" y="784" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">tasks and deadlines. Never</text><text x="620" y="798" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">modified.</text>
+<rect x="553" y="594" width="134" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="620" y="608" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Polls tasks and</text>
+<text x="620" y="621" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">deadlines, read-only</text>
+<rect x="541" y="308" width="159" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="620" y="322" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Views late tasks, claims</text>
+<text x="620" y="334" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">debts, marks debts</text>
+<text x="620" y="348" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">received</text>
+<rect x="753" y="278" width="134" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="820" y="292" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Troubleshoots the</text>
+<text x="820" y="304" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">witness view on fake</text>
+<text x="820" y="318" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">data</text>
+<rect x="347" y="278" width="146" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="420" y="292" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Views tasks and debts,</text>
+<text x="420" y="304" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">marks debts sent,</text>
+<text x="420" y="318" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">invites witnesses</text>
+<line x1="30" y1="892" x2="1150" y2="892" stroke="#dddddd"/>
+<text x="30" y="912" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<circle cx="93" cy="901" r="5" fill="#0b3c6f"/><rect x="83" y="906" width="20" height="12" rx="4" fill="#0b3c6f"/>
+<text x="116" y="912" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Person</text>
+<rect x="181.8" y="899" width="26" height="18" rx="3" fill="#1565c0"/>
+<text x="218" y="912" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System</text>
+<rect x="340.3" y="899" width="26" height="18" rx="3" fill="#5d5a6b"/>
+<text x="376" y="912" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System, external</text>
+<path d="M561.8,912 L571.8,912 L579.8,904 L587.8,904" fill="none" stroke="#444444" stroke-width="2"/><path d="M591.8,904 l-7,-4 v8 z" fill="#444444"/>
+<text x="598" y="912" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+</svg>
