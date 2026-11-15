@@ -42,7 +42,26 @@
 // of pipeline in docs/deferred.md (`core_25_example_svg_bytes_identical`).
 // Here `core_25_svg_deterministic_bytes` covers only the export half.
 
-use crate::scene::Scene;
+use std::fmt::Write as _;
+
+use crate::geom::{Point, Rect};
+use crate::label::Weight;
+use crate::model::Colour;
+use crate::scene::{Align, FONT_FAMILY, Outline, Scene, Stroke, Swatch, TextBlock, Tip};
+#[cfg(feature = "png")]
+use crate::scene::{FONT_BOLD, FONT_REGULAR};
+
+// DECISION: each item's `<g>` carries a `class` naming its kind
+// (`boundary`, `line`, `box`, `label`, `title`, `subtitle`, `key`), so a
+// reader of the file (and the paint-order test) tells the items apart;
+// a class is no reference and nothing styles it.
+// DECISION: `font-family` sits on every `<text>` rather than once on the
+// root, so no viewer default or wrapper can come between a text and
+// Inter.
+// DECISION: the root carries `xml:space="preserve"`: the scene's lines
+// are final (CORE-30), so runs of spaces must not collapse.
+// DECISION: one item per output line (`\n` after the background and
+// each `<g>`), so two exports diff line by line.
 
 /// The scene as one standalone SVG document (EXP-1, CORE-30, CORE-25).
 ///
@@ -67,7 +86,275 @@ use crate::scene::Scene;
 /// EDIT-7.
 #[must_use]
 pub fn svg(scene: &Scene) -> String {
-    todo!()
+    let mut w = Writer::default();
+    let b = scene.bounds;
+    w.raw("<svg xmlns=\"http://www.w3.org/2000/svg\"");
+    w.attr_str(
+        "viewBox",
+        &format!("{} {} {} {}", b.min.x, b.min.y, b.width(), b.height()),
+    );
+    w.attr_num("width", b.width());
+    w.attr_num("height", b.height());
+    w.raw(" xml:space=\"preserve\">\n");
+    w.rect(b, 0, Some(scene.background), None);
+    w.raw("\n");
+    for boundary in &scene.boundaries {
+        w.open("boundary");
+        w.rect(boundary.rect, 0, None, Some(&boundary.stroke));
+        w.text(&boundary.tag);
+        w.close();
+    }
+    for line in &scene.lines {
+        w.open("line");
+        w.polyline(&line.points, &line.stroke);
+        for chevron in &line.chevrons {
+            w.polyline(&chevron.points, &line.stroke);
+        }
+        w.tip(&line.tip, line.stroke.colour);
+        w.close();
+    }
+    for item in &scene.boxes {
+        w.open("box");
+        w.outline(&item.outline, item.fill, &item.stroke);
+        w.text(&item.name);
+        w.text(&item.type_line);
+        if let Some(description) = &item.description {
+            w.text(description);
+        }
+        w.close();
+    }
+    for label in &scene.labels {
+        w.open("label");
+        if let Some(fill) = label.fill {
+            w.rect(label.rect, 0, Some(fill), None);
+        }
+        w.text(&label.text);
+        w.close();
+    }
+    for (class, text) in [("title", &scene.title), ("subtitle", &scene.subtitle)] {
+        if let Some(text) = text {
+            w.open(class);
+            w.text(text);
+            w.close();
+        }
+    }
+    for entry in &scene.legend.entries {
+        w.open("key");
+        match &entry.swatch {
+            Swatch::Box {
+                outline,
+                fill,
+                stroke,
+            } => w.outline(outline, *fill, stroke),
+            Swatch::Line {
+                from,
+                to,
+                stroke,
+                tip,
+            } => {
+                w.polyline(&[*from, *to], stroke);
+                w.tip(tip, stroke.colour);
+            }
+        }
+        w.text(&entry.text);
+        w.close();
+    }
+    w.raw("</svg>\n");
+    w.out
+}
+
+/// The SVG text under construction. Writing to a `String` cannot fail,
+/// so `write!` results are dropped.
+#[derive(Default)]
+struct Writer {
+    out: String,
+}
+
+impl Writer {
+    fn raw(&mut self, s: &str) {
+        self.out.push_str(s);
+    }
+
+    fn attr_num(&mut self, name: &str, value: i32) {
+        let _ = write!(self.out, " {name}=\"{value}\"");
+    }
+
+    fn attr_str(&mut self, name: &str, value: &str) {
+        let _ = write!(self.out, " {name}=\"");
+        escape_into(&mut self.out, value);
+        self.out.push('"');
+    }
+
+    fn attr_colour(&mut self, name: &str, value: Colour) {
+        let _ = write!(self.out, " {name}=\"{value}\"");
+    }
+
+    fn open(&mut self, class: &str) {
+        let _ = write!(self.out, "<g class=\"{class}\">");
+    }
+
+    fn close(&mut self) {
+        self.out.push_str("</g>\n");
+    }
+
+    fn fill(&mut self, fill: Option<Colour>) {
+        match fill {
+            Some(c) => self.attr_colour("fill", c),
+            None => self.raw(" fill=\"none\""),
+        }
+    }
+
+    fn stroke(&mut self, stroke: Option<&Stroke>) {
+        if let Some(s) = stroke {
+            self.attr_colour("stroke", s.colour);
+            self.attr_num("stroke-width", s.width_px);
+            if let Some([dash, gap]) = s.dash_px {
+                let _ = write!(self.out, " stroke-dasharray=\"{dash} {gap}\"");
+            }
+        }
+    }
+
+    fn rect(&mut self, r: Rect, radius_px: i32, fill: Option<Colour>, stroke: Option<&Stroke>) {
+        self.raw("<rect");
+        self.attr_num("x", r.min.x);
+        self.attr_num("y", r.min.y);
+        self.attr_num("width", r.width());
+        self.attr_num("height", r.height());
+        if radius_px > 0 {
+            self.attr_num("rx", radius_px);
+        }
+        self.fill(fill);
+        self.stroke(stroke);
+        self.raw("/>");
+    }
+
+    fn circle(&mut self, centre: Point, radius_px: i32, fill: Colour, stroke: Option<&Stroke>) {
+        self.raw("<circle");
+        self.attr_num("cx", centre.x);
+        self.attr_num("cy", centre.y);
+        self.attr_num("r", radius_px);
+        self.attr_colour("fill", fill);
+        self.stroke(stroke);
+        self.raw("/>");
+    }
+
+    fn path(&mut self, d: &str, fill: Option<Colour>, stroke: Option<&Stroke>) {
+        self.raw("<path");
+        self.attr_str("d", d);
+        self.fill(fill);
+        self.stroke(stroke);
+        self.raw("/>");
+    }
+
+    /// An open polyline: a line's route, a chevron's V, a key sample.
+    fn polyline(&mut self, points: &[Point], stroke: &Stroke) {
+        self.raw("<path");
+        self.attr_str("d", &path_data(points, false));
+        self.raw(" fill=\"none\"");
+        self.stroke(Some(stroke));
+        // DECISION: round joins, as the prototype's lines, so a
+        // 45° bend and a chevron apex show no mitre spike.
+        self.raw(" stroke-linejoin=\"round\"/>");
+    }
+
+    fn tip(&mut self, tip: &Tip, colour: Colour) {
+        match tip {
+            Tip::Arrow(points) => self.path(&path_data(points, true), Some(colour), None),
+            Tip::Dot { at, radius_px } => self.circle(*at, *radius_px, colour, None),
+        }
+    }
+
+    fn outline(&mut self, outline: &Outline, fill: Colour, stroke: &Stroke) {
+        match *outline {
+            Outline::Rect { rect, radius_px } => {
+                self.rect(rect, radius_px, Some(fill), Some(stroke));
+            }
+            Outline::Person {
+                head_centre,
+                head_radius_px,
+                body,
+                body_radius_px,
+            } => {
+                self.rect(body, body_radius_px, Some(fill), Some(stroke));
+                self.circle(head_centre, head_radius_px, fill, Some(stroke));
+            }
+            Outline::Cylinder { rect, cap_ry_px } => {
+                // DECISION: the arcs' x radius is half the width rounded
+                // down; for an odd width SVG scales a too-small radius up
+                // to fit exactly, so the cap still spans the width.
+                let (x, y, w, h) = (rect.min.x, rect.min.y, rect.width(), rect.height());
+                let (rx, ry) = (w / 2, cap_ry_px);
+                let top = y + ry;
+                let body = format!(
+                    "M{x},{top} A{rx},{ry} 0 0 1 {},{top} L{},{} A{rx},{ry} 0 0 1 {x},{} Z",
+                    x + w,
+                    x + w,
+                    y + h - ry,
+                    y + h - ry
+                );
+                self.path(&body, Some(fill), Some(stroke));
+                let cap = format!("M{x},{top} A{rx},{ry} 0 0 0 {},{top}", x + w);
+                self.path(&cap, None, Some(stroke));
+            }
+        }
+    }
+
+    /// One `<text>` per line, baselines `line_px` apart, never re-wrapped
+    /// (CORE-30).
+    fn text(&mut self, block: &TextBlock) {
+        let anchor = match block.align {
+            Align::Start => "start",
+            Align::Middle => "middle",
+        };
+        let mut y = block.at.y;
+        for line in &block.lines {
+            self.raw("<text");
+            self.attr_num("x", block.at.x);
+            self.attr_num("y", y);
+            let _ = write!(self.out, " font-family=\"{FONT_FAMILY}, sans-serif\"");
+            self.attr_num("font-size", block.size_px);
+            if block.weight == Weight::Bold {
+                self.raw(" font-weight=\"bold\"");
+            }
+            self.attr_colour("fill", block.colour);
+            let _ = write!(self.out, " text-anchor=\"{anchor}\">");
+            escape_into(&mut self.out, line);
+            self.raw("</text>");
+            y += block.line_px;
+        }
+    }
+}
+
+/// `M x,y L x,y ...`, closed with `Z` when `closed`.
+fn path_data(points: &[Point], closed: bool) -> String {
+    let mut d = String::new();
+    for (i, p) in points.iter().enumerate() {
+        if i > 0 {
+            d.push(' ');
+        }
+        let _ = write!(d, "{}{},{}", if i == 0 { 'M' } else { 'L' }, p.x, p.y);
+    }
+    if closed {
+        d.push_str(" Z");
+    }
+    d
+}
+
+/// Appends `s` XML-escaped for text and double- or single-quoted
+/// attribute values; characters XML 1.0 cannot hold become U+FFFD.
+fn escape_into(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => out.push('\u{fffd}'),
+            _ => out.push(c),
+        }
+    }
 }
 
 /// The scene's SVG (`svg`) rasterized to PNG bytes at `width_px` wide,
@@ -97,7 +384,73 @@ pub fn svg(scene: &Scene) -> String {
 /// width, bounds, size, fonts.
 #[cfg(feature = "png")]
 pub fn png(scene: &Scene, width_px: u32) -> Result<Vec<u8>, PngError> {
-    todo!()
+    use resvg::{tiny_skia, usvg};
+
+    if width_px == 0 {
+        return Err(PngError::ZeroWidth);
+    }
+    let (Ok(w), Ok(h)) = (
+        u64::try_from(scene.bounds.width()),
+        u64::try_from(scene.bounds.height()),
+    ) else {
+        return Err(PngError::Render(empty_bounds(scene)));
+    };
+    if w == 0 || h == 0 {
+        return Err(PngError::Render(empty_bounds(scene)));
+    }
+    let height = ((h * u64::from(width_px) + w / 2) / w).max(1);
+    let Ok(height_px) = u32::try_from(height) else {
+        return Err(PngError::TooLarge {
+            width_px,
+            height_px: u32::MAX,
+        });
+    };
+    let mut pixmap = tiny_skia::Pixmap::new(width_px, height_px).ok_or(PngError::TooLarge {
+        width_px,
+        height_px,
+    })?;
+
+    // DECISION: a fresh font database per call (see the header): parsing
+    // two faces is cheap next to rasterizing, and no global state exists.
+    let mut db = usvg::fontdb::Database::new();
+    db.load_font_data(FONT_REGULAR.to_vec());
+    db.load_font_data(FONT_BOLD.to_vec());
+    if db.len() != 2
+        || db
+            .faces()
+            .any(|f| !f.families.iter().any(|(n, _)| n == FONT_FAMILY))
+    {
+        return Err(PngError::NoFont);
+    }
+    db.set_sans_serif_family(FONT_FAMILY);
+    let opt = usvg::Options {
+        font_family: FONT_FAMILY.to_owned(),
+        fontdb: std::sync::Arc::new(db),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_str(&svg(scene), &opt)
+        .map_err(|e| PngError::Render(format!("the SVG did not parse ({e})")))?;
+    let size = tree.size();
+    // DECISION: x and y scale separately so the drawing fills the
+    // rounded height exactly; the two differ by under one pixel's worth.
+    #[allow(clippy::cast_precision_loss)]
+    let transform = tiny_skia::Transform::from_scale(
+        width_px as f32 / size.width(),
+        height_px as f32 / size.height(),
+    );
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    pixmap
+        .encode_png()
+        .map_err(|e| PngError::Render(format!("PNG encoding failed ({e})")))
+}
+
+#[cfg(feature = "png")]
+fn empty_bounds(scene: &Scene) -> String {
+    format!(
+        "the scene is {} x {} px, so there is nothing to draw",
+        scene.bounds.width(),
+        scene.bounds.height()
+    )
 }
 
 /// Why `png` produced no image. `#[non_exhaustive]` for later causes.
@@ -125,7 +478,20 @@ pub enum PngError {
 impl std::fmt::Display for PngError {
     /// One sentence saying what failed and what to change (SRS 5.1).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            Self::ZeroWidth => f.write_str("PNG width is 0 px; ask for a width of at least 1 px."),
+            Self::NoFont => f.write_str(
+                "The bundled Inter font could not be loaded, so no PNG was drawn; reinstall or rebuild c4rizer.",
+            ),
+            Self::TooLarge {
+                width_px,
+                height_px,
+            } => write!(
+                f,
+                "A {width_px} x {height_px} px PNG is too large to allocate; ask for a smaller width."
+            ),
+            Self::Render(why) => write!(f, "PNG rendering failed: {why}; export the SVG instead."),
+        }
     }
 }
 
@@ -136,83 +502,718 @@ impl std::error::Error for PngError {}
 mod tests {
     use super::*;
 
+    use std::sync::atomic::AtomicBool;
+
+    use crate::geom::{Point, Rect};
+    use crate::label::place_labels;
+    use crate::model::parse;
+    use crate::place::{Keep, place};
+    use crate::route::{RouteConfig, route};
+    use crate::scene::{FONT_FAMILY, Outline, Swatch, TextBlock, Tip, build};
+    use crate::view::plan;
+
+    /// A small shop written with roles only: a person, a system with
+    /// three containers (one a cylinder), an external system. Names carry
+    /// characters XML must escape.
+    const SHOP: &str = r#"workspace {
+  model {
+    operator = person "Operator" "Runs the shop day to day."
+    shop = softwareSystem "Shop" "Sells goods online." {
+      web = container "Web <app> & 'co'" "Serves the \"shop\" pages and takes orders." "Rust"
+      db = container "Database" "Stores orders." "SQLite" "Database"
+      worker = container "Worker"
+    }
+    bank = softwareSystem "Bank" "Takes card payments." "External"
+    operator -> web "Manages orders in" "HTTPS"
+    web -> db "Reads & writes <orders>" "SQL"
+    worker -> db "Reads open orders from" "SQL"
+    web -> bank "Charges cards through" "HTTPS"
+  }
+  views {
+    systemContext shop "c1" "Shop context" {
+      include *
+    }
+    container shop "c2" "Shop containers" {
+      subtitle "The running parts of the shop."
+      include *
+    }
+    styles {
+      element "Person" {
+        shape Person
+        background #08427b
+        color #ffffff
+      }
+      element "Container" {
+        background #438dd5
+        color #ffffff
+      }
+      element "Database" {
+        shape Cylinder
+      }
+      element "External" {
+        background #999999
+      }
+    }
+  }
+}
+"#;
+
+    /// The scene of view `key` of `src`: auto-placed, routed, labelled.
+    fn scene_of(src: &str, key: &str) -> Scene {
+        let model = match parse(src) {
+            Ok(p) => p.model,
+            Err(e) => panic!("{e}"),
+        };
+        let plan = plan(&model, model.view(key).expect("view"));
+        let centres = place(&plan, &Keep::default());
+        let routes = route(
+            &plan,
+            &centres,
+            &RouteConfig::DEFAULT,
+            &AtomicBool::new(false),
+        )
+        .expect("not stopped");
+        let labels = place_labels(&plan, &routes);
+        build(&plan, &routes, &labels)
+    }
+
+    /// One parsed XML element: name, attributes in order, children, and
+    /// its own text content (unescaped).
+    #[derive(Debug, Default)]
+    struct El {
+        name: String,
+        attrs: Vec<(String, String)>,
+        children: Vec<El>,
+        text: String,
+    }
+
+    impl El {
+        fn attr(&self, name: &str) -> Option<&str> {
+            self.attrs
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.as_str())
+        }
+
+        /// Every element below this one, depth first, in document order.
+        fn walk<'a>(&'a self, out: &mut Vec<&'a El>) {
+            for c in &self.children {
+                out.push(c);
+                c.walk(out);
+            }
+        }
+
+        fn all(&self) -> Vec<&El> {
+            let mut out = vec![self];
+            self.walk(&mut out);
+            out
+        }
+    }
+
+    fn unescape(s: &str) -> Result<String, String> {
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(i) = rest.find('&') {
+            out.push_str(&rest[..i]);
+            rest = &rest[i..];
+            let end = rest.find(';').ok_or("unterminated entity")?;
+            out.push(match &rest[..=end] {
+                "&lt;" => '<',
+                "&gt;" => '>',
+                "&amp;" => '&',
+                "&quot;" => '"',
+                "&apos;" => '\'',
+                other => return Err(format!("unknown entity {other}")),
+            });
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        Ok(out)
+    }
+
+    /// A strict little parser for the subset of XML `svg` writes: one
+    /// root, balanced tags, double-quoted attributes, only the five
+    /// predefined entities, no raw `<` in text or values. `Err` = the
+    /// document would not parse.
+    fn parse_xml(doc: &str) -> Result<El, String> {
+        let mut stack: Vec<El> = vec![El::default()];
+        let mut rest = doc;
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix("</") {
+                let end = after.find('>').ok_or("unterminated close tag")?;
+                let name = &after[..end];
+                let el = stack.pop().ok_or("close without open")?;
+                if el.name != name {
+                    return Err(format!("</{name}> closes <{}>", el.name));
+                }
+                stack.last_mut().ok_or("unbalanced")?.children.push(el);
+                rest = &after[end + 1..];
+            } else if let Some(after) = rest.strip_prefix('<') {
+                let name_end = after
+                    .find(|c: char| c.is_whitespace() || c == '/' || c == '>')
+                    .ok_or("unterminated tag")?;
+                let mut el = El {
+                    name: after[..name_end].to_owned(),
+                    ..El::default()
+                };
+                if el.name.is_empty() || el.name.starts_with(['?', '!']) {
+                    return Err(format!("unexpected markup <{}", el.name));
+                }
+                let mut tail = &after[name_end..];
+                loop {
+                    tail = tail.trim_start();
+                    if let Some(t) = tail.strip_prefix("/>") {
+                        tail = t;
+                        stack.last_mut().ok_or("unbalanced")?.children.push(el);
+                        break;
+                    }
+                    if let Some(t) = tail.strip_prefix('>') {
+                        tail = t;
+                        stack.push(el);
+                        break;
+                    }
+                    let eq = tail.find('=').ok_or("attribute without value")?;
+                    let name = tail[..eq].to_owned();
+                    if name.is_empty() || name.contains(char::is_whitespace) {
+                        return Err(format!("bad attribute name {name:?}"));
+                    }
+                    let v = tail[eq + 1..]
+                        .strip_prefix('"')
+                        .ok_or("attribute value not double-quoted")?;
+                    let close = v.find('"').ok_or("unterminated attribute value")?;
+                    let raw = &v[..close];
+                    if raw.contains('<') {
+                        return Err("raw < in attribute value".into());
+                    }
+                    el.attrs.push((name, unescape(raw)?));
+                    tail = &v[close + 1..];
+                }
+                rest = tail;
+            } else {
+                let end = rest.find('<').unwrap_or(rest.len());
+                let text = unescape(&rest[..end])?;
+                if stack.len() == 1 && !text.trim().is_empty() {
+                    return Err("text outside the root".into());
+                }
+                stack.last_mut().ok_or("unbalanced")?.text.push_str(&text);
+                rest = &rest[end..];
+            }
+        }
+        let mut doc_node = stack.pop().ok_or("unbalanced")?;
+        if !stack.is_empty() {
+            return Err(format!("<{}> never closed", doc_node.name));
+        }
+        if doc_node.children.len() != 1 {
+            return Err("not exactly one root".into());
+        }
+        Ok(doc_node.children.remove(0))
+    }
+
+    fn root(svg_text: &str) -> El {
+        parse_xml(svg_text).unwrap_or_else(|e| panic!("{e}\n{svg_text}"))
+    }
+
+    /// Every text line of `scene`, in paint order.
+    fn painted_lines(scene: &Scene) -> Vec<String> {
+        let mut blocks: Vec<&TextBlock> = Vec::new();
+        blocks.extend(scene.boundaries.iter().map(|b| &b.tag));
+        for b in &scene.boxes {
+            blocks.push(&b.name);
+            blocks.push(&b.type_line);
+            blocks.extend(b.description.iter());
+        }
+        blocks.extend(scene.labels.iter().map(|l| &l.text));
+        blocks.extend(scene.title.iter());
+        blocks.extend(scene.subtitle.iter());
+        blocks.extend(scene.legend.entries.iter().map(|e| &e.text));
+        blocks
+            .iter()
+            .flat_map(|t| t.lines.iter().cloned())
+            .collect()
+    }
+
+    fn texts(root: &El) -> Vec<&El> {
+        root.all()
+            .into_iter()
+            .filter(|e| e.name == "text")
+            .collect()
+    }
+
     // One test per requirement, plus the Review Focus extras marked so.
     #[test]
     fn exp_1_svg_no_script_no_external_reference() {
-        // Scan the output: no `<script`, no `on*=` attribute, no `href`
-        // or `xlink:` at all, no `<image`, no `<foreignObject`, no
-        // `url(`, no `@import`, no `@font-face`. The only `http` is the
-        // `xmlns="http://www.w3.org/2000/svg"` namespace URI.
-        todo!()
+        for key in ["c1", "c2"] {
+            let out = svg(&scene_of(SHOP, key));
+            let root = root(&out);
+            assert_eq!(root.name, "svg");
+            assert_eq!(root.attr("xmlns"), Some("http://www.w3.org/2000/svg"));
+            for el in root.all() {
+                assert!(
+                    ["svg", "g", "rect", "path", "circle", "text"].contains(&el.name.as_str()),
+                    "unexpected element <{}>",
+                    el.name
+                );
+                for (name, value) in &el.attrs {
+                    let lower = name.to_ascii_lowercase();
+                    assert!(!lower.starts_with("on"), "event attribute {name}");
+                    assert!(!lower.contains("href"), "href attribute {name}");
+                    assert!(!lower.starts_with("xlink"), "xlink attribute {name}");
+                    assert!(!value.contains("url("), "url() in {name}");
+                }
+            }
+            for banned in [
+                "<script",
+                "<image",
+                "<foreignObject",
+                "<use",
+                "<style",
+                "url(",
+                "@import",
+                "@font-face",
+                "xlink:",
+                "href",
+                "data:",
+            ] {
+                assert!(!out.contains(banned), "{banned} in {key}");
+            }
+            assert_eq!(out.matches("http").count(), 1, "only the xmlns URI");
+            assert_eq!(out.matches("://").count(), 1, "only the xmlns URI");
+        }
     }
 
     #[test]
     fn core_30_svg_names_bundled_font_first() {
-        // Every text's `font-family` is `Inter, sans-serif`
-        // (`scene::FONT_FAMILY` first); lines drawn as the scene holds
-        // them, none re-wrapped.
-        todo!()
+        let family = format!("{FONT_FAMILY}, sans-serif");
+        assert_eq!(family, "Inter, sans-serif");
+        let scene = scene_of(SHOP, "c2");
+        let root = root(&svg(&scene));
+        let texts = texts(&root);
+        assert!(!texts.is_empty());
+        for t in &texts {
+            assert_eq!(t.attr("font-family"), Some(family.as_str()), "{t:?}");
+        }
+        // No other font-family anywhere that could override it.
+        for el in root.all() {
+            if el.name != "text" {
+                assert_eq!(el.attr("font-family"), None, "<{}>", el.name);
+            }
+        }
+        // One `<text>` per scene line, in paint order, never re-wrapped.
+        let drawn: Vec<String> = texts.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(drawn, painted_lines(&scene));
+        // Each line on its own baseline: at.y + i * line_px, and bold
+        // where the scene says bold.
+        let first = &scene.boxes[0];
+        let name_texts: Vec<&&El> = texts
+            .iter()
+            .filter(|t| first.name.lines.contains(&t.text))
+            .collect();
+        for (i, t) in name_texts.iter().enumerate().take(first.name.lines.len()) {
+            let line = i32::try_from(i).expect("small");
+            assert_eq!(
+                t.attr("y"),
+                Some(
+                    (first.name.at.y + line * first.name.line_px)
+                        .to_string()
+                        .as_str()
+                )
+            );
+            assert_eq!(t.attr("font-weight"), Some("bold"));
+            assert_eq!(t.attr("text-anchor"), Some("middle"));
+        }
+        let type_text = texts
+            .iter()
+            .find(|t| t.text == first.type_line.lines[0])
+            .expect("type line drawn");
+        assert_eq!(type_text.attr("font-weight"), None);
+        assert_eq!(
+            type_text.attr("font-size"),
+            Some(first.type_line.size_px.to_string().as_str())
+        );
     }
 
     #[test]
     fn exp_1_svg_escapes_text() {
-        // Review Focus extra: names and labels with `<`, `&`, `"` and
-        // `'` are escaped, U+0001 and U+FFFE come out as U+FFFD; the
-        // document still parses as XML.
-        todo!()
+        let mut scene = scene_of(SHOP, "c2");
+        // Through the whole pipeline: names and labels from the file.
+        let out = svg(&scene);
+        assert!(
+            out.contains("Web &lt;app&gt; &amp; &apos;co&apos;"),
+            "{out}"
+        );
+        assert!(out.contains("Reads &amp; writes &lt;orders&gt;"), "{out}");
+        assert!(!out.contains("<app>"));
+        assert!(!out.contains("<orders>"));
+        // Hand-made lines: quotes and characters XML cannot hold.
+        scene.boxes[0].name.lines = vec![
+            "a<b & \"c\" 'd' >".to_owned(),
+            "x\u{1}y\u{FFFE}z\u{FFFF}\u{0}".to_owned(),
+            "tab\tok".to_owned(),
+        ];
+        let out = svg(&scene);
+        assert!(out.contains(">a&lt;b &amp; &quot;c&quot; &apos;d&apos; &gt;</text>"));
+        assert!(out.contains(">x\u{FFFD}y\u{FFFD}z\u{FFFD}\u{FFFD}</text>"));
+        assert!(out.contains(">tab\tok</text>"));
+        for bad in ['\u{0}', '\u{1}', '\u{FFFE}', '\u{FFFF}'] {
+            assert!(!out.contains(bad), "{bad:?} written raw");
+        }
+        let root = root(&out);
+        let drawn: Vec<String> = texts(&root).iter().map(|t| t.text.clone()).collect();
+        assert!(drawn.contains(&"a<b & \"c\" 'd' >".to_owned()));
+        assert!(drawn.contains(&"x\u{FFFD}y\u{FFFD}z\u{FFFD}\u{FFFD}".to_owned()));
+        #[cfg(feature = "png")]
+        {
+            let doc = resvg::usvg::roxmltree::Document::parse(&out);
+            assert!(doc.is_ok(), "{doc:?}");
+        }
     }
 
     #[test]
     fn core_25_svg_deterministic_bytes() {
-        // Export half of CORE-25: two equal hand-made scenes give
-        // byte-identical SVG; no fractional numbers in the output. The
-        // `example/` half is pipeline's (docs/deferred.md).
-        todo!()
+        for key in ["c1", "c2"] {
+            let a = svg(&scene_of(SHOP, key));
+            let b = svg(&scene_of(SHOP, key));
+            assert_eq!(a, b, "{key}");
+            assert_eq!(svg(&scene_of(SHOP, key)), a, "{key} third run");
+            // Integers only: no number with a decimal point in any
+            // attribute value.
+            for el in root(&a).all() {
+                for (name, value) in &el.attrs {
+                    if name == "xmlns" {
+                        continue;
+                    }
+                    let b = value.as_bytes();
+                    for w in b.windows(2) {
+                        assert!(
+                            !((w[0].is_ascii_digit() && w[1] == b'.')
+                                || (w[0] == b'.' && w[1].is_ascii_digit())),
+                            "fractional number in {name}=\"{value}\""
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Box groups hold their outline shapes then one text per line; key
+    /// groups their swatch shapes then their text.
+    fn assert_box_and_key_groups(scene: &Scene, groups: &[&El]) {
+        // Box groups: outline shapes then one text per line.
+        let box_groups = groups.iter().filter(|g| g.attr("class") == Some("box"));
+        for (b, g) in scene.boxes.iter().zip(box_groups) {
+            let shapes = match b.outline {
+                Outline::Rect { .. } => vec!["rect"],
+                Outline::Person { .. } => vec!["rect", "circle"],
+                Outline::Cylinder { .. } => vec!["path", "path"],
+            };
+            let lines = b.name.lines.len()
+                + b.type_line.lines.len()
+                + b.description.as_ref().map_or(0, |d| d.lines.len());
+            let names: Vec<&str> = g.children.iter().map(|e| e.name.as_str()).collect();
+            let mut want = shapes.clone();
+            want.extend(std::iter::repeat_n("text", lines));
+            assert_eq!(names, want);
+        }
+        assert!(
+            scene
+                .boxes
+                .iter()
+                .any(|b| matches!(b.outline, Outline::Person { .. }))
+        );
+        assert!(
+            scene
+                .boxes
+                .iter()
+                .any(|b| matches!(b.outline, Outline::Cylinder { .. }))
+        );
+
+        // Key groups: swatch shapes then text.
+        let key_groups = groups.iter().filter(|g| g.attr("class") == Some("key"));
+        for (e, g) in scene.legend.entries.iter().zip(key_groups) {
+            let shapes = match e.swatch {
+                Swatch::Box {
+                    outline: Outline::Rect { .. },
+                    ..
+                } => 1,
+                Swatch::Box { .. } | Swatch::Line { .. } => 2,
+            };
+            assert_eq!(g.children.len(), shapes + e.text.lines.len());
+        }
     }
 
     #[test]
     fn core_1_svg_paint_order_and_viewbox() {
-        // Review Focus extra: `viewBox` is `scene.bounds` (negative
-        // origin kept); items in the scene's paint order, nothing drawn
-        // that the scene does not hold.
-        todo!()
+        let mut scene = scene_of(SHOP, "c2");
+        scene.bounds = Rect::from_corners(Point::new(-40, -30), scene.bounds.max);
+        let (w, h) = (scene.bounds.width(), scene.bounds.height());
+        let root = root(&svg(&scene));
+        assert_eq!(
+            root.attr("viewBox"),
+            Some(format!("-40 -30 {w} {h}").as_str())
+        );
+        assert_eq!(root.attr("width"), Some(w.to_string().as_str()));
+        assert_eq!(root.attr("height"), Some(h.to_string().as_str()));
+
+        // First the background over the bounds.
+        let bg = &root.children[0];
+        assert_eq!(bg.name, "rect");
+        assert_eq!(bg.attr("x"), Some("-40"));
+        assert_eq!(bg.attr("y"), Some("-30"));
+        assert_eq!(bg.attr("width"), Some(w.to_string().as_str()));
+        assert_eq!(bg.attr("height"), Some(h.to_string().as_str()));
+        assert_eq!(bg.attr("fill"), Some(scene.background.to_string().as_str()));
+
+        // Then one group per item, in the scene's paint order.
+        let groups: Vec<&El> = root.children[1..].iter().collect();
+        assert!(groups.iter().all(|g| g.name == "g"));
+        let mut want = Vec::new();
+        want.extend(scene.boundaries.iter().map(|_| "boundary"));
+        want.extend(scene.lines.iter().map(|_| "line"));
+        want.extend(scene.boxes.iter().map(|_| "box"));
+        want.extend(scene.labels.iter().map(|_| "label"));
+        want.extend(scene.title.iter().map(|_| "title"));
+        want.extend(scene.subtitle.iter().map(|_| "subtitle"));
+        want.extend(scene.legend.entries.iter().map(|_| "key"));
+        let got: Vec<&str> = groups
+            .iter()
+            .map(|g| g.attr("class").unwrap_or(""))
+            .collect();
+        assert_eq!(got, want);
+        assert!(!scene.boundaries.is_empty() && !scene.labels.is_empty());
+
+        // Each line group holds exactly its polyline, chevrons and tip.
+        let line_groups = groups.iter().filter(|g| g.attr("class") == Some("line"));
+        for (line, g) in scene.lines.iter().zip(line_groups) {
+            let d: Vec<String> = line
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| format!("{}{},{}", if i == 0 { "M" } else { "L" }, p.x, p.y))
+                .collect();
+            assert_eq!(g.children[0].attr("d"), Some(d.join(" ").as_str()));
+            assert_eq!(g.children[0].attr("fill"), Some("none"));
+            let stroke = line.stroke.colour.to_string();
+            assert_eq!(g.children[0].attr("stroke"), Some(stroke.as_str()));
+            assert_eq!(g.children.len(), 1 + line.chevrons.len() + 1);
+            let tip = match line.tip {
+                Tip::Arrow(_) => "path",
+                Tip::Dot { .. } => "circle",
+            };
+            assert_eq!(g.children.last().map(|e| e.name.as_str()), Some(tip));
+        }
+
+        assert_box_and_key_groups(&scene, &groups);
+
+        // An empty scene draws its background and nothing else.
+        let mut empty = scene.clone();
+        empty.boundaries.clear();
+        empty.lines.clear();
+        empty.boxes.clear();
+        empty.labels.clear();
+        empty.title = None;
+        empty.subtitle = None;
+        empty.legend.entries.clear();
+        let drawn = parse_xml(&svg(&empty)).expect("parses");
+        assert_eq!(drawn.children.len(), 1);
+    }
+
+    /// PNG width and height from the IHDR chunk; asserts the signature.
+    #[cfg(feature = "png")]
+    fn png_size(bytes: &[u8]) -> (u32, u32) {
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+        assert_eq!(&bytes[12..16], b"IHDR");
+        let be =
+            |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        (be(16), be(20))
+    }
+
+    /// The reference raster: `svg_text` parsed with a font database
+    /// holding only the two bundled faces, drawn at `width` x `height`.
+    #[cfg(feature = "png")]
+    fn reference_raster(svg_text: &str, width: u32, height: u32) -> Vec<u8> {
+        use resvg::{tiny_skia, usvg};
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(crate::scene::FONT_REGULAR.to_vec());
+        db.load_font_data(crate::scene::FONT_BOLD.to_vec());
+        db.set_sans_serif_family(FONT_FAMILY);
+        assert_eq!(db.len(), 2, "only the bundled faces");
+        let opt = usvg::Options {
+            font_family: FONT_FAMILY.to_owned(),
+            fontdb: std::sync::Arc::new(db),
+            ..usvg::Options::default()
+        };
+        let tree = usvg::Tree::from_str(svg_text, &opt).expect("own SVG parses");
+        let mut pixmap = tiny_skia::Pixmap::new(width, height).expect("allocates");
+        let size = tree.size();
+        #[allow(clippy::cast_precision_loss)]
+        let transform = tiny_skia::Transform::from_scale(
+            width as f32 / size.width(),
+            height as f32 / size.height(),
+        );
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        pixmap.encode_png().expect("encodes")
+    }
+
+    /// The documented height rule, in u64.
+    #[cfg(feature = "png")]
+    fn rule_height(scene: &Scene, width_px: u32) -> u32 {
+        let w = u64::try_from(scene.bounds.width()).expect("positive");
+        let h = u64::try_from(scene.bounds.height()).expect("positive");
+        u32::try_from(((h * u64::from(width_px) + w / 2) / w).max(1)).expect("fits")
     }
 
     #[cfg(feature = "png")]
     #[test]
     fn exp_2_png_matches_svg_raster() {
-        // The PNG equals the `svg` output rasterized at the same width
-        // by a font database holding only `scene::FONT_REGULAR` and
-        // `scene::FONT_BOLD`.
-        todo!()
+        let scene = scene_of(SHOP, "c2");
+        let width = u32::try_from(scene.bounds.width() * 2).expect("positive");
+        let height = rule_height(&scene, width);
+        let bytes = png(&scene, width).expect("renders");
+        assert_eq!(png_size(&bytes), (width, height));
+        assert_eq!(bytes, reference_raster(&svg(&scene), width, height));
+        // Same scene and width, same bytes.
+        assert_eq!(png(&scene, width).expect("renders"), bytes);
     }
 
     #[cfg(feature = "png")]
     #[test]
     fn exp_2_png_scaled_keeps_aspect() {
-        // Review Focus: a width smaller (and larger) than the scene
-        // scales it with its aspect ratio kept; the height follows the
-        // documented integer rule, ties rounding up.
-        todo!()
+        use resvg::tiny_skia::Pixmap;
+        let scene = scene_of(SHOP, "c2");
+        let w = scene.bounds.width();
+        let cylinder = scene
+            .boxes
+            .iter()
+            .find(|b| matches!(b.outline, Outline::Cylinder { .. }))
+            .expect("a cylinder");
+        let centre = cylinder.rect.centre();
+        for width in [
+            u32::try_from(w / 3).expect("positive"),
+            u32::try_from(w * 3 / 2).expect("positive"),
+        ] {
+            let bytes = png(&scene, width).expect("renders");
+            let height = rule_height(&scene, width);
+            assert_eq!(png_size(&bytes), (width, height), "width {width}");
+            let pixmap = Pixmap::decode_png(&bytes).expect("decodes");
+            // The cylinder's centre lands where the scale puts it, in its
+            // fill: the drawing is scaled, not cropped or stretched.
+            let scale = f64::from(width) / f64::from(w);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let at = |v: i32, min: i32| (f64::from(v - min) * scale) as u32;
+            // Sample 20px inside its left side at mid height, clear of
+            // the centred text and of the outline.
+            let px = pixmap
+                .pixel(
+                    at(cylinder.rect.min.x + 20, scene.bounds.min.x),
+                    at(centre.y, scene.bounds.min.y),
+                )
+                .expect("inside")
+                .demultiply();
+            let fill = cylinder.fill;
+            assert_eq!(
+                (px.red(), px.green(), px.blue()),
+                (fill.r, fill.g, fill.b),
+                "width {width}"
+            );
+            // A corner shows the background.
+            let corner = pixmap.pixel(0, 0).expect("inside").demultiply();
+            let bg = scene.background;
+            assert_eq!(
+                (corner.red(), corner.green(), corner.blue()),
+                (bg.r, bg.g, bg.b)
+            );
+        }
+        // The height rule rounds halves up: 100 x 3 / 200 = 1.5 -> 2.
+        let mut tie = scene.clone();
+        tie.bounds = Rect::from_corners(Point::new(0, 0), Point::new(200, 100));
+        assert_eq!(png_size(&png(&tie, 3).expect("renders")), (3, 2));
+        // 100 x 1 / 200 = 0.5 rounds up to 1; 0.4 would round to 0 and
+        // is lifted to 1.
+        assert_eq!(png_size(&png(&tie, 1).expect("renders")), (1, 1));
+        tie.bounds = Rect::from_corners(Point::new(0, 0), Point::new(1000, 1));
+        assert_eq!(png_size(&png(&tie, 100).expect("renders")), (100, 1));
     }
 
     #[cfg(feature = "png")]
     #[test]
     fn exp_2_png_no_system_font_fallback() {
-        // Not circular with the raster test: a text in a family that is
-        // not Inter (or a glyph Inter lacks) renders with the bundled
-        // faces or not at all, never with a system font: the PNG equals
-        // the raster of a font database holding only the two bundled
-        // faces.
-        todo!()
+        let mut scene = scene_of(SHOP, "c2");
+        // Glyphs Inter lacks (CJK, an emoji) beside Latin text: a system
+        // fallback font would draw them and change the pixels.
+        scene.boxes[0].name.lines = vec!["漢字 \u{1F600} Box".to_owned()];
+        if let Some(d) = scene.boxes[1].description.as_mut() {
+            d.lines = vec!["סקר ひらがな".to_owned()];
+        }
+        let width = u32::try_from(scene.bounds.width()).expect("positive");
+        let bytes = png(&scene, width).expect("renders");
+        assert_eq!(
+            bytes,
+            reference_raster(&svg(&scene), width, rule_height(&scene, width))
+        );
     }
 
     #[cfg(feature = "png")]
     #[test]
     fn exp_2_png_errors() {
-        // Width 0 is `ZeroWidth`; a width whose height overflows `u32`
-        // is `TooLarge` with `height_px` `u32::MAX`; zero-width bounds is
-        // `Render`.
-        todo!()
+        let scene = scene_of(SHOP, "c2");
+        assert_eq!(png(&scene, 0), Err(PngError::ZeroWidth));
+
+        let mut tall = scene.clone();
+        tall.bounds = Rect::from_corners(Point::new(0, 0), Point::new(1, 1000));
+        assert_eq!(
+            png(&tall, u32::MAX),
+            Err(PngError::TooLarge {
+                width_px: u32::MAX,
+                height_px: u32::MAX
+            })
+        );
+        // Fits u32 but cannot be allocated.
+        let mut wide = scene.clone();
+        wide.bounds = Rect::from_corners(Point::new(0, 0), Point::new(1000, 1));
+        let height = rule_height(&wide, u32::MAX);
+        assert_eq!(
+            png(&wide, u32::MAX),
+            Err(PngError::TooLarge {
+                width_px: u32::MAX,
+                height_px: height
+            })
+        );
+
+        let mut flat = scene.clone();
+        flat.bounds = Rect::from_corners(Point::new(10, 0), Point::new(10, 500));
+        assert!(matches!(png(&flat, 100), Err(PngError::Render(_))));
+        flat.bounds = Rect::from_corners(Point::new(0, 10), Point::new(500, 10));
+        assert!(matches!(png(&flat, 100), Err(PngError::Render(_))));
+        // Checked in order: width, then bounds, then size.
+        assert_eq!(png(&flat, 0), Err(PngError::ZeroWidth));
+        assert!(matches!(png(&flat, u32::MAX), Err(PngError::Render(_))));
+
+        // Every error reads as one sentence.
+        for e in [
+            PngError::ZeroWidth,
+            PngError::NoFont,
+            PngError::TooLarge {
+                width_px: 7,
+                height_px: 9,
+            },
+            PngError::Render("bad".into()),
+        ] {
+            let text = e.to_string();
+            assert!(text.ends_with('.'), "{text}");
+            assert!(
+                text.chars().next().is_some_and(char::is_uppercase),
+                "{text}"
+            );
+            assert_eq!(text.matches(". ").count(), 0, "one sentence: {text}");
+        }
+        assert!(
+            PngError::TooLarge {
+                width_px: 7,
+                height_px: 9
+            }
+            .to_string()
+            .contains('7')
+        );
+        assert!(PngError::Render("bad".into()).to_string().contains("bad"));
     }
 }
