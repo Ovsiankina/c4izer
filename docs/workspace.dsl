@@ -85,6 +85,8 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cView -> cGeom "Sizes boxes on the grid of"
         cPlace -> cGeom "Snaps positions to the grid of"
         cRoute -> cGeom "Walks the grid of"
+        cPlace -> cModel "Reads element ids and kinds from"
+        cRoute -> cModel "Reads box shapes from"
         cLabel -> cGeom "Tests overlaps with"
         cScene -> cGeom "Converts grid units with"
     }
