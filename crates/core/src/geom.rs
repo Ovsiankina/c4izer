@@ -298,8 +298,8 @@ pub struct Segment {
 }
 
 /// How two segments meet (CORE-8, CORE-17 / L4). Exactly one applies.
-/// Counting crossings between whole lines uses [`crossings`], not a sum
-/// of segment contacts.
+/// [`crossings`] counts, between whole lines, every segment pair whose
+/// contact is not [`Contact::Disjoint`] (L4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Contact {
     /// No common point.
@@ -459,45 +459,32 @@ impl Segment {
     }
 }
 
-/// Number of places where two polylines (vertex lists, consecutive
-/// vertices joined by segments) meet: each connected piece of their
-/// common points counts once, whether a straight-through crossing, a
-/// meeting at a bend vertex of either line (counted once, not once per
-/// segment pair and not zero), a touch, or a shared stretch (CORE-17 /
-/// L4, CORE-8). A meeting at a line's end is counted too: L4's
-/// exception for a joined line ending on its trunk needs destinations,
-/// which only the caller knows, so it subtracts that meeting itself.
-/// A polyline of fewer than two vertices meets nothing.
-// DECISION: one count per connected meeting, not per segment pair, so
-// the count matches the prototype's crossing count (CORE-11 parity).
+/// Number of crossings between two polylines (vertex lists, consecutive
+/// vertices joined by segments): one per pair of a segment of `a` and a
+/// segment of `b` that have any common point, whether they cross, touch
+/// (a T, a shared bend vertex, a join dot) or share a stretch (CORE-17 /
+/// L4, CORE-8). So a meeting at a bend vertex of one line costs two (one
+/// per segment ending there), and three lines through one point cost
+/// three when the caller sums every pair of lines. L4's exception for a
+/// joined line ending on the trunk it joins (same destination) needs
+/// destinations, which only the caller knows: it drops the joined line's
+/// last segment from the count, `crossings(trunk, &joined[..joined.len() - 1])`.
+/// A polyline of fewer than two vertices has no segment and meets nothing.
+// DECISION: count per segment pair, not per connected meeting: SRS L4
+// defines a crossing as two segments of different lines that cross or
+// touch, and the prototype's lint (c4.py seg_cross loop) counts every
+// such pair, which CORE-11 compares against.
 #[must_use]
 pub fn crossings(a: &[Point], b: &[Point]) -> u32 {
-    // DECISION: collect every common piece of each segment pair (a point
-    // or a shared stretch), join pieces that touch with a union-find, and
-    // count the groups. Exact: cross points are kept as rationals in i128.
-    let mut pieces: Vec<Piece> = Vec::new();
-    for sa in a.windows(2).map(|w| Segment::new(w[0], w[1])) {
-        for sb in b.windows(2).map(|w| Segment::new(w[0], w[1])) {
-            if let Some(piece) = common_piece(&sa, &sb) {
-                pieces.push(piece);
-            }
-        }
-    }
-    let mut parent: Vec<usize> = (0..pieces.len()).collect();
-    for i in 0..pieces.len() {
-        for j in (i + 1)..pieces.len() {
-            if pieces[i].meets(&pieces[j]) {
-                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-                if ri != rj {
-                    parent[rj] = ri;
-                }
-            }
-        }
-    }
-    let groups = (0..pieces.len())
-        .filter(|&i| find(&mut parent, i) == i)
+    let segs =
+        |p: &[Point]| -> Vec<Segment> { p.windows(2).map(|w| Segment::new(w[0], w[1])).collect() };
+    let (sa, sb) = (segs(a), segs(b));
+    let pairs = sa
+        .iter()
+        .flat_map(|s| sb.iter().map(move |t| s.contact(t)))
+        .filter(|&c| c != Contact::Disjoint)
         .count();
-    u32::try_from(groups).unwrap_or(u32::MAX)
+    u32::try_from(pairs).unwrap_or(u32::MAX)
 }
 
 /// Sign of the turn `p -> q -> r`: positive, negative or zero when
@@ -517,105 +504,6 @@ fn orient(p: Point, q: Point, r: Point) -> i64 {
 /// True when `p` lies on the closed segment `s`.
 fn on_segment(p: Point, s: &Segment) -> bool {
     orient(s.a, s.b, p) == 0 && Rect::from_corners(s.a, s.b).contains(p)
-}
-
-/// A point with rational coordinates `(x / d, y / d)`, `d > 0`: the
-/// exact spot where two segments cross.
-#[derive(Debug, Clone, Copy)]
-struct RatPoint {
-    x: i128,
-    y: i128,
-    d: i128,
-}
-
-impl RatPoint {
-    fn int(p: Point) -> Self {
-        Self {
-            x: i128::from(p.x),
-            y: i128::from(p.y),
-            d: 1,
-        }
-    }
-
-    fn same(&self, o: &RatPoint) -> bool {
-        self.x * o.d == o.x * self.d && self.y * o.d == o.y * self.d
-    }
-
-    /// True when this point lies on the closed integer segment `s`.
-    fn on(&self, s: &Segment) -> bool {
-        let (ax, ay) = (i128::from(s.a.x), i128::from(s.a.y));
-        let (ux, uy) = (i128::from(s.b.x) - ax, i128::from(s.b.y) - ay);
-        let (vx, vy) = (self.x - ax * self.d, self.y - ay * self.d);
-        let r = Rect::from_corners(s.a, s.b);
-        ux * vy - uy * vx == 0
-            && i128::from(r.min.x) * self.d <= self.x
-            && self.x <= i128::from(r.max.x) * self.d
-            && i128::from(r.min.y) * self.d <= self.y
-            && self.y <= i128::from(r.max.y) * self.d
-    }
-}
-
-/// One connected piece of the common points of two segments.
-#[derive(Debug, Clone, Copy)]
-enum Piece {
-    Point(RatPoint),
-    Stretch(Segment),
-}
-
-impl Piece {
-    fn meets(&self, other: &Piece) -> bool {
-        match (self, other) {
-            (Piece::Point(p), Piece::Point(q)) => p.same(q),
-            (Piece::Point(p), Piece::Stretch(s)) | (Piece::Stretch(s), Piece::Point(p)) => p.on(s),
-            (Piece::Stretch(s), Piece::Stretch(t)) => s.contact(t) != Contact::Disjoint,
-        }
-    }
-}
-
-/// The common points of `s` and `t` as one piece, if any.
-fn common_piece(s: &Segment, t: &Segment) -> Option<Piece> {
-    match s.contact(t) {
-        Contact::Disjoint => None,
-        Contact::Touch => [(s.a, t), (s.b, t), (t.a, s), (t.b, s)]
-            .into_iter()
-            .find(|(p, seg)| on_segment(*p, seg))
-            .map(|(p, _)| Piece::Point(RatPoint::int(p))),
-        Contact::Overlap => {
-            let lo = s.a.min(s.b).max(t.a.min(t.b));
-            let hi = s.a.max(s.b).min(t.a.max(t.b));
-            Some(Piece::Stretch(Segment::new(lo, hi)))
-        }
-        Contact::Cross => {
-            // s.a + r * (num / den), r = s.b - s.a, q = t.b - t.a.
-            let (ax, ay) = (i128::from(s.a.x), i128::from(s.a.y));
-            let (rx, ry) = (i128::from(s.b.x) - ax, i128::from(s.b.y) - ay);
-            let (qx, qy) = (
-                i128::from(t.b.x) - i128::from(t.a.x),
-                i128::from(t.b.y) - i128::from(t.a.y),
-            );
-            let (wx, wy) = (i128::from(t.a.x) - ax, i128::from(t.a.y) - ay);
-            let mut den = rx * qy - ry * qx;
-            let mut num = wx * qy - wy * qx;
-            if den < 0 {
-                den = -den;
-                num = -num;
-            }
-            Some(Piece::Point(RatPoint {
-                x: ax * den + rx * num,
-                y: ay * den + ry * num,
-                d: den,
-            }))
-        }
-    }
-}
-
-/// Union-find root with path halving.
-fn find(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
 }
 
 #[cfg(test)]
@@ -712,30 +600,39 @@ mod tests {
         // A crossing goes straight through.
         let cross = Segment::new(Point::new(5, 6), Point::new(5, -6));
         assert_eq!(trunk.contact(&cross), Contact::Cross);
-        // Whole lines: one meeting each, so the caller can tell a join (that
-        // it then subtracts) from a crossing elsewhere.
+        // Whole lines: the join dot touches the trunk, so it is counted;
+        // the caller applies L4's exception by dropping the joined line's
+        // last segment.
         let trunk_line = [Point::new(0, 0), Point::new(10, 0), Point::new(10, 8)];
-        let joined = [
-            Point::new(2, 8),
-            Point::new(2, 4),
-            Point::new(6, 0),
-            Point::new(10, 0),
-        ];
+        let joined = [Point::new(2, 8), Point::new(2, 4), Point::new(6, 0)];
+        assert_eq!(crossings(&trunk_line, &joined), 1, "join dot is a touch");
+        assert_eq!(crossings(&trunk_line, &joined[..joined.len() - 1]), 0);
+        // Joining at the trunk's bend vertex touches both trunk segments.
+        let at_bend = [Point::new(4, 6), Point::new(10, 0)];
+        assert_eq!(crossings(&trunk_line, &at_bend), 2);
+        assert_eq!(crossings(&trunk_line, &at_bend[..1]), 0);
+        // A joined line that also crosses the trunk elsewhere keeps that
+        // crossing after the exception.
+        let crossing_then_join = [Point::new(12, 2), Point::new(8, 2), Point::new(8, 0)];
+        assert_eq!(crossings(&trunk_line, &crossing_then_join), 2);
         assert_eq!(
-            crossings(&trunk_line, &joined),
-            1,
-            "join + shared stretch is one meeting"
+            crossings(
+                &trunk_line,
+                &crossing_then_join[..crossing_then_join.len() - 1]
+            ),
+            1
         );
     }
 
-    // CORE-17: crossings are counted once per meeting between two lines.
+    // CORE-17 / L4: crossings are counted per segment pair that crosses
+    // or touches.
     #[test]
-    fn core_17_crossings_counted_once_per_meeting() {
+    fn core_17_crossings_counted_per_segment_pair() {
         let h = [Point::new(0, 0), Point::new(10, 0)];
         let v = [Point::new(5, -5), Point::new(5, 5)];
         assert_eq!(crossings(&h, &v), 1);
         assert_eq!(crossings(&v, &h), 1);
-        // A zig-zag crossing a straight line twice: two meetings.
+        // A zig-zag crossing a straight line twice: two pairs.
         let zig = [
             Point::new(2, -2),
             Point::new(2, 2),
@@ -743,14 +640,26 @@ mod tests {
             Point::new(6, -2),
         ];
         assert_eq!(crossings(&h, &zig), 2);
-        // Crossing at a bend vertex of one line counts once, not twice.
+        // Meeting at a bend vertex of one line: both segments ending there
+        // touch the other line, so two pairs.
         let bend = [
             Point::new(3, -3),
             Point::new(6, -3),
             Point::new(9, 0),
             Point::new(6, 3),
         ];
-        assert_eq!(crossings(&h, &bend), 1);
+        assert_eq!(crossings(&h, &bend), 2);
+        // Three lines piling on one point cost three (one per pair of
+        // lines), not one.
+        let d = [Point::new(0, -5), Point::new(10, 5)];
+        let lines: [&[Point]; 3] = [&h, &v, &d];
+        let mut total = 0;
+        for i in 0..lines.len() {
+            for j in (i + 1)..lines.len() {
+                total += crossings(lines[i], lines[j]);
+            }
+        }
+        assert_eq!(total, 3);
         // Disjoint lines and degenerate polylines meet nothing.
         let far = [Point::new(0, 4), Point::new(10, 4)];
         assert_eq!(crossings(&h, &far), 0);
@@ -1033,7 +942,8 @@ mod tests {
             s.contact(&Segment::new(Point::new(5, 0), Point::new(8, 0))),
             Contact::Disjoint
         );
-        // Two lines sharing a stretch meet once.
+        // Two lines sharing a stretch: the overlap pair plus the two
+        // segments of `b` touching it at its bends, three pairs.
         let a = [
             Point::new(0, 3),
             Point::new(0, 0),
@@ -1046,7 +956,7 @@ mod tests {
             Point::new(4, 0),
             Point::new(4, -3),
         ];
-        assert_eq!(crossings(&a, &b), 1);
+        assert_eq!(crossings(&a, &b), 3);
     }
 
     // Also CORE-7 (no line through a box other than its own ends).
@@ -1084,29 +994,29 @@ mod tests {
         assert!(!Segment::new(Point::new(2, 0), Point::new(2, 4)).passes_through(&flat));
     }
 
-    // Review B1: a line crossing another at its bend vertex counts once.
+    // Review B1, revised by L4: a meeting at a bend vertex counts once
+    // per segment pair touching there, never zero.
     #[test]
-    fn crossing_at_bend_vertex_counts() {
+    fn crossing_at_bend_vertex_counts_each_pair() {
         let trunk = [Point::new(0, 2), Point::new(8, 2)];
         // A line bending exactly on the trunk and going on to the other
-        // side: one crossing.
+        // side: both its segments touch the trunk.
         let through = [Point::new(2, 0), Point::new(4, 2), Point::new(6, 4)];
-        assert_eq!(crossings(&trunk, &through), 1);
+        assert_eq!(crossings(&trunk, &through), 2);
         let square = [Point::new(4, 0), Point::new(4, 2), Point::new(6, 4)];
-        assert_eq!(crossings(&trunk, &square), 1);
-        assert_eq!(crossings(&square, &trunk), 1);
-        // Bending on the trunk and coming back to the same side: still one
-        // meeting.
+        assert_eq!(crossings(&trunk, &square), 2);
+        assert_eq!(crossings(&square, &trunk), 2);
+        // Bending on the trunk and coming back to the same side: the same.
         let bounce = [Point::new(2, 0), Point::new(4, 2), Point::new(6, 0)];
-        assert_eq!(crossings(&trunk, &bounce), 1);
-        // Both lines bend at the same vertex.
+        assert_eq!(crossings(&trunk, &bounce), 2);
+        // Both lines bend at the same vertex: 2 x 2 pairs.
         let left = [Point::new(0, 0), Point::new(2, 2), Point::new(0, 4)];
         let right = [Point::new(4, 0), Point::new(2, 2), Point::new(4, 4)];
-        assert_eq!(crossings(&left, &right), 1);
+        assert_eq!(crossings(&left, &right), 4);
         // A straight line through the bend vertex of a V-shaped line.
         let vee = [Point::new(0, 0), Point::new(2, 2), Point::new(4, 0)];
         let up = [Point::new(2, -1), Point::new(2, 4)];
-        assert_eq!(crossings(&vee, &up), 1);
+        assert_eq!(crossings(&vee, &up), 2);
     }
 
     // Review Focus: boxes left of / above the origin.
@@ -1154,7 +1064,7 @@ mod tests {
         let a2: Vec<Point> = a.iter().copied().map(shift).collect();
         let b2: Vec<Point> = b.iter().copied().map(shift).collect();
         assert_eq!(crossings(&a2, &b2), crossings(&a, &b));
-        assert_eq!(crossings(&a, &b), 2);
+        assert_eq!(crossings(&a, &b), 3);
         // Snapping is translation-invariant across zero.
         for px in -30..30 {
             assert_eq!(snap_px_to_grid(px - 1000), snap_px_to_grid(px) - 100);
