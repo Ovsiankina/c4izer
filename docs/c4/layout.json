@@ -1,0 +1,228 @@
+{
+  "views": {
+    "c1": {
+      "kind": "context",
+      "scope": "system",
+      "title": "System Context diagram for c4rizer",
+      "subtitle": "Who uses c4rizer and what writes its diagram file.",
+      "technology": false,
+      "max_crossings": 0,
+      "nodes": {
+        "architect": [
+          200,
+          170
+        ],
+        "agent": [
+          960,
+          170
+        ],
+        "textEditor": [
+          200,
+          500
+        ],
+        "system": [
+          620,
+          500
+        ]
+      },
+      "sizes": {
+        "system": [
+          280,
+          140
+        ]
+      }
+    },
+    "c2": {
+      "kind": "container",
+      "scope": "system",
+      "title": "Container diagram for c4rizer",
+      "subtitle": "The crates of c4rizer and the files they read and write.",
+      "max_crossings": 0,
+      "nodes": {
+        "architect": [
+          200,
+          170
+        ],
+        "textEditor": [
+          580,
+          170
+        ],
+        "agent": [
+          960,
+          170
+        ],
+        "editor": [
+          200,
+          460
+        ],
+        "model": [
+          580,
+          460
+        ],
+        "cli": [
+          960,
+          460
+        ],
+        "exports": [
+          580,
+          720
+        ],
+        "core": [
+          580,
+          980
+        ]
+      },
+      "label_width": 18
+    },
+    "c3-stages": {
+      "kind": "component",
+      "scope": "core",
+      "title": "Component diagram for c4rizer core: pipeline stages",
+      "subtitle": "How the stages depend on each other. Entry points and geometry are on the other two C3 views.",
+      "label_width": 18,
+      "max_crossings": 0,
+      "nodes": {
+        "cPlace": [
+          200,
+          170
+        ],
+        "cRoute": [
+          540,
+          170
+        ],
+        "cLabel": [
+          880,
+          170
+        ],
+        "cScene": [
+          1220,
+          170
+        ],
+        "cExport": [
+          1560,
+          170
+        ],
+        "cView": [
+          540,
+          430
+        ],
+        "cModel": [
+          540,
+          690
+        ],
+        "cText": [
+          200,
+          690
+        ],
+        "cEdit": [
+          200,
+          950
+        ],
+        "cLint": [
+          1220,
+          690
+        ]
+      }
+    },
+    "c3-entry": {
+      "kind": "component",
+      "scope": "core",
+      "title": "Component diagram for c4rizer core: entry points",
+      "subtitle": "What the CLI and the editor call. Stage-to-stage lines are on the stages view.",
+      "label_width": 16,
+      "max_crossings": 0,
+      "focus": [
+        "cPipeline",
+        "cli",
+        "editor"
+      ],
+      "nodes": {
+        "editor": [
+          880,
+          170
+        ],
+        "cli": [
+          1560,
+          170
+        ],
+        "cEdit": [
+          540,
+          430
+        ],
+        "cExport": [
+          1220,
+          430
+        ],
+        "cPipeline": [
+          1220,
+          690
+        ],
+        "cModel": [
+          200,
+          950
+        ],
+        "cView": [
+          540,
+          950
+        ],
+        "cPlace": [
+          880,
+          950
+        ],
+        "cRoute": [
+          1220,
+          950
+        ],
+        "cLabel": [
+          1560,
+          950
+        ],
+        "cScene": [
+          1900,
+          950
+        ],
+        "cLint": [
+          2240,
+          950
+        ]
+      }
+    },
+    "c3-geom": {
+      "kind": "component",
+      "scope": "core",
+      "title": "Component diagram for c4rizer core: geometry",
+      "subtitle": "The shared grid geometry and the stages that use it.",
+      "label_width": 16,
+      "max_crossings": 0,
+      "focus": [
+        "cGeom"
+      ],
+      "nodes": {
+        "cView": [
+          200,
+          430
+        ],
+        "cPlace": [
+          540,
+          430
+        ],
+        "cRoute": [
+          880,
+          430
+        ],
+        "cLabel": [
+          1220,
+          430
+        ],
+        "cScene": [
+          1560,
+          430
+        ],
+        "cGeom": [
+          880,
+          690
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 1272" width="1140" height="1272" font-family="Helvetica, Arial, sans-serif">
+<rect width="1140" height="1272" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">Container diagram for c4rizer</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">The crates of c4rizer and the files they read and write.</text>
+<defs>
+<marker id="a00796b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#006055"/></marker>
+<marker id="a0b3c6f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#083058"/></marker>
+<marker id="a2e7d32" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#246428"/></marker>
+<marker id="a5d5a6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a4855"/></marker>
+<marker id="ac2410c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9b3409"/></marker>
+</defs>
+<rect x="40" y="350" width="1080" height="760" rx="10" fill="#f6f8fa" stroke="#666666" stroke-width="1.5" stroke-dasharray="8 6"/>
+<text x="52" y="1098" font-size="12.5" fill="#444444" font-weight="bold" text-anchor="start">c4rizer [Software System]</text>
+<path d="M960,260 L960,390" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M200,260 L200,390" fill="none" stroke="#9b3409" stroke-width="2" stroke-linejoin="round" marker-end="url(#ac2410c)"/>
+<path d="M580,240 L580,390" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M840,460 L700,460" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M320,460 L460,460" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M300,200 L460,200" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M860,530 L860,550 L740,670 L700,670" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M300,530 L300,550 L420,670 L460,670" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M880,260 L880,280 L750,410 L700,410" fill="none" stroke="#006055" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00796b)"/>
+<path d="M880,530 L880,640 L680,840 L680,910" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M280,530 L280,640 L480,840 L480,910" fill="none" stroke="#246428" stroke-width="2" stroke-linejoin="round" marker-end="url(#a2e7d32)"/>
+<path d="M880.0,592.0 L874.0,579.0 L886.0,579.0 z" fill="#246428"/>
+<path d="M280.0,592.0 L274.0,579.0 L286.0,579.0 z" fill="#246428"/>
+<rect x="100" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="200.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="200" y="170" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Architect</text><text x="200" y="185" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="200" y="205" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Writes the model and</text><text x="200" y="219" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">arranges the diagrams until</text><text x="200" y="233" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">they read at a glance.</text>
+<rect x="460" y="100" width="240" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="580" y="145" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Text editor</text><text x="580" y="160" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="580" y="180" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Whatever editor the architect</text><text x="580" y="194" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">already uses for the diagram file.</text><text x="580" y="208" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Half of hot reload.</text>
+<rect x="860" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="960.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="960" y="163" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Coding agent</text><text x="960" y="178" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="960" y="198" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Edits the model and renders</text><text x="960" y="212" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">and lints diagrams from the</text><text x="960" y="226" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">command line, without a</text><text x="960" y="240" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">screen.</text>
+<rect x="80" y="390" width="240" height="140" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="200" y="435" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">c4rizer editor</text><text x="200" y="450" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: Rust, egui]</text><text x="200" y="470" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Desktop canvas: reloads on save,</text><text x="200" y="484" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">drag boxes with live re-routing,</text><text x="200" y="498" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">edit text in place.</text>
+<path d="M460,402 a120.0,12 0 0 1 240,0 v116 a120.0,12 0 0 1 -240,0 z" fill="#00796b" stroke="#00574d"/><path d="M460,402 a120.0,12 0 0 0 240,0" fill="none" stroke="#00574d"/><text x="580" y="441" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Diagram file</text><text x="580" y="456" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: c4rizer DSL]</text><text x="580" y="476" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Single source of truth: elements,</text><text x="580" y="490" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">relationships, styles, views and</text><text x="580" y="504" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">box positions.</text>
+<rect x="840" y="390" width="240" height="140" rx="6" fill="#c2410c" stroke="#8b2e08"/><text x="960" y="435" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">c4rizer CLI</text><text x="960" y="450" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: Rust binary]</text><text x="960" y="470" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Exports views to SVG and PNG and</text><text x="960" y="484" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">lints them with an exit code, for</text><text x="960" y="498" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">scripts and agents.</text>
+<path d="M460,662 a120.0,12 0 0 1 240,0 v116 a120.0,12 0 0 1 -240,0 z" fill="#00796b" stroke="#00574d"/><path d="M460,662 a120.0,12 0 0 0 240,0" fill="none" stroke="#00574d"/><text x="580" y="708" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Diagram exports</text><text x="580" y="723" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: SVG, PNG]</text><text x="580" y="743" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Rendered views for docs and</text><text x="580" y="757" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">reviews.</text>
+<rect x="460" y="910" width="240" height="140" rx="6" fill="#2e7d32" stroke="#215a24"/><text x="580" y="948" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">c4rizer core</text><text x="580" y="963" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Container: Rust library]</text><text x="580" y="983" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Parses, places, routes and lints;</text><text x="580" y="997" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">builds a scene per view; turns</text><text x="580" y="1011" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">scenes into SVG and PNG. No UI, no</text><text x="580" y="1025" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">file I/O.</text>
+<rect x="899" y="298" width="122" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="960" y="312" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Renders and lints</text>
+<text x="960" y="324" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">diagrams with</text>
+<text x="960" y="338" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">[shell, exit code]</text>
+<rect x="139" y="298" width="122" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="200" y="312" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">Watches live,</text>
+<text x="200" y="324" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">arranges boxes and</text>
+<text x="200" y="338" font-size="11" fill="#782807" font-weight="normal" text-anchor="middle">edits text with</text>
+<rect x="712" y="438" width="115" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="770" y="452" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Reads the diagram</text>
+<text x="770" y="464" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">file</text>
+<text x="770" y="478" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file I/O]</text>
+<rect x="329" y="431" width="122" height="58" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="390" y="445" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Reads, and writes</text>
+<text x="390" y="458" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">moves and edits</text>
+<text x="390" y="471" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">back to</text>
+<text x="390" y="484" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file I/O, atomic]</text>
+<rect x="522" y="288" width="115" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="580" y="302" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Saves the diagram</text>
+<text x="580" y="314" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">file</text>
+<text x="580" y="328" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file I/O]</text>
+<rect x="315" y="184" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="370" y="198" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Writes the model</text>
+<text x="370" y="211" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">and views with</text>
+<rect x="739" y="588" width="122" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="800" y="602" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Writes SVG and PNG</text>
+<text x="800" y="614" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">to</text>
+<text x="800" y="628" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file I/O]</text>
+<rect x="299" y="588" width="122" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="360" y="602" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Writes SVG and PNG</text>
+<text x="360" y="614" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">to</text>
+<text x="360" y="628" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file I/O]</text>
+<rect x="758" y="328" width="103" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="810" y="342" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">Edits the model</text>
+<text x="810" y="354" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">and views in</text>
+<text x="810" y="368" font-size="11" fill="#004b42" font-weight="normal" text-anchor="middle">[file tools]</text>
+<rect x="752" y="688" width="115" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="810" y="702" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Renders and lints</text>
+<text x="810" y="714" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">views through</text>
+<text x="810" y="728" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">[Rust API]</text>
+<rect x="289" y="681" width="122" height="58" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="350" y="695" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">Renders, re-routes</text>
+<text x="350" y="708" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">and lints views</text>
+<text x="350" y="721" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">through</text>
+<text x="350" y="734" font-size="11" fill="#1c4d1f" font-weight="normal" text-anchor="middle">[Rust API]</text>
+<line x1="30" y1="1198" x2="1110" y2="1198" stroke="#dddddd"/>
+<text x="30" y="1218" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<circle cx="93" cy="1207" r="5" fill="#0b3c6f"/><rect x="83" y="1212" width="20" height="12" rx="4" fill="#0b3c6f"/>
+<text x="116" y="1218" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Person</text>
+<rect x="181.8" y="1205" width="26" height="18" rx="3" fill="#5d5a6b"/>
+<text x="218" y="1218" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System, external</text>
+<rect x="403.3" y="1205" width="26" height="18" rx="3" fill="#c2410c"/>
+<text x="439" y="1218" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Container, app</text>
+<rect x="555.5" y="1205" width="26" height="18" rx="3" fill="#2e7d32"/>
+<text x="592" y="1218" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Container, core</text>
+<ellipse cx="727.0" cy="1208" rx="11" ry="4" fill="#00796b"/><rect x="716.0" y="1208" width="22" height="14" fill="#00796b"/><ellipse cx="727.0" cy="1222" rx="11" ry="4" fill="#00796b"/>
+<text x="750" y="1218" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Container, file</text>
+<path d="M80,1244 L90,1244 L98,1236 L106,1236" fill="none" stroke="#444444" stroke-width="2"/><path d="M110,1236 l-7,-4 v8 z" fill="#444444"/>
+<text x="116" y="1244" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+<rect x="635.4" y="1231" width="26" height="18" rx="3" fill="#f6f8fa" stroke="#666666" stroke-dasharray="4 3"/>
+<text x="671" y="1244" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Boundary of the system or container in scope</text>
+</svg>

@@ -1,0 +1,13 @@
+/target
+
+# ov-agentic-workflow (kept local, not versioned)
+/CLAUDE.md
+/.claude/
+/workflows/
+/docs/deferred.md
+/docs/learnings.md
+/docs/plans/
+
+# Structurizr Lite cache
+/docs/.structurizr/
+/docs/workspace.json

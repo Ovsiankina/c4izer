@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 732" width="1120" height="732" font-family="Helvetica, Arial, sans-serif">
+<rect width="1120" height="732" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">System Context diagram for c4rizer</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">Who uses c4rizer and what writes its diagram file.</text>
+<defs>
+<marker id="a0b3c6f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#083058"/></marker>
+<marker id="a1565c0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#105099"/></marker>
+<marker id="a5d5a6b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a4855"/></marker>
+</defs>
+<path d="M200,260 L200,430" fill="none" stroke="#4a4855" stroke-width="2" stroke-linejoin="round" marker-end="url(#a5d5a6b)"/>
+<path d="M320,500 L480,500" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M860,240 L840,240 L740,340 L740,430" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M300,240 L340,240 L500,400 L500,430" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M785.1,294.9 L790.0,281.5 L798.5,290.0 z" fill="#105099"/>
+<rect x="100" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="200.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="200" y="170" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Architect</text><text x="200" y="185" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="200" y="205" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Writes the model and</text><text x="200" y="219" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">arranges the diagrams until</text><text x="200" y="233" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">they read at a glance.</text>
+<rect x="860" y="130" width="200" height="130" rx="22" fill="#0b3c6f" stroke="#072b4f"/><circle cx="960.0" cy="110" r="30" fill="#0b3c6f" stroke="#072b4f"/><text x="960" y="163" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Coding agent</text><text x="960" y="178" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Person]</text><text x="960" y="198" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Edits the model and renders</text><text x="960" y="212" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">and lints diagrams from the</text><text x="960" y="226" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">command line, without a</text><text x="960" y="240" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">screen.</text>
+<rect x="80" y="430" width="240" height="140" rx="6" fill="#5d5a6b" stroke="#42404d"/><text x="200" y="475" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">Text editor</text><text x="200" y="490" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[External Software System]</text><text x="200" y="510" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Whatever editor the architect</text><text x="200" y="524" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">already uses for the diagram file.</text><text x="200" y="538" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Half of hot reload.</text>
+<rect x="480" y="430" width="280" height="140" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="620" y="475" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">c4rizer</text><text x="620" y="490" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Software System]</text><text x="620" y="510" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Turns one text file into clean C1-C3</text><text x="620" y="524" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">diagrams, lints them, and lets them be</text><text x="620" y="538" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">arranged by hand.</text>
+<rect x="327" y="490" width="146" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="400" y="504" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Saves the diagram file</text>
+<rect x="133" y="324" width="134" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="200" y="338" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">Writes the model and</text>
+<text x="200" y="351" font-size="11" fill="#393742" font-weight="normal" text-anchor="middle">views with</text>
+<rect x="702" y="304" width="115" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="760" y="318" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Renders and lints</text>
+<text x="760" y="331" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">diagrams with</text>
+<rect x="337" y="288" width="146" height="45" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="410" y="302" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Watches live, arranges</text>
+<text x="410" y="314" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">boxes and edits text</text>
+<text x="410" y="328" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">with</text>
+<line x1="30" y1="658" x2="1090" y2="658" stroke="#dddddd"/>
+<text x="30" y="678" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<circle cx="93" cy="667" r="5" fill="#0b3c6f"/><rect x="83" y="672" width="20" height="12" rx="4" fill="#0b3c6f"/>
+<text x="116" y="678" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Person</text>
+<rect x="181.8" y="665" width="26" height="18" rx="3" fill="#1565c0"/>
+<text x="218" y="678" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System</text>
+<rect x="340.3" y="665" width="26" height="18" rx="3" fill="#5d5a6b"/>
+<text x="376" y="678" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Software System, external</text>
+<path d="M80,704 L90,704 L98,696 L106,696" fill="none" stroke="#444444" stroke-width="2"/><path d="M110,696 l-7,-4 v8 z" fill="#444444"/>
+<text x="116" y="704" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+</svg>

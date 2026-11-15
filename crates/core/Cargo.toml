@@ -1,0 +1,13 @@
+[package]
+name = "c4rizer-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+png = []
+
+[dependencies]
+
+[lints]
+workspace = true

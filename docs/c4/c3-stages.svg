@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 1206" width="1720" height="1206" font-family="Helvetica, Arial, sans-serif">
+<rect width="1720" height="1206" fill="#ffffff"/>
+<text x="30" y="40" font-size="22" fill="#111111" font-weight="bold" text-anchor="start">Component diagram for c4rizer core: pipeline stages</text>
+<text x="30" y="62" font-size="13" fill="#555555" font-weight="normal" text-anchor="start">How the stages depend on each other. Entry points and geometry are on the other two C3 views.</text>
+<defs>
+<marker id="a00838f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#006872"/></marker>
+<marker id="a1565c0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#105099"/></marker>
+<marker id="a6a1b9a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#54157b"/></marker>
+</defs>
+<rect x="60" y="70" width="1640" height="1000" rx="10" fill="#f6f8fa" stroke="#666666" stroke-width="1.5" stroke-dasharray="8 6"/>
+<text x="72" y="1058" font-size="12.5" fill="#444444" font-weight="bold" text-anchor="start">c4rizer core [Container]</text>
+<path d="M540,490 L540,630" fill="none" stroke="#54157b" stroke-width="2" stroke-linejoin="round" marker-end="url(#a6a1b9a)"/>
+<path d="M200,890 L200,750" fill="none" stroke="#54157b" stroke-width="2" stroke-linejoin="round" marker-end="url(#a6a1b9a)"/>
+<path d="M540,230 L540,370" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M1120,170 L980,170" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M780,170 L640,170" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M1460,170 L1320,170" fill="none" stroke="#006872" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00838f)"/>
+<path d="M440,690 L300,690" fill="none" stroke="#54157b" stroke-width="2" stroke-linejoin="round" marker-end="url(#a6a1b9a)"/>
+<path d="M1220,630 L1220,230" fill="none" stroke="#006872" stroke-width="2" stroke-linejoin="round" marker-end="url(#a00838f)"/>
+<path d="M300,910 L330,910 L460,780 L460,750" fill="none" stroke="#54157b" stroke-width="2" stroke-linejoin="round" marker-end="url(#a6a1b9a)"/>
+<path d="M780,210 L750,210 L620,340 L620,370" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M300,210 L330,210 L460,340 L460,370" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M1120,690 L640,690" fill="none" stroke="#54157b" stroke-width="2" stroke-linejoin="round" marker-end="url(#a6a1b9a)"/>
+<path d="M1120,150 L1050,150 L990,90 L770,90 L710,150 L640,150" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M1120,190 L1050,190 L850,390 L640,390" fill="none" stroke="#105099" stroke-width="2" stroke-linejoin="round" marker-end="url(#a1565c0)"/>
+<path d="M1220.0,523.0 L1226.0,536.0 L1214.0,536.0 z" fill="#006872"/>
+<path d="M1220.0,323.0 L1226.0,336.0 L1214.0,336.0 z" fill="#006872"/>
+<path d="M993.0,690.0 L1006.0,684.0 L1006.0,696.0 z" fill="#54157b"/>
+<path d="M753.0,690.0 L766.0,684.0 L766.0,696.0 z" fill="#54157b"/>
+<path d="M945.1,294.9 L950.0,281.5 L958.5,290.0 z" fill="#105099"/>
+<path d="M738.0,390.0 L751.0,384.0 L751.0,396.0 z" fill="#105099"/>
+<rect x="100" y="110" width="200" height="120" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="200" y="145" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">place</text><text x="200" y="160" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="200" y="180" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Gives every unplaced box a</text><text x="200" y="194" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">grid position without moving</text><text x="200" y="208" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">placed ones.</text>
+<rect x="440" y="110" width="200" height="120" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="540" y="145" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">route</text><text x="540" y="160" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="540" y="180" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Octilinear grid router: bus</text><text x="540" y="194" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">lanes, joins, fewest</text><text x="540" y="208" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">crossings, rip-up and retry.</text>
+<rect x="780" y="110" width="200" height="120" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="880" y="152" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">label</text><text x="880" y="167" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="880" y="187" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Places each line label clear</text><text x="880" y="201" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">of boxes, labels and lines.</text>
+<rect x="1120" y="110" width="200" height="120" rx="6" fill="#00838f" stroke="#005e66"/><text x="1220" y="138" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">scene</text><text x="1220" y="153" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1220" y="173" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Builds the plain-data</text><text x="1220" y="187" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">picture of a view, every</text><text x="1220" y="201" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">item tagged with its model</text><text x="1220" y="215" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">id.</text>
+<rect x="1460" y="110" width="200" height="120" rx="6" fill="#00838f" stroke="#005e66"/><text x="1560" y="152" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">export</text><text x="1560" y="167" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1560" y="187" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Writes a scene as SVG text</text><text x="1560" y="201" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">or PNG bytes.</text>
+<rect x="440" y="370" width="200" height="120" rx="6" fill="#1565c0" stroke="#0f488a"/><text x="540" y="405" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">view</text><text x="540" y="420" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="540" y="440" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Resolves a view spec into</text><text x="540" y="454" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">boxes and edges: include,</text><text x="540" y="468" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">exclude, lifting, focus.</text>
+<rect x="440" y="630" width="200" height="120" rx="6" fill="#6a1b9a" stroke="#4c136e"/><text x="540" y="665" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">model</text><text x="540" y="680" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="540" y="700" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Elements, relationships,</text><text x="540" y="714" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">styles and view specs, each</text><text x="540" y="728" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">with its source span.</text>
+<rect x="100" y="630" width="200" height="120" rx="6" fill="#6a1b9a" stroke="#4c136e"/><text x="200" y="665" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">text</text><text x="200" y="680" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="200" y="700" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Lossless lexer and syntax</text><text x="200" y="714" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">tree; printing gives the</text><text x="200" y="728" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">input back.</text>
+<rect x="100" y="890" width="200" height="120" rx="6" fill="#6a1b9a" stroke="#4c136e"/><text x="200" y="925" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">edit</text><text x="200" y="940" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="200" y="960" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Turns moves, resizes, text</text><text x="200" y="974" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">and style edits into byte</text><text x="200" y="988" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">patches on the file.</text>
+<rect x="1120" y="630" width="200" height="120" rx="6" fill="#00838f" stroke="#005e66"/><text x="1220" y="665" font-size="15" fill="#ffffff" font-weight="bold" text-anchor="middle">lint</text><text x="1220" y="680" font-size="10.5" fill="#ffffff" font-weight="normal" text-anchor="middle">[Component: Rust module]</text><text x="1220" y="700" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">Checks a scene against the</text><text x="1220" y="714" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">C4 rules and the crossing</text><text x="1220" y="728" font-size="11.5" fill="#ffffff" font-weight="normal" text-anchor="middle">budget.</text>
+<rect x="1008" y="160" width="103" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1060" y="174" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Draws labels of</text>
+<rect x="482" y="534" width="115" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="540" y="548" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">Reads view specs</text>
+<text x="540" y="561" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">and elements from</text>
+<rect x="668" y="154" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="720" y="168" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Places labels</text>
+<text x="720" y="181" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">along routes of</text>
+<rect x="1364" y="160" width="72" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1400" y="174" font-size="11" fill="#005158" font-weight="normal" text-anchor="middle">Serialises</text>
+<rect x="152" y="814" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="200" y="828" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">Patches source</text>
+<text x="200" y="841" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">spans from</text>
+<rect x="332" y="674" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="380" y="688" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">Builds on the</text>
+<text x="380" y="701" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">syntax tree of</text>
+<rect x="485" y="274" width="109" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="540" y="288" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Routes the edges</text>
+<text x="540" y="301" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">of plans of</text>
+<rect x="329" y="834" width="122" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="390" y="848" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">Finds edit targets</text>
+<text x="390" y="861" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">in</text>
+<rect x="638" y="254" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="690" y="268" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Avoids boxes of</text>
+<text x="690" y="281" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">plans of</text>
+<rect x="338" y="254" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="390" y="268" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Fills positions</text>
+<text x="390" y="281" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">into plans of</text>
+<rect x="1162" y="424" width="115" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="1220" y="438" font-size="11" fill="#005158" font-weight="normal" text-anchor="middle">Measures geometry</text>
+<text x="1220" y="451" font-size="11" fill="#005158" font-weight="normal" text-anchor="middle">of</text>
+<rect x="838" y="674" width="103" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="890" y="688" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">Checks C4 rules</text>
+<text x="890" y="701" font-size="11" fill="#41105f" font-weight="normal" text-anchor="middle">against</text>
+<rect x="842" y="80" width="97" height="19" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="890" y="94" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Draws lines of</text>
+<rect x="842" y="334" width="97" height="32" rx="3" fill="#ffffff" fill-opacity="0.93"/>
+<text x="890" y="348" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">Draws boxes of</text>
+<text x="890" y="361" font-size="11" fill="#0d3e77" font-weight="normal" text-anchor="middle">plans of</text>
+<line x1="30" y1="1132" x2="1690" y2="1132" stroke="#dddddd"/>
+<text x="30" y="1152" font-size="12.5" fill="#111111" font-weight="bold" text-anchor="start">Key</text>
+<rect x="80" y="1139" width="26" height="18" rx="3" fill="#1565c0"/>
+<text x="116" y="1152" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, layout</text>
+<rect x="251.1" y="1139" width="26" height="18" rx="3" fill="#00838f"/>
+<text x="287" y="1152" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, output</text>
+<rect x="422.2" y="1139" width="26" height="18" rx="3" fill="#6a1b9a"/>
+<text x="458" y="1152" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Component, parse</text>
+<path d="M587.0,1152 L597.0,1152 L605.0,1144 L613.0,1144" fill="none" stroke="#444444" stroke-width="2"/><path d="M617.0,1144 l-7,-4 v8 z" fill="#444444"/>
+<text x="623" y="1152" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Relationship: arrowhead and chevrons show direction, colour matches the target</text>
+<rect x="1142.4" y="1139" width="26" height="18" rx="3" fill="#f6f8fa" stroke="#666666" stroke-dasharray="4 3"/>
+<text x="1178" y="1152" font-size="11.5" fill="#333333" font-weight="normal" text-anchor="start">Boundary of the system or container in scope</text>
+</svg>
