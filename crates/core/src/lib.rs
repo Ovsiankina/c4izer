@@ -3,9 +3,9 @@
 //!
 //! Depends on: its modules only.
 
-mod geom;
-mod text;
-mod model;
+pub mod geom;
+pub mod text;
+pub mod model;
 mod edit;
 mod view;
 mod place;

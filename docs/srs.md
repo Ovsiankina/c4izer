@@ -513,8 +513,8 @@ Views and rendering
   rasterizer use that font file, the SVG names it first in
   `font-family` with a `sans-serif` fallback, every text of a scene of
   `example/` fits its box or label rectangle, and text that cannot fit
-  is lint warning L25. `TODO(srs)`: owner picks the bundled font;
-  proposal: Inter (SIL OFL 1.1).
+  is lint warning L25. The bundled font is Inter (SIL OFL 1.1, owner's
+  choice 2026-11-15).
 
 Router (`SKILL.md` "Lines", `c4.py` `route`)
 
