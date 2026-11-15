@@ -473,8 +473,26 @@ fn drawn_box(model: &Model, boxes: &[PlanBox], element: ElementId) -> Option<Box
     None
 }
 
+/// True when `ancestor` is a strict ancestor of `element`.
+fn is_ancestor(model: &Model, ancestor: ElementId, element: ElementId) -> bool {
+    let mut current = model.element(element).parent;
+    while let Some(p) = current {
+        if p == ancestor {
+            return true;
+        }
+        current = model.element(p).parent;
+    }
+    false
+}
+
 /// Every line after lifting and de-duplication (CORE-5), sorted by the
 /// winning relationship's id.
+///
+/// Per CORE-5, a lifted line between an element's box and the box of
+/// one of its own ancestors is dropped, in either direction, as
+/// Structurizr creates no implied relationship between parent and
+/// child. A relationship written directly between a parent and its
+/// child is still drawn.
 fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
     let new_edge = |r: &crate::model::Relationship, source: BoxId, destination: BoxId| PlanEdge {
         id: EdgeId(0),
@@ -494,15 +512,20 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         else {
             continue;
         };
-        // DECISION: CORE-5 drops only lines whose ends lift to the same
-        // box; a lifted line between a box and its ancestor's box is drawn.
         if source == destination {
             continue;
         }
-        let direct =
-            boxes[source.0 as usize].element == s && boxes[destination.0 as usize].element == d;
+        let (source_element, destination_element) = (
+            boxes[source.0 as usize].element,
+            boxes[destination.0 as usize].element,
+        );
+        let direct = source_element == s && destination_element == d;
         if direct {
             edges.push(new_edge(r, source, destination));
+        } else if is_ancestor(model, source_element, destination_element)
+            || is_ancestor(model, destination_element, source_element)
+        {
+            // CORE-5: a lifted parent-child line is dropped.
         } else {
             lifted.entry((source, destination)).or_default().push(r.id);
         }
@@ -807,19 +830,14 @@ mod tests {
         assert_eq!(box_keys(&m, &p), ["user", "mail", "shop", "web"]);
         assert_eq!(
             edge_lines(&m, &p),
-            [
-                "user -> web: Uses",
-                "web -> shop: Reads",
-                "web -> mail: Sends",
-                "shop -> web: Calls"
-            ]
+            ["user -> web: Uses", "web -> mail: Sends"]
         );
     }
 
     #[test]
-    fn core_5_lift_to_element_and_its_ancestor_is_drawn() {
-        // CORE-5 drops a lifted line only when both ends lift to the same
-        // box: `api` lifts to `web`, `job` and `db` lift to `shop`.
+    fn core_5_lifted_child_to_ancestor_dropped() {
+        // `api -> db` lifts to `web -> shop`: `web` is a child of `shop`,
+        // and Structurizr implies no parent-child relationship.
         let m = model(&workspace(
             SHOP,
             "        systemContext shop \"n\" {\n            include shop web\n        }",
@@ -827,9 +845,40 @@ mod tests {
         let p = plan_of(&m, "n");
         assert_indexed(&p);
         assert_eq!(box_keys(&m, &p), ["shop", "web"]);
+        let reads = m.find_relationship(m.find("api").unwrap(), m.find("db").unwrap())[0];
+        assert!(p.edges.iter().all(|e| !e.relationships.contains(&reads)));
+        assert!(edge_lines(&m, &p).iter().all(|l| l != "web -> shop: Reads"));
+    }
+
+    #[test]
+    fn core_5_lifted_ancestor_to_child_dropped() {
+        // `job -> api` lifts to `shop -> web`: ancestor to child, dropped.
+        let m = model(&workspace(
+            SHOP,
+            "        systemContext shop \"n\" {\n            include shop web\n        }",
+        ));
+        let p = plan_of(&m, "n");
+        assert_indexed(&p);
+        let calls = m.find_relationship(m.find("job").unwrap(), m.find("api").unwrap())[0];
+        assert!(p.edges.iter().all(|e| !e.relationships.contains(&calls)));
+        assert!(edge_lines(&m, &p).iter().all(|l| l != "shop -> web: Calls"));
+    }
+
+    #[test]
+    fn core_5_direct_parent_child_relationship_drawn() {
+        // Only lifted lines are dropped: a relationship written between
+        // a parent and its child is drawn, in either direction.
+        let body =
+            format!("{SHOP}\n        web -> shop \"Reports\"\n        shop -> web \"Deploys\"");
+        let m = model(&workspace(
+            &body,
+            "        systemContext shop \"n\" {\n            include shop web\n        }",
+        ));
+        let p = plan_of(&m, "n");
+        assert_indexed(&p);
         assert_eq!(
             edge_lines(&m, &p),
-            ["web -> shop: Reads", "shop -> web: Calls"]
+            ["web -> shop: Reports", "shop -> web: Deploys"]
         );
     }
 

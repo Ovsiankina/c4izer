@@ -522,7 +522,12 @@ Views and rendering
   is lifted to their nearest drawn ancestors; a relationship declared
   between the two drawn elements wins over a lifted one, otherwise the
   first declared wins; a relationship whose ends lift to the same box
-  is not drawn; duplicate lifted lines are drawn once.
+  is not drawn; duplicate lifted lines are drawn once. A lifted line
+  between an element's box and the box of one of its own ancestors is
+  dropped, in either direction (child to ancestor, ancestor to child),
+  as Structurizr creates no implied relationship between parent and
+  child; this applies only to lifted lines: a relationship the author
+  wrote directly between a parent and its child is still drawn.
 - **CORE-30** Text is wrapped in core with a fixed per-character width
   table derived from one bundled font (no system font metrics), and the
   scene carries the final lines; the editor canvas and the PNG
