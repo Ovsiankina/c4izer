@@ -713,7 +713,7 @@ long as CORE-24 and EDIT-25 hold.
 
 #### Open holes
 
-CORE-12, CORE-23, CORE-24, CORE-27, CORE-31 numbers; CORE-30 font.
+CORE-24, CORE-27, CORE-31 numbers (measured when pipeline is built).
 
 ### 4.3 CLI
 
