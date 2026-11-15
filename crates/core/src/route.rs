@@ -451,7 +451,7 @@ const START_OFFSET: u32 = 40;
 // and more CORE-12 lane length than the admissible one (measured).
 const H_MAX: u32 = 100;
 const H_MIN: u32 = 45;
-/// States a search pops before it restarts with the crossing bound.
+/// States a search pops before it restarts with the cost bound.
 const POP_LIMIT: u32 = 12_000;
 /// Steps of own run from the first free cell before a join (CORE-8: the
 /// two port cells plus 9 steps = 110px >= 90px; the prototype's `MIN_JOIN`).
@@ -473,6 +473,19 @@ const MARGIN: i32 = 6;
 // score; with the iteration cap that bounds the work (CORE-32, CORE-24).
 const HISTORY: u32 = 3_000;
 const STALL_ROUNDS: u32 = 1;
+/// A view with more edges than this routes as a large view: each search
+/// runs once, with the cost bound, inside its two boxes' window.
+// DECISION: a size rule (CORE-25: never a clock): the example views have
+// at most 21 edges and keep their routing unchanged (same SVG bytes);
+// the CORE-31 view (60 edges) is the large case it is for.
+const LARGE_EDGES: usize = 32;
+/// Cells a large view's search window reaches past the bounding
+/// rectangle of the line's two boxes (the board's own `MARGIN`).
+// DECISION: the board margin, so a line has the same room around its
+// two boxes as the board gives every box; a search that finds no path in
+// its window searches the whole board (CORE-13: never unroutable for it).
+// On the CORE-31 view it also gives fewer crossings (232 -> 215, measured).
+const WINDOW_MARGIN: i32 = MARGIN;
 /// Seed of the edge-order shuffles (the prototype's default seed).
 const SEED: u64 = 7;
 
@@ -702,6 +715,9 @@ struct Cell {
     /// One bit per `Dir` (`1 << dir`) a line steps in into or out of it
     /// (same-way neighbours, CORE-12).
     heads: u8,
+    /// One bit per axis `Dir` `d`: `Board::clash(this cell, d)`, kept up
+    /// to date by `Board::add`.
+    clash: u8,
     /// Edge + 1 of the line through it, 0 when free.
     owner: u32,
     /// Net + 1 of the line through it.
@@ -786,11 +802,11 @@ impl Board {
                 if let Some(d) = Segment::new(p, c).dir() {
                     if let Some(ci) = ci {
                         self.cells[ci].axes |= axis_bit(d);
-                        self.cells[ci].heads |= 1 << d as u8;
+                        self.set_head(c, ci, d);
                     }
                     if let Some(pi) = g.index(p) {
                         self.cells[pi].axes |= axis_bit(d);
-                        self.cells[pi].heads |= 1 << d as u8;
+                        self.set_head(p, pi, d);
                         self.cells[pi].down = d as u8 + 1;
                     }
                     if d.is_diagonal() {
@@ -834,6 +850,41 @@ impl Board {
         };
     }
 
+    /// Sets head bit `d` on cell `i` at `q`, and the clash bits it turns
+    /// on: `clash(p, d)` holds when some `k` in {-3, -1, 1, 3} cells
+    /// across `d` has `p + k` and `p + d + k` both heading `d`, and head
+    /// bits are only ever set, so a new head at `q` can only switch on
+    /// `p = q - k` (with `q + d`) and `p = q - d - k` (with `q - d`).
+    // DECISION: clash bits kept per cell as lines are laid, instead of
+    // eight neighbour lookups on every axis step the search tries, which
+    // cost the CORE-31 view about 8% of its time (measured).
+    #[allow(clippy::many_single_char_names)]
+    fn set_head(&mut self, q: Point, i: usize, d: Dir) {
+        let bit = 1u8 << d as u8;
+        if self.cells[i].heads & bit != 0 {
+            return;
+        }
+        self.cells[i].heads |= bit;
+        if d.is_diagonal() {
+            return;
+        }
+        let g = self.grid;
+        let heads = |cells: &[Cell], q: Point| g.index(q).is_some_and(|j| cells[j].heads & bit != 0);
+        let ahead = heads(&self.cells, q.step(d));
+        let behind = heads(&self.cells, q.step(d.opposite()));
+        let horizontal = matches!(d, Dir::E | Dir::W);
+        for k in [-3, -1, 1, 3] {
+            let (dx, dy) = if horizontal { (0, k) } else { (k, 0) };
+            if ahead && let Some(j) = g.index(Point::new(q.x - dx, q.y - dy)) {
+                self.cells[j].clash |= bit;
+            }
+            let b = q.step(d.opposite());
+            if behind && let Some(j) = g.index(Point::new(b.x - dx, b.y - dy)) {
+                self.cells[j].clash |= bit;
+            }
+        }
+    }
+
     /// True when a line of another net than `net` (net + 1) is in the
     /// 3x3 neighbourhood of cell `i` (the NEAR cost).
     fn near_other(&self, i: usize, net: u32) -> bool {
@@ -847,6 +898,15 @@ impl Board {
     // step in `d`; it may also fire where a neighbour line turns at one
     // of them, which only steers a little further away.
     fn clash(&self, p: Point, d: Dir) -> bool {
+        let bit = 1u8 << d as u8;
+        self.grid
+            .index(p)
+            .is_some_and(|i| self.cells[i].clash & bit != 0)
+    }
+
+    /// `clash` worked out from the head bits, to check the kept bits.
+    #[cfg(test)]
+    fn clash_from_heads(&self, p: Point, d: Dir) -> bool {
         if d.is_diagonal() {
             return false;
         }
@@ -1017,40 +1077,51 @@ impl RadixHeap {
 /// Search buffers reused across the searches of one call.
 struct Scratch {
     recs: Vec<Rec>,
-    /// Best arena index per (cell, dir, run) for states that no longer
-    /// track their step count (`steps == MIN_JOIN`, or always without bus).
-    /// Per state: `[stamp, arena index, cost]`, valid when the stamp is
-    /// `state_gen` (one entry, so one cache line per lookup).
-    dense: Vec<[u32; 3]>,
-    /// Best arena index for the other states (near a source port, bus on).
+    /// Best cost per (cell, dir, run) for states that no longer track
+    /// their step count (`steps == MIN_JOIN`, or always without bus),
+    /// `u32::MAX` when none; `restart` resets the entries its states set.
+    // DECISION: the cost alone, not `[stamp, arena index, cost]`: a state's
+    // recorded cost only ever drops, so the latest record of a state is
+    // the one whose cost equals it (the same test as the index), and the
+    // 16 states of a cell fit one cache line (CORE-24, CORE-31).
+    dense: Vec<u32>,
+    /// Best cost for the other states (near a source port, bus on).
     // DECISION: a HashMap here is only looked up, never iterated, so its
     // random hashing cannot change any output (CORE-25).
-    sparse: HashMap<u64, (u32, u32), BuildHasherDefault<KeyHasher>>,
+    sparse: HashMap<u64, u32, BuildHasherDefault<KeyHasher>>,
     goal: Vec<u32>,
     goal_gen: Vec<u32>,
-    /// Cells a target reaches without a crossing (see `reach_from`).
-    reach_gen: Vec<u32>,
-    queue: Vec<u32>,
-    /// Stamps `goal_gen` and `reach_gen` per search.
+    /// Per cell: a lower bound of the cost from it to a target (see
+    /// `cost_from`), valid when `bound_gen` is `generation`.
+    bound: Vec<u32>,
+    bound_gen: Vec<u32>,
+    /// Source start cells `cost_from` has still to settle.
+    source_gen: Vec<u32>,
+    /// Stamps `goal_gen`, `bound_gen` and `source_gen` per search.
     generation: u32,
-    /// Stamps `dense_gen` per search attempt.
-    state_gen: u32,
     heap: RadixHeap,
+    /// The queue of `cost_from`.
+    cells_heap: RadixHeap,
+    /// The cells a search may step on: the whole board, or a large view's
+    /// window.
+    window: Rect,
 }
 
 impl Scratch {
     fn new(cells: usize) -> Scratch {
         Scratch {
             recs: Vec::new(),
-            dense: vec![[0; 3]; cells * 16],
+            dense: vec![u32::MAX; cells * 16],
             sparse: HashMap::default(),
             goal: vec![0; cells],
             goal_gen: vec![0; cells],
-            reach_gen: vec![0; cells],
-            queue: Vec::new(),
+            bound: vec![0; cells],
+            bound_gen: vec![0; cells],
+            source_gen: vec![0; cells],
             generation: 0,
-            state_gen: 0,
             heap: RadixHeap::default(),
+            cells_heap: RadixHeap::default(),
+            window: Rect::default(),
         }
     }
 
@@ -1058,7 +1129,8 @@ impl Scratch {
         self.generation = self.generation.wrapping_add(1);
         if self.generation == 0 {
             self.goal_gen.fill(0);
-            self.reach_gen.fill(0);
+            self.bound_gen.fill(0);
+            self.source_gen.fill(0);
             self.generation = 1;
         }
         self.restart();
@@ -1066,60 +1138,115 @@ impl Scratch {
 
     /// Forgets every search state, keeping the goals.
     fn restart(&mut self) {
-        self.state_gen = self.state_gen.wrapping_add(1);
-        if self.state_gen == 0 {
-            self.dense.fill([0; 3]);
-            self.state_gen = 1;
+        // Every recorded state's dense entry (also those kept in `sparse`,
+        // whose entry is then already `u32::MAX`).
+        for r in &self.recs {
+            self.dense[Self::dense_key(r.cell, r.dir, r.run)] = u32::MAX;
         }
         self.recs.clear();
         self.sparse.clear();
         self.heap.clear();
     }
 
-    /// Marks every free cell from which a target in `seeds` can be reached
-    /// without entering or diagonally crossing another line, ignoring the
-    /// turn rules (so it over-approximates the cells that need no crossing).
+    /// Runs a Dijkstra search backwards from the target cells `seeds`
+    /// over cells, each step charged what `astar` charges for it less the
+    /// BEND and CLASH costs and the turn and crossing rules, so
+    /// `bound[cell]` is a lower bound of the cost from `cell` to a target
+    /// (consistent, as each step costs at least as much in `astar`). It
+    /// stops once every cell of `sources` is settled and returns the cost
+    /// reached then: no cell left unsettled is cheaper.
+    // DECISION: the bound is per cell, not per (cell, direction): 8 times
+    // fewer states, and the turn costs it leaves out are small next to
+    // CROSS and NEAR, which are what made the octile bound flood (CORE-31).
     #[allow(clippy::many_single_char_names)]
-    fn reach_from(&mut self, board: &Board, seeds: &[usize]) {
+    fn cost_from(&mut self, board: &Board, seeds: &[usize], sources: &[usize], net: u32) -> u32 {
         let g = board.grid;
-        self.queue.clear();
+        let generation = self.generation;
+        self.cells_heap.clear();
         for &i in seeds {
-            self.reach_gen[i] = self.generation;
-            self.queue.push(u32::try_from(i).expect("cell fits u32"));
+            self.bound_gen[i] = generation;
+            self.bound[i] = 0;
+            self.cells_heap.push(0, u32::try_from(i).expect("cell fits u32"));
         }
-        let mut head = 0;
-        while head < self.queue.len() {
-            let i = self.queue[head] as usize;
-            head += 1;
-            let c = g.point(i);
-            for d in Dir::ALL {
-                let n = c.step(d);
-                let Some(ni) = g.index(n) else { continue };
-                if self.reach_gen[ni] == self.generation
-                    || board.cells[ni].blocked > 0
-                    || board.cells[ni].net != 0
-                {
-                    continue;
-                }
-                if d.is_diagonal() {
-                    let (sq, o) = square(c, n);
-                    if g.index(sq).is_some_and(|si| board.cells[si].diag[1 - o] != 0) {
-                        continue;
-                    }
-                }
-                self.reach_gen[ni] = self.generation;
-                self.queue.push(u32::try_from(ni).expect("cell fits u32"));
+        let mut left = 0usize;
+        for &i in sources {
+            if self.source_gen[i] != generation {
+                self.source_gen[i] = generation;
+                left += 1;
             }
         }
+        let mut reached = 0;
+        while left > 0 {
+            let Some(ni) = self.cells_heap.pop() else { break };
+            let key = self.cells_heap.last;
+            let ni = ni as usize;
+            if key > self.bound[ni] {
+                continue;
+            }
+            reached = key;
+            if self.source_gen[ni] == generation {
+                self.source_gen[ni] = 0;
+                left -= 1;
+            }
+            // Every step into `ni` costs, in `astar`, at least: the step,
+            // then CROSS onto another line, else NEAR beside one, else
+            // the lane discount, then the history; joining a trunk (own
+            // net) costs the step only.
+            let cell = &board.cells[ni];
+            let own = cell.net == net;
+            let other = cell.net != 0 && !own;
+            let near = !own && !other && board.near_other(ni, net);
+            let n = g.point(ni);
+            for d in Dir::ALL {
+                let c = n.step(d.opposite());
+                if !self.window.contains(c) {
+                    continue;
+                }
+                let Some(ci) = g.index(c) else { continue };
+                if board.cells[ci].blocked > 0 {
+                    continue;
+                }
+                let mut step = if d.is_diagonal() {
+                    STEP_DIAGONAL
+                } else {
+                    STEP_STRAIGHT
+                };
+                if !own {
+                    // As in `astar`, the lane discount also takes off
+                    // part of a diagonal crossing's CROSS.
+                    if d.is_diagonal() {
+                        let (sq, o) = square(c, n);
+                        if g.index(sq).is_some_and(|si| board.cells[si].diag[1 - o] != 0) {
+                            step += CROSS;
+                        }
+                    }
+                    if other {
+                        step += CROSS;
+                    } else if near {
+                        step += NEAR;
+                    } else if cell.lane & axis_bit(d) != 0 {
+                        step = step * LANE_NUM / LANE_DEN;
+                    }
+                    step += cell.history;
+                }
+                let cost = key.saturating_add(step);
+                if self.bound_gen[ci] == generation && self.bound[ci] <= cost {
+                    continue;
+                }
+                self.bound_gen[ci] = generation;
+                self.bound[ci] = cost;
+                self.cells_heap.push(cost, u32::try_from(ci).expect("cell fits u32"));
+            }
+        }
+        reached
     }
 
-    /// The best arena index recorded for this state, if any.
-    /// The best `(arena index, cost)` recorded for this state, if any.
+    /// The best cost recorded for this state, if any.
     #[allow(clippy::too_many_arguments)]
-    fn best(&self, cell: u32, dir: Dir, run: u8, steps: u8, bus: bool) -> Option<(u32, u32)> {
+    fn best(&self, cell: u32, dir: Dir, run: u8, steps: u8, bus: bool) -> Option<u32> {
         if !bus || steps == MIN_JOIN {
-            let [stamp, idx, cost] = self.dense[Self::dense_key(cell, dir, run)];
-            (stamp == self.state_gen).then_some((idx, cost))
+            let cost = self.dense[Self::dense_key(cell, dir, run)];
+            (cost != u32::MAX).then_some(cost)
         } else {
             self.sparse
                 .get(&Self::sparse_key(cell, dir, run, steps))
@@ -1127,13 +1254,13 @@ impl Scratch {
         }
     }
 
-    fn set_best(&mut self, r: &Rec, idx: u32, bus: bool) {
+    fn set_best(&mut self, r: &Rec, bus: bool) {
         if !bus || r.steps == MIN_JOIN {
             let k = Self::dense_key(r.cell, r.dir, r.run);
-            self.dense[k] = [self.state_gen, idx, r.cost];
+            self.dense[k] = r.cost;
         } else {
             self.sparse
-                .insert(Self::sparse_key(r.cell, r.dir, r.run, r.steps), (idx, r.cost));
+                .insert(Self::sparse_key(r.cell, r.dir, r.run, r.steps), r.cost);
         }
     }
 
@@ -1148,14 +1275,14 @@ impl Scratch {
     /// Records `r` when it beats the best cost of its state, and queues
     /// it with priority `cost + h`.
     fn push(&mut self, r: Rec, h: u32, tie: &mut u32, bus: bool) {
-        if let Some((_, cost)) = self.best(r.cell, r.dir, r.run, r.steps, bus)
+        if let Some(cost) = self.best(r.cell, r.dir, r.run, r.steps, bus)
             && cost <= r.cost
         {
             return;
         }
         let idx = u32::try_from(self.recs.len()).expect("arena fits u32");
         self.recs.push(r);
-        self.set_best(&r, idx, bus);
+        self.set_best(&r, bus);
         self.heap.push(r.cost.saturating_add(h), idx);
         *tie += 1;
     }
@@ -1245,31 +1372,68 @@ fn search(ctx: &Ctx<'_>, board: &Board, sc: &mut Scratch, edge: usize) -> Option
     }
     let sspots = spots(sbox, ctx.centres[e.source.0 as usize]);
     // DECISION: a search that runs past POP_LIMIT states is usually one
-    // whose targets are walled in by other lines, where the CROSS cost
-    // makes A* exhaust everything cheaper first. It restarts with every
-    // free cell that cannot reach a target without a crossing charged
-    // CROSS in its heuristic (`reach_from`): still a lower bound, so the
-    // path cost is the same, and the flood is gone (CORE-24).
-    for attempt in 0..2 {
-        let bonus = attempt == 1;
-        if bonus {
-            sc.restart();
-            sc.reach_from(board, &targets);
+    // whose targets are walled in by other lines, where the CROSS and
+    // NEAR costs make A* exhaust everything cheaper first. It restarts
+    // with `cost_from`'s per-cell cost bound as its heuristic: a lower
+    // bound, so the flood is gone (CORE-24, CORE-31). On `example/` it
+    // gives the same lines as the former crossing-count bound (the SVG
+    // bytes are unchanged, measured).
+    let whole = Rect::from_corners(
+        Point::new(g.x0, g.y0),
+        Point::new(g.x0 + g.w - 1, g.y0 + g.h - 1),
+    );
+    let large = ctx.plan.edges.len() > LARGE_EDGES;
+    let mut windows = vec![whole];
+    if large {
+        let s = sbox.rect_at(ctx.centres[e.source.0 as usize]);
+        let w = Rect::from_corners(
+            Point::new(s.min.x.min(drect.min.x), s.min.y.min(drect.min.y)),
+            Point::new(s.max.x.max(drect.max.x), s.max.y.max(drect.max.y)),
+        )
+        .inflate(WINDOW_MARGIN);
+        if w != whole {
+            windows.insert(0, w);
         }
-        match astar(board, sc, edge, (lo, hi), &sspots, &dspots, bonus, &trunk_at) {
-            Outcome::Found(f) => return Some(f),
-            Outcome::NoPath => return None,
-            Outcome::GaveUp => {}
+    }
+    for window in windows {
+        sc.window = window;
+        // A large view skips the octile attempt: on it most searches run
+        // past POP_LIMIT and only then start the one that counts.
+        for attempt in usize::from(large)..2 {
+            let mut bound = Bound::Octile;
+            if attempt == 1 {
+                sc.restart();
+                let sources: Vec<usize> = sspots
+                    .iter()
+                    .filter_map(|s| board.port_free(s.port.at, side_dir(s.port.side)))
+                    .collect();
+                bound = Bound::Cost(sc.cost_from(board, &targets, &sources, net));
+            }
+            match astar(board, sc, edge, (lo, hi), &sspots, &dspots, bound, &trunk_at) {
+                Outcome::Found(f) => return Some(f),
+                Outcome::NoPath => break,
+                Outcome::GaveUp => {}
+            }
         }
     }
     None
+}
+
+/// The heuristic of one A* attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bound {
+    /// Octile distance to the targets' bounding box (`H_MAX`, `H_MIN`).
+    Octile,
+    /// `Scratch::bound` where `cost_from` reached, else the cost it
+    /// stopped at.
+    Cost(u32),
 }
 
 /// How one A* attempt ended.
 enum Outcome {
     Found(Found),
     NoPath,
-    /// Hit `POP_LIMIT` without the crossing bound; retry with it.
+    /// Hit `POP_LIMIT` with the octile bound; retry with the cost bound.
     GaveUp,
 }
 
@@ -1286,22 +1450,26 @@ fn astar(
     (lo, hi): (Point, Point),
     sspots: &[Spot],
     dspots: &[Spot],
-    bonus: bool,
+    bound: Bound,
     trunk_at: &impl Fn(usize) -> Option<usize>,
 ) -> Outcome {
     let g = board.grid;
     let bus = board.bus;
     let net = board.edge_net[edge] + 1;
     let generation = sc.generation;
+    let limited = bound == Bound::Octile;
+    let window = sc.window;
     let h = |sc: &Scratch, p: Point, i: usize| -> u32 {
+        if let Bound::Cost(reached) = bound {
+            return if sc.bound_gen[i] == generation {
+                sc.bound[i].min(reached)
+            } else {
+                reached
+            };
+        }
         let dx = u32::try_from((lo.x - p.x).max(0).max(p.x - hi.x)).unwrap_or(0);
         let dy = u32::try_from((lo.y - p.y).max(0).max(p.y - hi.y)).unwrap_or(0);
-        let base = H_MAX * dx.max(dy) + H_MIN * dx.min(dy);
-        if bonus && board.cells[i].net == 0 && sc.reach_gen[i] != generation {
-            base + CROSS
-        } else {
-            base
-        }
+        H_MAX * dx.max(dy) + H_MIN * dx.min(dy)
     };
     let mut pops = 0u32;
     let mut tie = 0u32;
@@ -1330,14 +1498,14 @@ fn astar(
 
     while let Some(idx) = sc.heap.pop() {
         pops += 1;
-        if !bonus && pops > POP_LIMIT {
+        if limited && pops > POP_LIMIT {
             return Outcome::GaveUp;
         }
         let r = sc.recs[idx as usize];
         if r.steps == JOINED {
             return Outcome::Found(unwind(board, sc, idx, sspots, None, edge));
         }
-        if sc.best(r.cell, r.dir, r.run, r.steps, bus).map(|b| b.0) != Some(idx) {
+        if sc.best(r.cell, r.dir, r.run, r.steps, bus) != Some(r.cost) {
             continue;
         }
         let ci = r.cell as usize;
@@ -1355,6 +1523,9 @@ fn astar(
             }
             let nd = turn(r.dir, by);
             let n = c.step(nd);
+            if !window.contains(n) {
+                continue;
+            }
             let Some(ni) = g.index(n) else { continue };
             if board.cells[ni].blocked > 0 {
                 continue;
@@ -2934,6 +3105,92 @@ mod tests {
                 }
                 let r = run(&p, &c);
                 check_all(&p, &c, &r);
+            }
+        }
+    }
+
+    /// A 4x3 grid of boxes, every neighbour linked both ways: 34 edges,
+    /// more than `LARGE_EDGES`, so it routes as a large view.
+    fn large_plan(bus: bool) -> (ViewPlan, Vec<Point>) {
+        let (cols, rows) = (4u32, 3u32);
+        let boxes = vec![BOX; (cols * rows) as usize];
+        let mut edges = Vec::new();
+        for r in 0..rows {
+            for k in 0..cols {
+                let i = r * cols + k;
+                if k + 1 < cols {
+                    edges.push((i, i + 1));
+                    edges.push((i + 1, i));
+                }
+                if r + 1 < rows {
+                    edges.push((i, i + cols));
+                    edges.push((i + cols, i));
+                }
+            }
+        }
+        let p = mk(&boxes, &edges, bus);
+        let mut c = Vec::new();
+        for r in 0..rows {
+            for k in 0..cols {
+                c.push(pt(i32::try_from(k).expect("s") * 45, i32::try_from(r).expect("s") * 35));
+            }
+        }
+        (p, c)
+    }
+
+    #[test]
+    fn large_view_routes_every_line_within_the_rules() {
+        // The large-view search (cost bound only, in a window) keeps the
+        // CORE-6..10 rules, routes every line and is deterministic.
+        for bus in [false, true] {
+            let (p, c) = large_plan(bus);
+            assert!(p.edges.len() > LARGE_EDGES);
+            let r = run_cheap(&p, &c);
+            check_all(&p, &c, &r);
+            assert!(r.unroutable().is_empty(), "bus {bus}: {:?}", r.unroutable());
+            assert_eq!(r, run_cheap(&p, &c), "bus {bus}");
+        }
+    }
+
+    #[test]
+    fn large_view_search_leaves_its_window_when_walled_in() {
+        // A tall box between the two boxes of a line reaches far past
+        // their window: the only paths go round it outside the window, so
+        // the search retries on the whole board and still finds one.
+        let tall = (Shape::Box, 4, 40);
+        let edges = vec![(0, 1); LARGE_EDGES + 1];
+        let p = mk(&[BOX, BOX, tall], &edges, false);
+        let c = [pt(0, 0), pt(60, 0), pt(30, 0)];
+        let kept = vec![None; p.edges.len()];
+        let grid = Grid::new(&p, &c, &kept);
+        let board = Board::new(&p, &c, grid, &[]);
+        let mut sc = Scratch::new(grid.len());
+        let ctx = Ctx { plan: &p, centres: &c };
+        let f = search(&ctx, &board, &mut sc, 0).expect("routes round the tall box");
+        let reach = BOX.2 + WINDOW_MARGIN;
+        assert!(
+            f.cells.iter().any(|q| q.y.abs() > reach),
+            "the path leaves the window: {:?}",
+            f.cells
+        );
+    }
+
+    #[test]
+    fn kept_clash_bits_match_the_head_bits() {
+        // `Board::add` keeps `Cell::clash` as lines are laid; after every
+        // line it equals the eight-neighbour test on the head bits.
+        for (p, c) in [grid_plan(false), grid_plan(true), large_plan(false)] {
+            let r = run_cheap(&p, &c);
+            let grid = Grid::new(&p, &c, &r.lines);
+            let mut board = Board::new(&p, &c, grid, &[]);
+            for line in r.lines.iter().flatten() {
+                board.add(&cells_of(&line.points), line.edge.0 as usize, &line.end);
+                for i in 0..grid.len() {
+                    let q = grid.point(i);
+                    for d in Dir::ALL {
+                        assert_eq!(board.clash(q, d), board.clash_from_heads(q, d), "{q:?} {d:?}");
+                    }
+                }
             }
         }
     }

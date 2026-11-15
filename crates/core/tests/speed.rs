@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use c4rizer_core::geom::Point;
 use c4rizer_core::model::{Model, parse};
-use c4rizer_core::pipeline::{build_view, keep_across_reparse};
+use c4rizer_core::pipeline::{PREVIEW_ROUTE, build_view, keep_across_reparse, rebuild_after_move};
 use c4rizer_core::place::Keep;
 
 const EXAMPLE: &str = include_str!(concat!(
@@ -255,7 +255,7 @@ fn core_31_generated_file_is_seeded() {
 
 /// CORE-31: the generated 40-box, 60-line view (fixed seed, checked in
 /// under `crates/core/tests/data/`) routes, `pipeline::build_view` from
-/// the parsed model, under its budget (6750 ms) in a release build.
+/// the parsed model, under 1000 ms in a release build.
 #[test]
 #[ignore = "perf: release perf oracle only"]
 fn perf_core_31_generated_view_under_budget() {
@@ -272,9 +272,33 @@ fn perf_core_31_generated_view_under_budget() {
     check("perf_core_31", took, CORE_31_BUDGET_MS);
 }
 
-/// CORE-31 budget, proposed in SRS CORE-31: twice the first release
-/// measurement (3352 ms median, 2026-11-15, routing is all of it), rounded
-/// up to 50 ms.
-// TODO(srs): proposed by the step-5 loop; the owner confirms it at step 6
-// (docs/deferred.md row on CORE-31).
-const CORE_31_BUDGET_MS: u64 = 6750;
+/// The drag preview on the CORE-31 view: one box moved two cells right,
+/// then `pipeline::rebuild_after_move` with `PREVIEW_ROUTE` (re-routes
+/// only the lines the move broke). Measured and printed, no budget: no
+/// SRS row sets one (CORE-24 times the full route on view `c3`).
+#[test]
+#[ignore = "perf: release perf oracle only"]
+fn perf_core_31_drag_preview_measured() {
+    if debug_build("perf_core_31_preview") {
+        return;
+    }
+    let m = model(GENERATED);
+    let before = build_view(&m, "generated", &Keep::default(), &go()).expect("builds");
+    let first = before.plan.boxes[0].id;
+    let at = before.routes.centres[first.0 as usize];
+    let moved = BTreeMap::from([(first, Point::new(at.x + 2, at.y))]);
+    let mut lines = 0;
+    let took = median(|| {
+        let b = rebuild_after_move(&m, &before, &moved, &PREVIEW_ROUTE, &go()).expect("builds");
+        lines = b.scene.lines.len();
+    });
+    assert_eq!(lines, LINES);
+    println!(
+        "perf_core_31_preview: median {:.1} ms (measured, no budget)",
+        took.as_secs_f64() * 1e3
+    );
+}
+
+/// CORE-31 budget, SRS CORE-31: under 1000 ms (median 845 ms after the
+/// route-speed change, 2026-11-15; 3352 ms before it).
+const CORE_31_BUDGET_MS: u64 = 1000;

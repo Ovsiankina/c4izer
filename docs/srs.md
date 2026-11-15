@@ -697,11 +697,8 @@ Speed (checked by the release perf oracle, 5.2)
 - **CORE-28** Routing one view needs no other view: a caller can ask
   for one view's scene without the others being routed.
 - **CORE-31** A generated view of 40 boxes and 60 lines (fixed seed,
-  checked in as test data) routes in under 6750 ms in a release
-  build. `TODO(srs)`: budget proposed at pipeline step 5 (twice the
-  first release measurement, 3352 ms on
-  `crates/core/tests/data/core_31_generated.dsl`, rounded up to 50 ms);
-  the owner confirms it.
+  checked in as test data) routes in under 1000 ms in a release
+  build.
 
 #### Interfaces (intent, not signatures)
 
