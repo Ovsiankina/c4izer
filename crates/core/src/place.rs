@@ -1,9 +1,13 @@
 //! Automatic placement: gives a grid position to every box of a view
-//! plan that has none, never moving a placed box, scoring candidates by
-//! straight-line crossings (CORE-22, 23).
+//! plan that has none, never moving a placed box (CORE-22, 23). A view
+//! with no kept box is placed in layers (P2-26, P2-100..P2-110): ranks
+//! follow the edges, people on top, externals at the row ends, pitch
+//! grown where a box or label needs it, candidates compared by how they
+//! route; otherwise slots are scored by straight-line crossings.
 //!
 //! Depends on: `view`, `geom`, `model` (`ElementId` keys `Keep::previous`;
-//! `ElementKind` tells a person box apart).
+//! `ElementKind` tells a person box apart), `label` (label sizes for the
+//! pitch), `route` (candidates are compared by routing them).
 
 // Shape of the API: one function, `place(&ViewPlan, &Keep) -> Vec<Point>`,
 // returning the centre of every box in grid units, indexed by `BoxId`
@@ -18,10 +22,11 @@
 //   2. its `at` line, `PlanBox::centre` (CORE-22: never moved);
 //   3. `Keep::previous`: its centre in the previous scene of the same
 //      session, matched by `PlanBox::element` (CORE-29);
-//   4. otherwise it is auto-placed on candidate slots of a coarse grid
-//      (CORE-23 pitch), clear of every box from 1..3 with L6 clearance,
-//      scored by straight-line crossings then total edge length (place
-//      plan, SKILL.md "Placing boxes").
+//   4. otherwise it is auto-placed: with no box kept at all, by the
+//      layered placement (`layered`, SRS 4.6); else on candidate slots of
+//      a coarse grid (CORE-23 pitch), clear of every box from 1..3 with
+//      L6 clearance, scored by straight-line crossings then total edge
+//      length (place plan, SKILL.md "Placing boxes").
 // The CLI and a fresh build pass `Keep::default()`; the editor passes
 // the last scene's centres (`Keep::from_previous`) plus the dragged
 // boxes. When every box is covered by 1..3 nothing is searched, so the
@@ -62,9 +67,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::geom::{Point, Rect};
+use crate::geom::{GRID_PX, Point, Rect};
+use crate::label::{self, Weight};
 use crate::model::{ElementId, ElementKind};
+use crate::route::{self, RouteConfig};
 use crate::view::{BoxId, ViewPlan};
+use std::sync::atomic::AtomicBool;
 
 /// Centres `place` must keep besides the `at` lines of the plan: the
 /// previous scene's (CORE-29) and the ones the editor sets by dragging
@@ -136,22 +144,331 @@ impl Keep {
 /// person; boxes that are not boundary members are outside every
 /// boundary rectangle (`ViewPlan::boundary_rect`); auto-placed boxes
 /// sharing a row are at least 340px apart centre to centre and rows at
-/// least 280px apart; slots are chosen to minimise straight-line
-/// crossings between edge ends, then total edge length (CORE-23).
+/// least 280px apart (CORE-23). With no box kept, boxes sit in layers
+/// (P2-100..P2-110): an edge off every cycle and not into a person points
+/// down, people are on the top row, externals at the row ends, and row
+/// and column pitch grow where a box or a label needs room; of several
+/// searched layouts the one that routes best is returned. Otherwise slots
+/// are chosen to minimise straight-line crossings between edge ends, then
+/// total edge length.
 /// Deterministic: same inputs, same centres (CORE-25). When no box needs
 /// auto-placing it returns the kept centres without searching (EDIT-25).
 /// Out-of-range `keep.moved` entries and undrawn `keep.previous` entries
 /// are ignored. Serves CORE-22, CORE-23, CORE-25, CORE-29, EDIT-4,
-/// EDIT-20, EDIT-25.
+/// EDIT-20, EDIT-25, P2-26, P2-100..P2-110.
 pub fn place(plan: &ViewPlan, keep: &Keep) -> Vec<Point> {
     let kept = kept_centres(plan, keep);
     if kept.iter().all(Option::is_some) {
         return kept.into_iter().flatten().collect();
     }
+    if kept.iter().all(Option::is_none) {
+        return layered(plan);
+    }
     let mut layout = Layout::new(plan, &kept);
     layout.seed();
     layout.search();
     layout.finish()
+}
+
+// Layered placement (SRS 4.6 P2-26, P2-100..P2-110), used when no box of
+// the view is kept. Stages: ranks (rows), a seed order per row, the
+// threshold-accepting search restricted to moves inside a row, then a
+// lattice whose per-gap pitch grows where a box needs it.
+// DECISION: a view with some kept boxes keeps the phase-1 search
+// (`Layout::seed`/`search` over the whole lattice): CORE-22/CORE-29 bind
+// it, and the SRS asserts the layered rules only for views with no kept
+// box (docs/deferred.md row "place-quality, 2, views with some kept
+// boxes").
+
+/// One way to search a layered candidate: how many spare rows and
+/// columns the window gets, the starting threshold, moves per box, the
+/// weights of a straight-line crossing and of a straight line through a
+/// box, and whether boxes outside the boundary that only receive edges
+/// start under the boundary.
+#[derive(Debug, Clone, Copy)]
+struct Family {
+    spare_rows: i32,
+    spare_cols: i32,
+    threshold: i64,
+    moves_per_box: usize,
+    cross: i64,
+    through: i64,
+    sink: bool,
+}
+
+/// Family A: a narrow window and a short, cool search (the phase-1
+/// settings, rows fixed by rank).
+const NARROW: Family = Family {
+    spare_rows: 1,
+    spare_cols: 2,
+    threshold: THRESHOLD,
+    moves_per_box: MOVES_PER_BOX,
+    cross: W_CROSS,
+    through: W_THROUGH,
+    sink: false,
+};
+/// Family B: three spare rows and a longer, hotter search, which finds
+/// layouts with fewer straight crossings on dense views.
+const TALL: Family = Family {
+    spare_rows: 3,
+    spare_cols: 2,
+    threshold: 3000,
+    moves_per_box: 3000,
+    cross: W_CROSS,
+    through: W_THROUGH,
+    sink: false,
+};
+// DECISION: eight candidates, each with its own search seed (its index),
+// and the one that routes best wins (`routed_score`). Measured on the
+// example (workspace.dsl and example.dsl without `at` lines) and the
+// place.py graph, 2026-11-15: a single search is noisy on the routed
+// result (C3-startup 8 to 16 crossings by seed alone), and the
+// straight-line cost does not rank layouts the way routing does. The
+// mix of families was the best of the sets tried; the `sink: true`
+// variants are skipped on views with nothing to sink.
+// DECISION: the two sunk NARROW candidates search with a straight-line
+// crossing worth 100 instead of 1000 (`W_CROSS_LOOSE`): at 1000 one
+// straight crossing outweighs 10 000 px of line length, and the search
+// stretched C3-serving to 17 003 px and 3 routed crossings. Measured
+// 2026-11-15 on tests/data/example/workspace.dsl: these two candidates
+// win C2 (3554 px) and C3-serving (1 crossing, 14 161 px); C3-startup is
+// still won by a 1000-weight candidate (8 crossings, 17 733 px).
+/// Candidates searched for a view with no kept box.
+const FAMILIES: [Family; 8] = [
+    NARROW,
+    Family {
+        sink: true,
+        cross: W_CROSS_LOOSE,
+        ..NARROW
+    },
+    NARROW,
+    Family {
+        sink: true,
+        cross: W_CROSS_LOOSE,
+        ..NARROW
+    },
+    TALL,
+    Family { sink: true, ..TALL },
+    TALL,
+    NARROW,
+];
+
+// DECISION: candidates are compared after a cheap routing pass (one edge
+// order, four rip-up rounds), not the full `RouteConfig::DEFAULT`: about a
+// third of the time on the example, and the same choice on every example
+// view but C3-serving of workspace.dsl (3 routed crossings instead of 2).
+/// Router settings used to compare candidates.
+const PROBE: RouteConfig = RouteConfig {
+    orders: 1,
+    max_iterations: 4,
+};
+// DECISION: one routed crossing is worth 10 000 px of line length and
+// straight-line crossings between box centres are not scored. Measured on
+// tests/data/example/workspace.dsl, 2026-11-15: at 20 000 px plus 2 000
+// px per straight crossing the choice kept layouts with up to twice the
+// line length of a candidate one routed crossing worse (C2 3927 px
+// against 3554 px, both 0 crossings once fully routed), and C3-startup
+// takes a 7-crossing, 32 637 px layout over an 8-crossing, 17 733 px one
+// above about 15 000 px per crossing. p2_102 and the place.py bar of
+// `core_23_example_no_worse_than_place_py` hold without the straight term.
+/// `routed_score`: px of line length one routed crossing is worth.
+const SCORE_CROSSING_PX: i64 = 10_000;
+/// `routed_score`: px one label over another line (L23) is worth.
+const SCORE_OVER_LINE_PX: i64 = 3_000;
+
+/// Centres of every box of a plan with no kept box (P2-100..P2-110).
+fn layered(plan: &ViewPlan) -> Vec<Point> {
+    let rank = ranks(plan);
+    let mut sunk = rank.clone();
+    lower_outside_sinks(plan, &mut sunk);
+    let n = plan.boxes.len();
+    let mut base = Layout::new(plan, &vec![None; n]);
+    base.layered = true;
+    base.ranked.above = vec![Vec::new(); n];
+    base.ranked.below = vec![Vec::new(); n];
+    for (s, d) in forward_edges(n, &inner_edges(plan)) {
+        base.ranked.above[d].push(s);
+        base.ranked.below[s].push(d);
+    }
+    base.ranked.top_row = i32::from(plan.boxes.iter().any(|b| b.kind == ElementKind::Person));
+    let never = AtomicBool::new(false);
+    let mut best: Option<((usize, usize, i64), Vec<Point>)> = None;
+    for (k, fam) in FAMILIES.iter().enumerate() {
+        if fam.sink && sunk == rank {
+            continue;
+        }
+        let mut l = base.clone();
+        l.tune.cross = fam.cross;
+        l.tune.through = fam.through;
+        l.tune.threshold = fam.threshold;
+        l.tune.moves_per_box = fam.moves_per_box;
+        l.tune.seed = SEED ^ u64::try_from(k).unwrap_or(0).wrapping_mul(0x9E37_79B9);
+        l.seed_layered(
+            if fam.sink { &sunk } else { &rank },
+            fam.spare_rows,
+            fam.spare_cols,
+        );
+        l.search();
+        let centres = l.finish_layered();
+        let score = routed_score(plan, &centres, &never);
+        if best.as_ref().is_none_or(|(bs, _)| score < *bs) {
+            best = Some((score, centres));
+        }
+    }
+    best.map(|(_, c)| c).unwrap_or_default()
+}
+
+/// How well candidate centres route with `PROBE`, lower is better:
+/// unroutable lines, then labels with no room (P2-107), then one weighted
+/// sum of routed crossings, labels over lines and total line length in px
+/// (P2-108).
+fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usize, usize, i64) {
+    let Ok(routes) = route::route(plan, centres, &PROBE, never) else {
+        return (usize::MAX, usize::MAX, i64::MAX);
+    };
+    let labels = label::place_labels(plan, &routes);
+    let mut length = 0_i64;
+    for line in routes.lines.iter().flatten() {
+        for w in line.points.windows(2) {
+            let (dx, dy) = ((w[1].x - w[0].x).abs(), (w[1].y - w[0].y).abs());
+            let steps = i64::from(dx.max(dy)) * i64::from(GRID_PX);
+            // DECISION: 14/10 for a diagonal step, integer only (CORE-25).
+            length += if dx != 0 && dy != 0 {
+                steps * 14 / 10
+            } else {
+                steps
+            };
+        }
+    }
+    let over = i64::try_from(labels.over_lines().len()).unwrap_or(i64::MAX / SCORE_OVER_LINE_PX);
+    let weighted = SCORE_CROSSING_PX * i64::from(routes.crossings)
+        + SCORE_OVER_LINE_PX * over
+        + length;
+    (routes.unroutable().len(), labels.no_room().len(), weighted)
+}
+
+/// Moves every box outside a boundary that has no edge to a non-person
+/// (a sink, e.g. a database or an external system called from inside)
+/// to the row under the boundary's lowest member, so it never has to
+/// sit beside the members' columns (P2-109). Edges into it still point
+/// down (P2-100).
+fn lower_outside_sinks(plan: &ViewPlan, rank: &mut [i32]) {
+    let inside = inside_all(plan);
+    let Some(bottom) = (0..rank.len())
+        .filter(|&b| inside[b] && !plan.boundaries.is_empty())
+        .map(|b| rank[b])
+        .max()
+    else {
+        return;
+    };
+    let mut source = vec![false; rank.len()];
+    let mut target = vec![false; rank.len()];
+    for (s, d) in inner_edges(plan) {
+        source[s] = true;
+        target[d] = true;
+    }
+    for b in 0..rank.len() {
+        if !inside[b] && target[b] && !source[b] && plan.boxes[b].kind != ElementKind::Person {
+            rank[b] = rank[b].max(bottom + 1);
+        }
+    }
+}
+
+/// The edges between two boxes that are not people, as box indices, in
+/// plan order: the edges ranks are taken over.
+fn inner_edges(plan: &ViewPlan) -> Vec<(usize, usize)> {
+    let person = |b: usize| plan.boxes[b].kind == ElementKind::Person;
+    plan.edges
+        .iter()
+        .map(|e| (e.source.0 as usize, e.destination.0 as usize))
+        .filter(|&(s, d)| s != d && !person(s) && !person(d))
+        .collect()
+}
+
+/// True for every box that is a member of every boundary of `plan`
+/// (every box when there is none).
+fn inside_all(plan: &ViewPlan) -> Vec<bool> {
+    let mut inside = vec![true; plan.boxes.len()];
+    for k in &plan.boundaries {
+        let mut m = vec![false; plan.boxes.len()];
+        for id in &k.members {
+            m[id.0 as usize] = true;
+        }
+        for (i, v) in inside.iter_mut().enumerate() {
+            *v &= m[i];
+        }
+    }
+    inside
+}
+
+/// Row of every box, 0 at the top (P2-100, P2-101, P2-103, P2-110).
+/// People are row 0. Every other box with at least one edge gets its
+/// longest path from the sources over the edges between non-people, back
+/// edges of a depth-first walk in box index order dropped (`layers`),
+/// one row below the people when the view has any. Boxes with no edge at
+/// all fill rows below, in a compact block.
+// DECISION: edges into a person are dropped before ranking (P2-103: people
+// stay on top even when a box points at them); edges out of a person only
+// say "below the people row", which every non-person row is. The
+// `autoLayout` direction and separations are never read (P2-110).
+// DECISION: boxes with no edge carry no rank; they fill the rows under the
+// layered rows, at most max(widest row, ceil(sqrt(count))) per row, so a
+// view with no edges is a compact grid (`zero_edges_compact_grid`).
+fn ranks(plan: &ViewPlan) -> Vec<i32> {
+    let n = plan.boxes.len();
+    let person: Vec<bool> = plan
+        .boxes
+        .iter()
+        .map(|b| b.kind == ElementKind::Person)
+        .collect();
+    let mut degree = vec![0_usize; n];
+    for e in &plan.edges {
+        let (s, d) = (e.source.0 as usize, e.destination.0 as usize);
+        if s != d {
+            degree[s] += 1;
+            degree[d] += 1;
+        }
+    }
+    let layer = layers(n, &inner_edges(plan));
+    let top = i32::from(person.iter().any(|&p| p));
+    let mut rank = vec![0_i32; n];
+    let mut width = BTreeMap::<i32, usize>::new();
+    let mut loose = Vec::new();
+    for b in 0..n {
+        if person[b] {
+            rank[b] = 0;
+        } else if degree[b] == 0 {
+            loose.push(b);
+            continue;
+        } else {
+            rank[b] = top + i32::try_from(layer[b]).unwrap_or(i32::MAX / 2);
+        }
+        *width.entry(rank[b]).or_default() += 1;
+    }
+    if loose.is_empty() {
+        return rank;
+    }
+    let first = width.keys().next_back().map_or(0, |&r| r + 1);
+    let widest = width.values().copied().max().unwrap_or(0);
+    let side = loose.len().isqrt() + usize::from(loose.len().isqrt().pow(2) < loose.len());
+    let per_row = widest.max(side).max(1);
+    // Members of every boundary first, so a loose box outside a boundary
+    // never shares a row with a loose member.
+    let inside = inside_all(plan);
+    loose.sort_by_key(|&b| (!inside[b], plan.boxes[b].external, b));
+    let mut r = first;
+    let mut used = 0;
+    let mut prev = None;
+    for b in loose {
+        if used == per_row || prev.is_some_and(|p| p != inside[b]) {
+            r += 1;
+            used = 0;
+        }
+        rank[b] = r;
+        used += 1;
+        prev = Some(inside[b]);
+    }
+    rank
 }
 
 /// Column pitch of the slot lattice in grid units (340px, CORE-23).
@@ -172,6 +489,9 @@ const MARGIN: i32 = 4;
 // 2 crossings against place.py's 4 (core_23_example_no_worse_than_place_py).
 /// Cost of one straight-line crossing.
 const W_CROSS: i64 = 1000;
+/// Cost of one straight-line crossing in the layered candidates that
+/// trade crossings for length.
+const W_CROSS_LOOSE: i64 = 100;
 /// Cost of one straight line passing through a box other than its ends.
 const W_THROUGH: i64 = 700;
 /// Cost of one line pointing up (callers sit above what they use).
@@ -190,6 +510,10 @@ const MAX_MOVES: usize = 120_000;
 const THRESHOLD: i64 = 600;
 /// Fixed search seed (CORE-25).
 const SEED: u64 = 0x5EED_C4C4_0000_0001;
+/// Barycentre sweeps each way in the layered seed.
+const SWEEPS: usize = 4;
+/// Most gap widenings `finish_layered` makes to clear the boundaries.
+const PUSH_ROUNDS: usize = 4000;
 /// Window growths tried with every constraint before the seed falls back
 /// to L6 clearance only.
 const STRICT_GROWTHS: usize = 8;
@@ -236,6 +560,7 @@ impl Rng {
 /// A lattice slot: column and row index.
 type Slot = (i32, i32);
 
+#[derive(Clone)]
 /// Placement state: every box's current centre, which boxes are kept,
 /// which are active (kept or already seeded), and the slot of each
 /// auto-placed box.
@@ -262,6 +587,57 @@ struct Layout<'a> {
     window: (i32, i32, i32, i32),
     /// False once the seed had to drop the people and boundary rules.
     strict: bool,
+    /// True for the layered placement of a view with no kept box: rows
+    /// are fixed by rank, moves stay inside a row, and the lattice pitch
+    /// is set per gap at the end (`finish_layered`).
+    layered: bool,
+    /// Layered mode: rank order and row-end levels.
+    ranked: Ranked,
+    /// Search settings.
+    tune: Tune,
+}
+
+/// Layered mode constraints of a `Layout`.
+#[derive(Clone, Default)]
+struct Ranked {
+    /// For every box, the boxes that must sit on a row above it (sources
+    /// of its edges off every cycle, people excluded, P2-100) ...
+    above: Vec<Vec<usize>>,
+    /// ... and the boxes that must sit on a row below it.
+    below: Vec<Vec<usize>>,
+    /// How far out in its row a box must sit (P2-104, P2-109): 0
+    /// external (people excluded), 1 outside a boundary, 2 every other
+    /// box. Along a row the levels rise then fall.
+    level: Vec<u8>,
+    /// The first row a non-person may use (1 when the view has a person,
+    /// P2-103).
+    top_row: i32,
+}
+
+/// Settings of the threshold-accepting search.
+#[derive(Clone, Copy)]
+struct Tune {
+    /// Cost of one straight-line crossing.
+    cross: i64,
+    /// Cost of one straight line through a third box.
+    through: i64,
+    /// Seed of the generator (CORE-25: fixed).
+    seed: u64,
+    /// Starting threshold.
+    threshold: i64,
+    /// Moves per auto-placed box.
+    moves_per_box: usize,
+}
+
+impl Tune {
+    /// The phase-1 settings.
+    const PHASE_1: Tune = Tune {
+        cross: W_CROSS,
+        through: W_THROUGH,
+        seed: SEED,
+        threshold: THRESHOLD,
+        moves_per_box: MOVES_PER_BOX,
+    };
 }
 
 impl<'a> Layout<'a> {
@@ -292,54 +668,12 @@ impl<'a> Layout<'a> {
                 m
             })
             .collect();
-        let kept_pts: Vec<Point> = kept.iter().flatten().copied().collect();
         // DECISION: the lattice is anchored on the first kept box, so a
         // box beside a kept neighbour sits exactly one pitch away (plan
         // Review Focus, SKILL.md rule 3); with nothing kept it starts at 0
         // and the result is shifted to the margin at the end.
         let origin = kept.iter().flatten().next().copied().unwrap_or_default();
-        let auto = n - kept_pts.len();
-        let side = i32::try_from(auto.isqrt()).unwrap_or(i32::MAX / 4) + 2;
-        let (window, anchor) = if kept_pts.is_empty() {
-            let mid = side / 2;
-            (
-                (0, 0, side, side),
-                Point::new(mid * COL_PITCH, mid * ROW_PITCH),
-            )
-        } else {
-            let lo_c = kept_pts
-                .iter()
-                .map(|p| (p.x - origin.x).div_euclid(COL_PITCH))
-                .min();
-            let hi_c = kept_pts
-                .iter()
-                .map(|p| (p.x - origin.x).div_euclid(COL_PITCH) + 1)
-                .max();
-            let lo_r = kept_pts
-                .iter()
-                .map(|p| (p.y - origin.y).div_euclid(ROW_PITCH))
-                .min();
-            let hi_r = kept_pts
-                .iter()
-                .map(|p| (p.y - origin.y).div_euclid(ROW_PITCH) + 1)
-                .max();
-            let count = i64::try_from(kept_pts.len()).unwrap_or(1);
-            let sx: i64 = kept_pts.iter().map(|p| i64::from(p.x)).sum();
-            let sy: i64 = kept_pts.iter().map(|p| i64::from(p.y)).sum();
-            let anchor = Point::new(
-                i32::try_from(sx.div_euclid(count)).unwrap_or(0),
-                i32::try_from(sy.div_euclid(count)).unwrap_or(0),
-            );
-            (
-                (
-                    lo_c.unwrap_or(0) - side,
-                    lo_r.unwrap_or(0) - side,
-                    hi_c.unwrap_or(0) + side,
-                    hi_r.unwrap_or(0) + side,
-                ),
-                anchor,
-            )
-        };
+        let (window, anchor) = lattice_window(kept, origin);
         let mut layout = Self {
             plan,
             pos,
@@ -355,6 +689,9 @@ impl<'a> Layout<'a> {
             anchor,
             window,
             strict: true,
+            layered: false,
+            ranked: Ranked::default(),
+            tune: Tune::PHASE_1,
         };
         layout.exempt = (0..layout.member.len())
             .map(|k| {
@@ -404,6 +741,14 @@ impl<'a> Layout<'a> {
     /// True when the active layout keeps the rules for the boxes in `m`
     /// (L6 clearance) and, when strict, the people and boundary rules.
     fn valid(&self, m: &[usize]) -> bool {
+        if self.layered {
+            // Boxes never share a slot (`occupant`), and the per-gap pitch
+            // of `finish_layered` gives L6 clearance; only the order
+            // rules are checked here.
+            return m.iter().all(|&b| self.rank_ok(b))
+                && (!self.strict
+                    || (m.iter().all(|&b| self.ends_ok(b)) && self.boundary_slots_ok()));
+        }
         for &b in m {
             let r = self.rect(b).inflate(CLEAR);
             let clash = (0..self.pos.len())
@@ -486,12 +831,12 @@ impl<'a> Layout<'a> {
                     continue;
                 }
                 if proper_cross(a, b, self.pos[s2], self.pos[d2]) {
-                    total += W_CROSS;
+                    total += self.tune.cross;
                 }
             }
             for o in 0..self.pos.len() {
                 if self.active[o] && o != s && o != d && through(a, b, &self.rect(o)) {
-                    total += W_THROUGH;
+                    total += self.tune.through;
                 }
             }
         }
@@ -499,7 +844,7 @@ impl<'a> Layout<'a> {
             let (s, d) = self.ends[f];
             for &o in moved {
                 if through(self.pos[s], self.pos[d], &self.rect(o)) {
-                    total += W_THROUGH;
+                    total += self.tune.through;
                 }
             }
         }
@@ -599,17 +944,29 @@ impl<'a> Layout<'a> {
     fn search(&mut self) {
         let autos: Vec<usize> = (0..self.pos.len()).filter(|&b| !self.fixed[b]).collect();
         let slots = self.slots();
-        let moves = (MOVES_PER_BOX * autos.len()).min(MAX_MOVES);
-        let mut rng = Rng(SEED);
+        let moves = (self.tune.moves_per_box * autos.len()).min(MAX_MOVES);
+        let mut rng = Rng(self.tune.seed);
         let mut cur = self.cost(&autos);
         let mut best = (cur, self.slot_of.clone());
         let total = i64::try_from(moves).unwrap_or(i64::MAX);
         for step in 0..total {
-            let threshold = THRESHOLD * (total - step) / total;
+            let threshold = self.tune.threshold * (total - step) / total;
             let b = autos[rng.below(autos.len())];
-            let s = slots[rng.below(slots.len())];
             let Some(from) = self.slot_of[b] else {
                 continue;
+            };
+            let s = if self.layered {
+                // Half the moves stay on the box's row; the rest pick a row
+                // inside the range its rank order allows (`row_range`).
+                let (c0, _, c1, _) = self.window;
+                let width = usize::try_from(c1 - c0 + 1).unwrap_or(1);
+                let c = c0 + i32::try_from(rng.below(width)).unwrap_or(0);
+                let (lo, hi) = self.row_range(b);
+                let height = usize::try_from(hi - lo + 1).unwrap_or(1);
+                let r = lo + i32::try_from(rng.below(height)).unwrap_or(0);
+                (c, if rng.below(2) == 0 { from.1 } else { r })
+            } else {
+                slots[rng.below(slots.len())]
             };
             if from == s {
                 continue;
@@ -639,6 +996,386 @@ impl<'a> Layout<'a> {
                 self.put(b, s);
             }
         }
+    }
+
+    /// Layered mode: the rows box `b` may take without breaking the rank
+    /// order, clipped to the window (never empty: its own row is in it).
+    fn row_range(&self, b: usize) -> (i32, i32) {
+        let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
+        let (_, r0, _, r1) = self.window;
+        if self.is_person(b) {
+            return (0, 0);
+        }
+        let lo = self.ranked.above[b]
+            .iter()
+            .map(|&o| row(o) + 1)
+            .fold(r0.max(self.ranked.top_row), i32::max);
+        let hi = self.ranked.below[b]
+            .iter()
+            .map(|&o| row(o) - 1)
+            .fold(r1, i32::min);
+        let own = row(b);
+        (lo.min(own), hi.max(own))
+    }
+
+    /// Layered mode: box `b` keeps the rank order (P2-100, P2-103): below
+    /// every box of `above`, above every box of `below`, people on row 0
+    /// and nothing else above `top_row`.
+    fn rank_ok(&self, b: usize) -> bool {
+        let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
+        let r = row(b);
+        if self.is_person(b) {
+            return r == 0;
+        }
+        r >= self.ranked.top_row
+            && self.ranked.above[b].iter().all(|&o| row(o) < r)
+            && self.ranked.below[b].iter().all(|&o| row(o) > r)
+    }
+
+    /// Layered mode: along the row of `b`, ordered by column, the levels
+    /// rise then fall (P2-104: externals only at the row ends, then boxes
+    /// outside the boundary, P2-109). Taking a box out of a row keeps
+    /// this, so only the rows boxes move into need checking.
+    fn ends_ok(&self, b: usize) -> bool {
+        let Some((_, r)) = self.slot_of[b] else {
+            return true;
+        };
+        let mut row: Vec<(i32, u8)> = (0..self.pos.len())
+            .filter_map(|o| match self.slot_of[o] {
+                Some((c, rr)) if rr == r => Some((c, self.ranked.level[o])),
+                _ => None,
+            })
+            .collect();
+        row.sort_unstable();
+        let mut falling = false;
+        row.windows(2).all(|w| {
+            if w[1].1 < w[0].1 {
+                falling = true;
+            } else if w[1].1 > w[0].1 && falling {
+                return false;
+            }
+            true
+        })
+    }
+
+    /// Layered mode: no box outside boundary `k` sits on a slot inside
+    /// the row span and the column span of `k`'s members (P2-109). The
+    /// per-gap pitch of `finish_layered` then keeps such a box outside the
+    /// boundary rectangle.
+    fn boundary_slots_ok(&self) -> bool {
+        (0..self.member.len()).all(|k| {
+            let span = |f: fn(Slot) -> i32| {
+                let v = (0..self.pos.len())
+                    .filter(|&b| self.member[k][b])
+                    .filter_map(|b| self.slot_of[b].map(f));
+                (v.clone().min(), v.max())
+            };
+            let (Some(c0), Some(c1)) = span(|s| s.0) else {
+                return true;
+            };
+            let (Some(r0), Some(r1)) = span(|s| s.1) else {
+                return true;
+            };
+            (0..self.pos.len()).all(|b| {
+                self.member[k][b]
+                    || self.slot_of[b]
+                        .is_none_or(|(c, r)| !((c0..=c1).contains(&c) && (r0..=r1).contains(&r)))
+            })
+        })
+    }
+
+    /// Layered seed: each box on the row of its rank, rows ordered, then
+    /// laid on columns so that boxes outside a boundary sit beside the
+    /// members' columns on the rows the members span.
+    fn seed_layered(&mut self, rank: &[i32], spare_rows: i32, spare_cols: i32) {
+        let n = self.pos.len();
+        let mut rows: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+        for (b, &r) in rank.iter().enumerate() {
+            rows.entry(r).or_default().push(b);
+        }
+        let inside = inside_all(self.plan);
+        let fenced = !self.plan.boundaries.is_empty();
+        self.ranked.level = (0..n)
+            .map(|b| {
+                if self.plan.boxes[b].external && !self.is_person(b) {
+                    0
+                } else {
+                    u8::from(!fenced || inside[b]) + 1
+                }
+            })
+            .collect();
+        self.sweep(&mut rows);
+        let levels = self.ranked.level.clone();
+        // Level 2 boxes form the middle of a row; lower levels go to the
+        // row ends, the lowest outermost.
+        let level = |b: usize| levels[b];
+        let span: Vec<i32> = (0..n)
+            .filter(|&b| fenced && inside[b])
+            .map(|b| rank[b])
+            .collect();
+        let (lo, hi) = (
+            span.iter().copied().min().unwrap_or(1),
+            span.iter().copied().max().unwrap_or(0),
+        );
+        let wide = rows
+            .iter()
+            .filter(|(r, _)| (lo..=hi).contains(*r))
+            .map(|(_, row)| row.iter().filter(|&&b| level(b) == 2).count())
+            .max()
+            .unwrap_or(0);
+        let wide = i32::try_from(wide).unwrap_or(0);
+        for (&r, row) in &rows {
+            let len = row.len();
+            let mut left: Vec<(u8, usize, usize)> = Vec::new();
+            let mut core = Vec::new();
+            let mut right: Vec<(u8, usize, usize)> = Vec::new();
+            for (i, &b) in row.iter().enumerate() {
+                if level(b) == 2 {
+                    core.push(b);
+                } else if 2 * i < len {
+                    left.push((level(b), i, b));
+                } else {
+                    right.push((level(b), i, b));
+                }
+            }
+            left.sort_unstable();
+            right.sort_unstable_by_key(|&(l, i, _)| (std::cmp::Reverse(l), i));
+            let mut seq: Vec<usize> = left.iter().map(|t| t.2).collect();
+            seq.extend(&core);
+            seq.extend(right.iter().map(|t| t.2));
+            let cols: Vec<i32> = if fenced && (lo..=hi).contains(&r) {
+                // Outside boxes beside the members' column span, the
+                // members of this row centred within it.
+                let core_len = i32::try_from(core.len()).unwrap_or(0);
+                let left_len = i32::try_from(left.len()).unwrap_or(0);
+                let mid = (wide - core_len).div_euclid(2);
+                (0..left_len)
+                    .map(|j| j - left_len)
+                    .chain((0..core_len).map(|j| mid + j))
+                    .chain((0..).map(|j| wide + j).take(right.len()))
+                    .collect()
+            } else {
+                let start = (wide - i32::try_from(len).unwrap_or(0)).div_euclid(2);
+                (0..).map(|j| start + j).take(len).collect()
+            };
+            for (&b, c) in seq.iter().zip(cols) {
+                self.active[b] = true;
+                self.put(b, (c, r));
+            }
+        }
+        let cols = self.slot_of.iter().flatten().map(|s| s.0);
+        let (c0, c1) = (cols.clone().min().unwrap_or(0), cols.max().unwrap_or(0));
+        let used_rows = self.slot_of.iter().flatten().map(|s| s.1);
+        let (r0, r1) = (
+            used_rows.clone().min().unwrap_or(0),
+            used_rows.max().unwrap_or(0),
+        );
+        // DECISION: the search may use two spare columns on each side of
+        // the seed: room to step around a box, no runaway widening.
+        self.window = (c0 - spare_cols, r0, c1 + spare_cols, r1 + spare_rows);
+        self.anchor = Point::new((c0 + c1) * COL_PITCH / 2, (r0 + r1) * ROW_PITCH / 2);
+        if !self.boundary_slots_ok() {
+            // DECISION: only reachable with several boundaries; keep the
+            // order rules off rather than search from an invalid seed.
+            self.strict = false;
+        }
+    }
+
+    /// Barycentre sweeps over the rows (P2-102): each box is keyed by the
+    /// mean position of its neighbours on the rows above (down sweep) or
+    /// below (up sweep), rows re-sorted by key, `SWEEPS` times each way.
+    /// Positions are centred per row so rows of different widths align.
+    // DECISION: neighbours on every row above (or below), not only the
+    // adjacent one: no dummy boxes for long edges, the search refines.
+    // Ties keep the current order, then `BoxId` (CORE-25).
+    fn sweep(&self, rows: &mut BTreeMap<i32, Vec<usize>>) {
+        let n = self.pos.len();
+        let mut nbrs = vec![Vec::new(); n];
+        for &(s, d) in &self.ends {
+            if s != d {
+                nbrs[s].push(d);
+                nbrs[d].push(s);
+            }
+        }
+        let keys: Vec<i32> = rows.keys().copied().collect();
+        let mut x = vec![0_i64; n];
+        let mut row_of = vec![0_i32; n];
+        let place_row = |row: &[usize], x: &mut [i64]| {
+            let len = i64::try_from(row.len()).unwrap_or(0);
+            for (i, &b) in row.iter().enumerate() {
+                x[b] = 2 * i64::try_from(i).unwrap_or(0) - (len - 1);
+            }
+        };
+        for (&r, row) in rows.iter() {
+            place_row(row, &mut x);
+            for &b in row {
+                row_of[b] = r;
+            }
+        }
+        for pass in 0..2 * SWEEPS {
+            let down = pass % 2 == 0;
+            let order: Vec<i32> = if down {
+                keys.clone()
+            } else {
+                keys.iter().rev().copied().collect()
+            };
+            for r in order {
+                let Some(row) = rows.get_mut(&r) else {
+                    continue;
+                };
+                let key = |b: usize| {
+                    let near: Vec<i64> = nbrs[b]
+                        .iter()
+                        .filter(|&&o| if down { row_of[o] < r } else { row_of[o] > r })
+                        .map(|&o| x[o])
+                        .collect();
+                    if near.is_empty() {
+                        x[b] * 1000
+                    } else {
+                        near.iter().sum::<i64>() * 1000 / i64::try_from(near.len()).unwrap_or(1)
+                    }
+                };
+                let mut keyed: Vec<(i64, i64, usize)> =
+                    row.iter().map(|&b| (key(b), x[b], b)).collect();
+                keyed.sort_unstable();
+                *row = keyed.into_iter().map(|t| t.2).collect();
+                place_row(row, &mut x);
+            }
+        }
+    }
+
+    /// Layered mode: the centres on a lattice whose pitch grows per gap
+    /// (P2-106): two adjacent columns are at least `COL_PITCH` apart and
+    /// far enough for L6 between the boxes they share a row with; two
+    /// consecutive rows likewise with `ROW_PITCH`. Gaps next to a
+    /// boundary then grow until no outside box overlaps it (P2-109).
+    /// Shifted so the drawing starts at the margin.
+    fn finish_layered(&self) -> Vec<Point> {
+        let n = self.pos.len();
+        let slot: Vec<Slot> = (0..n)
+            .map(|b| self.slot_of[b].unwrap_or_default())
+            .collect();
+        let c0 = slot.iter().map(|s| s.0).min().unwrap_or(0);
+        // Empty rows are dropped: row index = rank among the used rows.
+        let used: std::collections::BTreeSet<i32> = slot.iter().map(|s| s.1).collect();
+        let dense: Vec<usize> = (0..n).map(|b| used.range(..slot[b].1).count()).collect();
+        let ci = |b: usize| usize::try_from(slot[b].0 - c0).unwrap_or(0);
+        let ri = |b: usize| dense[b];
+        let ncols = (0..n).map(ci).max().map_or(0, |m| m + 1);
+        let nrows = (0..n).map(ri).max().map_or(0, |m| m + 1);
+        let bx = |b: usize| &self.plan.boxes[b];
+        // Column gaps: gap[c] is the pitch from column c to c + 1.
+        let mut col_gap = vec![COL_PITCH; ncols.saturating_sub(1)];
+        for a in 0..n {
+            for b in 0..n {
+                if ri(a) == ri(b) && ci(a) + 1 == ci(b) {
+                    let need = bx(a).half_width + bx(b).half_width + 2 * CLEAR;
+                    col_gap[ci(a)] = col_gap[ci(a)].max(need);
+                }
+            }
+        }
+        let mut row_gap = vec![ROW_PITCH; nrows.saturating_sub(1)];
+        // P2-105: a labelled edge between neighbours of one row or one
+        // column widens that gap until the label fits between the boxes
+        // with its CORE-14 gaps to the line's ends.
+        for (e, &(s, d)) in self.ends.iter().enumerate() {
+            let Some((width, height)) = label_px(self.plan, e) else {
+                continue;
+            };
+            let (a, b) = if (ci(s), ri(s)) <= (ci(d), ri(d)) {
+                (s, d)
+            } else {
+                (d, s)
+            };
+            if ri(a) == ri(b) && ci(a) + 1 == ci(b) {
+                let need = bx(a).half_width + bx(b).half_width + label_gap(width);
+                col_gap[ci(a)] = col_gap[ci(a)].max(need);
+            } else if ci(a) == ci(b) && ri(a) + 1 == ri(b) {
+                let need = bx(a).half_height + bx(b).half_height + label_gap(height);
+                row_gap[ri(a)] = row_gap[ri(a)].max(need);
+            }
+        }
+        let mut out = vec![Point::default(); n];
+        // DECISION: bounded push-out loop (each round widens one gap by one
+        // grid unit); the bound only guards against a layout the slot rule
+        // cannot fix, which leaves the boxes where they are (CORE-25: no
+        // time cap, a fixed count).
+        for _ in 0..PUSH_ROUNDS {
+            let xs = prefix(&col_gap);
+            for a in 0..n {
+                for b in 0..n {
+                    if ri(a) + 1 == ri(b) {
+                        let (xa, xb) = (xs[ci(a)], xs[ci(b)]);
+                        let reach = bx(a).half_width + bx(b).half_width + 2 * CLEAR;
+                        if (xa - xb).abs() < reach {
+                            let need = bx(a).half_height + bx(b).half_height + 2 * CLEAR;
+                            row_gap[ri(a)] = row_gap[ri(a)].max(need);
+                        }
+                    }
+                }
+            }
+            let ys = prefix(&row_gap);
+            for b in 0..n {
+                out[b] = Point::new(xs[ci(b)], ys[ri(b)]);
+            }
+            let cell: Vec<(usize, usize)> = (0..n).map(|b| (ci(b), ri(b))).collect();
+            if !self.push_out(&out, &cell, &mut col_gap, &mut row_gap) {
+                break;
+            }
+        }
+        let min_x = (0..n)
+            .map(|b| bx(b).rect_at(out[b]).min.x)
+            .min()
+            .unwrap_or(0);
+        let min_y = (0..n)
+            .map(|b| bx(b).rect_at(out[b]).min.y)
+            .min()
+            .unwrap_or(0);
+        out.iter()
+            .map(|p| Point::new(p.x - min_x + MARGIN, p.y - min_y + MARGIN))
+            .collect()
+    }
+
+    /// One push-out step of `finish_layered`: when a box outside a
+    /// boundary overlaps that boundary's rectangle at centres `at`, widen
+    /// the gap between it and the members' span by one grid unit and
+    /// return true; false when nothing overlaps.
+    fn push_out(
+        &self,
+        at: &[Point],
+        cell: &[(usize, usize)],
+        col_gap: &mut [i32],
+        row_gap: &mut [i32],
+    ) -> bool {
+        for (k, members) in self.member.iter().enumerate() {
+            let Some(r) = self.plan.boundary_rect(k, at) else {
+                continue;
+            };
+            let inner: Vec<usize> = (0..at.len()).filter(|&b| members[b]).collect();
+            let c_lo = inner.iter().map(|&b| cell[b].0).min().unwrap_or(0);
+            let c_hi = inner.iter().map(|&b| cell[b].0).max().unwrap_or(0);
+            let r_lo = inner.iter().map(|&b| cell[b].1).min().unwrap_or(0);
+            let r_hi = inner.iter().map(|&b| cell[b].1).max().unwrap_or(0);
+            for b in (0..at.len()).filter(|&b| !members[b]) {
+                if !r.overlaps(&self.plan.boxes[b].rect_at(at[b])) {
+                    continue;
+                }
+                let (c, rw) = cell[b];
+                if rw > r_hi {
+                    row_gap[r_hi] += 1;
+                } else if rw < r_lo {
+                    row_gap[r_lo - 1] += 1;
+                } else if c > c_hi {
+                    col_gap[c_hi] += 1;
+                } else if c < c_lo {
+                    col_gap[c_lo - 1] += 1;
+                } else {
+                    continue;
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// Moves `b` from slot `from` to `to`; `other`, the box on `to`,
@@ -679,9 +1416,129 @@ impl<'a> Layout<'a> {
     }
 }
 
+/// Size in px of the label `label::place_labels` gives edge `e`, `None`
+/// when the edge has no label text.
+// DECISION: mirrors the documented `Label::width_px` / `height_px` formula
+// (widest line at `LABEL_FONT_PX` rounded up plus the x paddings; lines
+// times `LABEL_LINE_PX` plus the y paddings) from pub `label` items, as
+// `label_size` is private there; no pub change is needed. A drift shows
+// in `p2_105_gap_fits_label`, which reads the real `Label` fields.
+fn label_px(plan: &ViewPlan, e: usize) -> Option<(i32, i32)> {
+    let lines = label::label_lines(&plan.edges[e], &plan.options);
+    if lines.is_empty() {
+        return None;
+    }
+    let widest = lines
+        .iter()
+        .map(|l| label::text_advance(l, Weight::Regular))
+        .max()
+        .unwrap_or(0);
+    let text = (widest * label::LABEL_FONT_PX + label::EM - 1) / label::EM;
+    let count = i32::try_from(lines.len()).unwrap_or(i32::MAX / label::LABEL_LINE_PX);
+    Some((
+        text + 2 * label::LABEL_PAD_X_PX,
+        count * label::LABEL_LINE_PX + 2 * label::LABEL_PAD_Y_PX,
+    ))
+}
+
+/// Grid units of clear gap two boxes need for a label `extent` px long
+/// along the line between them (P2-105: `max(30, e/2) + max(50, e/2)`,
+/// from CORE-14's start and arrowhead gaps), rounded up to the grid.
+fn label_gap(extent: i32) -> i32 {
+    let half = (extent + 1) / 2;
+    let px = label::START_GAP_PX.max(half) + label::ARROW_GAP_PX.max(half);
+    (px + GRID_PX - 1) / GRID_PX
+}
+
+/// The phase-1 slot window, inclusive (min col, min row, max col, max
+/// row), and the compactness anchor, for kept centres `kept` and lattice
+/// origin `origin`.
+fn lattice_window(kept: &[Option<Point>], origin: Point) -> ((i32, i32, i32, i32), Point) {
+    let kept_pts: Vec<Point> = kept.iter().flatten().copied().collect();
+    let auto = kept.len() - kept_pts.len();
+    let side = i32::try_from(auto.isqrt()).unwrap_or(i32::MAX / 4) + 2;
+    if kept_pts.is_empty() {
+        let mid = side / 2;
+        (
+            (0, 0, side, side),
+            Point::new(mid * COL_PITCH, mid * ROW_PITCH),
+        )
+    } else {
+        let lo_c = kept_pts
+            .iter()
+            .map(|p| (p.x - origin.x).div_euclid(COL_PITCH))
+            .min();
+        let hi_c = kept_pts
+            .iter()
+            .map(|p| (p.x - origin.x).div_euclid(COL_PITCH) + 1)
+            .max();
+        let lo_r = kept_pts
+            .iter()
+            .map(|p| (p.y - origin.y).div_euclid(ROW_PITCH))
+            .min();
+        let hi_r = kept_pts
+            .iter()
+            .map(|p| (p.y - origin.y).div_euclid(ROW_PITCH) + 1)
+            .max();
+        let count = i64::try_from(kept_pts.len()).unwrap_or(1);
+        let sx: i64 = kept_pts.iter().map(|p| i64::from(p.x)).sum();
+        let sy: i64 = kept_pts.iter().map(|p| i64::from(p.y)).sum();
+        let anchor = Point::new(
+            i32::try_from(sx.div_euclid(count)).unwrap_or(0),
+            i32::try_from(sy.div_euclid(count)).unwrap_or(0),
+        );
+        (
+            (
+                lo_c.unwrap_or(0) - side,
+                lo_r.unwrap_or(0) - side,
+                hi_c.unwrap_or(0) + side,
+                hi_r.unwrap_or(0) + side,
+            ),
+            anchor,
+        )
+    }
+}
+
+/// Running sums of `gaps` from 0: the coordinate of every lattice index.
+fn prefix(gaps: &[i32]) -> Vec<i32> {
+    let mut out = Vec::with_capacity(gaps.len() + 1);
+    let mut at = 0;
+    out.push(at);
+    for g in gaps {
+        at += g;
+        out.push(at);
+    }
+    out
+}
+
 /// Longest-path layer of every box over the edges, back edges of a
 /// depth-first walk (boxes in index order) ignored.
 fn layers(n: usize, ends: &[(usize, usize)]) -> Vec<usize> {
+    let (out, rank, post) = dfs_order(n, ends);
+    let mut layer = vec![0_usize; n];
+    for &v in post.iter().rev() {
+        for &w in &out[v] {
+            if rank[w] > rank[v] {
+                layer[w] = layer[w].max(layer[v] + 1);
+            }
+        }
+    }
+    layer
+}
+
+/// The edges of `ends` that are not back edges of the depth-first walk
+/// `layers` uses: an acyclic subset, every edge off a cycle kept.
+fn forward_edges(n: usize, ends: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let (_, rank, _) = dfs_order(n, ends);
+    ends.iter()
+        .copied()
+        .filter(|&(s, d)| s != d && rank[d] > rank[s])
+        .collect()
+}
+
+/// Out-lists, reverse post-order rank and post-order of a depth-first
+/// walk over `ends`, roots in index order.
+fn dfs_order(n: usize, ends: &[(usize, usize)]) -> (Vec<Vec<usize>>, Vec<usize>, Vec<usize>) {
     let mut out = vec![Vec::new(); n];
     for &(s, d) in ends {
         if s != d {
@@ -715,15 +1572,7 @@ fn layers(n: usize, ends: &[(usize, usize)]) -> Vec<usize> {
     for (r, &v) in post.iter().rev().enumerate() {
         rank[v] = r;
     }
-    let mut layer = vec![0_usize; n];
-    for &v in post.iter().rev() {
-        for &w in &out[v] {
-            if rank[w] > rank[v] {
-                layer[w] = layer[w].max(layer[v] + 1);
-            }
-        }
-    }
-    layer
+    (out, rank, post)
 }
 
 /// Sign of the turn `a -> b -> c`, exact in i64.
@@ -1287,5 +2136,187 @@ mod tests {
             "ext {ext:?} api {api:?}"
         );
         assert_l6_clear(&p, &c, &[box_of(&m, &p, "ext")]);
+    }
+
+    // place-quality (SRS 4.6, P2-100..P2-110).
+
+    /// A container view of system `sys` holding `containers` (keys, each
+    /// declared as a container), with `rels` as relationship lines and
+    /// `extra` as further model lines before the system.
+    fn containers_view(extra: &str, containers: &[&str], rels: &str, view_extra: &str) -> String {
+        let mut body = String::from(extra);
+        body.push_str("        sys = softwareSystem \"System\" \"Does things.\" {\n");
+        for c in containers {
+            writeln!(
+                body,
+                "            {c} = container \"{c}\" \"Part {c}.\" \"Rust\""
+            )
+            .expect("write to String");
+        }
+        body.push_str("        }\n");
+        body.push_str(rels);
+        workspace(
+            &body,
+            &format!(
+                "        container sys \"V\" {{\n            include *\n{view_extra}        }}"
+            ),
+        )
+    }
+
+    #[test]
+    fn p2_100_edges_point_down_between_ranks() {
+        let src = containers_view(
+            "",
+            &["a", "b", "c"],
+            "        a -> b \"Feeds\"\n        b -> c \"Feeds\"\n        a -> c \"Feeds\"\n",
+            "",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        let y = |k: &str| at(&c, box_of(&m, &p, k)).y;
+        assert!(y("a") < y("b"), "a {} b {}", y("a"), y("b"));
+        assert!(y("b") < y("c"), "b {} c {}", y("b"), y("c"));
+    }
+
+    #[test]
+    fn p2_101_cycle_still_placed_deterministic() {
+        let src = containers_view(
+            "",
+            &["a", "b", "c", "d"],
+            "        a -> b \"Feeds\"\n        b -> c \"Feeds\"\n        c -> a \"Feeds\"\n        c -> d \"Feeds\"\n",
+            "",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        assert_eq!(c.len(), p.boxes.len());
+        assert_l6_clear(&p, &c, &p.unplaced());
+        let y = |k: &str| at(&c, box_of(&m, &p, k)).y;
+        assert!(y("c") < y("d"), "c {} d {}", y("c"), y("d"));
+        assert_eq!(place(&p, &Keep::default()), c);
+    }
+
+    #[test]
+    fn p2_103_person_on_top_with_edge_into_person() {
+        let src = containers_view(
+            "        user = person \"User\" \"A role.\"\n",
+            &["app", "db"],
+            "        user -> app \"Calls\"\n        app -> user \"Notifies\"\n        app -> db \"Stores in\"\n",
+            "",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        let y = |k: &str| at(&c, box_of(&m, &p, k)).y;
+        assert!(y("user") < y("app"), "user {} app {}", y("user"), y("app"));
+        assert!(y("user") < y("db"), "user {} db {}", y("user"), y("db"));
+        assert!(y("app") < y("db"), "app {} db {}", y("app"), y("db"));
+    }
+
+    #[test]
+    fn p2_110_autolayout_arguments_ignored() {
+        let centres = |line: &str| {
+            let src = containers_view(
+                "        user = person \"User\" \"A role.\"\n",
+                &["app", "db", "worker"],
+                "        user -> app \"Calls\"\n        app -> db \"Stores in\"\n        worker -> db \"Reads\"\n",
+                line,
+            );
+            let m = model(&src);
+            place(&plan_of(&m, "V"), &Keep::default())
+        };
+        let plain = centres("");
+        assert_eq!(centres("            autoLayout\n"), plain);
+        assert_eq!(centres("            autoLayout lr 100 50\n"), plain);
+    }
+
+    #[test]
+    fn p2_102_order_within_rank_removes_crossing() {
+        // Sources a, b; destinations declared d before c; a -> c, b -> d.
+        // A third rank (c -> e, d -> f, declared f before e) checks the
+        // order carries down.
+        let src = containers_view(
+            "",
+            &["a", "b", "d", "c", "f", "e"],
+            "        a -> c \"Feeds\"\n        b -> d \"Feeds\"\n        c -> e \"Feeds\"\n        d -> f \"Feeds\"\n",
+            "",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        assert_eq!(straight_crossings(&p, &c), 0, "{c:?}");
+    }
+
+    #[test]
+    fn p2_104_externals_at_row_ends() {
+        // An external called by two internal boxes would sit between
+        // them, and between their own internal callees, by length alone.
+        let src = workspace(
+            r#"        app = softwareSystem "App" "Serves."
+        i1 = softwareSystem "Billing" "Bills."
+        i2 = softwareSystem "Reports" "Reports."
+        i3 = softwareSystem "Ledger" "Records."
+        e1 = softwareSystem "Mailer" "Sends mail." "External"
+        i4 = softwareSystem "Archive" "Keeps."
+        app -> i1 "Bills through"
+        app -> i2 "Reports to"
+        i1 -> i3 "Records in"
+        i1 -> e1 "Sends through"
+        i2 -> e1 "Sends through"
+        i2 -> i4 "Archives in"
+        app -> i3 "Audits"
+        app -> e1 "Tests"
+        app -> i4 "Restores"
+"#,
+            "        systemContext app \"V\" {\n            include *\n        }",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        let mut rows: Vec<i32> = c.iter().map(|q| q.y).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        for y in rows {
+            let mut row: Vec<usize> = (0..c.len()).filter(|&i| c[i].y == y).collect();
+            row.sort_by_key(|&i| c[i].x);
+            let ext: Vec<bool> = row.iter().map(|&i| p.boxes[i].external).collect();
+            if let (Some(a), Some(z)) =
+                (ext.iter().position(|&x| !x), ext.iter().rposition(|&x| !x))
+            {
+                assert!(ext[a..=z].iter().all(|&x| !x), "row {y}: {ext:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn p2_109_outside_scope_box_clear_of_boundary() {
+        // An outside container called by one component and calling
+        // another ranks between the components.
+        let src = workspace(
+            r#"        sys = softwareSystem "System" "Does things." {
+            app = container "App" "Serves." "Rust" {
+                a = component "a" "First." "Rust"
+                b = component "b" "Second." "Rust"
+                c = component "c" "Third." "Rust"
+            }
+            q = container "Queue" "Buffers." "Rust"
+        }
+        a -> q "Puts on"
+        q -> b "Delivers to"
+        b -> c "Calls"
+        a -> c "Calls"
+"#,
+            "        component app \"V\" {\n            include *\n        }",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let centres = place(&p, &Keep::default());
+        let r = p.boundary_rect(0, &centres).expect("boundary");
+        let q = box_of(&m, &p, "q");
+        assert!(
+            !r.overlaps(&rect(&p, &centres, q)),
+            "queue inside the boundary"
+        );
     }
 }
