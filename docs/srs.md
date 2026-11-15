@@ -575,8 +575,9 @@ Router (`SKILL.md` "Lines", `c4.py` `route`)
   than the prototype's (C1 0, C2 0, C3 1, C3-startup 0).
 - **CORE-12** Lines heading the same way run as lanes exactly 20px
   apart; on `example/` the length of line running 20px beside another
-  is at least the prototype's. `TODO(srs)`: measure that length per
-  view on the prototype output once and write the numbers here.
+  (horizontal and vertical runs heading the same way, summed once per
+  pair of lines) is at least the prototype's: C1 0px, C2 70px, C3 220px,
+  C3-startup 110px (measured once on the prototype output, 2026-11-15).
 - **CORE-25** Routing is deterministic: the same file gives the same
   scene, and the same SVG bytes, on every run and machine; scene
   coordinates are integers or fixed-precision decimals; tested by
