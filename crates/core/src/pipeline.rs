@@ -85,7 +85,7 @@ use crate::geom::Point;
 use crate::label::Labels;
 use crate::lint::{Finding, Report};
 use crate::model::{
-    ElementId, ElementKind, Model, Selector, Spanned, ViewKind, ViewScope, ViewSpec,
+    ElementId, ElementKind, Mode, Model, Selector, Spanned, ViewKind, ViewScope, ViewSpec,
 };
 use crate::place::Keep;
 use crate::route::{RouteConfig, Routes, Stopped};
@@ -366,6 +366,59 @@ pub fn build_all(model: &Model, stop: &AtomicBool) -> Result<AllViews, Stopped> 
         coverage,
         unsupported: Vec::new(),
     })
+}
+
+/// `build_view` in `mode`: the plan from `view::plan_in`, so styles
+/// resolve over the top-level and `mode` blocks and the scene carries
+/// `mode` (P2-430, P2-431). `build_view(..)` equals
+/// `build_view_in(.., Mode::Light, ..)`. The CLI's `--mode` (P2-432) and
+/// the editor's light/dark switch (P2-433) call it. Serves P2-430,
+/// P2-432, P2-433.
+///
+/// # Errors
+///
+/// As `build_view`: `UnknownView`, `Unsupported` for a non-drawable
+/// key, `Stopped`.
+pub fn build_view_in(
+    _model: &Model,
+    _key: &str,
+    _keep: &Keep,
+    _mode: Mode,
+    _stop: &AtomicBool,
+) -> Result<ViewBuild, BuildError> {
+    todo!()
+}
+
+/// `build_spec` in `mode`, for any spec, drawable or not (O7). Serves
+/// P2-430, P2-433, EDIT-15.
+///
+/// # Errors
+///
+/// `BuildError::Unsupported` when `!view.kind.drawable()`;
+/// `BuildError::Stopped` when `stop` was set while routing.
+///
+/// # Panics
+///
+/// When `view` does not belong to `model`.
+pub fn build_spec_in(
+    _model: &Model,
+    _view: &ViewSpec,
+    _keep: &Keep,
+    _mode: Mode,
+    _stop: &AtomicBool,
+) -> Result<ViewBuild, BuildError> {
+    todo!()
+}
+
+/// `build_all` in `mode`: every drawable view built with
+/// `build_spec_in(.., mode, ..)`, then L22 once. `build_all(..)` equals
+/// `build_all_in(.., Mode::Light, ..)`. Serves P2-430, P2-432.
+///
+/// # Errors
+///
+/// `Stopped` as `build_all`.
+pub fn build_all_in(_model: &Model, _mode: Mode, _stop: &AtomicBool) -> Result<AllViews, Stopped> {
+    todo!()
 }
 
 /// The drag preview (EDIT-2, EDIT-20, EDIT-25): `previous` with the boxes

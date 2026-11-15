@@ -237,8 +237,8 @@ pub struct Relationship {
     pub perspectives: Vec<Perspective>,
 }
 
-/// A box shape. Phase 2 adds the rest of Structurizr's shapes (P2-11).
-/// Serves DSL-3, CORE-2.
+/// A box shape: the 19 shapes of Structurizr's notation page, parsed
+/// in any letter case. Serves DSL-3, CORE-2, P2-11.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum Shape {
@@ -249,6 +249,48 @@ pub enum Shape {
     Person,
     /// `shape Cylinder`.
     Cylinder,
+    /// `shape RoundedBox`: a box with a larger corner radius than `Box`
+    /// (P2-415).
+    RoundedBox,
+    /// `shape Circle`.
+    Circle,
+    /// `shape Ellipse`.
+    Ellipse,
+    /// `shape Hexagon`.
+    Hexagon,
+    /// `shape Diamond`.
+    Diamond,
+    /// `shape Bucket`.
+    Bucket,
+    /// `shape Pipe`: a horizontal cylinder.
+    Pipe,
+    /// `shape Robot`.
+    Robot,
+    /// `shape Folder`.
+    Folder,
+    /// `shape WebBrowser`.
+    WebBrowser,
+    /// `shape Window`.
+    Window,
+    /// `shape Terminal`.
+    Terminal,
+    /// `shape Shell`.
+    Shell,
+    /// `shape MobileDevicePortrait`.
+    MobileDevicePortrait,
+    /// `shape MobileDeviceLandscape`.
+    MobileDeviceLandscape,
+    /// `shape Component`.
+    Component,
+}
+
+impl Shape {
+    /// The reference's spelling (`"MobileDevicePortrait"`), which `edit`
+    /// writes (DSL-13) and the style panel shows. Serves P2-11, P2-417.
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        todo!()
+    }
 }
 
 /// A `#rrggbb` colour. Serves DSL-3.
@@ -270,6 +312,51 @@ impl fmt::Display for Colour {
     }
 }
 
+/// How a box outline or a line is stroked: `border` on an element style,
+/// `style` (and `dashed true|false`) on a relationship style. Serves
+/// P2-405, P2-420.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Border {
+    /// No dash array; the default for boxes and, unlike Structurizr, for
+    /// lines (CORE-10, B styles-themes 2).
+    #[default]
+    Solid,
+    /// A dash.
+    Dashed,
+    /// A dash shorter than `Dashed`'s.
+    Dotted,
+}
+
+/// Light or dark: which `light { }` / `dark { }` style blocks apply, and
+/// the colour defaults a view is drawn with. Serves P2-21, P2-430..P2-433.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub enum Mode {
+    /// The default (Structurizr `-mode light`).
+    #[default]
+    Light,
+    /// `dark`.
+    Dark,
+}
+
+/// A relationship style's or per-view line's `routing`. Parsed and kept;
+/// every value draws with c4rizer's router. Serves P2-421 (and
+/// editor-breadth P2-709, O8).
+// TODO(srs): P2-421, what each value means under the circuit-board
+// router. Reading taken (B styles-themes 1): parsed and stored, every
+// value draws with c4rizer's router (CORE-6..9), no notice.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Routing {
+    /// `routing Direct`.
+    Direct,
+    /// `routing Orthogonal`.
+    Orthogonal,
+    /// `routing Curved`.
+    Curved,
+}
+
 /// One `element "<tag>" { ... }` block in the `styles` block of `views`.
 /// Each property keeps the span of its value so `edit` rewrites only that
 /// value (DSL-13). Phase 2 adds the other style properties (P2-10).
@@ -287,6 +374,44 @@ pub struct ElementStyle {
     pub shape: Option<Spanned<Shape>>,
     /// The whole `element` statement, block included.
     pub span: Span,
+    /// `stroke <colour>`: the box outline colour (P2-403).
+    pub stroke: Option<Spanned<Colour>>,
+    /// `strokeWidth N`, 1..10 (P2-404).
+    // TODO(srs): P2-404/P2-406/P2-425/P2-426 say an out-of-range value
+    // is an invalid-value error; B styles-themes 13 [I] (Structurizr for
+    // Java's setters) clamps to the range with no error. Reading taken:
+    // clamp, the Structurizr-faithful one; verify at the pinned commit.
+    pub stroke_width: Option<Spanned<u8>>,
+    /// `width W` in px (P2-402).
+    // TODO(srs): P2-402, literal px and off-grid sizes. Reading taken (B
+    // styles-themes 4): literal px; a value that is not a multiple of 10
+    // is rounded up to the next multiple of 10.
+    pub width: Option<Spanned<i32>>,
+    /// `height H` in px (P2-402).
+    pub height: Option<Spanned<i32>>,
+    /// `fontSize N`: the box name's px size (P2-407).
+    pub font_size: Option<Spanned<u32>>,
+    /// `border solid|dashed|dotted` (P2-405).
+    pub border: Option<Spanned<Border>>,
+    /// `opacity N`, 0..100 (P2-406).
+    pub opacity: Option<Spanned<u8>>,
+    /// `metadata true|false`: the `[type: technology]` line (P2-408).
+    pub metadata: Option<Spanned<bool>>,
+    /// `description true|false` (P2-408).
+    pub description: Option<Spanned<bool>>,
+    /// `icon <file>` as written (P2-409); the bytes are in
+    /// `ResolvedStyle::icon` and `Model::assets`.
+    pub icon: Option<Literal>,
+    /// `properties { name value }`, kept byte for byte, no effect
+    /// (P2-410).
+    pub properties: Vec<Property>,
+    /// `Some` when the block sits in `light { }` or `dark { }`, `None`
+    /// for a top-level block (P2-21, P2-430).
+    pub mode: Option<Mode>,
+    /// `Some(i)` for a style read from `Model::themes[i]`, `None` for the
+    /// file's own block; `edit` never edits a theme style (P2-13,
+    /// P2-439). A theme style's `span` is its `theme` statement's.
+    pub theme: Option<usize>,
 }
 
 /// The style an element ends up with: each property from the last of its
@@ -302,6 +427,34 @@ pub struct ResolvedStyle {
     pub color: Colour,
     /// Box shape.
     pub shape: Shape,
+    /// Outline colour; `None`: the fill darkened to 72% (P2-403).
+    pub stroke: Option<Colour>,
+    /// Outline width in px; 1 by default, as in phase 1 (P2-404).
+    pub stroke_width: u8,
+    /// Box width in px replacing the kind default (P2-402).
+    pub width: Option<i32>,
+    /// Box height in px replacing the kind default (P2-402).
+    pub height: Option<i32>,
+    /// Name size in px; `None`: the phase-1 14px (P2-407).
+    // TODO(srs): P2-407, how the type line and description scale. Reading
+    // taken (B styles-themes 5): name N px on an N+6 px pitch; type line
+    // and description round(N x 11/14) px on that size plus 4.
+    pub font_size: Option<u32>,
+    /// Outline dash (P2-405).
+    pub border: Border,
+    /// 0..100; 100 by default (P2-406).
+    pub opacity: u8,
+    /// Draw the `[type: technology]` line (P2-408).
+    pub metadata: bool,
+    /// Draw the description (P2-408).
+    pub description: bool,
+    /// The icon file's bytes (P2-409, P2-428, O3).
+    // TODO(srs): P2-409. Readings taken (B styles-themes 7): drawn centred
+    // in the box's bottom band, at most 1/4 of the box height, clear of
+    // the texts; PNG, JPEG and SVG local files and `data:` URIs accepted;
+    // a URL icon is not drawn and gets a P2-3 notice; a missing or
+    // unreadable file is a `FileRead` parse error naming the path.
+    pub icon: Option<Asset>,
 }
 
 impl ResolvedStyle {
@@ -320,8 +473,190 @@ impl ResolvedStyle {
                 ElementKind::Person => Shape::Person,
                 _ => Shape::Box,
             },
+            // DECISION: the phase-2 properties default to their phase-1
+            // look (P2-437), so phase-1 files draw unchanged.
+            stroke: None,
+            stroke_width: 1,
+            width: None,
+            height: None,
+            font_size: None,
+            border: Border::Solid,
+            opacity: 100,
+            metadata: true,
+            description: true,
+            icon: None,
         }
     }
+}
+
+/// One `relationship "<tag>" { ... }` block, top-level in `styles` or in
+/// `light`/`dark`, or read from a theme. Each property keeps its value
+/// span (DSL-13). Serves P2-12, P2-418..P2-426, P2-410.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RelationshipStyle {
+    /// The tag this style applies to.
+    pub tag: Literal,
+    /// `thickness N`: line and chevron width in px (P2-418).
+    pub thickness: Option<Spanned<u32>>,
+    /// `color`/`colour` (one property, P2-400, P2-401, P2-419).
+    pub color: Option<Spanned<Colour>>,
+    /// `style solid|dashed|dotted`, or `dashed true|false` (P2-420).
+    pub style: Option<Spanned<Border>>,
+    /// `routing Direct|Orthogonal|Curved` (P2-421).
+    pub routing: Option<Spanned<Routing>>,
+    /// `jump true|false` (P2-422).
+    pub jump: Option<Spanned<bool>>,
+    /// `fontSize N`: label size in px (P2-423).
+    pub font_size: Option<Spanned<u32>>,
+    /// `width W`: label text width in px (P2-424).
+    pub width: Option<Spanned<u32>>,
+    /// `position P`, 0..100 along the line (P2-425).
+    pub position: Option<Spanned<u8>>,
+    /// `opacity N`, 0..100 (P2-426).
+    pub opacity: Option<Spanned<u8>>,
+    /// `properties { name value }`, kept, no effect (P2-410).
+    pub properties: Vec<Property>,
+    /// As `ElementStyle::mode` (P2-21, P2-430).
+    pub mode: Option<Mode>,
+    /// As `ElementStyle::theme` (P2-13, P2-439).
+    pub theme: Option<usize>,
+    /// The whole `relationship` statement, block included.
+    pub span: Span,
+}
+
+/// The style a drawn line ends up with: each property from the last of
+/// its winning relationship's tags that sets it (DSL-15), else the
+/// phase-1 default (`DEFAULT`). `view::plan_in` folds the per-view
+/// `line` layout into it (O9). Serves P2-12, P2-418..P2-426.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedRelationshipStyle {
+    /// Line and chevron width in px (P2-418).
+    // TODO(srs): P2-418, scaling. Reading taken (B styles-themes 9): the
+    // arrowhead and join dot scale by thickness/2, never below the
+    // phase-1 size; the 20px lane pitch does not change.
+    pub thickness: u32,
+    /// `None`: the destination box's fill (CORE-3); `Some` overrides it
+    /// for line, chevrons, tip and label text (P2-419).
+    pub color: Option<Colour>,
+    /// Polyline dash (P2-420).
+    pub style: Border,
+    /// Parsed routing, no effect on the drawing (P2-421).
+    pub routing: Option<Routing>,
+    /// Hop at crossings (P2-422).
+    // TODO(srs): P2-422. Readings taken (B styles-themes 8): a `jump
+    // true` line hops at every crossing with a line drawn before it; when
+    // both jump, the later-drawn line hops; a hop is a 6px-radius half
+    // circle.
+    pub jump: bool,
+    /// Label size in px; `None`: the phase-1 11px (P2-423).
+    // TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal, as
+    // 11/13 in phase 1): N + 2.
+    pub font_size: Option<u32>,
+    /// Label text width in px; `None`: `labelWidth` characters (P2-424).
+    pub width: Option<u32>,
+    /// Label position in percent of the line's length; `None`: phase-1
+    /// placement (P2-425).
+    pub position: Option<u8>,
+    /// 0..100 (P2-426).
+    pub opacity: u8,
+}
+
+impl ResolvedRelationshipStyle {
+    /// The phase-1 line look: 2px, destination colour, solid, no routing,
+    /// no jump, phase-1 label, opacity 100 (CORE-2, CORE-3, CORE-10).
+    /// Serves P2-12, P2-437.
+    pub const DEFAULT: ResolvedRelationshipStyle = ResolvedRelationshipStyle {
+        thickness: 2,
+        color: None,
+        style: Border::Solid,
+        routing: None,
+        jump: false,
+        font_size: None,
+        width: None,
+        position: None,
+        opacity: 100,
+    };
+}
+
+/// The look of a boundary: element styles for `Boundary` then
+/// `Boundary:SoftwareSystem`/`Boundary:Container` (scope boundaries), or
+/// `Group` then `Group:<name>` (group boundaries), per property; `None`
+/// keeps the phase-1 value (dashed 8/6, 1px, #666666, no fill). Serves
+/// P2-411, P2-412.
+// TODO(srs): P2-411, a boundary `icon`. Reading taken (B styles-themes
+// 7b): drawn left of its name tag, at the tag's height.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedBoundaryStyle {
+    /// Fill; `None`: no fill.
+    pub background: Option<Colour>,
+    /// Outline colour.
+    pub stroke: Option<Colour>,
+    /// Outline width in px.
+    pub stroke_width: Option<u8>,
+    /// Name-tag text colour.
+    pub color: Option<Colour>,
+    /// Name-tag size in px.
+    pub font_size: Option<u32>,
+    /// Outline dash; `None`: the phase-1 8/6 dash.
+    pub border: Option<Border>,
+    /// 0..100.
+    pub opacity: u8,
+    /// `false` drops the bracketed type from the name tag (scope
+    /// boundaries only, P2-411).
+    pub metadata: bool,
+}
+
+impl ResolvedBoundaryStyle {
+    /// The phase-1 boundary look: every property `None`, opacity 100,
+    /// metadata shown (CORE-1). Serves P2-411, P2-437.
+    // DECISION: a pub const beside `ResolvedRelationshipStyle::DEFAULT`
+    // (not in A.2) so `view::plan` and test plans build a phase-1
+    // boundary without calling the model.
+    pub const DEFAULT: ResolvedBoundaryStyle = ResolvedBoundaryStyle {
+        background: None,
+        stroke: None,
+        stroke_width: None,
+        color: None,
+        font_size: None,
+        border: None,
+        opacity: 100,
+        metadata: true,
+    };
+}
+
+/// One `theme`/`themes` source in `views`, in theme order. Serves P2-13,
+/// P2-427..P2-429.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Theme {
+    /// The source as written.
+    pub source: Literal,
+    /// What the source names.
+    pub kind: ThemeSource,
+    /// The `theme`/`themes` statement.
+    pub span: Span,
+}
+
+/// What a theme source names. Serves P2-13, P2-427, P2-429.
+// TODO(srs): P2-429, bundled copies, a cache or a fetch. Reading taken (B
+// styles-themes 11 with approver note C): a name or URL draws nothing and
+// gets a P2-3 notice naming it (no network in phase 2; phase-3 row
+// `network`); `theme default` by name draws if its styles can be bundled
+// under their licence. A theme file must stay under the diagram's folder
+// (`PathOutsideRoot`).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ThemeSource {
+    /// A local Structurizr theme JSON file, relative to the diagram
+    /// file's folder (P2-427).
+    File(String),
+    /// A named theme (`default`, ...).
+    Name(String),
+    /// An `https://` URL.
+    Url(String),
 }
 
 /// The view kinds of phase 1. Phase 2 and 3 add `systemLandscape`,
@@ -1085,6 +1420,14 @@ pub struct Model {
     pub configuration_scope: Option<Spanned<ConfigurationScope>>,
     /// Workspace-level `!docs` / `!adrs` / `!decisions` (P2-159, P2-160).
     pub docs: Vec<Attachment>,
+    /// Every `relationship` style block: theme styles first in theme
+    /// order, then the file's own in source order (P2-12, P2-13).
+    pub relationship_styles: Vec<RelationshipStyle>,
+    /// Every `theme`/`themes` source in order (P2-13).
+    pub themes: Vec<Theme>,
+    /// Every file read at parse time (icons, image-view files), in load
+    /// order, de-duplicated by path (P2-409, P2-428, O3).
+    pub assets: Vec<Asset>,
 }
 
 impl Model {
@@ -1203,6 +1546,56 @@ impl Model {
             }
         }
         style
+    }
+
+    /// `styles_for` in `mode`: the top-level blocks and those of `mode`'s
+    /// `light`/`dark` block; theme styles (in both modes) resolve as if
+    /// written before the file's first block, so for one tag the file's
+    /// block beats a theme's and a later theme beats an earlier one
+    /// (P2-13). Serves P2-21, P2-430, P2-13, DSL-15.
+    // TODO(srs): P2-430. Readings taken (B styles-themes 10a, 10b): for
+    // one tag and mode, a `light`/`dark` block beats a top-level block
+    // wherever each is written; theme styles apply in both modes.
+    pub fn styles_for_in(&self, _element: ElementId, _mode: Mode) -> Vec<usize> {
+        todo!()
+    }
+
+    /// `style_of` in `mode`: `styles_for_in` applied per property over
+    /// `ResolvedStyle::default_for(kind)`. Serves P2-10, P2-400..P2-410,
+    /// P2-430, DSL-15.
+    pub fn style_of_in(&self, _element: ElementId, _mode: Mode) -> ResolvedStyle {
+        todo!()
+    }
+
+    /// `relationship_style_of_in(relationship, Mode::Light)`. Serves
+    /// P2-12.
+    pub fn relationship_style_of(
+        &self,
+        _relationship: RelationshipId,
+    ) -> ResolvedRelationshipStyle {
+        todo!()
+    }
+
+    /// The style of `relationship` in `mode`: `relationship_styles` for
+    /// `Relationship` then its declared tags (DSL-15 order, same mode
+    /// and theme rules as `styles_for_in`), applied per property over
+    /// `ResolvedRelationshipStyle::DEFAULT`. Serves P2-12, P2-13, P2-430.
+    pub fn relationship_style_of_in(
+        &self,
+        _relationship: RelationshipId,
+        _mode: Mode,
+    ) -> ResolvedRelationshipStyle {
+        todo!()
+    }
+
+    /// The look of a boundary carrying `tags` (`["Boundary",
+    /// "Boundary:SoftwareSystem"]`, `["Group", "Group:<name>"]`) in
+    /// `mode`: element styles for those tags, in that order, per
+    /// property. `shape`, `width`, `height` and `description` are
+    /// ignored; `Boundary:Enterprise` changes nothing (P2-440). Serves
+    /// P2-411, P2-412, P2-440.
+    pub fn boundary_style_in(&self, _tags: &[&str], _mode: Mode) -> ResolvedBoundaryStyle {
+        todo!()
     }
 
     /// The elements `view` includes after `include` and `exclude`
@@ -1930,6 +2323,9 @@ impl<'t> Builder<'t> {
                 configuration_properties: Vec::new(),
                 configuration_scope: None,
                 docs: Vec::new(),
+                relationship_styles: Vec::new(),
+                themes: Vec::new(),
+                assets: Vec::new(),
             },
             keys: BTreeMap::new(),
             pending: Vec::new(),
@@ -2988,6 +3384,19 @@ impl Builder<'_> {
             color: None,
             shape: None,
             span: statement.span,
+            stroke: None,
+            stroke_width: None,
+            width: None,
+            height: None,
+            font_size: None,
+            border: None,
+            opacity: None,
+            metadata: None,
+            description: None,
+            icon: None,
+            properties: Vec::new(),
+            mode: None,
+            theme: None,
         };
         for inner in self.block(statement, head)? {
             let head = self.head(inner)?;
@@ -3764,7 +4173,8 @@ mod tests {
             ResolvedStyle {
                 background: C(0xdd, 0xdd, 0xdd),
                 color: C(0, 0, 0),
-                shape: Shape::Person
+                shape: Shape::Person,
+                ..ResolvedStyle::default_for(ElementKind::Person)
             }
         );
         assert_eq!(

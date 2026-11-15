@@ -301,6 +301,13 @@ pub struct Label {
     pub height_px: i32,
     /// Whether it sits clear, over lines, or with no room (CORE-15).
     pub fit: Fit,
+    /// Text size in px: the edge style's `font_size`, else
+    /// `LABEL_FONT_PX` (P2-423).
+    pub font_px: i32,
+    /// Line pitch in px: `font_px + 2`, else `LABEL_LINE_PX` (P2-423).
+    // TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal):
+    // N + 2, as 11/13 in phase 1.
+    pub line_px: i32,
 }
 
 impl Label {
@@ -498,6 +505,8 @@ pub fn place_labels(plan: &ViewPlan, routes: &Routes) -> Labels {
             width_px,
             height_px,
             fit: Fit::NoRoom,
+            font_px: LABEL_FONT_PX,
+            line_px: LABEL_LINE_PX,
         };
         let spots = walk(&line.points);
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
@@ -1052,6 +1061,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let mut centres = far(2);
         centres[0] = pt(0, 0);
@@ -1201,6 +1211,8 @@ mod tests {
             width_px: 43,
             height_px: 19,
             fit: Fit::Clear,
+            font_px: LABEL_FONT_PX,
+            line_px: LABEL_LINE_PX,
         };
         // px rectangle: x 9..52, y 11..30.
         assert_eq!(l.bounds(), Rect::from_corners(pt(0, 1), pt(6, 3)));
@@ -1226,6 +1238,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0), BoxId(1)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let centres = vec![pt(0, 0), pt(30, 20)];
         let outer = p.boundary_rect(0, &centres).expect("boundary");
@@ -1375,6 +1388,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let r = routes(
             vec![pt(0, 0), pt(40, 0), pt(40, 30)],

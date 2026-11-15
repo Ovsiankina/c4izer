@@ -296,6 +296,16 @@ impl Writer {
                 let cap = format!("M{x},{top} A{rx},{ry} 0 0 0 {},{top}", x + w);
                 self.path(&cap, None, Some(stroke));
             }
+            Outline::Ellipse { .. }
+            | Outline::Hexagon { .. }
+            | Outline::Diamond { .. }
+            | Outline::Bucket { .. }
+            | Outline::Pipe { .. }
+            | Outline::Robot { .. }
+            | Outline::Folder { .. }
+            | Outline::Window { .. }
+            | Outline::MobileDevice { .. }
+            | Outline::Component { .. } => todo!(),
         }
     }
 
@@ -905,6 +915,16 @@ mod tests {
                 Outline::Rect { .. } => vec!["rect"],
                 Outline::Person { .. } => vec!["rect", "circle"],
                 Outline::Cylinder { .. } => vec!["path", "path"],
+                Outline::Ellipse { .. }
+                | Outline::Hexagon { .. }
+                | Outline::Diamond { .. }
+                | Outline::Bucket { .. }
+                | Outline::Pipe { .. }
+                | Outline::Robot { .. }
+                | Outline::Folder { .. }
+                | Outline::Window { .. }
+                | Outline::MobileDevice { .. }
+                | Outline::Component { .. } => todo!(),
             };
             let lines = b.name.lines.len()
                 + b.type_line.lines.len()

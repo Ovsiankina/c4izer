@@ -89,7 +89,8 @@ use crate::label::{
     text_advance,
 };
 use crate::model::{
-    Colour, ElementId, ElementKind, RelationshipId, Shape, ViewKind, ViewOptions, ViewScope,
+    Asset, Colour, ElementId, ElementKind, Mode, RelationshipId, Shape, ViewKind, ViewOptions,
+    ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
@@ -211,8 +212,15 @@ pub struct Stroke {
 }
 
 /// The exact geometry of a box shape in px, so the canvas and the SVG
-/// draw the same outline (EDIT-12). `#[non_exhaustive]`: phase 2 adds
-/// Structurizr's other shapes (P2-11). Serves CORE-2.
+/// draw the same outline (EDIT-12). Every outline lies inside the box
+/// rectangle and the box texts inside its text area (P2-413); lines end
+/// on the box rectangle, not the outline (P2-414). Serves CORE-2, P2-11,
+/// P2-413..P2-416.
+// TODO(srs): P2-413/P2-414. Reading taken (B styles-themes 6):
+// proportions per Structurizr's notation page; lines end on the box
+// rectangle, so CORE-6's grid ports hold for every shape.
+// TODO(srs): P2-415. Reading taken (B styles-themes 3): `Box` keeps the
+// phase-1 6px corner radius, `RoundedBox` uses 20px.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Outline {
@@ -245,6 +253,113 @@ pub enum Outline {
         /// Vertical radius of the caps.
         cap_ry_px: i32,
     },
+    /// `Shape::Circle` (a circle centred in `rect`, diameter its shorter
+    /// side) and `Shape::Ellipse` (the ellipse filling `rect`): told
+    /// apart by `circle`.
+    Ellipse {
+        /// The ellipse's bounding rectangle (a square for a circle).
+        rect: Rect,
+        /// True for `Shape::Circle`.
+        circle: bool,
+    },
+    /// `Shape::Hexagon`: flat top and bottom, the left and right points
+    /// `inset_px` in from the slanted sides' ends.
+    Hexagon {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Horizontal inset of the top and bottom corners.
+        inset_px: i32,
+    },
+    /// `Shape::Diamond`: the four side midpoints of `rect`.
+    Diamond {
+        /// Bounding rectangle.
+        rect: Rect,
+    },
+    /// `Shape::Bucket`: a cylinder whose bottom is narrower than its top.
+    Bucket {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Vertical radius of the top cap.
+        cap_ry_px: i32,
+    },
+    /// `Shape::Pipe`: a horizontal cylinder with caps left and right.
+    Pipe {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Horizontal radius of the caps.
+        cap_rx_px: i32,
+    },
+    /// `Shape::Robot`: a head above a body, with the texts in the body.
+    Robot {
+        /// The head rectangle.
+        head: Rect,
+        /// The body rectangle; the texts sit in it.
+        body: Rect,
+        /// Corner radius of both.
+        radius_px: i32,
+    },
+    /// `Shape::Folder`: a box with a tab on its top left.
+    Folder {
+        /// The folder body.
+        rect: Rect,
+        /// The tab above the body.
+        tab: Rect,
+    },
+    /// `Shape::WebBrowser`, `Window`, `Terminal`, `Shell`: a box with a
+    /// title bar `bar_px` tall, decorated per `kind`.
+    Window {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Title bar height.
+        bar_px: i32,
+        /// Which of the four.
+        kind: WindowKind,
+    },
+    /// `Shape::MobileDevicePortrait`/`MobileDeviceLandscape`: a rounded
+    /// device with the screen `inset_px` inside it.
+    MobileDevice {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// True for portrait.
+        portrait: bool,
+        /// Bezel width.
+        inset_px: i32,
+    },
+    /// `Shape::Component`: a box with two small tabs on its left side.
+    Component {
+        /// The component body.
+        rect: Rect,
+        /// The two tabs, top first.
+        tabs: [Rect; 2],
+    },
+}
+
+/// The decoration of an `Outline::Window`. Serves P2-11.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowKind {
+    /// `Shape::WebBrowser`: bar with an address field.
+    WebBrowser,
+    /// `Shape::Window`: bar with three buttons.
+    Window,
+    /// `Shape::Terminal`: dark screen.
+    Terminal,
+    /// `Shape::Shell`: dark screen with a prompt.
+    Shell,
+}
+
+/// An icon drawn inside a box or beside a boundary's name tag, the same
+/// in canvas, SVG (`<image>` with a `data:` URI) and PNG. Serves P2-409.
+// TODO(srs): P2-409 icon placement. Reading taken (B styles-themes 7a,
+// 7b): centred in the box's bottom band, at most 1/4 of the box height,
+// clear of the texts; a boundary icon left of its name tag.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneIcon {
+    /// Where it is drawn, in px.
+    pub rect: Rect,
+    /// The image file.
+    pub asset: Asset,
 }
 
 /// One box (CORE-2): an element drawn with its shape, fill, name, type
@@ -281,6 +396,11 @@ pub struct SceneBox {
     /// The description wrapped to the box's text width, `None` when the
     /// element has none.
     pub description: Option<TextBlock>,
+    /// 0..100: fill, outline, texts and icon drawn at `opacity`/100;
+    /// 100 draws no opacity attribute (P2-406).
+    pub opacity: u8,
+    /// The style's icon, inside `rect` and clear of the texts (P2-409).
+    pub icon: Option<SceneIcon>,
 }
 
 /// An open V (two strokes meeting at the apex) pointing along its
@@ -347,6 +467,12 @@ pub struct SceneLine {
     /// False when the router could not route it (CORE-13, L1): drawn as
     /// a straight fallback, outside the CORE-6..9 checks.
     pub routed: bool,
+    /// 0..100: polyline, chevrons and tip at `opacity`/100 (P2-426).
+    pub opacity: u8,
+    /// The crossing points (px) where this line hops over a line drawn
+    /// before it (`jump true`, P2-422); empty otherwise. L4's crossing
+    /// count is unchanged.
+    pub jumps: Vec<Point>,
 }
 
 /// One placed label (CORE-14): `label::Label` in px, its text block and
@@ -368,6 +494,8 @@ pub struct SceneLabel {
     pub text: TextBlock,
     /// Clear, over lines (L23) or no room (L24), as `label` placed it.
     pub fit: Fit,
+    /// 0..100, the line's opacity (P2-426).
+    pub opacity: u8,
 }
 
 /// One dashed boundary (CORE-1): `ViewPlan::boundary_rect` in px and its
@@ -389,6 +517,13 @@ pub struct SceneBoundary {
     pub tag_rect: Rect,
     /// The tag text, bold: the name, then the scope's type in brackets.
     pub tag: TextBlock,
+    /// Fill from the boundary style's `background`; `None`: no fill
+    /// (P2-411, P2-412).
+    pub fill: Option<Colour>,
+    /// 0..100 (P2-411).
+    pub opacity: u8,
+    /// A boundary icon (P2-411; TODO(srs) on `ResolvedBoundaryStyle`).
+    pub icon: Option<SceneIcon>,
 }
 
 /// The sample drawn beside a key entry. `#[non_exhaustive]` so phase 2
@@ -438,6 +573,16 @@ pub struct LegendEntry {
 /// `Relationship`; an unstyled element still gets an entry, in the
 /// Structurizr default colours. Laid out clear of every box, line and
 /// label (CORE-14). Serves CORE-1, CORE-14.
+///
+/// Phase 2 (styles-themes step 5): a box look adds stroke colour,
+/// stroke width and border (P2-435); line entries are one per
+/// relationship-style tag (the last tag of the winner, in DSL-15 order,
+/// that has a relationship style block and is not `Relationship`), named
+/// by it and drawn with that style's colour, thickness and dash, plus one
+/// `Relationship` entry for every other drawn line (P2-27, P2-434).
+// TODO(srs): P2-27/P2-434/P2-435. Readings taken (B styles-themes 12):
+// join-dot lines keep their own entry; the `Relationship` entry's swatch
+// is #707070; opacity and icons do not split box entries.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Legend {
@@ -499,6 +644,13 @@ pub struct Scene {
     /// Crossings between routed lines, `Routes::crossings` as routed
     /// (L4, CORE-11, CORE-17). `move_box` leaves it unchanged.
     pub crossings: u32,
+    /// The plan's mode: the colour defaults it was drawn with (P2-431);
+    /// `pipeline::rebuild_after_move` keeps it. Serves P2-430, P2-433.
+    // TODO(srs): P2-431, dark-mode defaults. Reading taken (B
+    // styles-themes 10c): background #111111, box text #ffffff, default
+    // box fill #333333, line and boundary #aaaaaa; every other default
+    // unchanged.
+    pub mode: Mode,
 }
 
 impl Scene {
@@ -711,6 +863,16 @@ impl Scene {
                 rect: shift_rect(rect, dx, dy),
                 cap_ry_px,
             },
+            Outline::Ellipse { .. }
+            | Outline::Hexagon { .. }
+            | Outline::Diamond { .. }
+            | Outline::Bucket { .. }
+            | Outline::Pipe { .. }
+            | Outline::Robot { .. }
+            | Outline::Folder { .. }
+            | Outline::Window { .. }
+            | Outline::MobileDevice { .. }
+            | Outline::Component { .. } => todo!(),
         };
         b.name.translate(dx, dy);
         b.type_line.translate(dx, dy);
@@ -846,6 +1008,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
         subtitle,
         legend,
         crossings: routes.crossings,
+        mode: plan.mode,
     }
 }
 
@@ -1107,6 +1270,16 @@ fn text_area(shape: Shape, rect: Rect) -> Rect {
             Point::new(rect.max.x, (rect.max.y - cap_ry_px).max(rect.min.y)),
         ),
         Outline::Rect { rect, .. } => rect,
+        Outline::Ellipse { .. }
+        | Outline::Hexagon { .. }
+        | Outline::Diamond { .. }
+        | Outline::Bucket { .. }
+        | Outline::Pipe { .. }
+        | Outline::Robot { .. }
+        | Outline::Folder { .. }
+        | Outline::Window { .. }
+        | Outline::MobileDevice { .. }
+        | Outline::Component { .. } => todo!(),
     };
     inner.inflate(-PAD_PX)
 }
@@ -1169,6 +1342,8 @@ fn scene_box(b: &PlanBox, centre: Point) -> SceneBox {
         name: texts.name,
         type_line: texts.type_line,
         description: texts.description,
+        opacity: 100,
+        icon: None,
     }
 }
 
@@ -1344,6 +1519,8 @@ fn scene_line(edge: &PlanEdge, routes: &Routes, boxes: &[SceneBox], labels: &[Re
         tip,
         joins,
         routed: routed_line.is_some(),
+        opacity: 100,
+        jumps: Vec::new(),
     }
 }
 
@@ -1393,6 +1570,7 @@ fn scene_label(plan: &ViewPlan, label: &Label, boxes: &[SceneBox]) -> SceneLabel
             &rect,
         ),
         fit: label.fit.clone(),
+        opacity: 100,
     }
 }
 
@@ -1456,6 +1634,9 @@ fn scene_boundary(plan: &ViewPlan, index: usize, centres: &[Point]) -> Option<Sc
         },
         tag_rect,
         tag,
+        fill: None,
+        opacity: 100,
+        icon: None,
     })
 }
 
@@ -1721,6 +1902,16 @@ fn outline_contains(outline: &Outline, at: Point) -> bool {
             let y = i64::from(at.y);
             (top..=bottom).contains(&y) || in_cap(top) || in_cap(bottom)
         }
+        Outline::Ellipse { .. }
+        | Outline::Hexagon { .. }
+        | Outline::Diamond { .. }
+        | Outline::Bucket { .. }
+        | Outline::Pipe { .. }
+        | Outline::Robot { .. }
+        | Outline::Folder { .. }
+        | Outline::Window { .. }
+        | Outline::MobileDevice { .. }
+        | Outline::Component { .. } => todo!(),
     }
 }
 
@@ -2497,6 +2688,8 @@ mod tests {
             width_px: 50,
             height_px: 20,
             fit: Fit::Clear,
+            font_px: crate::label::LABEL_FONT_PX,
+            line_px: crate::label::LABEL_LINE_PX,
         });
         let scene = build(&plan, &routes, &labels);
         let at: Vec<Point> = scene.lines[0].chevrons.iter().map(|c| c.at).collect();

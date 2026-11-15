@@ -70,8 +70,8 @@ use std::collections::BTreeMap;
 
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
-    ElementId, ElementKind, GroupId, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
-    ViewSpec,
+    ElementId, ElementKind, GroupId, Mode, Model, RelationshipId, ResolvedBoundaryStyle,
+    ResolvedRelationshipStyle, ResolvedStyle, ViewKind, ViewOptions, ViewScope, ViewSpec,
 };
 
 /// Index of a box in `ViewPlan::boxes`, valid for one plan only. It is
@@ -176,6 +176,12 @@ pub struct PlanEdge {
     /// The winner's technology, unquoted, as written; read it through
     /// `shown_technology` (CORE-4).
     pub technology: Option<String>,
+    /// The winner's resolved relationship style in the plan's mode, with
+    /// the view's per-view `line` layout (position, routing, jump) folded
+    /// in over it (O9); `ResolvedRelationshipStyle::DEFAULT` for an
+    /// unstyled line. `route`, `label` and `scene` read it. Serves P2-12,
+    /// P2-418..P2-426.
+    pub style: ResolvedRelationshipStyle,
 }
 
 impl PlanEdge {
@@ -232,6 +238,9 @@ pub struct Boundary {
     /// The boxes inside, in `ViewPlan::boxes` order; never empty (a
     /// scope with no drawn child has no boundary).
     pub members: Vec<BoxId>,
+    /// Its look from the `Boundary*` or `Group*` element styles in the
+    /// plan's mode (`Model::boundary_style_in`). Serves P2-411, P2-412.
+    pub style: ResolvedBoundaryStyle,
 }
 
 /// Everything one view draws, before placement and routing: boxes,
@@ -263,6 +272,9 @@ pub struct ViewPlan {
     pub edges: Vec<PlanEdge>,
     /// The dashed boundaries; phase 1 holds at most one (CORE-1).
     pub boundaries: Vec<Boundary>,
+    /// The mode styles were resolved in; `scene` draws its defaults
+    /// (P2-431). Serves P2-430.
+    pub mode: Mode,
 }
 
 impl ViewPlan {
@@ -357,7 +369,23 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
         boxes,
         edges,
         boundaries,
+        mode: Mode::Light,
     }
+}
+
+/// `plan` in `mode`: box styles from `Model::style_of_in` (a resolved
+/// `width`/`height` replaces that dimension of the CORE-2 kind default,
+/// and a `size` line still wins), each edge's `style` from
+/// `Model::relationship_style_of_in` of its winner, each boundary's
+/// `style` from `Model::boundary_style_in`, and `ViewPlan::mode` set.
+/// `plan(model, view)` equals `plan_in(model, view, Mode::Light)`.
+/// Serves P2-430, P2-12, P2-402, P2-411, P2-412.
+///
+/// # Panics
+///
+/// As `plan`.
+pub fn plan_in(_model: &Model, _view: &ViewSpec, _mode: Mode) -> ViewPlan {
+    todo!()
 }
 
 /// The CORE-1 boundary margin: 40px.
@@ -419,6 +447,7 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Option<B
         of: BoundaryOf::Element(scope),
         name: model.element(scope).name.value.clone(),
         members,
+        style: ResolvedBoundaryStyle::DEFAULT,
     })
 }
 
@@ -517,6 +546,7 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         relationships: vec![r.id],
         description: r.description.as_ref().map(|d| d.value.clone()),
         technology: r.technology.as_ref().map(|t| t.value.clone()),
+        style: ResolvedRelationshipStyle::DEFAULT,
     };
     let mut edges: Vec<PlanEdge> = Vec::new();
     // Lifted relationships per ordered box pair, in relationship order.

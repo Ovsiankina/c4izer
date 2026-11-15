@@ -2347,6 +2347,9 @@ mod tests {
                         }
                     }
                     Shape::Box => {}
+                    // The helper builds phase-1 shapes only; P2-414 checks
+                    // every shape in tests/styles_themes.rs.
+                    _ => unreachable!("phase-1 shapes only"),
                 }
             }
             assert_eq!(line.points[0], line.source.at);

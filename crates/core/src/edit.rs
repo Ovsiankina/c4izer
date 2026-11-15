@@ -1619,6 +1619,23 @@ const fn shape_word(shape: Shape) -> &'static str {
         Shape::Box => "Box",
         Shape::Person => "Person",
         Shape::Cylinder => "Cylinder",
+        // P2-417: step 5 writes every shape through `Shape::keyword`.
+        Shape::RoundedBox
+        | Shape::Circle
+        | Shape::Ellipse
+        | Shape::Hexagon
+        | Shape::Diamond
+        | Shape::Bucket
+        | Shape::Pipe
+        | Shape::Robot
+        | Shape::Folder
+        | Shape::WebBrowser
+        | Shape::Window
+        | Shape::Terminal
+        | Shape::Shell
+        | Shape::MobileDevicePortrait
+        | Shape::MobileDeviceLandscape
+        | Shape::Component => todo!(),
     }
 }
 

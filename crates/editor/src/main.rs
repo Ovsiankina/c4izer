@@ -15,6 +15,8 @@ mod files;
 mod history;
 mod state;
 #[cfg(test)]
+mod styles_themes_tests;
+#[cfg(test)]
 mod testutil;
 mod worker;
 
