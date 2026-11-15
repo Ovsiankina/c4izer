@@ -939,133 +939,1591 @@ Working beside a text editor
 
 ### 4.6 Phase 2
 
-Stubs, grouped by ROADMAP phase 2 row (a row may own several); each
-row's stubs become one testable sentence each at the row's step 2. The parity table (section 2) lists every
-feature these stubs cover.
+Requirements grouped by ROADMAP phase 2 row, one testable sentence each
+(rows' step 2, 2026-11-15). The parity table (section 2) lists every
+feature they cover. Ids P2-1..P2-28 are the original stubs, kept; new
+ids are allocated in one block per row so rows never collide:
+place-quality P2-100.., dsl-breadth P2-120.., landscape-filtered
+P2-300.., styles-themes P2-400.., compat-fixtures P2-500.., cli-breadth
+P2-600.., editor-breadth P2-700.. `TODO(srs)` marks a hole listed in
+`docs/deferred.md`.
+
+place-quality
+
+Row `place-quality` (phase 2), scope P2-26. Authority: SRS 4.6 P2-26;
+phase-1 CORE-14, CORE-15, CORE-22, CORE-23, CORE-25, CORE-29, EDIT-4,
+EDIT-20, EDIT-25; parity table rows `autoLayout` ("the arguments have no
+effect"). Structurizr DSL reference, fetched 2026-11-15 from
+https://docs.structurizr.com/dsl/language: `autoLayout [tb|bt|lr|rl]
+[rankSeparation] [nodeSeparation]`, `tb` top to bottom is the default,
+both separations default to 300px. The page names no layout engine and
+says nothing about positions beyond direction and separations. "Example"
+below means `tests/data/example/workspace.dsl` as checked in: no `at`
+lines, no `size` lines, `autoLayout` on every view, view keys `C1`,
+`C2`, `C3-serving`, `C3-startup`. It is built with
+`pipeline::build_all`, which uses `Keep::default()`. A "kept box" is one
+with an `at` line, a `Keep::moved` entry or a `Keep::previous` entry.
+"Auto-placed" means every other box.
+
+- **P2-26** (kept, umbrella) Automatic placement is layered: ranks
+  follow the direction of relationships, order within a rank reduces
+  crossings, people are on top and external elements at the sides; the
+  row and column pitch grows where a label would not fit between two
+  boxes. On the example, all four views have no "no room for label", no
+  label over a box, and crossings and total line length no worse than
+  phase 1 and lower on C3-startup. It is split into P2-100..P2-110
+  below, and its numbers are in P2-107/P2-108. `TODO(srs)`: the owner
+  approves those numbers before they freeze.
+- **P2-100** In a view with no kept box, ranks run top to bottom
+  (Structurizr's `tb` default). Consider every drawn edge whose
+  destination is not a person and that lies on no directed cycle of the
+  view's edges, counting only edges that do not end on a person. For
+  each such edge, the source box's centre has a strictly smaller y than
+  the destination box's centre.
+- **P2-101** A view whose edges, not counting edges that end on a
+  person, contain a directed cycle is still placed in full and
+  terminates: every box gets a centre (CORE-22), the edges outside every
+  cycle still satisfy P2-100, and two runs give equal centres (CORE-25).
+- **P2-102** A view with no kept box and no person, made of sources `a`,
+  `b` and destinations `c`, `d` declared in the order `a, b, d, c`, with
+  edges `a -> c` and `b -> d`, is placed with zero straight-line
+  crossings between edge ends.
+- **P2-103** In a view with no kept box, no auto-placed box has a centre
+  y smaller than that of any auto-placed person (CORE-23 "people on the
+  top row"), including when an edge points from a non-person to a
+  person.
+- **P2-104** In a view with no kept box, sort the auto-placed boxes that
+  share a centre y by centre x. They read as zero or more external boxes
+  (`PlanBox::external`, people excluded), then every non-external box,
+  then zero or more external boxes.
+- **P2-105** In a view with no kept box, take every drawn edge with a
+  label whose two boxes are in the same column on consecutive rows. The
+  vertical gap in px between the two box rectangles is at least `max(30,
+  h/2) + max(50, h/2)`. For every drawn edge with a label whose two
+  boxes are on the same row in adjacent columns, the horizontal gap is
+  at least `max(30, w/2) + max(50, w/2)`. Here `w` and `h` are that
+  edge's `Label::width_px` and `Label::height_px` from
+  `label::place_labels`. Source of the bounds: CORE-14, where the label
+  centre is at least 30px along the line from its start and 50px from
+  its arrowhead, and the label overlaps neither box.
+- **P2-106** In a view with no kept box, the auto-placed centres lie on
+  a lattice of rows and columns. Two consecutive rows are the smallest
+  multiple of 10px apart that is at least 280px, keeps every two boxes
+  of those rows that share a column at least 60px apart (L6), and meets
+  P2-105 for every labelled edge between the two rows. Two adjacent
+  columns follow the same rule with 340px and the horizontal bound of
+  P2-105. So the pitch never drops below the CORE-23 minimum, and it
+  grows only where a box size or a label needs it.
+- **P2-107** Each of the four example views meets three conditions. No
+  label has `Fit::NoRoom` (`Labels::no_room()` is empty, no L24). No
+  label's px rectangle overlaps any box's px rectangle with positive
+  area. The label rectangle is centred at `grid_to_px(centre)` with size
+  `width_px` x `height_px`. The box rectangle is
+  `PlanBox::rect_at(routes.centres[i])` scaled by `GRID_PX`. The lint
+  report has no L26 finding. The phase-1 baseline was measured on the
+  working tree on 2026-11-15. No-room labels: C1 0, C2 2, C3-serving 2,
+  C3-startup 1. Label-over-box pairs: C1 0, C2 4, C3-serving 4,
+  C3-startup 2. L26: 0 on every view.
+- **P2-108** On each example view, routed crossings
+  (`Routes::crossings`) and total line length are no higher than the
+  phase-1 baseline. Both are strictly lower on C3-startup. No line is
+  unroutable (`Routes::unroutable()` empty). Total line length is the
+  sum over every segment of every routed line of `steps * 10_000`
+  (axis-aligned) or `steps * 14_142` (45 degrees) milli-px, divided by
+  1000 and truncated once. `steps` is the segment's larger grid delta.
+  This follows the integer convention of label.rs. The baseline was
+  measured on 2026-11-15. Crossings: C1 0, C2 0, C3-serving 1,
+  C3-startup 9. Length: C1 691px, C2 1898px, C3-serving 7092px,
+  C3-startup 18146px.
+- **P2-109** In a view with a boundary and no kept box, no auto-placed
+  box that is not a child of the scope overlaps the boundary rectangle
+  (`ViewPlan::boundary_rect`, CORE-23, L26). This holds when such a box
+  ranks between two ranks of children.
+- **P2-110** The arguments of a view's `autoLayout` statement do not
+  change auto-placed centres (parity table: "the arguments have no
+  effect"). The same view with `autoLayout`, with `autoLayout lr 100
+  50`, and with no `autoLayout` gives equal centres.
 
 dsl-breadth
 
-- **P2-1** The parser accepts the complete Structurizr DSL grammar,
-  deployment and dynamic constructs included, and every file of the
-  compat corpus (P2-14) parses with zero errors.
-- **P2-2** A view whose type is not yet drawable appears in the view
-  list marked "not yet supported" instead of failing the file.
-- **P2-3** A construct that is accepted but has no effect (`!script`,
-  `!plugin`, `configuration`, and others the parity table marks so)
-  shows a visible notice naming it, in the CLI report and the editor.
-- **P2-4** `group` blocks draw as nested dashed boundaries (CORE-1).
-- **P2-5** `!include <path>` reads a local file; a text edit goes to
-  the file the literal came from, `at` and `size` lines always go to
-  the root file, and the editor watches every included file.
-  A URL must be HTTPS (parity table). `TODO(srs)`: fetch, cache and
-  offline behaviour for URL includes.
-- **P2-6** With `!identifiers hierarchical`, ids are dotted paths and
-  are accepted as such in `at`, `size`, `focus`, `hide` and edits.
-- **P2-7** `!impliedRelationships`, archetypes, `!docs`, `!adrs` and
-  `terminology` each parse and take the effect the Structurizr
-  reference gives them (one test each). `TODO(srs)`: `!const`/`!var`
-  and `branding` have no parity row (not found in the reference pages
-  read); confirm against the reference, then add rows or drop them.
-- **P2-16** `workspace extends <file|url>` loads the base workspace
-  and applies the file on top of it. `TODO(srs)`: URL fetch (same
-  rules as P2-5).
-- **P2-17** `!element`, `!elements`, `!relationship`,
-  `!relationships` (and the deprecated `!extend`, `!ref`) and custom
-  `element` declarations build and modify the model as in Structurizr.
-- **P2-18** `tag`, `url`, `properties`, `perspectives`, workspace
-  `name`/`description`, `configuration scope` (a validation rule) and
-  the `structurizr.*` view-set properties of the parity table are
-  parsed into the model and act as the table notes.
-  `TODO(srs)`: one requirement per item.
+Sources: https://docs.structurizr.com/dsl/language, /dsl/basics,
+/dsl/identifiers, /dsl/includes, /dsl/expressions, /dsl/archetypes,
+/dsl/implied-relationships and /dsl/cookbook/groups/, fetched 2026-11-15
+(the reviewer fetched basics, identifiers, includes, expressions,
+archetypes, implied-relationships, groups and language again on the same
+day). /dsl/text-blocks returned 404. The workspace-extension page has
+only an overview, and the language page's "extends" text is used
+instead. Where a page is silent, the item is marked TODO(srs). Existing
+ids are kept, with their sentences tightened. New ids run from P2-120 to
+P2-181. /dsl/basics answers the old P2-7 TODO(srs) on `!const`/`!var`
+(P2-150..152), so the parity table needs a row for `!const`, `!var` and
+`${NAME}`; `branding` is not a keyword in the current language reference
+and is dropped from P2-7.
+
+**Grammar and lexing**
+
+- **P2-1** On `tests/data/dsl-breadth/grammar.dsl` (plus its include and
+  base files), every keyword the Structurizr DSL language reference
+  lists parses without error in each block where the reference allows
+  it. Workspace: `name`, `description`, `properties`, `!identifiers`,
+  `!docs`, `!adrs`, `model`, `views`, `configuration`, plus the
+  `workspace extends` head. Model: `!identifiers`, `archetypes`,
+  `group`, `person`, `softwareSystem`, `deploymentEnvironment`,
+  `element`, `->`. Element blocks: `description`, `technology`, `tags`,
+  `tag`, `url`, `properties`, `perspectives`, `group`, `!docs`, `!adrs`,
+  `!components`, `->`. Directives: `!const`, `!var`, `!include`,
+  `!script`, `!plugin`, `!element`, `!elements`, `!relationship`,
+  `!relationships`, `!extend`, `!ref`, `!impliedRelationships`,
+  `!decisions`. Views: `systemLandscape`, `systemContext`, `container`,
+  `component`, `filtered`, `dynamic`, `deployment`, `custom`, `image`,
+  `styles`, `theme`, `themes`, `terminology`, `properties`. View bodies:
+  `include`, `exclude`, `autoLayout`, `default`, `animation`, `title`,
+  `description`, `properties`. Styles: `light`, `dark`, `element`,
+  `relationship`. Configuration: `scope`, `visibility`, `users`,
+  `properties`. The compat-fixtures row tests the compat-corpus clause
+  (P2-14).
+- **P2-178** A keyword whose effect belongs to another phase-2 or
+  phase-3 row is accepted with no error and kept byte for byte (DSL-11)
+  until that row lands. This covers every style property and shape,
+  `light`/`dark`, `theme`/`themes`, view expressions and relationship
+  patterns in `include`/`exclude`, `default`, `animation` and the
+  `Group`/`Group:Name` style tags.
+- **P2-147** A `\` as the last character of a line continues the
+  statement on the next line, and the model is the same as with the
+  statement written on one line.
+- **P2-148** A `"""` text block is accepted wherever a string value is.
+  TODO(srs): the value rules (indent stripping, escapes); the reference
+  page is missing (404).
+- **P2-149** A positional string argument with no whitespace may be
+  written unquoted (`person User`) and gives the same value as the
+  quoted form.
+- **P2-150** `!const NAME value`, with a name of only `a-zA-Z0-9-_.`,
+  makes every later `${NAME}` inside any token, quoted strings included,
+  take that value.
+- **P2-151** `!var NAME value` may be redefined by a later `!var NAME
+  other`, and each `${NAME}` takes the value in force at its line.
+  TODO(srs): whether redefining a `!const` is an error. TODO(srs): what
+  a DSL-10 edit does to a literal holding `${...}`.
+- **P2-152** A `${NAME}` with no matching constant or variable takes the
+  environment variable `NAME`, and with neither it is left as written.
+  TODO(srs): which wins when a constant or variable and an environment
+  variable share a name; the reference does not say.
+
+**Deployment and dynamic parsed, not drawn (phase 3 draws them)**
+
+- **P2-120** `deploymentEnvironment`, `deploymentGroup`,
+  `deploymentNode`, `infrastructureNode`, `softwareSystemInstance`,
+  `containerInstance`, `instanceOf`, `instances`, `healthCheck`, `-/>`
+  and `group` inside `deploymentEnvironment` or `deploymentNode` all
+  parse without error. An undeclared id they reference is a DSL-5 error,
+  and an id they declare that is already in use is `DuplicateId`
+  (identifiers are global, /dsl/identifiers). No element they declare is
+  drawn on any static view or selected by `include *`.
+- **P2-121** A `dynamic <*|system|container> [key] [desc]` view parses
+  without error with its body steps: `[order:] <src> -> <dst> [desc]
+  [tech]`, `[order:] <relationship id> [desc]`, and parallel `{ }`
+  blocks. An undeclared id in its scope or steps is a DSL-5 error.
+- **P2-179** A `deployment <*|system> <environment> [key] [desc]` view
+  parses without error with `include`, `exclude`, `autoLayout`,
+  `default`, `animation`, `title`, `description` and `properties` in its
+  body. A scope or environment that is not declared is a DSL-5 error.
+- **P2-2** A view whose kind has no drawer yet (`dynamic` and
+  `deployment`; `systemLandscape`, `filtered`, `custom` and `image`
+  until their rows land) is in `Model::views` with its key and title.
+  `pipeline::build_all` lists it in `AllViews::unsupported`, and the
+  rest of the file builds as before with no error.
+- **P2-122** For an unsupported view, `c4rizer render` and `c4rizer
+  lint` print `== <key>: <title>` and then a line indented by three
+  spaces (CLI-1) that contains `not yet supported`. They write no file
+  for that view and add nothing to the exit code (CLI-2). TODO(srs): the
+  exact line text.
+- **P2-123** The editor's view list shows an unsupported view marked
+  "not yet supported". Selecting it draws nothing and changes no file,
+  and the editor never opens an unsupported view by itself: at startup
+  and in the EDIT-27 fallback it opens the first supported view.
+- **P2-180** The editor's "Export all views" (EDIT-7) skips unsupported
+  views and writes no file for them.
+- **P2-124** A `systemLandscape`, `dynamic` or `deployment` view with no
+  key gets `SystemLandscape-NNN`, `Dynamic-NNN` or `Deployment-NNN` per
+  DSL-7, numbered per kind in declaration order. TODO(srs): the
+  generated key, or whether a key is required, for `custom`, `image` and
+  `filtered` views; the reference states key generation only for the
+  other kinds.
+
+**Constructs accepted with no effect**
+
+- **P2-3** Each of these is accepted and adds exactly one
+  `Model::notices` entry naming the construct, its file and its line,
+  with no other effect: `!script` (inline or file form), `!plugin`,
+  `!components`, `healthCheck`, `configuration visibility`,
+  `configuration users`, an `image` view with a `plantuml`, `mermaid` or
+  `kroki` source, the `plantuml.*`, `mermaid.*` and `kroki.*` view-set
+  properties, `!impliedRelationships <fqcn>`, and a `!docs`/`!adrs`
+  importer FQCN.
+- **P2-125** `c4rizer render` and `lint` print every notice before the
+  first view, one line each naming the construct, file and line, and
+  notices add nothing to the exit code. TODO(srs): the exact line
+  format.
+- **P2-126** The editor's findings panel (EDIT-6) shows every notice of
+  the open file, naming the construct.
+
+**Identifiers**
+
+- **P2-145** An element declared without `<id> =` parses, and `include
+  *` selects it as its kind allows. TODO(srs): how `at`, `size` and
+  edits address such a box. EDIT-26 writes an `at` line for every box,
+  and this box has no id. The app must not add an id itself unless the
+  SRS says so, since editing must change text, layout and style only
+  (EDIT-21).
+- **P2-146** `r = a -> b` sets the relationship's key to `r`,
+  `!relationship r` resolves it, and a relationship key declared twice
+  is `DuplicateId` naming both lines. TODO(srs): whether a relationship
+  id may equal an element id.
+- **P2-144** In flat mode (the default, or `!identifiers flat`), a
+  second element whose id is already used anywhere is `DuplicateId`,
+  naming both lines.
+- **P2-6** With `!identifiers hierarchical` in the workspace or `model`
+  block, an element's full id is its parent's full id, then `.`, then
+  its own id. So two `api` containers in systems `s1` and `s2` both
+  parse and `Model::find` finds them as `s1.api` and `s2.api`, and two
+  elements with the same full id are `DuplicateId`.
+- **P2-142** Under hierarchical ids, a full id is accepted in
+  relationships, `include`, `exclude`, `at`, `size`, `focus`, `hide`,
+  `!element` and every `edit` element key, and `edit` writes the full
+  id. TODO(srs): whether a bare id names a nested element from inside
+  its parent's block.
+- **P2-143** Under `!identifiers hierarchical`, relationship identifiers
+  stay global: `r = a -> b` inside `s1` is found as `r`, not `s1.r`.
+- **P2-131** A group adds no segment to a hierarchical id: a container
+  `api` inside a group in `s1` is `s1.api`.
+- **P2-177** Each of these is an error naming both lines: two people or
+  two software systems with the same name, two containers with the same
+  name in one software system, or two components with the same name in
+  one container. Source: Structurizr for Java model rules, which no
+  fetched DSL page states, so confirm (open question).
+
+**Groups**
+
+- **P2-4** `group "<name>" { ... }` is accepted in `model`, in a
+  software system block and in a container block, and every element
+  declared inside it has that group.
+- **P2-127** A group holds only elements of its block's level: people
+  and software systems in `model`, containers in a software system,
+  components in a container. Any other element kind inside a group is an
+  `InvalidNesting` error. TODO(srs): whether a custom `element` may sit
+  in a model-level group.
+- **P2-128** A `group "<name>"` line inside a component block sets that
+  component's group (language reference, "group").
+- **P2-129** With the `model` property `structurizr.groupSeparator` set
+  to `/`, an element inside `group "A" { group "B" { ... } }` has the
+  group `A/B`. TODO(srs): what a nested group with no separator set
+  does.
+- **P2-130** On every drawable view, a group with at least one drawn
+  member draws as a dashed boundary (CORE-1: members' bounds plus 40px)
+  around its drawn members, with the group's name as its name tag and no
+  bracketed type. It sits inside its enclosing group's boundary, and
+  also inside the scope boundary when its members are children of the
+  scope, otherwise it does not overlap the scope boundary. TODO(srs):
+  the name tag of a nested group (full path or last segment); the
+  default colour (the reference says only "light grey"); whether
+  `structurizr.groups` (P2-176) hides group boundaries.
+- **P2-132** On `tests/data/dsl-breadth/groups.dsl` with no `at` lines,
+  auto-placement leaves no non-member box overlapping any group
+  rectangle, as CORE-23 requires for the scope boundary. TODO(srs):
+  whether L26 also covers group rectangles, and its wording.
+
+**!include and workspace extends**
+
+- **P2-5** `!include <relative file>` inlines the file's statements
+  where the directive stands, and the model is the same as with the text
+  pasted there.
+- **P2-133** `!include <relative directory>` inlines every DSL file in
+  that directory. TODO(srs): order, recursion and which file extensions
+  count. The reference says only "in the order the files are
+  discovered".
+- **P2-134** A relative include path that resolves outside the including
+  file's directory and its subdirectories is an error naming the path.
+- **P2-135** Each included file gets a `FileId` from 1, in the order
+  files are first read, every span names its file, and printing each
+  tree gives its file back byte for byte (DSL-11, DSL-16).
+- **P2-136** A parse or model error in an included file carries that
+  file's path, line and column (SRS 5.1), in the CLI report and in the
+  editor (EDIT-11).
+- **P2-137** A file whose includes form a cycle, a self-include
+  included, stops with an error naming the file that closes the cycle.
+- **P2-138** `!include` of a URL that is not `https://` is an error
+  naming the URL. TODO(srs): fetch, cache and offline behaviour for
+  HTTPS URLs (as P2-5 says).
+- **P2-139** A DSL-10 text edit to a literal from an included file
+  patches that file only, and the root file's bytes are unchanged (SRS
+  P2-5). TODO(srs): where a DSL-13 per-box `tags` line goes for an
+  element declared in an included file.
+- **P2-140** A DSL-9 `at` or `size` edit of a view declared in the root
+  file is written to the root file (SRS P2-5). TODO(srs): a view
+  declared in an included file. SRS P2-5 says root file, but an `at`
+  line must sit inside the view block, so the two rules conflict.
+- **P2-141** The editor watches every included file: a change to any of
+  them reloads as EDIT-1 does, a save by rename is seen as EDIT-23 says,
+  and the app's own write to one does not reload, as EDIT-22 says.
+- **P2-16** `workspace extends <relative DSL file>` loads the base
+  workspace and applies this file on top, and the base's elements,
+  relationships and views are in the model. TODO(srs): URL bases (same
+  rules as P2-5); JSON bases, which the reference allows; which file a
+  text edit to a base literal goes to.
+- **P2-164** In an extending workspace, a relationship or view may
+  reference an id declared in the base file.
+- **P2-165** In an extending workspace, `!element <base id> { tags "X"
+  }` adds tag `X` to the base element.
+
+**Directives that modify the model**
+
+- **P2-17** `!element <id> { ... }` finds an existing element and adds
+  the tags, properties, child elements and relationships of its block.
+- **P2-166** `!elements <expression> { ... }` applies its `->`, `tag`,
+  `tags`, `url`, `properties` and `perspectives` children to every
+  element the expression selects. This holds for each element-expression
+  form of /dsl/expressions and for `&&` and `||`.
+- **P2-167** `!relationship <id> { ... }` adds `tag`, `tags`, `url`,
+  `properties` and `perspectives` to that relationship.
+- **P2-168** `!relationships <expression> { ... }` applies `tag`,
+  `tags`, `url`, `properties` and `perspectives` to every relationship
+  the expression selects. This holds for each relationship-expression
+  form of /dsl/expressions and for `&&` and `||`.
+- **P2-169** `!extend` and `!ref` behave as `!element`, or as
+  `!relationship` when the id names a relationship. TODO(srs): `<id> =
+  !element <canonical name>` and `<id> = !relationship <canonical
+  name>`, which the reference gives only for JSON-based workspaces.
+- **P2-170** `element <name> [metadata] [description] [tags] { ... }` in
+  `model` declares a custom element with only the implicit tag `Element`
+  and its metadata kept, and it accepts `description`, `tags`, `url`,
+  `properties`, `perspectives` and `->` children. TODO(srs): whether
+  `include *` on a context, container or component view may select a
+  custom element. The reference says only that a custom view takes
+  custom elements only.
+
+**Body statements and settings**
+
+- **P2-18** `tag "<name>"` in an element or relationship block adds that
+  one tag after the tags before it (DSL-15 order).
+- **P2-171** `url <url>` in an element or relationship block sets that
+  item's URL.
+- **P2-172** `properties { <name> <value> ... }` in the workspace,
+  `model`, `configuration`, an element, a relationship, a view or
+  `views` stores its pairs in file order on that owner.
+- **P2-173** `perspectives` in an element or relationship block stores
+  each perspective's name, description, value and URL. Both forms work:
+  the one-line `<name> <description> [value]` form and the `perspective
+  <name> { description, value, url }` block form.
+- **P2-174** `name "<text>"` and `description "<text>"` lines in the
+  workspace block set the workspace name and description.
+- **P2-175** `configuration { scope landscape|softwaresystem|none }`
+  stores the scope. TODO(srs): the validation the scope applies.
+- **P2-176** The `structurizr.*` properties of `views` (`locale`,
+  `timezone`, `sort`, `tooltips`, `title`, `description`, `metadata`,
+  `groups`) are stored. TODO(srs): one requirement per property for its
+  effect.
+
+**Implied relationships, archetypes, docs, terminology (P2-7 split)**
+
+- **P2-7** With `!impliedRelationships false`, no lifted line is drawn
+  (CORE-5 lifting off), and `include *` counts only relationships
+  declared on the element itself. TODO(srs): what a directive placed
+  between relationships does; the reference does not say whether it
+  applies only to later relationships.
+- **P2-153** `!impliedRelationships true` behaves exactly as no
+  directive, and both behave as CORE-5 (the reference names
+  CreateImpliedRelationshipsUnlessAnyRelationshipExistsStrategy for
+  `true`).
+- **P2-154** `!impliedRelationships <fqcn>` behaves as P2-153 and adds a
+  notice (P2-3), as the parity table says ("parsed, no effect").
+- **P2-155** With `archetypes { service = container { technology "Go";
+  tags "Service" } }` in `model`, `x = service "Name"` declares a
+  container with technology `Go` and tag `Service`, and a positional or
+  body `description`/`technology` overrides the default.
+- **P2-156** An archetype based on another archetype (`api = service {
+  technology "Go REST" }`) takes the base's description, technology,
+  properties and perspectives defaults and overrides those it sets
+  itself. TODO(srs): how the two archetypes' tags combine.
+- **P2-157** With `sync = -> { tags "Synchronous" }` and `https =
+  --sync-> { technology "HTTPS" }`, `a --https-> b "d"` declares a
+  relationship with tag `Synchronous`, technology `HTTPS` and
+  description `d`.
+- **P2-158** An element archetype whose base is not one of `person`,
+  `softwareSystem`, `container`, `component`, `deploymentNode`,
+  `infrastructureNode`, `group` or `element` is an error naming the
+  base. A `--name->` naming no relationship archetype is an error naming
+  it. TODO(srs): the tag order of an element declared from an archetype
+  (DSL-15).
+- **P2-181** An archetype's technology default is applied only to
+  containers and components, and its metadata default only to custom
+  elements. TODO(srs): whether a technology on another base is an error
+  or ignored.
+- **P2-159** `!docs <path> [fqcn]` in the workspace or a software
+  system, container or component block records the path on that owner.
+  The language page's block lists include component, and its prose names
+  only the first three. TODO(srs): whether phase 2 reads or checks the
+  files.
+- **P2-160** `!adrs <path> [type|fqcn]` and `!decisions` record the path
+  and the importer type on their owner, in the same blocks as `!docs`.
+- **P2-161** `terminology { softwareSystem "Service" }`, and likewise
+  `person`, `container` and `component`, replaces that type word on box
+  type lines and boundary name tags (`[Service]`). TODO(srs): the CORE-2
+  `External Software System` type word under terminology.
+  `deploymentNode` and `infrastructureNode` are stored and take effect
+  in phase 3.
+- **P2-162** `terminology { relationship "Link" }` makes the key's line
+  entries read `Link` instead of `Relationship` (CORE-1).
+- **P2-163** `terminology { metadata round|curly|angle|none }` writes
+  the box type line as `(…)`, `{…}`, `<…>` or with no brackets, and
+  `square` is the default `[…]`. TODO(srs): the glyphs for
+  `double-angle`.
 
 landscape-filtered
 
+Row `landscape-filtered` (phase 2) owns P2-8, P2-9, P2-19 and P2-20.
+Each existing id keeps the part the SRS already settles, and each TODO
+part becomes a new id from P2-300. The authority is the Structurizr DSL
+reference, fetched 2026-11-15: /dsl/language (the permitted-children
+table, include, exclude, image), /dsl/expressions, and the cookbook
+pages /dsl/cookbook/filtered-view/, /dsl/cookbook/custom-view/ and
+/dsl/cookbook/image-view/. Every fetch succeeded. Where those pages are
+silent, the sentence says so and carries TODO(srs). A claim that rests
+on memory of the Structurizr implementation rather than on the reference
+is marked "(memory)" and stays TODO(srs).
+
+**System landscape (P2-8)**
+
 - **P2-8** A `systemLandscape ["key"] ["description"]` view with
-  `include *` draws every person and software system of the model,
-  with no boundary, under the same router and lint rules as C1.
-  `TODO(srs)`: which lint rules apply to a landscape view.
+  `include *` draws every person and software system of the model as a
+  box, with no scope boundary and no name tag.
+  - Its relationships are drawn after lifting (CORE-5) and routed and
+    labelled under the rules every view follows (CORE-6..15).
+  - CORE-1 title, subtitle and key are unchanged.
+- **P2-300** `systemLandscape` takes no scope, then an optional key and
+  an optional description.
+  - Its body accepts `include`, `exclude`, `autoLayout`, `default`,
+    `title`, `description` and `properties` (the reference's permitted
+    children), plus the c4rizer view extensions of the SRS 4.1 table
+    (`subtitle`, `technology`, `bus`, `labelWidth`, `maxCrossings`,
+    `focus`, `hide`, `at`, `size`).
+  - `animation` is parsed and kept byte for byte (P2-1), draws nothing
+    until phase 3 (parity row: phase 3), and shows the P2-3 notice.
+- **P2-301** A `systemLandscape` view with no key gets
+  `SystemLandscape-NNN`. Keys are numbered per kind in declaration
+  order, skipping keys already taken (the DSL-7 rule applied to the new
+  kind).
+- **P2-302** On a system landscape view, `include *` selects every
+  person and every software system of the model, connected or not
+  (reference: the wildcard on a landscape "adds all people and
+  systems"). An element named in `include <id>` is kept whatever its
+  kind, as in phase 1.
+- **P2-303** On a system landscape, custom or image view, lint runs
+  every rule of the lint table that is not tied to a view kind or to the
+  whole file (L1..L14, L23..L26), and none of L19..L21.
+- **P2-304** TODO(srs): which of the C1 rules L15..L18 apply to a system
+  landscape view. The P2-8 stub said "same lint rules as C1", but L17
+  (more than 8 boxes) works against the purpose of a landscape.
+- **P2-305** In a system landscape view, a click on an enterable box
+  opens its view exactly as EDIT-15 says, and the breadcrumb is the
+  workspace crumb alone, since a landscape has no scope (EDIT-16).
+  TODO(srs): whether the workspace crumb (EDIT-16) should open the first
+  declared system landscape view before the first system context view.
+
+**Filtered view (P2-9)**
+
 - **P2-9** A `filtered <baseKey> include|exclude "<tags>" ["key"]
-  ["description"]` view draws its base view keeping, or dropping, the
-  elements and relationships with those tags, and takes the base
-  view's `at` lines. `TODO(srs)`: whether a filtered view may carry its
-  own `at` lines.
+  ["description"]` view draws its base view, keeping (`include`) or
+  dropping (`exclude`) the elements and relationships that carry those
+  tags. Every box takes the base view's `at` and `size` lines.
+- **P2-306** A `baseKey` that names no view is an error naming the key
+  (as DSL-5).
+  - TODO(srs): base views of other kinds. From memory, Structurizr
+    accepts only a `systemLandscape`, `systemContext`, `container` or
+    `component` view as the base. The reference pages read do not say.
+    If confirmed, any other kind (filtered, custom, image) is an error
+    naming the key and its kind.
+  - TODO(srs): whether the base view may be declared after the filtered
+    view.
+- **P2-307** A filtered view's body accepts `default`, `title`,
+  `description` and `properties` (reference). `include`, `exclude`,
+  `autoLayout` and `animation` there are an error naming the construct.
+  - TODO(srs): whether the c4rizer extensions (`at`, `size`, `focus`,
+    `hide`, `subtitle`, `technology`, `bus`, `labelWidth`,
+    `maxCrossings`) are accepted in a filtered view and override the
+    base view's.
+- **P2-308** The `<tags>` argument is comma-separated and trimmed, like
+  `tags`.
+  - In `include` mode, a box of the base view is kept when its element
+    has at least one of the tags.
+  - In `exclude` mode, a box is dropped when its element has at least
+    one of them.
+  - Implicit tags (`Element` and the kind tag, DSL-15) count.
+  - Source: the cookbook keeps "all elements/relationships that are
+    tagged `Tag 1`, `Tag 2`, or `Relationship`".
+- **P2-309** A line of the base view is kept only when both of its boxes
+  are kept.
+  - In `include` mode, its relationship must also carry at least one of
+    the tags.
+  - In `exclude` mode, its relationship must carry none of them.
+  - The implicit `Relationship` tag counts, so `include
+    "Element,Relationship"` draws the base view unchanged (cookbook
+    `landscape-all`).
+- **P2-310** TODO(srs): a lifted line can merge several relationships
+  (CORE-5). Whose tags decide P2-309 for it: the winner's, any merged
+  relationship's, or each relationship's on its own with the survivors
+  merged again?
+- **P2-311** A filtered view's drawn title is its own `title`, else its
+  own description (DSL-6), and L8 applies to it. TODO(srs): whether it
+  takes the base view's c4rizer options (`technology`, `bus`,
+  `labelWidth`, `maxCrossings`, `focus`, `hide`, `subtitle`) or the
+  defaults.
+- **P2-312** TODO(srs): what happens to a box with no `at` line in the
+  base view. Either it takes the centre it gets in the base view's scene
+  (shared layout; that is Structurizr's renderer behaviour from memory,
+  and the reference pages do not say), or it is auto-placed within the
+  filtered view alone.
+- **P2-313** TODO(srs): moving or resizing a box in a filtered view.
+  Either it writes the base view's `at`/`size` line (DSL-9, EDIT-26),
+  which follows from P2-9 sharing the lines, or the move is refused with
+  a status-bar message. Depends on P2-307.
+- **P2-314** A view that is the base of at least one filtered view is
+  left out of the editor's view list. This amends EDIT-8 (reference: the
+  base view "no longer shows in the list of viewable diagrams. This is
+  by design.").
+  - TODO(srs): whether `c4rizer render` still writes it (CLI-1 says one
+    SVG per view).
+  - TODO(srs): whether EDIT-15 and EDIT-16 may still open it.
+- **P2-315** TODO(srs): the key generated for a filtered, custom or
+  image view with no key. The reference says only that generated keys
+  "are not guaranteed to be stable". The DSL-7 pattern would give
+  `Filtered-001`, `Custom-001` and `Image-001`.
+- **P2-342** TODO(srs): which kind-scoped lint rules run on a filtered
+  view. The choices are the base view kind's rules (L15..L21) or only
+  the rules P2-303 lists.
+
+**Custom and image views (P2-19)**
+
 - **P2-19** A `custom` view draws custom elements, and an `image` view
-  with a local file source shows that PNG or SVG. `TODO(srs)`: image
-  views with a URL source.
-- **P2-20** View statements beyond phase 1 work as in Structurizr:
-  `include *?`, element and relationship expressions with `&&`/`||`,
-  relationship patterns in `exclude`, `default` and view `properties`.
-  `TODO(srs)`: one requirement per expression form.
+  with a local file source shows that PNG or SVG.
+- **P2-316** `custom ["key"] ["title"] ["description"]` takes the title
+  as its second argument (reference).
+  - Its body accepts `include`, `exclude`, `autoLayout`, `default`,
+    `title`, `description` and `properties`, plus the c4rizer view
+    extensions as P2-300 lists them.
+  - `animation` is handled as in P2-300.
+- **P2-317** Only custom elements (`element` declarations, P2-17) may be
+  included in a custom view. `include <id>` naming any other element is
+  an error naming the id (reference: "Only custom elements are permitted
+  to be included on a custom view").
+- **P2-318** `include *` on a custom view selects every custom element
+  of the model and draws the relationships between them. Source: the
+  cookbook custom-view example uses `include *` with two custom elements
+  and one relationship; the language page does not list a custom-view
+  wildcard.
+- **P2-319** TODO(srs): the default box size and type line of a custom
+  element. CORE-2 lists only the four C4 kinds.
+- **P2-320** `image <*|element> ["key"] { image <file> }` with a local
+  `.png` or `.svg` file builds a scene holding that image, the view's
+  title and subtitle, and an empty key.
+  - Canvas, SVG export and PNG export show the same image.
+  - Besides the source line, the body accepts `default`, `title`,
+    `description` and `properties` (reference).
+- **P2-343** An `image <element>` view whose element identifier is
+  undeclared is an error naming the id (DSL-5).
+- **P2-340** The SVG export of an image view still meets EXP-1: no
+  script and no external reference, with the image carried inside the
+  file. TODO(srs): what happens to an SVG source that holds a script or
+  an external reference (rejected with an error naming the file,
+  stripped, or rasterized).
+- **P2-321** An image view whose source is `plantuml` or `mermaid` draws
+  a placeholder naming the source kind and the file, URL or view key as
+  written (parity table: never, placeholder shown). A `kroki <format>`
+  source is parsed, draws nothing and shows the P2-3 notice (parity
+  table: never, no effect).
+- **P2-322** TODO(srs), image views (one item each):
+  - the base path for `image <file>`: the diagram file's directory, and
+    whether the path must stay under it as an `!include` path must;
+  - the error when the file is missing or is not PNG/SVG;
+  - the drawn size and scaling of the image;
+  - the `<url>` form: fetch, cache, offline;
+  - what `*` means compared with an element identifier (the reference is
+    silent);
+  - whether an image view scoped to an element makes its box enterable
+    (EDIT-15), as the cookbook's "level 4" component example suggests.
+
+**View statements beyond phase 1 (P2-20)**
+
+- **P2-20** `include *?`, element and relationship expressions with
+  `&&`/`||`, relationship patterns in `exclude`, `default` and view
+  `properties` work as in Structurizr. Each form has its own id below.
+- **P2-323** `include *?` on a system context, container or component
+  view selects the same elements as `*`, but draws only the
+  relationships to or from the scoped element (reference): the scoped
+  system (C1), or the scope's children (C2: its containers; C3: its
+  components). TODO(srs): whether `*?` on any other view kind is an
+  error. The reference only says it "is available for" these three
+  kinds.
+- **P2-324** `include ->x`, `x->` and `->x->`, and the forms
+  `element==->x`, `element==x->` and `element==->x->`, add x plus every
+  element with a relationship to x, from x, or either (reference: "the
+  element(s) plus afferent/efferent couplings"; x may itself be an
+  expression).
+  - In `exclude`, the same expressions remove those elements.
+  - A relationship of a nested element counts for its ancestors, as with
+    phase-1 `include *`.
+- **P2-325** TODO(srs): when a coupled element from P2-324 is nested, at
+  which level it is drawn (itself, or its ancestor at the view's level),
+  and whether such an element is kept when the view kind does not
+  normally show it.
+- **P2-326** `element.type==<T>` matches the elements of type T, for T
+  in `Person`, `SoftwareSystem`, `Container`, `Component` and `Custom`
+  (spelled as the reference spells them). The deployment types
+  (`DeploymentNode`, `InfrastructureNode`, `SoftwareSystemInstance`,
+  `ContainerInstance`) belong to phase 3.
+- **P2-327** `element.parent==<id>` matches the elements whose parent is
+  `<id>`.
+- **P2-328** `element.tag==<t>[,t]` matches the elements that have every
+  listed tag. `element.tag!=<t>[,t]` matches those that do not have
+  every listed tag (reference: "all of the specified tags").
+- **P2-329** `element.technology==<t>` matches the elements whose
+  technology is t, and `element.technology!=<t>` matches those whose
+  technology is not t.
+- **P2-330** `element.properties[<name>]==<value>` matches the elements
+  whose property `<name>` is set to that value. It needs element
+  properties (P2-18).
+- **P2-331** `element.group==<name>` matches the elements in that group.
+  It needs groups (P2-4).
+- **P2-332** In `exclude`, each of these relationship expressions
+  removes the drawn lines whose relationship matches and keeps every
+  box:
+  - `*->*`, `<id>->*`, `*-><id>`, `relationship==*`,
+    `relationship==*->*`;
+  - `relationship.tag==` and `relationship.tag!=` (every listed tag);
+  - `relationship.properties[<n>]==<v>` (needs P2-18);
+  - `relationship.source==<id>`, `relationship.destination==<id>`;
+  - `relationship==<id>->*`, `relationship==*-><id>`,
+    `relationship==<a>-><b>`.
+- **P2-333** `exclude "<*|id|expression> -> <*|id|expression>"` removes
+  every drawn line whose source box matches the left side and whose
+  destination box matches the right side. It acts only on elements in
+  the view (reference).
+- **P2-334** A relationship expression in `include` adds no box. It
+  matches only relationships whose two ends are already in the view
+  (reference: "Relationship expressions only match elements already in
+  the view").
+- **P2-341** `include <r>` or `exclude <r>`, where `r` names a
+  relationship (`r = a -> b`, dsl-breadth), adds or removes that
+  relationship's line. The line is drawn only when both of its ends are
+  in the view (reference: include and exclude accept a relationship
+  identifier).
+- **P2-335** Two expressions joined by `&&` match what both match, and
+  joined by `||` they match what either matches (reference example:
+  `"element.type==Container && element.parent==abc"`).
+- **P2-336** TODO(srs): more than two operands, `&&`/`||` precedence
+  when mixed, and parentheses. The reference covers only "two
+  expressions" and points to scripts for anything more complex.
+- **P2-337** An expression that contains whitespace must be written in
+  double quotes (reference). Unquoted, it is an error naming the token,
+  never read silently as something else (DSL-4).
+- **P2-338** A `default` line in a view makes it the view the editor
+  shows when no last-viewed view applies. It replaces "else the first
+  declared" in EDIT-13. TODO(srs): what happens when two or more views
+  carry `default`.
+- **P2-339** A view `properties { <name> <value> }` block is parsed,
+  kept byte for byte (DSL-11), and has no effect on the scene.
 
 styles-themes
 
-- **P2-10** Every Structurizr element style property is parsed and
-  drawn in canvas, SVG and PNG alike. `TODO(srs)`: list from the parity
-  table (stroke, strokeWidth, border, opacity, fontSize, width, height,
-  icon, metadata, description, and others).
-- **P2-11** Every Structurizr shape draws in canvas, SVG and PNG alike,
-  with ports that keep CORE-9. `TODO(srs)`: list from the parity table
-  and port rules per shape.
-- **P2-12** `relationship "<tag>"` styles set line colour, thickness
-  and dash, and a set colour overrides CORE-3. `TODO(srs)`: what
-  Structurizr `routing` and `position` mean under the circuit-board
-  router.
-- **P2-13** `theme` and `themes` apply the theme's styles below the
-  file's own styles. `TODO(srs)`: themes are URLs; decide bundled
-  copies, a local cache or a fetch.
-- **P2-21** `styles { light {...} dark {...} }` give each view a light
-  and a dark rendering; the editor switches mode and SVG/PNG export
-  takes a dark mode option (Structurizr `-mode dark`).
+Sources fetched 2026-11-15: https://docs.structurizr.com/dsl/language
+(styles, light, dark, element style, relationship style, theme, themes),
+https://docs.structurizr.com/server/diagrams/notation (defaults,
+Boundary/Group tags, which properties apply where, icons) and the
+cookbook page relationship-styles (`dashed`). Taken from the draft
+without re-fetching: the themes page (a theme is a folder holding
+`theme.json` and its icons) and export/png-and-svg (`-mode`, default
+light). From memory, not from a fetched page, and marked where used: the
+Structurizr theme-JSON key names. Existing ids are kept. The TODO stubs
+are split into P2-400..P2-439 and P2-440, one testable sentence each.
+
+**Element styles (P2-10)**
+
+- **P2-10** In an `element "<tag>"` block (top-level in `styles` or
+  inside `light`/`dark`), each of `shape`, `icon`, `width`, `height`,
+  `background`, `color`, `colour`, `stroke`, `strokeWidth`, `fontSize`,
+  `border`, `opacity`, `metadata`, `description` and `properties { name
+  value }` is parsed into the style with its value span, and any other
+  word is still a DSL-4 error naming it.
+- **P2-400** `colour` and `color` are one property (box text colour), so
+  a block that sets both is the same duplicate-property error as a block
+  that sets `color` twice.
+- **P2-401** Wherever a `#rrggbb` colour is accepted (element
+  `background`, `color`/`colour` and `stroke`; relationship
+  `color`/`colour`), a CSS/HTML colour name in any letter case resolves
+  to its CSS hex value, and any other word is an invalid-value error.
+- **P2-402** A resolved `width W` or `height H` replaces that dimension
+  of the CORE-2 kind default, each on its own, and a view's `size` line
+  for the box still wins over both. `TODO(srs)`: a value that is not a
+  multiple of 20 (`size` requires multiples of 20; proposal: round up),
+  and whether Structurizr numbers are taken literally in px
+  (Structurizr's default box is 450x300 at 24px text, c4rizer's is
+  240x140 at 14px).
+- **P2-403** `stroke <colour>` sets the box outline colour, and with no
+  `stroke` the outline is the fill darkened to 72%, as in phase 1 (the
+  reference's "darker version of the background").
+- **P2-404** `strokeWidth N` draws the box outline N px wide, N outside
+  1..10 is an invalid-value error naming N, and with no `strokeWidth`
+  the outline stays 1px as in phase 1 (Structurizr's default is 2px).
+- **P2-405** `border solid|dashed|dotted` strokes the box outline with
+  no dash array, with a dash, or with a dash shorter than the dashed
+  one, and the default is `solid`.
+- **P2-406** `opacity N` (N outside 0..100 is an invalid-value error)
+  draws the whole box (fill, outline, texts, icon) at N/100 opacity in
+  canvas, SVG and PNG, and at 100 (the default) the SVG carries no
+  opacity attribute.
+- **P2-407** `fontSize N` draws the box name at N px, and wrapping, the
+  text-fit check (L25) and the EDIT-18 minimum size use that size.
+  `TODO(srs)`: how the type line and description scale with N (proposal:
+  round(N x 11 / 14) px on an N px pitch).
+- **P2-408** `metadata false` leaves out the box's `[type: technology]`
+  line and `description false` leaves out its description (both default
+  `true`), and the box's remaining texts still fit inside it.
+- **P2-409** `icon <file>` with a local PNG or JPG path, relative to the
+  diagram file's folder, draws that image inside the box rectangle,
+  clear of its texts, the same in canvas, SVG and PNG. `TODO(srs)`: icon
+  size and position (the reference says top, left or bottom, but no DSL
+  property chooses), URL and base64 data-URI icon values (the reference
+  allows both), SVG icons (the reference contradicts itself), and
+  whether a missing file is a parse error or a lint warning. In the SVG,
+  the icon is an `<image>` with a `data:` URI. That is no external
+  reference, so the SRS text of EXP-1 allows it, but the export module's
+  own EXP-1 test bans `<image>` and `href` and has to be relaxed.
+- **P2-410** `properties { name value }` in an element or relationship
+  style is parsed, kept byte for byte, and changes no scene.
+- **P2-411** Element styles for `Boundary` and then
+  `Boundary:SoftwareSystem` (container views) or `Boundary:Container`
+  (component views) apply, in that tag order, to the CORE-1 boundary's
+  `background` (fill), `stroke`, `strokeWidth`, `color` and `fontSize`
+  (name tag), `border`, `opacity` and `metadata` (`false` drops the
+  bracketed type from the name tag), and a property no such block sets
+  keeps its phase-1 value (dashed 8/6, 1px, #666666, no fill). `shape`,
+  `width`, `height` and `description` are ignored. `TODO(srs)`: a
+  boundary `icon` (the reference puts it in the bottom-left corner).
+- **P2-412** Element styles for `Group` and then `Group:<name>` apply to
+  group boundaries (P2-4, row dsl-breadth) with the P2-411 properties
+  except `metadata`.
+- **P2-440** `element "Boundary:Enterprise"` is accepted, changes no
+  scene and shows the P2-3 notice naming it (the reference marks it
+  deprecated).
+
+**Shapes (P2-11)**
+
+- **P2-11** `shape` accepts the 19 reference shapes in any letter case
+  (Box, RoundedBox, Circle, Ellipse, Hexagon, Diamond, Cylinder, Bucket,
+  Pipe, Person, Robot, Folder, WebBrowser, Window, Terminal, Shell,
+  MobileDevicePortrait, MobileDeviceLandscape, Component), and each
+  draws as its own scene outline, which canvas, SVG and PNG all take
+  from the scene.
+- **P2-413** For every shape, the outline lies inside the box rectangle
+  and the box's texts lie inside the outline's text area, which is the
+  area L25 measures fit against. `TODO(srs)`: exact proportions per
+  shape (the reference gives none).
+- **P2-414** For every shape, every line still meets CORE-6..9, measured
+  on the box rectangle. `TODO(srs)`: port rules per shape (CORE-9 covers
+  only box, person and cylinder), and whether a line ends at its
+  rectangle port or on an outline that leaves the rectangle side
+  (Circle, Ellipse, Hexagon, Diamond, Robot). The second puts the end
+  point off CORE-6's 10px grid.
+- **P2-415** A RoundedBox has a larger corner radius than a Box.
+  `TODO(srs)`: the reference's Box has square corners, but the phase-1
+  Box has a 6px radius, which is in the golden SVGs.
+- **P2-416** A box entry's key swatch draws that entry's shape outline.
+- **P2-417** The editor style panel (EDIT-17) offers all 19 shapes, and
+  `edit` writes the chosen one in the reference's spelling (for example
+  `shape MobileDevicePortrait`).
+
+**Relationship styles (P2-12)**
+
+- **P2-12** A `relationship "<tag>"` block (top-level in `styles` or
+  inside `light`/`dark`) accepts `thickness`, `color`, `colour`,
+  `style`, `dashed`, `routing`, `jump`, `fontSize`, `width`, `position`,
+  `opacity` and `properties`, and each drawn line takes the style of its
+  winning relationship (CORE-5), resolved per property over
+  `Relationship` and then the declared tags by the DSL-15 rules.
+- **P2-418** `thickness N` draws the line and its chevrons N px wide,
+  and the default stays 2px (CORE-2). `TODO(srs)`: whether the
+  arrowhead, the join dot and the 20px lane pitch scale with N.
+- **P2-419** `color`/`colour` gives the line, its chevrons, its tip and
+  its label text that colour in place of the destination box's fill
+  (overrides CORE-3).
+- **P2-420** `style solid|dashed|dotted` draws the line's polyline
+  solid, dashed or dotted, `dashed true|false` (the cookbook form,
+  absent from the language page) means `style dashed`/`style solid`, and
+  the default stays solid (CORE-10) although Structurizr's default is
+  dashed.
+- **P2-421** `routing Direct|Orthogonal|Curved` is parsed into the
+  resolved relationship style and changes no scene. `TODO(srs)`: what
+  each value means under the circuit-board router (the parity table says
+  it "maps onto the c4rizer router"). Both example fixtures style
+  `Relationship` with `routing Orthogonal`.
+- **P2-422** With `jump true`, each crossing on that line is drawn as a
+  hop at the crossing point in canvas, SVG and PNG, and L4's crossing
+  count does not change. `TODO(srs)`: which line hops when both lines
+  have `jump true`, and the hop size.
+- **P2-423** A relationship `fontSize N` draws that line's label at N
+  px, and its label size, placement clearances and L25 fit use that
+  size. `TODO(srs)`: the line pitch (proposal: N + 2, as 11/13 in phase
+  1).
+- **P2-424** A relationship `width W` wraps that line's label to W px of
+  text width, measured with the CORE-30 width table, in place of
+  `labelWidth` characters.
+- **P2-425** A relationship `position P` (P outside 0..100 is an
+  invalid-value error) orders that label's candidate centres by distance
+  from P% of the line's length instead of 50%, with CORE-14's gaps and
+  clearances kept, and with no `position` the placement is exactly as in
+  phase 1.
+- **P2-426** A relationship `opacity N` (N outside 0..100 is an
+  invalid-value error) draws the line, its chevrons, tip and label at
+  N/100 opacity, and at 100 the SVG carries no opacity attribute.
+
+**Themes (P2-13)**
+
+- **P2-13** `theme <x>` and `themes <x> [y ...]` inside `views` are
+  parsed, and a theme's styles resolve as if written before the file's
+  first style block, in theme order: for one tag, the file's own block
+  beats any theme's and a later theme beats an earlier one, while across
+  tags the DSL-15 tag order decides.
+- **P2-427** A theme given as a local file path, relative to the diagram
+  file's folder, is read as Structurizr theme JSON (`elements` and
+  `relationships` arrays of objects, each with `tag` and Structurizr
+  style keys; key names from memory). Unknown keys are ignored, nothing
+  is ever written to the theme file, and a missing file or malformed
+  JSON is a parse error naming the file and saying what to fix (5.1).
+- **P2-428** A relative `icon` path in a theme resolves against the
+  theme file's folder.
+- **P2-429** A theme given by name or by URL is accepted, changes no
+  scene and shows the P2-3 notice naming it. `TODO(srs)`: bundled
+  copies, a local cache or a fetch (the HLD has no network dependency;
+  the reference says named themes must be installed).
+
+**Light and dark (P2-21)**
+
+- **P2-21** `light { }` and `dark { }` inside `styles` accept only
+  `element` and `relationship` blocks, and anything else inside them is
+  a DSL-4 error.
+- **P2-430** Light mode resolves styles over the top-level and `light`
+  blocks, dark mode over the top-level and `dark` blocks, and a file
+  with neither kind of block resolves the same style for every element
+  and relationship in both modes. `TODO(srs)`: for one tag, whether a
+  mode block beats a top-level block wherever each is written (proposal:
+  the mode block wins), and whether theme styles apply in both modes.
+- **P2-431** `TODO(srs)`: the dark-mode defaults for diagram background,
+  unstyled box and line colours, title, subtitle, key and boundary (the
+  reference only says "colour scheme").
+- **P2-432** `c4rizer render FILE -o DIR --mode light|dark` writes the
+  SVGs (and the PNGs with `--png`) in that mode, the default is `light`
+  (Structurizr `-mode`), and any other value is a usage error (exit 2).
+- **P2-433** The editor has a light/dark switch that rebuilds the shown
+  view in the chosen mode without writing to the file, and the editor's
+  export uses the shown mode.
+
+**Key (P2-27)**
+
+- **P2-27** Each drawn line belongs to the last tag of its winning
+  relationship, in DSL-15 tag order, that has a relationship style block
+  and is not `Relationship`, and the key has one line entry per such
+  tag, named by the tag, plus one entry named `Relationship` for all the
+  other drawn lines. `TODO(srs)`: whether a line ending in a join dot
+  (CORE-8) keeps its own entry.
+- **P2-434** A named line entry's swatch is drawn with that style's
+  resolved colour, thickness and dash. `TODO(srs)`: the swatch colour of
+  the `Relationship` entry when CORE-3 gives its lines different colours
+  (proposal: #707070).
+- **P2-435** A box look in the key is (shape, fill, text colour, stroke
+  colour, stroke width, border), so boxes that differ only in stroke or
+  border get separate entries (CORE-1: "every shape, colour and line
+  style drawn"). `TODO(srs)`: whether opacity and icon split entries.
+
+**Cross-cutting**
+
+- **P2-436** A fixture that uses every element style property, every
+  shape and every relationship style property gives an editor draw list
+  with the same items, outlines, strokes, dashes and opacities as its
+  SVG, and its PNG is that SVG rasterized (EDIT-12, EXP-2).
+- **P2-437** A file with no phase-2 style construct gives the same scene
+  as in phase 1 except for the key's line entries, which P2-27
+  collapses. The four golden SVGs are regenerated once for that change,
+  the owner re-approves them (CLI-5 (2)), and they are byte-identical
+  after that.
+- **P2-438** A file using every construct of this row (all properties,
+  all shapes, `light`/`dark`, `theme`/`themes`, colour names, `colour`,
+  `dashed`) round-trips byte-identical (DSL-11).
+- **P2-439** A DSL-13 style edit changes only the edited property's
+  line. On a block that uses `colour`, a text-colour edit rewrites that
+  line and adds no `color` line. A theme style is never edited: an `all
+  <tag>` edit on a tag styled only by a theme adds a block for that tag
+  to the file's own `styles`.
 
 compat-fixtures
 
-- **P2-14** Every `.dsl` in `tests/data/structurizr/` (the official
-  Structurizr examples plus `docs/workspace.dsl`) opens with zero
-  parse errors and every drawable view renders; this is an oracle
-  test. `TODO(srs)`: pick the example set and its licence.
-- **P2-15** `c4rizer import-layout workspace.json FILE.dsl` writes, for
-  each view key present in both, an `at` line for every element
-  position stored in the Structurizr `workspace.json`, snapped to the
-  10px grid, and changes nothing else in `FILE.dsl`. `TODO(srs)`:
-  coordinate mapping (Structurizr stores top-left corners; `at` is the
-  centre).
+Sources: docs/srs.md sections 2 (parity table), 4.1, 4.6 and 5; phase-1
+code on dev (model.rs, edit.rs, view.rs, pipeline.rs, lint.rs, cli
+main.rs); and the Structurizr reference. The doc pages
+docs.structurizr.com/json and the structurizr/json schema returned 404
+when the draft was written. Where a page was missing, the behaviour
+comes from the reference implementation's source:
+github.com/structurizr/structurizr (Apache-2.0) at commit
+ad34036c5a1227535fc9adea9a0f97de5962189d, files
+DefaultLayoutMergeStrategy.java, SVGReader.java,
+IdentifiersRegister.java, StructurizrDslParser.java and DslTests.java.
+Anything taken from memory is marked as such.
 
-cli-breadth (ROADMAP row `cli-breadth`, phase 2)
+- **P2-14** (kept, made precise) The oracle tests run over every file
+  that `tests/data/structurizr/MANIFEST` marks `root`, plus
+  `docs/workspace.dsl` read where it lives. They check three things:
+  each file parses with zero errors, with `!include` resolved per P2-5;
+  `pipeline::build_all` gives a `ViewBuild` for every view that P2-2
+  does not mark "not yet supported"; and `export::svg` of each of those
+  builds' scenes is a non-empty SVG document.
+- **P2-500** The corpus is the tree
+  `structurizr-dsl/src/test/resources/dsl/` of
+  https://github.com/structurizr/structurizr at commit
+  `ad34036c5a1227535fc9adea9a0f97de5962189d`, plus
+  `structurizr-export/src/test/resources/big-bank-plc.json`, copied into
+  `tests/data/structurizr/` at their relative paths. `SOURCE` lists
+  every copied file with its git blob id at that commit. The test
+  `p2_500_corpus_pinned_source` recomputes each file's git blob SHA-1
+  with a helper inside the test and fails on any mismatch, missing file
+  or unlisted file.
+- **P2-501** `tests/data/structurizr/MANIFEST` has exactly one line per
+  `.dsl` file in the copied tree. Each line marks the file `root`,
+  `fragment` (read only through another file's `!include` or `workspace
+  extends`), or `excluded <reason>`, and the reason is one of these:
+  - `rejected-by-structurizr`: Structurizr's own `DslTests` at the
+    pinned commit expect a parse failure.
+  - `needs-network`: an `!include`, `workspace extends`, theme or image
+    source that is a URL. This holds until the P2-5/P2-16 URL
+    `TODO(srs)` is settled.
+  - `needs-jvm`: the file's views or relationships refer to model
+    content that only `!script`, `!plugin` or `!components` would
+    create, which the parity table marks never.
+  - `needs-env`: the file needs an environment variable. Rust 2024 makes
+    `std::env::set_var` `unsafe`, so a test cannot set one. This reason
+    is tied to the `${NAME}` environment lookup (dsl-breadth).
 
-- **P2-22** The CLI adds `validate`, `inspect` (exit code = violation
-  count), `list` (lists elements), `version` and `help`, with the
-  meaning of the Structurizr commands of the same name.
-  `TODO(srs)`: argument names and output format.
-- **P2-25** SVG export (CLI `render` and the editor's export) offers an
-  option to embed the font or outline the text, instead of naming it
-  (EXP-1). Not built in phase 1.
+  The test `p2_501_manifest_covers_every_dsl` fails on any `.dsl` with
+  no line, any line naming a missing file, any duplicate line, and any
+  reason outside the list.
+- **P2-502** `tests/data/structurizr/` holds the Apache-2.0 `LICENSE`
+  text of the source repository. Its `SOURCE` file names the repository
+  URL, the commit and both source paths, and says the files are
+  unmodified. The test is `p2_502_corpus_licence_present`.
+- **P2-28** (kept, made precise) The `#[ignore]`d test
+  `p2_28_house_style_report` is run by hand. It builds every MANIFEST
+  root and prints one line per root, giving the sorted codes of every
+  lint error rule the file breaks over all its built views plus the
+  file-level L22 findings (`AllViews::coverage`). It then prints three
+  totals that sum to the number of roots:
+  - files with no lint error
+  - files whose lint errors are all house-style rules
+  - files with any other lint error
 
-editor-breadth (ROADMAP row `editor-breadth`, phase 2)
+  The house-style rules are L4 (crossings above `maxCrossings`) and L15
+  (C1 line shows a technology), the two the SRS names. `TODO(srs)`:
+  whether other c4rizer-only error rules (for example L8, L9, L10, L12,
+  L13, L18, L21, L22) also count as house style.
+- **P2-503** The same report prints, for each lint error rule, the
+  number of root files that break it at least once.
+  `p2_503_per_rule_file_counts` checks this count on hand-made findings:
+  one file breaking a rule twice counts once.
+- **P2-15** (kept) `c4rizer import-layout workspace.json FILE.dsl`
+  writes an `at` line, snapped to the 10px grid, for every element
+  position stored in the Structurizr `workspace.json` that can be
+  matched (P2-506) to a box of a view whose key is in both files. It
+  changes nothing else in `FILE.dsl` beyond P2-509's exception. P2-504
+  to P2-511 give the details. The old coordinate-mapping `TODO(srs)` is
+  now P2-508.
+- **P2-504** `c4rizer import-layout JSON FILE` rewrites FILE in place
+  and exits 0 when the run completes, even when it skipped items. It
+  exits 2, with FILE left byte-identical, in these cases:
+  - a usage error, with the usage text on stderr
+  - a file that cannot be read
+  - a DSL parse error
+  - JSON that is not valid RFC 8259
+  - JSON with no top-level `views` object (not a Structurizr workspace)
+  - an `edit::apply` error
 
-- **P2-23** Canvas commands of the Structurizr diagram editor: run
-  auto-layout again on demand, bring all boxes back onto the canvas,
-  canvas size decrease/auto/increase, centre diagram or selection,
-  fit to width/height/content, fullscreen, keyboard shortcuts for
-  align and distribute, move a label with Up/Down (writes `position`),
-  cycle routing with `r` and toggle jumps with `j`.
-- **P2-24** Viewing aids: keyboard previous/next/back navigation
-  between views, open an element or relationship `url`, toggle
-  descriptions and metadata, tooltips, filter by tags and a
-  perspectives view. `TODO(srs)`: one requirement per item.
-- **P2-26** (place-quality) Automatic placement is layered: ranks follow
-  the direction of relationships, order within a rank reduces
-  crossings, people are on top and external elements at the sides; the
-  row and column pitch grows where a label would not fit between two
-  boxes. On `tests/data/example/workspace.dsl` (no `at` lines), all four
-  views have no "no room for label", no label over a box, and crossings
-  and total line length no worse than phase 1 and lower on C3-startup.
-  `TODO(srs)`: the numbers, measured and approved before they freeze.
-- **P2-27** (styles-themes) The key has one entry per relationship
-  style, named by its tag, or a single `Relationship` entry when the
-  styles have no name.
-- **P2-28** (compat-fixtures) Report how many corpus files fail lint on
-  house-style rules alone (L15, crossing budget); the owner rules on
-  defaults then.
+  A JSON syntax error is reported as `path:line:column: <what> — <what
+  to change>` (SRS 5.1).
+- **P2-505** Views are matched by key. A view in the JSON arrays
+  `systemLandscapeViews`, `systemContextViews`, `containerViews`,
+  `componentViews` or `customViews` is paired with the c4rizer view
+  whose `ViewSpec::key` equals its `key`, compared exactly. A JSON view
+  with no c4rizer view of that key is reported as skipped. A c4rizer
+  view with no JSON view is left untouched. When a match is on a key
+  c4rizer generated (`ViewSpec::declared_key` is `None`), a warning
+  names the view, because the reference recommends explicit keys when
+  layout is kept and says generated ones are not stable.
+- **P2-506** Within a matched view, each box that `view::plan` draws is
+  paired with the first JSON element view whose element matches, trying
+  the steps of the reference's `DefaultLayoutMergeStrategy` in order:
+  1. same canonical name (element type plus the names of its ancestors
+     and itself)
+  2. same element type and same name
+  3. same element type and same non-empty description
+
+  The reference's fourth step, matching by Structurizr element id, does
+  not apply, because c4rizer elements carry no Structurizr ids. A JSON
+  element view whose `id` is not in the JSON model is skipped with a
+  notice.
+- **P2-507** An element that the JSON view lists but the c4rizer view
+  does not draw is not imported, because the reference copies layout
+  only into elements of the destination view. A drawn box with no JSON
+  match keeps its current `at` line, or still has none, and gets one
+  warning naming the view and the element.
+- **P2-508** JSON element positions `x` and `y` are the box's top-left
+  corner (reference: `SVGReader` sets the page bound to `x + style
+  width`). The `at` centre is `(x + w/2, y + h/2)`, each coordinate
+  rounded to the nearest multiple of 10. `w` and `h` are the `width` and
+  `height` of the element's resolved style in the JSON's
+  `views.configuration.styles.elements`: the element's comma-separated
+  `tags` are taken in order and a later tag wins, as in DSL-15.
+  `TODO(srs)`: the size to use when no style sets width or height. It is
+  Structurizr's renderer default, remembered as 450x300 but not in the
+  fetched sources. `TODO(srs)`: whether positions are scaled to
+  c4rizer's smaller box sizes (CORE-2); the reference has no such step.
+- **P2-509** Positions are written by one `edit::apply` call that holds
+  one `Edit::Move` per matched box. An existing `at` line is
+  overwritten, because the reference copies layout over the destination.
+  A missing one is added per DSL-9. With `!include`, the lines go to the
+  root file (P2-5). Every byte outside the written `at` lines is
+  unchanged, with one exception: DSL-9 splits a one-line view body `{
+  ... }` onto lines before adding the first `at` line. The test checks
+  this with a line diff of FILE before and after. FILE is not rewritten
+  when there is no edit.
+- **P2-510** Layout data that c4rizer cannot hold is not imported, and
+  the report names each kind once per view: relationship `vertices`
+  (phase 3, P3-4), relationship `routing` and `position` (P2-12
+  `TODO(srs)`), and view `paperSize` and `dimensions`. JSON
+  `dynamicViews`, `deploymentViews` and `imageViews` are reported as
+  skipped, not drawable yet. JSON `filteredViews` hold no positions and
+  are ignored, because a c4rizer filtered view takes its base view's
+  `at` lines (P2-9). The JSON's `views.configuration.themes` are named
+  once and not fetched (P2-13).
+- **P2-511** A matched box whose element has no identifier in FILE
+  (`Element::key` is `None`, which phase 2 allows) gets no `at` line,
+  because an `at` line names an identifier, and the report gives one
+  warning naming the view and the element's name. `TODO(srs)`: whether
+  import-layout should offer to add an identifier (a text edit, not
+  element creation) so that these boxes can keep their layout.
+
+cli-breadth
+
+Sources: https://docs.structurizr.com/commands, /validate, /inspect,
+/list and /workspaces/inspections, fetched 2026-11-15.
+/export/png-and-svg and /dsl/language were not re-read, because this row
+adds no DSL grammar and Structurizr has no SVG text option. The
+inspections page was available only as a paraphrase: the inspection keys
+and option texts below are exact, but the default-severity sentence is
+not quoted word for word. Umbrella ids are kept: **P2-22** is split into
+P2-600..P2-650 and **P2-25** into P2-651..P2-665. An umbrella counts as
+met when every child is met. Two SRS edits this row needs are open
+questions in `docs/deferred.md`: CLI-2 scoped to `render` and `lint` (as
+written it would give `inspect` exit 1 on lint errors, against P2-642),
+and EXP-1 scoped to `--svg-text name` (its "no `@font-face`" clause
+contradicts P2-25 by design).
+
+- **P2-22** (kept, umbrella) The CLI adds `validate`, `inspect`, `list`,
+  `version` and `help` with the meaning of the Structurizr commands of
+  the same name; met when P2-600..P2-650 are met (no test of its own).
+- **P2-25** (kept, umbrella) SVG export (CLI `render` and the editor's
+  export) offers an option to embed the font or outline the text instead
+  of naming it (EXP-1); met when P2-651..P2-665 are met (no test of its
+  own).
+
+**The workspace argument**
+
+- **P2-600** `validate`, `inspect` and `list` each take the diagram file
+  as `-workspace FILE`, the spelling of the parity table and
+  Structurizr. TODO(srs): should a bare positional FILE also work, as it
+  does for `render` and `lint`?
+- **P2-601** `-workspace -` reads the diagram from stdin. Errors name it
+  `<stdin>`, the same convention as `render` and `lint`.
+- **P2-602** `validate`, `inspect` or `list` exits 2 and prints a usage
+  error on stderr in each of these cases: no `-workspace`, `-workspace`
+  with no value, `-workspace` given twice, or an argument the subcommand
+  does not take.
+- **P2-603** TODO(srs): Structurizr also accepts a URL and a JSON
+  workspace in `-workspace`. URL fetching has the same open question as
+  P2-5, and the parity table puts JSON workspace input in phase 3. Until
+  this is ruled, the value is always read as a local path. A URL
+  therefore fails as an I/O error (exit 2) and a JSON file as a parse
+  error (exit 2).
+
+**validate** (Structurizr: "Validates a workspace.")
+
+- **P2-604** `c4rizer validate -workspace FILE` exits 0 when FILE parses
+  into a model with no error. TODO(srs): the text of the success line,
+  if there is one.
+- **P2-605** `validate` writes no file and runs no placement, routing or
+  lint, so lint findings never change its exit code.
+- **P2-606** On a parse or I/O error, `validate` prints `c4rizer:
+  <path>:<line>:<column>: <what> — <what to change>` on stderr (SRS 5.1)
+  and exits 2.
+- **P2-607** `validate` exits 2, with a message naming the element that
+  breaks the rule, when the workspace breaks its own `configuration
+  scope`. This needs P2-18. TODO(srs): the exact scope rules for
+  `landscape` and `softwaresystem`. They come from memory of the
+  Structurizr scope validation and were not re-read.
+
+**list** (Structurizr: "Lists the elements in a workspace.")
+
+- **P2-608** `c4rizer list -workspace FILE` prints every element of the
+  model to stdout exactly once, in declaration order (`Model::elements`,
+  so parents come before children), and exits 0. TODO(srs): the line
+  format, which the reference does not show.
+- **P2-609** `list` writes no file and runs no placement, routing or
+  lint.
+- **P2-610** On a parse or I/O error, `list` prints the error on stderr
+  per SRS 5.1 and exits 2.
+
+**inspect** (Structurizr: "Runs the inspections on a workspace.")
+
+- **P2-611** `c4rizer inspect -workspace FILE` prints one line to stdout
+  for each inspection violation it shows. TODO(srs): the exact line
+  format and any summary line, which the reference does not describe.
+- **P2-612** Each violation line gives the severity, the inspection key
+  and the subject: an element id, a relationship as `<source id> ->
+  <destination id>`, a view key, or nothing for a workspace-level
+  violation.
+- **P2-613** `inspect` writes no file and runs no placement, routing or
+  lint, so lint findings never change its exit code.
+- **P2-614** On a parse or I/O error, `inspect` prints the error on
+  stderr per SRS 5.1 and exits 2. TODO(srs): see P2-642, since this
+  cannot be told apart from two violations.
+- **P2-615** `model.empty`: a model with no elements gives exactly one
+  violation.
+- **P2-616** `model.person.description`: each person with no description
+  gives one violation naming it.
+- **P2-617** `model.softwaresystem.description`: each software system
+  with no description gives one violation naming it.
+- **P2-618** `model.container.description`: each container with no
+  description gives one violation naming it.
+- **P2-619** `model.container.technology`: each container with no
+  technology gives one violation naming it.
+- **P2-620** `model.component.description`: each component with no
+  description gives one violation naming it.
+- **P2-621** `model.component.technology`: each component with no
+  technology gives one violation naming it.
+- **P2-622** `model.element.disconnected`: each element that is the
+  source or destination of no relationship gives one violation naming
+  it. TODO(srs): do relationships of its children count, and do implied
+  relationships count (P2-7)?
+- **P2-623** `model.element.noview`: each element that `Model::included`
+  returns for no declared view gives one violation naming it. Default
+  views that the editor offers (EDIT-15) and has not written to the file
+  do not count.
+- **P2-624** `model.relationship.description`: each relationship with no
+  description gives one violation naming its source and destination.
+- **P2-625** `model.relationship.technology`: each relationship with no
+  technology gives one violation naming its source and destination.
+- **P2-626** `views.empty`: a workspace with no declared view gives
+  exactly one violation.
+- **P2-627** `views.view.empty`: each declared view that includes no
+  element gives one violation naming its key.
+- **P2-628** `model.softwaresystem.documentation`: each software system
+  that has containers but no attached documentation (`!docs`) gives one
+  violation naming it. This needs the dsl-breadth `!docs` requirement.
+- **P2-629** `model.softwaresystem.decisions`: each software system that
+  has containers but no attached decisions (`!adrs`) gives one violation
+  naming it. This needs the dsl-breadth `!adrs` requirement.
+- **P2-630** `views.styles.element.metadata`: each element style that
+  sets `metadata false` gives one violation naming its tag. This needs
+  P2-10.
+- **P2-631** TODO(srs): the reference names five inspections without
+  defining their triggers: `workspace.scope` (depends on `configuration
+  scope`, P2-18), `workspace.tooling`, `views.view.key`,
+  `views.view.layout` and `documentation.embeddedview`. Each one gets
+  its own id once its trigger is settled.
+- **P2-632** The deployment inspections wait for the phase-3 deployment
+  model (P3-1) and are not built in this row:
+  `model.deploymentnode.description`, `model.deploymentnode.technology`,
+  `model.deploymentnode.empty`, `model.infrastructurenode.description`
+  and `model.infrastructurenode.technology`.
+- **P2-633** Every violation has severity `error` unless a property from
+  P2-634..P2-639 sets another one. (Reference: `error` is the default
+  severity of all inspections.)
+- **P2-634** A workspace property `structurizr.inspection.<key>` with
+  value `error`, `warning`, `info` or `ignore` sets that severity on
+  every violation with that inspection key. This needs P2-18
+  `properties`.
+- **P2-635** The wildcard keys set the severity of every inspection
+  under their prefix: `structurizr.inspection.*`,
+  `structurizr.inspection.model.*` and
+  `structurizr.inspection.model.component.*`. TODO(srs): which key wins
+  when an exact key and a wildcard both match.
+- **P2-636** A `structurizr.inspection.<key>` property on an element, a
+  relationship or a view sets the severity of that subject's violations
+  with that key. This needs P2-18.
+- **P2-637** A `structurizr.inspection.<key>` property on an element
+  also sets the severity of the violations with that key on every
+  element beneath it. For example, a property on a container covers its
+  components.
+- **P2-638** Model-level properties set the severity of model
+  inspections, and view-set or workspace properties set the severity of
+  view inspections. TODO(srs): which level wins when several set a
+  severity.
+- **P2-639**
+  `structurizr.inspection.model.relationship[<src>-><dst>].technology`
+  sets the severity only for relationships whose source and destination
+  elements are of those types. The types are `person`, `softwaresystem`,
+  `container`, `component`, `deploymentnode`, `infrastructurenode`,
+  `softwaresysteminstance` and `containerinstance`. The plain key
+  `structurizr.inspection.model.relationship.technology` covers all
+  relationships.
+- **P2-640** `-severity LIST` (comma-separated values from `error`,
+  `warning`, `info` and `ignore`; default `error,warning,info,ignore`)
+  makes `inspect` show, and count, only violations with a listed
+  severity.
+- **P2-641** `-severity` with an unknown value, with no value, given
+  twice, or on a subcommand other than `inspect` prints a usage error on
+  stderr and exits 2.
+- **P2-642** `inspect` exits with the number of violations shown, so 0
+  means none was shown. (Reference: "The return code indicates the
+  number of violations that were shown.") TODO(srs): process exit codes
+  stop at 255, so what happens above 255? TODO(srs): exit 2 for a parse,
+  I/O or usage error cannot be told apart from two violations.
+- **P2-643** `-inspector <class>` is refused: c4rizer prints one line on
+  stderr saying that custom Java inspectors need the JVM and are not
+  supported (parity table: never), and exits 2.
+- **P2-644** `inspect` run twice on the same file prints byte-identical
+  output (CORE-25).
+
+**version, help, usage**
+
+- **P2-645** `c4rizer version` prints a line containing the workspace
+  package version (`CARGO_PKG_VERSION`) on stdout and exits 0.
+  TODO(srs): the exact text. Proposal: `c4rizer <version>`.
+- **P2-646** `c4rizer version` followed by any argument prints a usage
+  error on stderr and exits 2.
+- **P2-647** `c4rizer help` prints the usage text on stdout and exits 0.
+  TODO(srs): `help <command>` and `-h`/`--help`. The reference only says
+  "Displays a help message."
+- **P2-648** The usage text names every subcommand (`render`, `lint`,
+  `validate`, `inspect`, `list`, `version`, `help`) with each of its
+  arguments, including `-workspace`, `-severity` and `--svg-text`.
+- **P2-649** Every usage error prints `c4rizer: <error>` and then the
+  usage text on stderr, and exits 2.
+- **P2-650** The no-subcommand and unknown-subcommand messages name all
+  seven subcommands.
+
+**SVG text option (P2-25)**
+
+- **P2-651** `c4rizer render` takes `--svg-text name|embed|outline`.
+  TODO(srs): the flag name. Structurizr has no equivalent because it
+  exports through a browser.
+- **P2-652** Without `--svg-text`, or with `--svg-text name`, every SVG
+  `render` writes is byte-identical to the phase-1 EXP-1 output, so the
+  CLI-5 goldens do not change.
+- **P2-653** `--svg-text` on a subcommand other than `render`, given
+  twice, with no value or with an unknown value prints a usage error on
+  stderr and exits 2.
+- **P2-654** EXP-1 applies in full to `name`. Under `embed`,
+  P2-655..P2-657 replace EXP-1's "no `@font-face`" clause. Under
+  `outline`, P2-658..P2-659 replace EXP-1's `font-family` clause.
+- **P2-655** With `embed`, the SVG carries one `<style>` with one
+  `@font-face` for each bundled face the scene's text uses. Each rule
+  gives `font-family` equal to `scene::FONT_FAMILY` and a `font-weight`
+  that matches the text it serves: `normal` for `scene::FONT_REGULAR`
+  and `bold` for `scene::FONT_BOLD`.
+- **P2-656** With `embed`, each `@font-face` has `src:
+  url(data:font/ttf;base64,…)`, and its decoded bytes equal the bundled
+  face exactly. TODO(srs): font subsetting. The full faces are 412 KB
+  and 420 KB, about 550 KB each in base64.
+- **P2-657** With `embed`, the SVG passes the EXP-1
+  no-external-reference scan except for the `data:` URIs inside
+  `@font-face`: no script, no `href`, no `<image>` and no other
+  `url(...)`.
+- **P2-658** With `outline`, the SVG has no `<text>` element, no
+  `font-family` and no `@font-face`. Every text line is drawn instead as
+  filled paths taken from the bundled faces' glyph outlines, with the
+  same fill as the `name` export.
+- **P2-659** With `outline`, the SVG passes the EXP-1
+  no-external-reference scan with no exception.
+- **P2-660** An `outline` SVG rasterized with no font loaded matches the
+  same view's `name` SVG rasterized with the bundled fonts (EXP-2) at
+  the same width, within a pixel tolerance. TODO(srs): the allowed
+  difference.
+- **P2-661** `--svg-text` changes only the `.svg` files: `--png` output
+  is byte-identical whatever its value.
+- **P2-662** `--svg-text outline` on a build without outline support
+  exits 2 with a message saying how to rebuild, the same way `--png`
+  without the `png` feature does.
+- **P2-663** The editor's "Export view" and "Export all views" (EDIT-7)
+  offer the choices `name`, `embed` and `outline`, with `name` as the
+  default.
+- **P2-664** An SVG the editor exports with a given choice is
+  byte-identical to `c4rizer render --svg-text <choice>` for the same
+  view and positions.
+- **P2-665** Picking an SVG text choice in the editor writes nothing to
+  the diagram file. The `.dsl` holds only model, views and layout.
+
+editor-breadth
+
+P2-23 and P2-24 keep their ids and become umbrellas; the new ids run
+from P2-700 to P2-733. Sources fetched 2026-11-15:
+https://docs.structurizr.com/server/diagrams/viewer,
+/server/diagrams/editor, /server/diagrams/perspectives and
+/server/diagrams/customisation (the `/ui/diagrams/...` paths return 404;
+the pages moved under `/server/diagrams/`). A point taken from memory
+rather than from a fetched page says "from memory" and carries
+TODO(srs). Each requirement is one testable sentence; a TODO(srs) or
+Note after it is not part of the sentence.
+
+- **P2-23** (kept, umbrella) The Structurizr diagram-editor canvas
+  commands work in the editor, which is met when P2-700..P2-712 and
+  P2-733 are met (no test of its own).
+- **P2-24** (kept, umbrella; its old TODO(srs) "one requirement per
+  item" is resolved by the split below) The Structurizr viewer's viewing
+  aids work in the editor, which is met when P2-713..P2-732 are met (no
+  test of its own).
+
+**Canvas commands (split from P2-23)**
+
+- **P2-700** The "Auto-place view" command places every box of the open
+  view with CORE-22 placement as though the view had no `at` lines and
+  no previous scene (`place::Keep::default()`, `size` lines kept), then
+  writes an `at` line for every box at its new grid-snapped centre as
+  one undo step (EDIT-19), writing the default view first when EDIT-15
+  needs it, so that running it twice on an unchanged file leaves the
+  file byte-identical (CORE-25). Note: Structurizr's version is the
+  auto-layout modal ("manually apply the automatic layout algorithm";
+  Structurizr uses Dagre). The command takes no options because
+  `autoLayout` lines are kept byte for byte and have no effect (DSL-6).
+- **P2-701** "Decrease canvas size", "Auto canvas size" and "Increase
+  canvas size" set the open view's canvas to the previous size in an
+  ordered size list, the smallest size that holds the scene, or the next
+  size, and write it to the diagram file (P2-733) as one undo step.
+  TODO(srs): (a) the size list (from memory: A6..A0 portrait and
+  landscape, Letter, Legal, slide formats; no fetched page lists it);
+  (b) the syntax (Structurizr DSL has none and keeps paper size in
+  workspace JSON, so c4rizer needs a view extension line, as it has
+  `at`); (c) whether SVG/PNG export (EDIT-7, CLI) uses the canvas
+  instead of `Scene::bounds` (the parity note says "Paper size for
+  export").
+- **P2-702** Decrease and Increase canvas size move every box of the
+  open view by one shared grid-snapped offset that keeps the drawing
+  centred on the new canvas, in the same undo step as the size change,
+  unless Alt is held, in which case every box keeps its position. The
+  reference says: "By default, the diagram will stay centred when using
+  the decrease and increase canvas size buttons", and holding Alt turns
+  this off. TODO(srs): the reference names only decrease and increase;
+  whether Auto also re-centres.
+- **P2-703** "Bring boxes onto the canvas" (the magnet button in
+  Structurizr's auto-layout modal, "bring all elements back on to the
+  diagram canvas") moves each box of the open view that lies wholly or
+  partly outside the canvas to the nearest grid position fully inside
+  it, and writes those boxes' `at` lines as one undo step. It writes
+  nothing when every box is already inside. TODO(srs): "nearest" is a
+  c4rizer choice (the reference says only "back on to"); what it does
+  while the canvas is on auto size.
+- **P2-704** "Centre" moves the selected boxes, or every box of the open
+  view when none is selected, by one shared grid-snapped offset that
+  puts the centre of their bounding rectangle at the canvas centre,
+  horizontally and vertically, as one undo step. The reference says:
+  "Centre diagram or selected elements" and "horizontally and vertically
+  centre the selected elements on the diagram canvas". TODO(srs): what
+  the canvas centre is while the canvas is on auto size.
+- **P2-705** `w`, `h` and `c` set the camera so that the whole scene,
+  measured as EDIT-30 "Fit view" measures it (20px margin, never above
+  100% zoom), fits the canvas widget's width, its height, or both,
+  centred, without changing the file (EDIT-9); on an empty scene the
+  camera stays unchanged. Note: `c` ("Zoom to fit content") does exactly
+  what EDIT-30 Fit view does.
+- **P2-706** A "Fullscreen" command toggles fullscreen for the window
+  and keeps the open view, zoom, pan and selection. TODO(srs):
+  Structurizr binds `f` ("Enter fullscreen mode"), but phase-1 EDIT-30
+  gives the F key to Fit view. The owner picks one: a different key for
+  fullscreen, no key, or amending EDIT-30.
+- **P2-707** With two or more boxes selected, `l`, `c`, `r`, `t`, `m`,
+  `b`, `h` and `v` align left, centre, right, top, middle and bottom,
+  and distribute horizontally and vertically; each key gives the same
+  file and the same single undo step as the matching EDIT-20 command.
+  TODO(srs): which box is the alignment reference. EDIT-20 as built
+  aligns to the outermost edge, and the fetched editor page does not say
+  what Structurizr does; aligning to the first selected element is from
+  memory.
+- **P2-708** While the pointer is over a line or its label, Up and Down
+  move that line's label one step along the line in Structurizr
+  `position` units (0..100, clamped), redraw the label there, and write
+  the open view's position for that line to the diagram file as one undo
+  step. The reference says: "`Up` and `Down` arrows can be used to move
+  the positioning of the label". TODO(srs): which key moves towards the
+  source, and the step size; the per-view syntax (the DSL has `position`
+  only on relationship styles, and Structurizr keeps per-view positions
+  in workspace JSON); how CORE-14/15 label placement honours a position
+  (shared with P2-12).
+- **P2-709** While the pointer is over a line or its label, `r` cycles
+  that line's routing Direct → Orthogonal → Curved → Direct, writes it
+  for the open view to the diagram file as one undo step, and redraws
+  the line. The reference says `r` "will toggle the routing algorithm
+  between direct, orthogonal, and curved". TODO(srs): what each routing
+  means under the octilinear router (P2-12); the per-view syntax.
+- **P2-710** While the pointer is over a line or its label, `j` toggles
+  jumps for that line in the open view, written to the diagram file as
+  one undo step; with jumps on, the line is drawn with a jump at each
+  crossing, the same in canvas, SVG and PNG (EDIT-12). Note: the jump
+  drawing belongs to styles-themes (parity row `jump`). TODO(srs): the
+  per-view syntax; the jump shape on a 0/45/90 line.
+- **P2-711** `+` and `-` zoom in and out by one `ZOOM_STEP` about the
+  canvas widget's centre, clamped to `MIN_ZOOM..=MAX_ZOOM`, without
+  changing the file (EDIT-9). Note: the reference gives the keys but not
+  the zoom anchor; the widget centre is c4rizer's choice.
+- **P2-712** The single-key bindings of this row act only when no text
+  field has focus and no in-place edit is open (EDIT-5), and each key
+  goes to the first owner that takes it, in this order, while EDIT-16,
+  EDIT-19 and EDIT-28 chords keep their meaning (Ctrl+Z, Ctrl+Shift+Z,
+  Ctrl+Y, Alt+Left, Backspace, Enter, F2 and Escape-deselect):
+  1. An open quick-navigation list (P2-715) takes every key.
+  2. A line or label under the pointer takes Up, Down, `r` and `j`.
+  3. A selection of two or more boxes takes `l c r t m b h v`.
+  4. Otherwise the viewer bindings apply.
+
+  TODO(srs): this order is a proposal. Structurizr has separate editor
+  and viewer modes, so its keys clash (`l c r t m b h`, Up/Down), and
+  the reference does not settle one combined table.
+
+**Viewing aids (split from P2-24)**
+
+- **P2-713** Up or Right opens the previous view of the view list
+  (`State::views`, EDIT-8, ordered per P2-716), and Down or Left opens
+  the next, unless P2-712 gives the key elsewhere. The reference reads:
+  "`Up arrow` Navigate to the previous diagram", "`Down arrow` … next",
+  "`Left arrow` … next", "`Right arrow` … previous". TODO(srs): the
+  Left/Right mapping looks inverted but is copied as quoted; whether the
+  list stops or wraps at its ends.
+- **P2-714** `b` opens the last viewed view, the one shown before the
+  current one in this session's history of views shown, which is not the
+  scope-derived parent crumb of EDIT-16 (reference: "Go back to the last
+  viewed diagram").
+- **P2-715** A Space press released with no pointer drag in between
+  opens quick navigation, a list of every view of the view list filtered
+  by the typed text, in which Enter opens the highlighted view and
+  Escape closes the list and changes nothing; Space held during a drag
+  pans (EDIT-28) and never opens the list. The reference says only:
+  "`Space` open quick navigation". TODO(srs): the matching rule (key or
+  title, substring or prefix, case).
+- **P2-716** The view-set property `structurizr.sort` orders the view
+  list (EDIT-8), and so P2-713: `key` sorts by view key, `created` by
+  declaration order ("the order in which views are defined in your
+  DSL"), and `type` by view type ("keep all system context views
+  together"). Note: the parsing comes from dsl-breadth (P2-18).
+  TODO(srs): the order among types, and tie-breaks; with no property
+  set, keep EDIT-8's declaration order or take Structurizr's default
+  ("first sorted by scope and then by diagram type", whose details are
+  not on the fetched page)?
+- **P2-717** A file whose views contain a `default` statement opens on
+  that view when the per-user state has no remembered view for the file,
+  so the open order becomes remembered view, then `default` view, then
+  first declared view (extends EDIT-13). Note: the parsing comes from
+  landscape-filtered (P2-20). TODO(srs): confirm that a remembered view
+  beats `default`; whether EDIT-27's fallback after a reload also
+  prefers the `default` view.
+- **P2-718** An Alt+click on a box toggles its selection as a
+  Shift-click does and never enters the box, so an Alt+double-click
+  leaves both the open view and the selection as they were. The
+  reference says: "Hold `Alt` or `Shift` while clicking an element … to
+  multi-select", and the parity row reads "Multi-select
+  (Shift/Alt-click, lasso)". Note: this fills a gap in EDIT-28, whose
+  table names only Shift.
+- **P2-719** An Alt+double-click on a box whose element has a `url`
+  emits an effect that opens that URL in the system browser; on a box
+  with no `url`, nothing opens and the status bar says so. The reference
+  says: "Double-clicking with the `Alt` key pressed will open the URL".
+  TODO(srs): whether only `http`/`https` URLs are opened; the
+  reference's double-click also offers the URLs in an element's
+  `properties` (name=label, value=url) and its docs and decisions (docs
+  and decisions belong to phase-3 `explore`; property URLs have no
+  parity row).
+- **P2-720** An Alt+double-click on a line or its label opens the `url`
+  of the relationship it draws; for a lifted or merged line this is the
+  relationship EDIT-5 edits (`PlanEdge::winner`), and with no `url`
+  nothing opens and the status bar says so. The reference says:
+  "Double-clicking relationships (hold the `Alt` key while in the
+  diagram editor)".
+- **P2-721** `d` toggles descriptions: while they are off, no element or
+  relationship description is drawn on the canvas, and box sizes, box
+  positions, lines and label positions are unchanged. The reference
+  says: "Toggle element/relationship descriptions on/off". TODO(srs):
+  keeping the geometry is a c4rizer choice (P2-730: viewing aids are
+  view-only); how the toggle combines with the element style
+  `description false` (P2-10).
+- **P2-722** `m` toggles metadata: while it is off, each box's type line
+  (CORE-2, for example `[Container: Rust]`) and the technology in each
+  line label are not drawn, with geometry unchanged as in P2-721. The
+  reference says: "Toggle element/relationship metadata on/off".
+  TODO(srs): "metadata = type line plus technology" is from memory, not
+  from a fetched page; how the toggle combines with the element style
+  `metadata false` (P2-10).
+- **P2-723** `t` toggles tooltips, and while tooltips are on, hovering a
+  box or line shows an overlay with its EDIT-10 details; the initial
+  state comes from `structurizr.tooltips` on the view, else on the view
+  set ("Viewset or view", `true`/`false`). TODO(srs): the initial state
+  when neither property is set (the reference gives no default); tooltip
+  content beyond the EDIT-10 fields (properties, perspectives, URL).
+- **P2-724** Holding Alt while a tooltip is displayed makes it sticky,
+  so it stays shown after the pointer leaves its item. The reference
+  says: "hold the `Alt` key while the tooltip is displayed to enable
+  sticky tooltips". TODO(srs): what releases a sticky tooltip (`t`,
+  Escape, the next hover), and how Escape is shared with EDIT-28
+  deselect.
+- **P2-725** `g` opens a tag filter that lists the user-defined tags of
+  the open view's boxes and lines, meaning their effective tags minus
+  the built-ins `Element`, `Person`, `Software System`, `Container`,
+  `Component` and `Relationship`; choosing tags marks as filtered out
+  every box and line that carries none of them, and clearing the choice
+  restores the view. The reference says: "Filter by user-defined tags".
+  TODO(srs): whether filtered-out items are faded or hidden; whether
+  several chosen tags match any or all; the full built-in tag list once
+  groups (P2-4) and phase-3 deployment tags land.
+- **P2-726** `p` lists the perspective names found on the open view's
+  elements and relationships (P2-18); choosing one shows the view "with
+  a given perspective" (reference), and choosing none returns to the
+  normal view. TODO(srs): what is drawn. The perspectives page does not
+  say. From memory, items without the perspective are faded and the
+  others show its value.
+- **P2-727** `n` shows or hides the view-list panel (EDIT-8, EDIT-32)
+  without changing the open view, zoom, pan or file. The reference says:
+  "`n` Toggle diagram navigation on/off", and lists the diagrams in "the
+  navigation panel". TODO(srs): the parity table has no row for `n`, `i`
+  or `l`, which is a defect under section 2. Add one.
+- **P2-728** `i` shows the diagram key/legend (reference: "`i` Show
+  diagram key/legend"). TODO(srs): c4rizer draws the key inside the
+  scene (CORE-1), so "show" needs a testable meaning: pan to it, an
+  overlay, or toggle it.
+- **P2-729** When P2-712 does not give `l` to a selection, `l` opens the
+  diagram navigator, which shows the views that sit above, next to and
+  below the open view (reference: "The diagram navigator provides a way
+  to see which diagrams in the workspace sit “above”, “next to”, and
+  “below”"). TODO(srs): the parity table maps the navigator to EDIT-8
+  and the breadcrumb (EDIT-16); the form of the navigator.
+- **P2-730** None of P2-705, P2-706, P2-711 or P2-713..P2-729 writes the
+  diagram file or adds an undo step.
+- **P2-731** After an external reload (EDIT-1), the description,
+  metadata and tooltip toggles, the tag filter and the chosen
+  perspective stay as they were, as view, zoom and pan do, except that a
+  chosen tag or perspective no longer present in the open view is
+  dropped. TODO(srs): whether these are also remembered per file in the
+  per-user state (EDIT-13); whether SVG/PNG export applies them.
+- **P2-732** The only differences between the canvas and the SVG export
+  of the same view, beyond EDIT-12's selection and hover marks, are the
+  tooltip overlay, the quick-navigation list, the tag-filter and
+  perspective marks, and the texts hidden by P2-721/P2-722 (this amends
+  EDIT-12).
+- **P2-733** Every write made by this row goes to the open `.dsl` file
+  as lines of the view it was made in (`at` lines, and the view
+  extension lines of P2-701 and P2-708..P2-710), never to a workspace
+  JSON, a side file or the per-user state (EDIT-13), and no command of
+  this row creates or deletes an element or relationship (EDIT-21).
 
 ### 4.7 Phase 3
 
