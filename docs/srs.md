@@ -671,10 +671,11 @@ Placement
   position.
 - **CORE-23** With every `at` line removed from `tests/data/example.dsl`,
   auto-place then route gives, per view: no unroutable line, no label
-  without room, crossings within the per-view cap below, people on the
-  top row, boxes outside the scope outside the boundary, column pitch
-  at least 340px and row pitch at least 280px. `TODO(srs)`: set the
-  per-view crossing caps after the first measurement.
+  without room, crossings within the per-view cap (C1 0, C2 0,
+  C3-serving 1, C3-startup 0: the prototype's routed crossings on its
+  hand layout, `c4.py` on `example/`, measured 2026-11-15), people on
+  the top row, boxes outside the scope outside the boundary, column
+  pitch at least 340px and row pitch at least 280px.
 - **CORE-26** When a view cannot meet its crossing budget after
   placement and routing, lint says so and suggests splitting the view
   (`focus`, `hide`), naming the boxes involved in the crossings.
