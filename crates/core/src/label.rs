@@ -425,6 +425,12 @@ fn tag_text(plan: &ViewPlan, name: &str) -> String {
     let kind = match plan.kind {
         ViewKind::SystemContext | ViewKind::Container => "Software System",
         ViewKind::Component => "Container",
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => todo!(),
     };
     format!("{name} [{kind}]")
 }

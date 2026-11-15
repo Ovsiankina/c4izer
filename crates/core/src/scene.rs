@@ -521,6 +521,7 @@ impl Scene {
                 .map(|l| ModelId::Relationship(l.relationship)),
             ItemKey::Boundary(i) => self.boundaries.get(i as usize).map(|b| match b.of {
                 BoundaryOf::Element(e) => ModelId::Element(e),
+                BoundaryOf::Group(_) => todo!(),
             }),
             ItemKey::Title | ItemKey::Subtitle | ItemKey::Legend => None,
         }
@@ -1064,6 +1065,7 @@ fn type_text(b: &PlanBox) -> String {
         ElementKind::SoftwareSystem => "Software System",
         ElementKind::Container => "Container",
         ElementKind::Component => "Component",
+        ElementKind::Custom => todo!(),
     };
     match b.technology.as_deref().map(str::trim) {
         Some(tech) if !tech.is_empty() => format!("[{kind}: {tech}]"),
@@ -1420,6 +1422,12 @@ fn tag_text(plan: &ViewPlan, name: &str) -> String {
     let kind = match plan.kind {
         ViewKind::SystemContext | ViewKind::Container => "Software System",
         ViewKind::Component => "Container",
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => todo!(),
     };
     format!("{name} [{kind}]")
 }
@@ -2839,7 +2847,9 @@ mod tests {
                 Some(ModelId::Relationship(winner))
             );
         }
-        let BoundaryOf::Element(scope) = scene.boundaries[0].of;
+        let BoundaryOf::Element(scope) = scene.boundaries[0].of else {
+            unreachable!("phase-1 scope boundary")
+        };
         assert_eq!(
             scene.model_id(ItemKey::Boundary(0)),
             Some(ModelId::Element(scope))
@@ -2866,7 +2876,9 @@ mod tests {
             assert_eq!(scene.boxes_of(b.element), vec![b.id]);
         }
         // The scope is a boundary on a container view, not a box.
-        let BoundaryOf::Element(shop) = scene.boundaries[0].of;
+        let BoundaryOf::Element(shop) = scene.boundaries[0].of else {
+            unreachable!("phase-1 scope boundary")
+        };
         assert!(scene.boxes_of(shop).is_empty());
         assert!(scene.boxes_of(ElementId(999)).is_empty());
     }

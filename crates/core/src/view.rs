@@ -70,7 +70,7 @@ use std::collections::BTreeMap;
 
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
-    ElementId, ElementKind, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
+    ElementId, ElementKind, GroupId, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
     ViewSpec,
 };
 
@@ -206,6 +206,15 @@ impl PlanEdge {
 pub enum BoundaryOf {
     /// An element's drawn children (the view's scope in phase 1).
     Element(ElementId),
+    /// A group's drawn members: dashed, the group's name as its name tag
+    /// with no bracketed type, nested inside its enclosing group's
+    /// boundary. Emitted only when a member is drawn, outer before inner.
+    /// Serves P2-130, P2-132.
+    // TODO(srs): P2-130, the name tag of a nested group. Reading taken
+    // (Structurizr UI): the last segment of the full name. The default
+    // colour: the phase-1 boundary look (B dsl-breadth 14c). Whether
+    // `structurizr.groups false` hides it: yes (B dsl-breadth 14d).
+    Group(GroupId),
 }
 
 /// A dashed boundary around drawn boxes (CORE-1). Its rectangle is the
@@ -391,6 +400,12 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Option<B
     match view.kind {
         ViewKind::SystemContext => return None,
         ViewKind::Container | ViewKind::Component => {}
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => todo!(),
     }
     let members: Vec<BoxId> = boxes
         .iter()
@@ -427,6 +442,7 @@ const fn default_half_size(kind: ElementKind) -> (i32, i32) {
         ElementKind::SoftwareSystem | ElementKind::Container => (12, 7),
         // 200x120 px
         ElementKind::Component => (10, 6),
+        ElementKind::Custom => todo!(),
     }
 }
 

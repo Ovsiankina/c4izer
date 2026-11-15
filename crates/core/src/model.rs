@@ -47,6 +47,9 @@
 // and when the same tag has two style blocks the later block wins.
 
 use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -95,6 +98,10 @@ pub enum ElementKind {
     Container,
     /// `component`, only inside a container.
     Component,
+    /// `element <name> [metadata] [description] [tags]`: a custom element,
+    /// declared in `model` (P2-170). Keyword `element`, default tag
+    /// `Element` only. Serves P2-170, P2-155, P2-181.
+    Custom,
 }
 
 impl ElementKind {
@@ -106,6 +113,7 @@ impl ElementKind {
             ElementKind::SoftwareSystem => "softwareSystem",
             ElementKind::Container => "container",
             ElementKind::Component => "component",
+            ElementKind::Custom => "element",
         }
     }
 
@@ -118,6 +126,10 @@ impl ElementKind {
             ElementKind::SoftwareSystem => "Software System",
             ElementKind::Container => "Container",
             ElementKind::Component => "Component",
+            // DECISION: a custom element's kind tag is `Element` itself
+            // (A.2: default_tag "Element"); P2-170 keeps only the implicit
+            // tag `Element`, so the builder must not add it twice.
+            ElementKind::Custom => "Element",
         }
     }
 }
@@ -154,6 +166,22 @@ pub struct Element {
     pub declared_tags: Vec<Literal>,
     /// The whole statement, block included.
     pub span: Span,
+    /// The innermost `group` the element was declared in, or the group a
+    /// `group "<name>"` line in a component block names. Serves P2-4,
+    /// P2-127, P2-128, P2-129.
+    pub group: Option<GroupId>,
+    /// `url <url>` (P2-171).
+    pub url: Option<Literal>,
+    /// `properties { ... }` pairs in file order (P2-172).
+    pub properties: Vec<Property>,
+    /// `perspectives { ... }`, either form, in file order (P2-173).
+    pub perspectives: Vec<Perspective>,
+    /// A custom element's metadata argument, and an archetype's metadata
+    /// default (P2-170, P2-181); `None` for every other kind.
+    pub metadata: Option<Literal>,
+    /// `!docs` / `!adrs` / `!decisions` on this element, in file order
+    /// (P2-159, P2-160).
+    pub docs: Vec<Attachment>,
 }
 
 impl Element {
@@ -201,6 +229,12 @@ pub struct Relationship {
     pub declared_tags: Vec<Literal>,
     /// The whole statement, block included.
     pub span: Span,
+    /// `url <url>` (P2-171).
+    pub url: Option<Literal>,
+    /// `properties { ... }` pairs in file order (P2-172).
+    pub properties: Vec<Property>,
+    /// `perspectives { ... }`, either form, in file order (P2-173).
+    pub perspectives: Vec<Perspective>,
 }
 
 /// A box shape. Phase 2 adds the rest of Structurizr's shapes (P2-11).
@@ -302,17 +336,45 @@ pub enum ViewKind {
     Container,
     /// `component <container>`
     Component,
+    /// `systemLandscape [key] [description]` (P2-2, P2-8, P2-124).
+    SystemLandscape,
+    /// `filtered <base> <include|exclude> <tags>` (P2-2, P2-9).
+    Filtered,
+    /// `custom [key] [title] [description]` (P2-2, P2-19).
+    Custom,
+    /// `image <*|element> [key]` (P2-2, P2-3).
+    Image,
+    /// `dynamic <*|system|container> [key] [description]` (P2-121).
+    Dynamic,
+    /// `deployment <*|system> <environment> [key] [description]` (P2-179).
+    Deployment,
 }
 
 impl ViewKind {
-    /// The DSL keyword (`systemContext`, `container`, `component`).
-    /// Serves DSL-4 (error text), DSL-6.
+    /// The DSL keyword (`systemContext`, `container`, `component`, ...).
+    /// Serves DSL-4 (error text), DSL-6, P2-122.
     pub const fn keyword(self) -> &'static str {
         match self {
             ViewKind::SystemContext => "systemContext",
             ViewKind::Container => "container",
             ViewKind::Component => "component",
+            ViewKind::SystemLandscape => "systemLandscape",
+            ViewKind::Filtered => "filtered",
+            ViewKind::Custom => "custom",
+            ViewKind::Image => "image",
+            ViewKind::Dynamic => "dynamic",
+            ViewKind::Deployment => "deployment",
         }
+    }
+
+    /// True for the kinds c4rizer draws: the phase-1 kinds after
+    /// dsl-breadth, plus `SystemLandscape`, `Filtered`, `Custom` and
+    /// `Image` once landscape-filtered lands. Never `Dynamic` or
+    /// `Deployment` in phase 2. A view whose kind is not drawable is
+    /// listed in `pipeline::AllViews::unsupported`. Serves P2-2, P2-122,
+    /// P2-123, P2-180.
+    pub const fn drawable(self) -> bool {
+        todo!()
     }
 }
 
@@ -326,14 +388,30 @@ pub enum ViewScope {
     /// The software system (context and container views) or container
     /// (component views), as written.
     Element(Spanned<ElementId>),
+    /// No scope argument: `systemLandscape`, `custom`, `filtered`. Serves
+    /// P2-2, P2-124.
+    Unscoped,
+    /// A written `*`: `dynamic *`, `image *`. Serves P2-121.
+    Wildcard(Span),
+    /// `deployment <*|system> <environment>`; `software_system: None` for
+    /// `*`. Serves P2-179.
+    Deployment {
+        /// The software system, `None` for `*`.
+        software_system: Option<Spanned<ElementId>>,
+        /// The deployment environment's name or id, as written.
+        environment: Literal,
+    },
 }
 
 impl ViewScope {
-    /// The scope element, `None` for a view with no single scope (none in
-    /// phase 1). Serves DSL-6.
+    /// The scope element, `None` for a view with no single scope
+    /// (`Unscoped`, `Wildcard`, `Deployment`). Serves DSL-6.
     pub const fn element(&self) -> Option<ElementId> {
         match self {
             ViewScope::Element(e) => Some(e.value),
+            // DECISION: A.3 item 3 fixes this value; a deployment view's
+            // system is not its single scope element.
+            ViewScope::Unscoped | ViewScope::Wildcard(_) | ViewScope::Deployment { .. } => None,
         }
     }
 }
@@ -479,6 +557,8 @@ pub struct ViewSpec {
     /// The whole view statement, block included; `edit` adds a missing
     /// `at` line before its closing brace (DSL-9).
     pub span: Span,
+    /// `properties { ... }` in the view body, in file order (P2-172).
+    pub properties: Vec<Property>,
 }
 
 impl ViewSpec {
@@ -525,6 +605,435 @@ impl ViewSpec {
     }
 }
 
+// ------------------------------------------------- phase 2: dsl-breadth
+
+/// Index of a group in `Model::groups`; `groups[i].id == GroupId(i)`.
+/// Stable for one parse. Serves P2-4, P2-129.
+// TODO(owner): `#[repr(transparent)]` is a data-layout item (CLAUDE.md);
+// it mirrors `ElementId` and the `size_of` test pins 4 bytes.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GroupId(pub u32);
+
+/// A `group "<name>" { ... }` block. Serves P2-4, P2-127..P2-131.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Group {
+    /// This group's index in `Model::groups`.
+    pub id: GroupId,
+    /// `g = group "x"`, used by `element==g` (P2-166); `None` when the
+    /// group has no identifier.
+    pub key: Option<Spanned<String>>,
+    /// The name as written.
+    pub name: Literal,
+    /// The names from the outermost group down, joined with the model
+    /// property `structurizr.groupSeparator` (P2-129); equal to `name`
+    /// for a group that is not nested.
+    // TODO(srs): P2-129, a nested group with no separator set. Reading
+    // taken (B dsl-breadth 14b, Structurizr for Java):
+    // `ModelErrorKind::NestedGroupNeedsSeparator`.
+    pub full_name: String,
+    /// The enclosing group, `None` at the outermost level.
+    pub parent: Option<GroupId>,
+    /// The element whose block holds the group, `None` at model level.
+    pub owner: Option<ElementId>,
+    /// The whole statement, block included.
+    pub span: Span,
+}
+
+/// One `<name> <value>` line of a `properties` block, on any owner
+/// (workspace, model, views, configuration, element, relationship, view,
+/// style). Serves P2-172.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Property {
+    /// The property name, as written.
+    pub name: Literal,
+    /// The value, as written (after `${}` substitution, P2-150).
+    pub value: Literal,
+    /// The whole line.
+    pub span: Span,
+}
+
+/// One perspective of an element or relationship: the one-line
+/// `<name> <description> [value]` form or the `perspective <name> {
+/// description, value, url }` block form. Serves P2-173.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Perspective {
+    /// The perspective name.
+    pub name: Literal,
+    /// Its description.
+    pub description: Option<Literal>,
+    /// Its value.
+    pub value: Option<Literal>,
+    /// Its URL (block form only).
+    pub url: Option<Literal>,
+    /// The whole line or block.
+    pub span: Span,
+}
+
+/// Which directive an `Attachment` came from. Serves P2-159, P2-160.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachmentKind {
+    /// `!docs <path> [fqcn]`.
+    Docs,
+    /// `!adrs <path> [type|fqcn]` or its alias `!decisions`.
+    Adrs,
+}
+
+/// A `!docs`, `!adrs` or `!decisions` directive on the workspace or an
+/// element: the path and importer are recorded, the files are not read in
+/// phase 2. Serves P2-159, P2-160.
+// TODO(srs): P2-159, whether phase 2 reads or checks the files. Reading
+// taken (B dsl-breadth 19, Structurizr fails the parse on a missing
+// path): a path that does not exist is `ModelErrorKind::FileRead`, one
+// outside the diagram's folder `PathOutsideRoot`; the content is not read.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Attachment {
+    /// Docs or ADRs.
+    pub kind: AttachmentKind,
+    /// The path as written.
+    pub path: Literal,
+    /// The importer type or FQCN, if written; a FQCN also adds a notice
+    /// (P2-3).
+    pub importer: Option<Literal>,
+    /// The whole directive.
+    pub span: Span,
+}
+
+/// `!identifiers flat|hierarchical`. Serves P2-6, P2-142..P2-144.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Identifiers {
+    /// Every element id is global (the default).
+    #[default]
+    Flat,
+    /// An element's full id is its parent's full id, `.`, its own id.
+    Hierarchical,
+}
+
+/// The `!impliedRelationships` setting. Serves P2-7, P2-153, P2-154.
+// TODO(srs): P2-7, a directive placed between relationships. Reading taken
+// (B dsl-breadth 17; lines are processed in order, /dsl/basics): it
+// applies to relationships declared after it; this field holds the last
+// value written, and the builder records the strategy per relationship.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum ImpliedRelationships {
+    /// No directive: CORE-5 lifting.
+    #[default]
+    Default,
+    /// `!impliedRelationships true`: same as `Default` (P2-153).
+    True,
+    /// `!impliedRelationships false`: no lifting (P2-7).
+    False,
+    /// `!impliedRelationships <fqcn>`: same as `Default`, plus a notice
+    /// (P2-154).
+    Strategy(Literal),
+}
+
+/// `configuration { scope ... }`. Serves P2-175.
+// TODO(srs): P2-175, the validation the scope applies. Reading taken (B
+// dsl-breadth 20, Structurizr workspace-scope validation): `Landscape`
+// fails when any software system has containers, `SoftwareSystem` unless
+// exactly one has, `None` checks nothing (`ModelErrorKind::ScopeViolation`).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConfigurationScope {
+    /// `scope landscape`.
+    Landscape,
+    /// `scope softwaresystem`.
+    SoftwareSystem,
+    /// `scope none`.
+    None,
+}
+
+/// The bracket style of the box type line (`terminology { metadata ... }`).
+/// Serves P2-163.
+// TODO(srs): P2-163, the glyphs for `double-angle`. Reading taken (B
+// dsl-breadth 18a): `«` and `»`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetadataSymbols {
+    /// `[...]`, the default.
+    Square,
+    /// `(...)`.
+    Round,
+    /// `{...}`.
+    Curly,
+    /// `<...>`.
+    Angle,
+    /// `«...»`.
+    DoubleAngle,
+    /// No brackets.
+    None,
+}
+
+/// The `terminology` block of `views`: a written word replaces the type
+/// word on box type lines, boundary name tags and key entries.
+/// `deployment_node` and `infrastructure_node` are stored and take effect
+/// in phase 3. Serves P2-161, P2-162, P2-163.
+// TODO(srs): P2-161, the CORE-2 `External Software System` type word under
+// terminology. Reading taken (B dsl-breadth 18b): `External <word>`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Terminology {
+    /// `person "<word>"`.
+    pub person: Option<Literal>,
+    /// `softwareSystem "<word>"`.
+    pub software_system: Option<Literal>,
+    /// `container "<word>"`.
+    pub container: Option<Literal>,
+    /// `component "<word>"`.
+    pub component: Option<Literal>,
+    /// `deploymentNode "<word>"` (phase 3 effect).
+    pub deployment_node: Option<Literal>,
+    /// `infrastructureNode "<word>"` (phase 3 effect).
+    pub infrastructure_node: Option<Literal>,
+    /// `relationship "<word>"`: the key's line entries (P2-162).
+    pub relationship: Option<Literal>,
+    /// `metadata round|curly|angle|double-angle|square|none` (P2-163).
+    pub metadata: Option<Spanned<MetadataSymbols>>,
+}
+
+/// What a `Notice` reports. Serves P2-3, P2-154.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum NoticeKind {
+    /// A construct accepted with no effect (P2-3): `!script`, `!plugin`,
+    /// `!components`, `healthCheck`, `configuration visibility|users`, an
+    /// external-source `image` view, `plantuml.*`/`mermaid.*`/`kroki.*`
+    /// view-set properties, `!impliedRelationships <fqcn>`, a
+    /// `!docs`/`!adrs` importer FQCN.
+    NoEffect,
+}
+
+/// Something the file says that c4rizer accepts with no effect: one per
+/// construct, in file order, in `Model::notices`. Notices are never
+/// errors and add nothing to the exit code (P2-125). `Display` gives
+/// `<line>:<column>: <subject> is accepted and has no effect`; the caller
+/// adds the path of `span.file`. Serves P2-3, P2-125, P2-126.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Notice {
+    /// What kind of remark this is.
+    pub kind: NoticeKind,
+    /// The construct as named in P2-3 (`!script`, `healthCheck`,
+    /// `plantuml.url`, ...).
+    pub subject: String,
+    /// The view key, for a construct inside a view.
+    pub view: Option<String>,
+    /// The construct's bytes; names its file (DSL-16).
+    pub span: Option<Span>,
+    /// Line and column of `span.start`.
+    pub position: Option<Position>,
+}
+
+impl fmt::Display for Notice {
+    /// `<line>:<column>: <subject> is accepted and has no effect`
+    /// (P2-125); the caller adds `notice: <path>:`.
+    // TODO(srs): P2-125, the exact line format. Reading taken (B
+    // dsl-breadth 24): `notice: <path>:<line>:<column>: <construct> is
+    // accepted and has no effect`.
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+/// The type of a file read at parse time. Serves P2-409, P2-320 (styles-
+/// themes, landscape-filtered); defined here so every row shares it (O3).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Mime {
+    /// `image/png`.
+    Png,
+    /// `image/jpeg`.
+    Jpeg,
+    /// `image/svg+xml`.
+    Svg,
+}
+
+/// An external file a style or view names, read through the `Loader` at
+/// parse time; cheap to clone. Serves P2-409, P2-428, P2-320 (O3).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Asset {
+    /// The path as written, relative to the file that names it.
+    pub path: String,
+    /// The detected type.
+    pub mime: Mime,
+    /// The file's bytes.
+    pub bytes: Arc<[u8]>,
+}
+
+/// An element or relationship expression (/dsl/expressions), plain values
+/// with no spans: the `Spanned<Selector>` or the directive statement
+/// holds the span (O1). One evaluator: `Model::select_elements` and
+/// `Model::select_relationships`. Serves P2-166, P2-168 (and
+/// landscape-filtered's view expressions).
+// TODO(srs): P2-166/P2-168, mixed `&&`/`||`. Reading taken (B dsl-breadth
+// 25): one operator kind per expression, left to right; mixing is
+// `ModelErrorKind::MixedOperators`; no parentheses.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Expression {
+    /// One element by id.
+    Element(ElementId),
+    /// Every member of a group (`element==g`, or a group id).
+    Group(GroupId),
+    /// `->x`, `element==->x`: `x` and the elements with a relationship to it.
+    Afferent(Box<Expression>),
+    /// `x->`, `element==x->`: `x` and the elements it has a relationship to.
+    Efferent(Box<Expression>),
+    /// `->x->`, `element==->x->`: both directions.
+    AfferentEfferent(Box<Expression>),
+    /// `element.type==<type>`; `kind: None` for a type the model does not
+    /// build in phase 2 (`DeploymentNode`, ...), which matches nothing.
+    ElementType {
+        /// The kind, when phase 2 builds it.
+        kind: Option<ElementKind>,
+        /// The type name as written.
+        name: String,
+    },
+    /// `element.parent==<id>`: the direct children of that element.
+    ElementParent(ElementId),
+    /// `element.tag==a,b` (all of) or `element.tag!=a,b`.
+    ElementTag {
+        /// The tags, all of which must match.
+        tags: Vec<String>,
+        /// `!=` instead of `==`.
+        negated: bool,
+    },
+    /// `element.technology==x` or `!=`.
+    ElementTechnology {
+        /// The technology.
+        technology: String,
+        /// `!=` instead of `==`.
+        negated: bool,
+    },
+    /// `element.properties[name]==value`.
+    ElementProperty {
+        /// Property name.
+        name: String,
+        /// Property value.
+        value: String,
+    },
+    /// `element.group==<full group name>`.
+    ElementGroup(String),
+    /// `*->*`, `a->*`, `*->b`, `a->b`, `relationship==...`,
+    /// `relationship.source==a`, `relationship.destination==b`; `None`
+    /// stands for `*`.
+    Relationships {
+        /// Source, `None` for any.
+        source: Option<ElementId>,
+        /// Destination, `None` for any.
+        destination: Option<ElementId>,
+    },
+    /// `relationship.tag==a,b` (all of) or `!=`.
+    RelationshipTag {
+        /// The tags, all of which must match.
+        tags: Vec<String>,
+        /// `!=` instead of `==`.
+        negated: bool,
+    },
+    /// `relationship.properties[name]==value`.
+    RelationshipProperty {
+        /// Property name.
+        name: String,
+        /// Property value.
+        value: String,
+    },
+    /// `a && b && ...`: at least two operands.
+    And(Vec<Expression>),
+    /// `a || b || ...`: at least two operands.
+    Or(Vec<Expression>),
+}
+
+/// File access for `parse_with`: `!include`, `workspace extends`, and
+/// (styles-themes, landscape-filtered) theme, icon and image files; plus
+/// the environment for `${NAME}` (P2-152). Core performs every path check
+/// itself (inside the diagram's folder, cycles, `..` and symlinks through
+/// `canonicalize`), so a test loader gets the same rules. New methods
+/// will only ever come with default bodies. Serves P2-5, P2-16,
+/// P2-133..P2-138, P2-152.
+pub trait Loader {
+    /// The bytes of the file at `path`; text files are UTF-8-checked by
+    /// core.
+    ///
+    /// # Errors
+    ///
+    /// Any read error; core reports it as `ModelErrorKind::FileRead`.
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+
+    /// The entries of the directory at `path` (P2-133), in any order;
+    /// core sorts them.
+    ///
+    /// # Errors
+    ///
+    /// Any read error.
+    fn read_dir(&mut self, path: &Path) -> io::Result<Vec<PathBuf>>;
+
+    /// `path` with `..` and symlinks resolved (P2-134).
+    ///
+    /// # Errors
+    ///
+    /// Any resolution error.
+    fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf>;
+
+    /// The environment variable `name`, `None` when unset (P2-152).
+    fn env(&self, name: &str) -> Option<String>;
+}
+
+/// `std::fs` and `std::env`: core's only I/O helper besides export (HLD
+/// §3 amendment, pending). The CLI and the editor use it. Serves P2-5,
+/// P2-16, P2-152.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FsLoader;
+
+impl Loader for FsLoader {
+    fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn read_dir(&mut self, _path: &Path) -> io::Result<Vec<PathBuf>> {
+        todo!()
+    }
+
+    fn canonicalize(&mut self, _path: &Path) -> io::Result<PathBuf> {
+        todo!()
+    }
+
+    fn env(&self, _name: &str) -> Option<String> {
+        todo!()
+    }
+}
+
+/// Refuses every path and sees no environment: what `parse` uses.
+/// Serves P2-5, P2-152.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoFiles;
+
+impl Loader for NoFiles {
+    fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn read_dir(&mut self, _path: &Path) -> io::Result<Vec<PathBuf>> {
+        todo!()
+    }
+
+    fn canonicalize(&mut self, _path: &Path) -> io::Result<PathBuf> {
+        todo!()
+    }
+
+    fn env(&self, _name: &str) -> Option<String> {
+        todo!()
+    }
+}
+
 /// The whole diagram file, typed. Fields are pub plain data; ids index
 /// the `Vec`s. Serves DSL-1..8, DSL-15.
 #[non_exhaustive]
@@ -551,6 +1060,31 @@ pub struct Model {
     pub views_span: Option<Span>,
     /// Every view in source order.
     pub views: Vec<ViewSpec>,
+    /// Every `group` block in source order (outer before inner);
+    /// `groups[i].id == GroupId(i)`. Serves P2-4, P2-129.
+    pub groups: Vec<Group>,
+    /// Constructs accepted with no effect, in file order (P2-3).
+    pub notices: Vec<Notice>,
+    /// `!identifiers` in the workspace or `model` block (P2-6).
+    pub identifiers: Identifiers,
+    /// `!impliedRelationships` (P2-7, P2-153, P2-154).
+    pub implied_relationships: ImpliedRelationships,
+    /// `terminology` in `views` (P2-161..P2-163).
+    pub terminology: Terminology,
+    /// `properties` of the workspace block (P2-172).
+    pub workspace_properties: Vec<Property>,
+    /// `properties` of the `model` block, `structurizr.groupSeparator`
+    /// among them (P2-172, P2-129).
+    pub model_properties: Vec<Property>,
+    /// `properties` of the `views` block, `structurizr.*` among them
+    /// (P2-172, P2-176).
+    pub views_properties: Vec<Property>,
+    /// `properties` of the `configuration` block (P2-172).
+    pub configuration_properties: Vec<Property>,
+    /// `configuration { scope ... }` (P2-175).
+    pub configuration_scope: Option<Spanned<ConfigurationScope>>,
+    /// Workspace-level `!docs` / `!adrs` / `!decisions` (P2-159, P2-160).
+    pub docs: Vec<Attachment>,
 }
 
 impl Model {
@@ -746,6 +1280,12 @@ impl Model {
         let system = match view.kind {
             ViewKind::Component => self.element(scope).parent,
             ViewKind::SystemContext | ViewKind::Container => None,
+            ViewKind::SystemLandscape
+            | ViewKind::Filtered
+            | ViewKind::Custom
+            | ViewKind::Image
+            | ViewKind::Dynamic
+            | ViewKind::Deployment => todo!(),
         };
         for r in &self.relationships {
             let (s, d) = (r.source.value, r.destination.value);
@@ -760,6 +1300,31 @@ impl Model {
                 set.insert(shown);
             }
         }
+    }
+
+    /// The elements an element expression selects, sorted by id. Serves
+    /// P2-166 (and landscape-filtered's view expressions).
+    pub fn select_elements(&self, _expression: &Expression) -> Vec<ElementId> {
+        todo!()
+    }
+
+    /// The relationships a relationship expression selects, sorted by id.
+    /// Serves P2-168 (and landscape-filtered's view expressions).
+    pub fn select_relationships(&self, _expression: &Expression) -> Vec<RelationshipId> {
+        todo!()
+    }
+
+    /// The canonical edit key of `id`: its id under flat identifiers, its
+    /// dotted full id under `!identifiers hierarchical` (groups add no
+    /// segment, P2-131); `None` for an element declared without an id
+    /// (P2-145). `Model::find(full_key)` gives `id` back. Serves P2-6,
+    /// P2-142, P2-145.
+    // TODO(srs): P2-145, how `at`, `size` and edits address an anonymous
+    // box. Reading taken (B dsl-breadth 10): never; it is auto-placed on
+    // every build and the editor refuses moves, resizes and per-box style
+    // edits on it, never adding an identifier (EDIT-21).
+    pub fn full_key(&self, _id: ElementId) -> Option<String> {
+        todo!()
     }
 
     /// The elements `view` includes that have no `at` line, sorted by
@@ -784,6 +1349,10 @@ pub struct Parsed {
     pub trees: Vec<SyntaxTree>,
     /// The typed model.
     pub model: Model,
+    /// The path of each tree, indexed by `FileId`; empty when parsed
+    /// without a path (`parse`, or `parse_with(_, None, _)`). The editor
+    /// watches each of them (P2-141). Serves P2-135, P2-136, P2-141.
+    pub paths: Vec<PathBuf>,
 }
 
 /// Parses `source`, the root file (`FileId::ROOT`), into its syntax tree
@@ -800,7 +1369,45 @@ pub fn parse(source: &str) -> Result<Parsed, ModelError> {
     Ok(Parsed {
         trees: vec![tree],
         model,
+        paths: Vec::new(),
     })
+}
+
+/// Parses `source`, the root file, at `path` (`None`: stdin or in
+/// memory; then any file-relative construct is `NeedsFile`), reading
+/// `!include` files and `workspace extends` bases through `loader` and
+/// substituting `!const`/`!var`/`${NAME}` as each line is reached
+/// (environment through `Loader::env`). Each file read gets the next
+/// `FileId` from 1 in first-read order and its own tree. Serves P2-5,
+/// P2-16, P2-133..P2-138, P2-150..P2-152, P2-164, P2-165.
+// TODO(srs): P2-133, order, recursion and extensions of a directory
+// include. Reading taken (B dsl-breadth 5): every regular file under it,
+// recursively, ascending relative path compared byte by byte, names
+// starting with `.` skipped.
+// TODO(srs): P2-138 and P2-16, HTTPS includes, URL and JSON bases.
+// Reading taken (B dsl-breadth 6): `UrlNotSupported` naming the URL; a
+// JSON base is `LaterPhase` (phase 3).
+// TODO(srs): P2-152, a constant or variable and an environment variable
+// with the same name. Reading taken (B dsl-breadth 4): the constant or
+// variable defined earlier in the file wins.
+// TODO(srs): P2-151, redefining a `!const`. Reading taken (B dsl-breadth
+// 2): `DuplicateConstant` naming both lines; a `!var` may be redefined.
+// TODO(srs): P2-148, text block value rules (/dsl/text-blocks is 404).
+// Reading taken (B dsl-breadth 1, Java text blocks): the lines between
+// the delimiters, common leading whitespace of non-blank lines removed,
+// no final line break, no escape processing.
+///
+/// # Errors
+///
+/// `ModelErrorKind::Syntax` or any `Model::from_tree` error, in the file
+/// it occurs in (P2-136); `FileRead`, `PathOutsideRoot`, `IncludeCycle`,
+/// `InsecureUrl`, `UrlNotSupported`, `NeedsFile`, `DuplicateConstant`.
+pub fn parse_with(
+    _source: &str,
+    _path: Option<&Path>,
+    _loader: &mut dyn Loader,
+) -> Result<Parsed, ModelError> {
+    todo!()
 }
 
 /// Why a file could not become a model (DSL-4, DSL-5). `Display` names
@@ -903,6 +1510,101 @@ pub enum ModelErrorKind {
     /// `this`, or a relationship with no source, outside an element
     /// block (Review Focus).
     NoEnclosingElement,
+    /// A `Loader` read failed: an included file, a base workspace, a
+    /// `!docs`/`!adrs` path (P2-5, P2-16, P2-159).
+    FileRead {
+        /// The path as written.
+        path: String,
+        /// The I/O error, in words.
+        error: String,
+    },
+    /// A file read through the `Loader` is not what it must be (not
+    /// UTF-8 for a DSL file; styles-themes and landscape-filtered add
+    /// malformed themes and assets).
+    FileFormat {
+        /// The path as written.
+        path: String,
+        /// Why it was refused, in words.
+        reason: String,
+    },
+    /// A relative path that resolves outside the including file's
+    /// directory and its subdirectories (P2-134).
+    PathOutsideRoot {
+        /// The path as written.
+        path: String,
+    },
+    /// An include cycle, a self-include included; names the file that
+    /// closes the cycle (P2-137).
+    IncludeCycle {
+        /// That file's path.
+        path: String,
+    },
+    /// `!include` of a URL that is not `https://` (P2-138).
+    InsecureUrl {
+        /// The URL.
+        url: String,
+    },
+    /// An HTTPS `!include` or `workspace extends <url>`: download the
+    /// file and include it locally (B dsl-breadth 6).
+    UrlNotSupported {
+        /// The URL.
+        url: String,
+    },
+    /// A file-relative construct (`!include`, `workspace extends`) in a
+    /// file parsed without a path.
+    NeedsFile {
+        /// The construct.
+        construct: String,
+    },
+    /// Two people or software systems with the same name, two containers
+    /// with the same name in one software system, or two components with
+    /// the same name in one container (P2-177); span is the second.
+    // TODO(srs): P2-177 is an open question in the SRS (Structurizr for
+    // Java model rule). Reading taken (B dsl-breadth 13): this error.
+    DuplicateName {
+        /// The name.
+        name: String,
+        /// The first declaration.
+        first: Span,
+        /// Line and column of `first`.
+        first_position: Position,
+    },
+    /// A name defined by `!const` defined again (P2-151).
+    DuplicateConstant {
+        /// The name.
+        name: String,
+        /// The first definition.
+        first: Span,
+        /// Line and column of `first`.
+        first_position: Position,
+    },
+    /// An element archetype whose base is not an element kind, `group`
+    /// or another archetype (P2-158).
+    InvalidArchetype {
+        /// The base as written.
+        base: String,
+    },
+    /// A `--name->` naming no relationship archetype, or an element
+    /// declared from an unknown archetype (P2-158).
+    UnknownArchetype {
+        /// The name as written.
+        name: String,
+    },
+    /// A `group` nested in a `group` with no `structurizr.groupSeparator`
+    /// model property (P2-129, B dsl-breadth 14b).
+    NestedGroupNeedsSeparator,
+    /// The model breaks `configuration { scope ... }` (P2-175).
+    ScopeViolation {
+        /// The scope.
+        scope: ConfigurationScope,
+        /// The offending software system's id or name.
+        element: String,
+    },
+    /// An expression mixing `&&` and `||` (P2-166, P2-168).
+    MixedOperators {
+        /// The expression as written.
+        expression: String,
+    },
 }
 
 /// A model error: what, where, and its line and column (DSL-4, DSL-5).
@@ -920,6 +1622,10 @@ pub struct ModelError {
 impl fmt::Display for ModelError {
     /// `line:column: <what> — <what to change>` (DSL-4, SRS 5.1). The
     /// caller prefixes the path of `span.file`.
+    // DECISION: one arm per kind keeps every message next to its kind;
+    // the phase-2 kinds push it past clippy's 100 lines. Step 5 may move
+    // their text into a helper instead.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let ModelErrorKind::Syntax(kind) = self.kind {
             let error = ParseError {
@@ -954,6 +1660,7 @@ impl fmt::Display for ModelError {
                     ElementKind::Person | ElementKind::SoftwareSystem => "directly into `model`",
                     ElementKind::Container => "into a software system block",
                     ElementKind::Component => "into a container block",
+                    ElementKind::Custom => todo!(),
                 };
                 match parent {
                     Some(p) => write!(
@@ -993,6 +1700,12 @@ impl fmt::Display for ModelError {
                 let needed = match kind {
                     ViewKind::SystemContext | ViewKind::Container => "software system",
                     ViewKind::Component => "container",
+                    ViewKind::SystemLandscape
+                    | ViewKind::Filtered
+                    | ViewKind::Custom
+                    | ViewKind::Image
+                    | ViewKind::Dynamic
+                    | ViewKind::Deployment => todo!(),
                 };
                 write!(
                     f,
@@ -1015,6 +1728,20 @@ impl fmt::Display for ModelError {
             ModelErrorKind::NoEnclosingElement => f.write_str(
                 "`this` and a relationship without a source only work inside an element block — name the source element",
             ),
+            ModelErrorKind::FileRead { .. }
+            | ModelErrorKind::FileFormat { .. }
+            | ModelErrorKind::PathOutsideRoot { .. }
+            | ModelErrorKind::IncludeCycle { .. }
+            | ModelErrorKind::InsecureUrl { .. }
+            | ModelErrorKind::UrlNotSupported { .. }
+            | ModelErrorKind::NeedsFile { .. }
+            | ModelErrorKind::DuplicateName { .. }
+            | ModelErrorKind::DuplicateConstant { .. }
+            | ModelErrorKind::InvalidArchetype { .. }
+            | ModelErrorKind::UnknownArchetype { .. }
+            | ModelErrorKind::NestedGroupNeedsSeparator
+            | ModelErrorKind::ScopeViolation { .. }
+            | ModelErrorKind::MixedOperators { .. } => todo!(),
         }
     }
 }
@@ -1042,6 +1769,7 @@ const fn kind_name(kind: ElementKind) -> &'static str {
         ElementKind::SoftwareSystem => "software system",
         ElementKind::Container => "container",
         ElementKind::Component => "component",
+        ElementKind::Custom => "custom element",
     }
 }
 
@@ -1191,6 +1919,17 @@ impl<'t> Builder<'t> {
                 styles_span: None,
                 views_span: None,
                 views: Vec::new(),
+                groups: Vec::new(),
+                notices: Vec::new(),
+                identifiers: Identifiers::Flat,
+                implied_relationships: ImpliedRelationships::Default,
+                terminology: Terminology::default(),
+                workspace_properties: Vec::new(),
+                model_properties: Vec::new(),
+                views_properties: Vec::new(),
+                configuration_properties: Vec::new(),
+                configuration_scope: None,
+                docs: Vec::new(),
             },
             keys: BTreeMap::new(),
             pending: Vec::new(),
@@ -1553,6 +2292,7 @@ impl<'t> Builder<'t> {
             ElementKind::Person | ElementKind::SoftwareSystem => parent_kind.is_none(),
             ElementKind::Container => parent_kind == Some(ElementKind::SoftwareSystem),
             ElementKind::Component => parent_kind == Some(ElementKind::Container),
+            ElementKind::Custom => todo!(),
         };
         if !allowed {
             return Err(self.error(
@@ -1611,6 +2351,12 @@ impl<'t> Builder<'t> {
             tags: Vec::new(),
             declared_tags,
             span: statement.span,
+            group: None,
+            url: None,
+            properties: Vec::new(),
+            perspectives: Vec::new(),
+            metadata: None,
+            docs: Vec::new(),
         });
         if let Some(block) = &statement.block {
             for inner in &block.statements {
@@ -1736,6 +2482,9 @@ impl<'t> Builder<'t> {
             tags: effective_tags(&["Relationship"], &declared_tags),
             declared_tags,
             span: statement.span,
+            url: None,
+            properties: Vec::new(),
+            perspectives: Vec::new(),
         });
         Ok(())
     }
@@ -1830,6 +2579,12 @@ impl Builder<'_> {
         let needed = match kind {
             ViewKind::SystemContext | ViewKind::Container => ElementKind::SoftwareSystem,
             ViewKind::Component => ElementKind::Container,
+            ViewKind::SystemLandscape
+            | ViewKind::Filtered
+            | ViewKind::Custom
+            | ViewKind::Image
+            | ViewKind::Dynamic
+            | ViewKind::Deployment => todo!(),
         };
         if self.model.element(scope.value).kind != needed {
             return Err(self.error(
@@ -1870,6 +2625,7 @@ impl Builder<'_> {
             positions: Vec::new(),
             sizes: Vec::new(),
             span: statement.span,
+            properties: Vec::new(),
         };
         let mut seen_description = false;
         for inner in self.block(statement, head)? {
@@ -1921,6 +2677,12 @@ impl Builder<'_> {
             ViewKind::SystemContext => "SystemContext",
             ViewKind::Container => "Container",
             ViewKind::Component => "Component",
+            ViewKind::SystemLandscape
+            | ViewKind::Filtered
+            | ViewKind::Custom
+            | ViewKind::Image
+            | ViewKind::Dynamic
+            | ViewKind::Deployment => todo!(),
         };
         let mut n = 1;
         loop {

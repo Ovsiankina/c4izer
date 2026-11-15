@@ -448,6 +448,17 @@ pub struct Applied {
     /// (EDIT-21). The inverse of a text insertion that added `""`
     /// placeholders also takes those placeholders out.
     pub inverse: Vec<Edit>,
+    /// The patched files other than the root, by `FileId`, ascending: a
+    /// text edit goes to the file its literal came from (P2-139), and an
+    /// `at`/`size` line to the file holding the view block (P2-140).
+    /// Empty when only the root changed.
+    // TODO(srs): P2-140, `at`/`size` for a view declared in an included
+    // file. Reading taken (B dsl-breadth 7): the file holding the view's
+    // block. P2-139, a DSL-13 per-box `tags` line for an element declared
+    // in an included file: the file holding its declaration (B 8). P2-16,
+    // a text edit to a literal from a `workspace extends` base: the base
+    // file (B 9).
+    pub files: Vec<(FileId, String)>,
 }
 
 /// Applies `edits` in order to the root file of `parsed`, finding each
@@ -495,6 +506,7 @@ pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
     Ok(Applied {
         text,
         inverse: steps.into_iter().rev().flatten().collect(),
+        files: Vec::new(),
     })
 }
 
@@ -520,6 +532,15 @@ pub enum EditErrorKind {
     },
     /// A text value contains `\n` or `\r` (DSL-10).
     Newline,
+    /// The literal's written bytes hold a `${NAME}` substitution
+    /// (P2-150): rewriting it would drop the reference, so the edit is
+    /// refused and no file changes.
+    // TODO(srs): P2-151, a DSL-10 edit of a literal holding `${...}`.
+    // Reading taken (B dsl-breadth 3): refused, naming the constant.
+    Substituted {
+        /// The constant or variable name.
+        name: String,
+    },
     /// A value the file cannot hold, shaped like
     /// `model::ModelErrorKind::InvalidValue` so `Display` can quote it.
     InvalidValue {
@@ -570,6 +591,7 @@ impl fmt::Display for EditError {
             EditErrorKind::InvalidValue { value, reason } => {
                 write!(f, "change not written: `{value}`: {reason}")
             }
+            EditErrorKind::Substituted { .. } => todo!(),
         }
     }
 }
@@ -1871,6 +1893,12 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
             model.element(id).kind == ElementKind::SoftwareSystem
         }
         ViewKind::Component => model.element(id).kind == ElementKind::Container,
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => todo!(),
     };
     if !fits {
         return Err(EditErrorKind::InvalidValue {

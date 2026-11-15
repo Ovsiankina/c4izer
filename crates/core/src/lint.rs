@@ -1214,7 +1214,9 @@ impl<'a> Lint<'a> {
             if bd.tag.fits {
                 continue;
             }
-            let BoundaryOf::Element(e) = bd.of;
+            let BoundaryOf::Element(e) = bd.of else {
+                todo!()
+            };
             self.push(
                 Rule::TextFit,
                 vec![ModelId::Element(e)],
@@ -1229,7 +1231,9 @@ impl<'a> Lint<'a> {
     fn boundary_intrusion(&mut self) {
         let scene = self.scene;
         for (i, bd) in scene.boundaries.iter().enumerate() {
-            let BoundaryOf::Element(scope) = bd.of;
+            let BoundaryOf::Element(scope) = bd.of else {
+                todo!()
+            };
             for b in &scene.boxes {
                 if bd.members.contains(&b.id) || !b.rect.overlaps(&bd.rect) {
                     continue;
@@ -2311,7 +2315,9 @@ mod tests {
         assert!(of_rule(&lint(&model, &scene), Rule::C3NoScopeComponent).is_empty());
         // The same boxes on a view of another container.
         let store = el(&model, "store");
-        let ViewScope::Element(mut scope) = scene.scope.clone();
+        let ViewScope::Element(mut scope) = scene.scope.clone() else {
+            unreachable!("phase-1 scoped view")
+        };
         scope.value = store;
         scene.scope = ViewScope::Element(scope);
         let report = lint(&model, &scene);
