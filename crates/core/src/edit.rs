@@ -26,10 +26,13 @@
 // - `at` and `size` lines in a view;
 // - `title` and `subtitle` lines in a view;
 // - a default view block (EDIT-15, `Edit::AddDefaultView`): a view, not
-//   an element, appended as the last view in `views`;
+//   an element, appended as the last view in `views`, and removed again
+//   by `Edit::RemoveDefaultView` (inverse only, EDIT-19) while it holds
+//   nothing but `include *`, `at` and `size` lines;
 // - the `views` block itself, when the file has none (a model-only file,
 //   valid Structurizr) and an edit needs one: created as the last block
-//   of the workspace body, indented per DSL-9 (EDIT-15, DSL-13);
+//   of the workspace body, indented per DSL-9 (EDIT-15, DSL-13); removed
+//   by `Edit::RemoveDefaultView` when the view was all it held;
 // - string literals of existing statements (DSL-10), including `""`
 //   placeholders for skipped positional arguments;
 // - style property lines (`background`, `color`, `shape`) in an
@@ -287,7 +290,8 @@ pub enum StyleProperty {
 ///
 /// There is deliberately no variant that creates or deletes an element
 /// or a relationship (EDIT-21); only layout (`at`, `size`), text and
-/// style change, and a default view is added (EDIT-15).
+/// style change, and a default view is added (EDIT-15) and, by an
+/// inverse only, removed again (EDIT-19).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Edit {
@@ -376,8 +380,9 @@ pub enum Edit {
     /// not an element (EDIT-21). The editor puts it first in the batch of
     /// the first write made in a default view (move, resize, style), so
     /// that write is one step and its `Move`/`Resize` lines land in the
-    /// new view; its inverse removes the view block, and the `views`
-    /// block too when it holds nothing but what `edit` wrote there.
+    /// new view; its inverse, `RemoveDefaultView`, removes the view
+    /// block, and the `views` block too when it holds nothing but what
+    /// `edit` wrote there.
     AddDefaultView {
         /// The scope element key (the bare `model::Element::key` in phase
         /// 1).
@@ -390,6 +395,30 @@ pub enum Edit {
         /// scope whose element kind does not fit `kind` (a container
         /// scope for `Container` or `SystemContext`, a system scope for
         /// `Component`, a person) is `EditErrorKind::InvalidValue`.
+        kind: ViewKind,
+    },
+    /// Remove the default view of `scope` (EDIT-15, EDIT-19): the `kind`
+    /// view with key `<scope id>-<kind>` that `AddDefaultView` wrote.
+    /// Inverse only: it is the inverse of `AddDefaultView`, and the
+    /// editor never builds it from a user gesture (EDIT-21: no gesture
+    /// deletes anything from the file).
+    ///
+    /// The view block is removed only while it holds nothing but what
+    /// `edit` wrote there: one `include *` line plus `at` and `size`
+    /// lines, a head of keyword, scope and key only, and no comment.
+    /// Otherwise it is refused (`EditErrorKind::InvalidValue`) and nothing
+    /// is written. The `views` block goes with it under the same rule:
+    /// only when the view was all it held, as when `AddDefaultView`
+    /// created it. The inverse adds the view back with its `at` and
+    /// `size` lines.
+    RemoveDefaultView {
+        /// The scope element key (the bare `model::Element::key` in phase
+        /// 1).
+        scope: String,
+        /// The view kind, as in `AddDefaultView`; a view with the key
+        /// `<scope id>-<kind>` of another kind or scope is
+        /// `EditErrorKind::InvalidValue`, no view with that key is
+        /// `EditErrorKind::TargetGone`.
         kind: ViewKind,
     },
 }
@@ -444,8 +473,10 @@ pub struct Applied {
 /// name, a technology on a person or software system, another control
 /// character in a text value, `StyleTarget::Tag` with a tag the element
 /// does not carry, an `AddDefaultView` scope whose kind does not fit, an
-/// `AddDefaultView` whose key `<scope>-<kind>` names a view of another
-/// scope or kind; the same view already written is not an error).
+/// `AddDefaultView` or `RemoveDefaultView` whose key `<scope>-<kind>`
+/// names a view of another scope or kind, a `RemoveDefaultView` whose
+/// view holds more than `edit` wrote; the same view already written is
+/// not an error for `AddDefaultView`).
 pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
     // DECISION: each edit is applied to the text left by the previous one,
     // re-parsed in between, so every edit finds its target by key in the
@@ -602,6 +633,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         } => set_style(current, element, target, *property),
         Edit::ResetStyle { element } => reset_style(current, element),
         Edit::AddDefaultView { scope, kind } => add_default_view(current, scope, *kind),
+        Edit::RemoveDefaultView { scope, kind } => remove_default_view(current, scope, *kind),
     }
 }
 
@@ -1034,6 +1066,35 @@ impl<'a> Ctx<'a> {
             }
         }
         self.remove_line(target.span)
+    }
+
+    /// True when the view statement `view` holds nothing but what `edit`
+    /// writes in a default view (EDIT-15): a head of keyword, scope and
+    /// key, one `include *` line, `at` and `size` lines, no comment.
+    fn holds_only_default_view(&self, view: &Statement) -> bool {
+        let Some(block) = &view.block else {
+            return false;
+        };
+        if self.head(view).len() != 3 || !self.only_statements(block) {
+            return false;
+        }
+        let mut includes = 0;
+        for statement in &block.statements {
+            let words: Vec<&str> = self
+                .head(statement)
+                .into_iter()
+                .map(|i| self.tree.token_text(i))
+                .collect();
+            if statement.block.is_some() {
+                return false;
+            }
+            match words.first().map(|w| w.to_ascii_lowercase()).as_deref() {
+                Some("include") if words.len() == 2 && words[1] == "*" => includes += 1,
+                Some("at" | "size") => {}
+                _ => return false,
+            }
+        }
+        includes == 1
     }
 
     /// Inserts `lines` as the last lines of `styles`, creating `styles`
@@ -1821,9 +1882,9 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
     if let Some(view) = model.view(&key) {
         if view.kind == kind && view.scope.element() == Some(id) {
             // DECISION: the same view (key, scope, kind) is already written,
-            // e.g. a redo after an undo whose inverse could not remove it
-            // (docs/deferred.md): a no-op with no inverse, so the batch's
-            // later edits still apply (EDIT-19).
+            // e.g. a redo after an undo whose `RemoveDefaultView` was refused
+            // because the view held more: a no-op with no inverse, so the
+            // batch's later edits still apply (EDIT-19).
             return Ok(Vec::new());
         }
         // DECISION: another view holds the default key; refused rather than
@@ -1839,11 +1900,67 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
         (0, "}".to_owned()),
     ];
     run(current, |cx| plan_add_view(cx, &lines))?;
-    // DECISION: no inverse. Removing the view needs an `Edit` variant the
-    // frozen contract does not have (docs/deferred.md, edit step 5); the
-    // inverses of the batch's later edits still take its `at` lines out,
-    // which leaves the view as the default view the editor shows anyway.
-    Ok(Vec::new())
+    Ok(vec![Edit::RemoveDefaultView {
+        scope: scope.to_owned(),
+        kind,
+    }])
+}
+
+/// `RemoveDefaultView` (EDIT-15, EDIT-19): removes the view `<scope>-<kind>`
+/// while it holds nothing but what `edit` wrote, and `views` with it when
+/// the view was all it held.
+// DECISION: "what `edit` wrote" in a default view is read from the text:
+// a head of keyword, scope and key, one `include *` line, `at` and `size`
+// lines, no comment. `title`/`subtitle` lines are refused although `edit`
+// can write them: they may be the author's, and the approved change
+// (docs/deferred.md) lists `include *`, `at` and `size` only.
+// DECISION: the `views` block is removed whenever the view was all it
+// held, since the text does not say who created it; a file whose `views`
+// block was empty before `AddDefaultView` gets the same model back, not
+// the same bytes.
+fn remove_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Vec<Edit>> {
+    let key = format!("{scope}-{}", kind.keyword());
+    let model = &current.model;
+    let view = model.view(&key).ok_or_else(|| gone(&key))?;
+    let id = find_element(model, scope)?;
+    if view.kind != kind || view.scope.element() != Some(id) {
+        return Err(EditErrorKind::InvalidValue {
+            value: key,
+            reason: "this view is not the default view of that scope and kind",
+        });
+    }
+    let mut inverse = vec![Edit::AddDefaultView {
+        scope: scope.to_owned(),
+        kind,
+    }];
+    inverse.extend(view.positions.iter().map(|a| {
+        LineKind::At.edit(
+            &key,
+            &element_key(model, a.element.value),
+            Some((a.x.value, a.y.value)),
+        )
+    }));
+    inverse.extend(view.sizes.iter().map(|z| {
+        LineKind::Size.edit(
+            &key,
+            &element_key(model, z.element.value),
+            Some((z.width.value, z.height.value)),
+        )
+    }));
+    run(current, |cx| {
+        let spec = cx.model.view(&key).ok_or_else(|| gone(&key))?;
+        let owner = cx.statement(spec.span).ok_or_else(|| gone(&key))?;
+        if !cx.holds_only_default_view(owner) {
+            return Err(EditErrorKind::InvalidValue {
+                value: key.clone(),
+                reason: "the view holds more than the default view; remove it in the file",
+            });
+        }
+        Ok(Plan::Patches(vec![
+            cx.remove_nested(owner, &[cx.model.views_span]),
+        ]))
+    })?;
+    Ok(inverse)
 }
 
 /// Appends a view as the last view in `views` (before a `styles` block
@@ -2939,7 +3056,7 @@ workspace {
         // AddDefaultView then a Move in one batch: the view (key
         // `<scope id>-<kind>`, `include *`, no `at` lines from it) is the
         // last view in `views`, written first. The inverse part is in
-        // `edit_15_default_view_inverse_removes_it` (deferred).
+        // `edit_15_default_view_inverse_removes_it`.
         let source = styled();
         let applied = ok(
             &source,
@@ -2995,9 +3112,9 @@ workspace {
 
     #[test]
     fn edit_19_redo_after_undo_of_default_view_batch() {
-        // EDIT-19: apply, undo, redo. The inverse keeps the view (no Edit
-        // removes one, docs/deferred.md), so redo finds it written and
-        // still writes the batch's later edits.
+        // EDIT-19: apply, undo, redo. The undo removes the view
+        // (`RemoveDefaultView`) and the redo writes it and the batch's
+        // later edits again.
         for second in [
             mv("sys-systemContext", "user", 10, 10),
             style("user", StyleTarget::ThisBox, StyleProperty::Shape(Some(Shape::Cylinder))),
@@ -3022,7 +3139,7 @@ workspace {
         // Move in one batch creates `views` as the last block of the
         // workspace body, indented per DSL-9, holding the new view with
         // its `at` line. The inverse part is in
-        // `edit_15_default_view_inverse_removes_it` (deferred).
+        // `edit_15_default_view_inverse_removes_it`.
         let applied = ok(
             MODEL_ONLY,
             &[
@@ -3067,7 +3184,6 @@ workspace {
     }
 
     #[test]
-    #[ignore = "deferred"]
     fn edit_15_inverse_keeps_views_block_holding_more() {
         // A `views` block created by `edit`, then an external change adds
         // a view to it: the inverse removes only the default view, the
@@ -3091,11 +3207,9 @@ workspace {
     }
 
     #[test]
-    #[ignore = "deferred"]
     fn edit_15_default_view_inverse_removes_it() {
         // EDIT-15, EDIT-19: undoing the first write in a default view
         // removes the view, and the `views` block `edit` created for it.
-        // Blocked: no `Edit` variant removes a view (docs/deferred.md).
         let source = styled();
         let (_, back) = round_trip(
             &source,
@@ -3119,6 +3233,95 @@ workspace {
             ],
         );
         assert_eq!(back, MODEL_ONLY);
+    }
+
+    fn remove_default(scope: &str, kind: ViewKind) -> Edit {
+        Edit::RemoveDefaultView {
+            scope: scope.into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn edit_19_inverse_of_add_default_view_is_remove_default_view() {
+        let applied = ok(
+            MODEL_ONLY,
+            &[
+                Edit::AddDefaultView {
+                    scope: "sys".into(),
+                    kind: ViewKind::Container,
+                },
+                mv("sys-container", "api", 200, 100),
+            ],
+        );
+        assert_eq!(
+            applied.inverse.last(),
+            Some(&remove_default("sys", ViewKind::Container))
+        );
+    }
+
+    #[test]
+    fn edit_19_remove_default_view_refused_when_view_holds_more() {
+        // Anything besides `include *`, `at` and `size` lines (another
+        // statement, a comment, a head argument) refuses the removal and
+        // nothing is written.
+        let added = ok(
+            &styled(),
+            &[Edit::AddDefaultView {
+                scope: "sys".into(),
+                kind: ViewKind::Container,
+            }],
+        )
+        .text;
+        let open = "        container sys \"sys-container\" {\n            include *\n";
+        assert!(added.contains(open));
+        for extra in [
+            "            autoLayout\n",
+            "            exclude user\n",
+            "            include user\n",
+            "            // mine\n",
+            "            title \"Mine\"\n",
+        ] {
+            let source = added.replace(open, &format!("{open}{extra}"));
+            let e = fail(&source, &[remove_default("sys", ViewKind::Container)]);
+            assert!(
+                matches!(e.kind, EditErrorKind::InvalidValue { .. }),
+                "{extra:?}"
+            );
+        }
+        let described = added.replace(
+            "container sys \"sys-container\" {",
+            "container sys \"sys-container\" \"Mine\" {",
+        );
+        let e = fail(&described, &[remove_default("sys", ViewKind::Container)]);
+        assert!(matches!(e.kind, EditErrorKind::InvalidValue { .. }));
+        // `at` and `size` lines are what `edit` writes: removed with the
+        // view, and given back by its inverse.
+        let placed = ok(
+            &added,
+            &[
+                mv("sys-container", "api", 200, 100),
+                resize("sys-container", "api", 240, 160),
+            ],
+        )
+        .text;
+        let removed = ok(&placed, &[remove_default("sys", ViewKind::Container)]);
+        assert_eq!(removed.text, styled());
+        assert_eq!(ok(&removed.text, &removed.inverse).text, placed);
+    }
+
+    #[test]
+    fn edit_19_remove_default_view_target_checks() {
+        // No view with that key: the target is gone. A view with that key
+        // but another kind or scope is refused.
+        let e = fail(BASE, &[remove_default("sys", ViewKind::Container)]);
+        assert!(matches!(e.kind, EditErrorKind::TargetGone { .. }));
+        let clash = BASE.replace(
+            "    views {\n",
+            "    views {\n        systemContext sys \"sys-container\" {\n            include *\n        }\n",
+        );
+        let e = fail(&clash, &[remove_default("sys", ViewKind::Container)]);
+        assert!(matches!(e.kind, EditErrorKind::InvalidValue { .. }));
     }
 
     #[test]
