@@ -429,6 +429,8 @@ Views and positions (replaces the prototype's `layout.json`)
   and a named relationship `r = a -> b` are DSL-4 errors naming
   phase 2. A view with no key gets `<Kind>-NNN` (`SystemContext-001`,
   numbered per kind in declaration order), as Structurizr does.
+  A `focus` or `hide` id with no box of its own in the view is lifted
+  to its nearest drawn ancestor; when it has none it is ignored.
 - **DSL-8** An element included in a view but without an `at` line is
   placed automatically (CORE-22); positions are written back only as
   EDIT-26 says.
@@ -438,19 +440,28 @@ Writing back
 - **DSL-9** Moving one box rewrites only that box's `at` line, or adds
   one after the view's last `at` line (before the view's closing brace
   when it has none), copying the indentation and line ending of the
-  line above; every other byte of the file is unchanged, except on the
+  line above; when the line above is the view head, the new line gets
+  the view's body indentation (the first body line's indentation, else
+  the view's indentation plus one level of the file's indent unit, four
+  spaces by default; a one-line view `{ ... }` is first split onto
+  lines); a new `size` line is placed the same way after the last
+  `size` line, else after the last `at` line; every other byte of the file is unchanged, except on the
   first write in a view (EDIT-26).
 - **DSL-10** Editing the name, description or technology of an
   element, the description or technology of a relationship, or the
   title or subtitle of a view rewrites only that string literal, with
   `"` and `\` escaped; a newline is refused; when the literal is absent
   the edit inserts it, with `""` placeholders for skipped positional
-  arguments; every other byte is unchanged.
+  arguments; a missing view `title` or `subtitle` line is inserted as
+  the first line of the view body, indented per DSL-9; every other byte
+  is unchanged.
 - **DSL-13** Changing an element's colour, text colour or shape writes
   to the `styles` block for the target the user picked: `all <tag>`
   edits or adds the property in that tag's `element` block; `this box
-  only` adds a tag named after the element id to the element (a `tags`
-  line in its block, creating the block if needed) and an
+  only` adds a tag named after the element's full dotted id to the
+  element, suffixed `-2`, `-3`... when another element already carries
+  that tag (a `tags` line as the last line of its block, creating the
+  block if needed) and an
   `element "<id>"` block at the end of `styles`; those are the only
   bytes changed, and "reset to tag style" removes that tag and block.
 - **DSL-11** Parse, then write back with no edits, gives a file
@@ -781,7 +792,8 @@ C4 levels
   when none exists, a default view (`include *`, every box auto-placed)
   opens, and it is written to the file on the first write made in it
   (move, resize, style), appended as the last view in `views` with key
-  `<scope id>-<kind>`. Gestures per EDIT-28.
+  `<scope id>-<kind>`; `edit` writes it, as the first patch of that
+  write. Gestures per EDIT-28.
 - **EDIT-16** The breadcrumb is derived from the open view's scope in
   the model (workspace / system / container), not from click history;
   clicking a crumb opens the first declared view scoped to that
