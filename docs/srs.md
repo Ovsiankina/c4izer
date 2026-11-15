@@ -76,6 +76,10 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | DSL keyword | `->` relationship `<src> -> <dest> [desc] [tech] [tags]` | 1 | DSL-2 |
 | DSL keyword | Nested `-> <dest>` (source is the enclosing element) | 1 | DSL-2 "nested" |
 | DSL keyword | `this` (the element in scope) | 1 | DSL-2 (`this` as relationship source) |
+| DSL keyword | element declared without `<id> =` | 2 | DSL-4 error naming phase 2 in phase 1 (DSL-7) |
+| DSL keyword | named relationship `r = a -> b` | 2 | DSL-4 error naming phase 2 in phase 1 (DSL-7) |
+| DSL keyword | line continuation `\` at end of line | 2 | lexed in phase 1, rejected per DSL-4 |
+| DSL keyword | `"""` text blocks | 2 | lexed in phase 1, rejected per DSL-4; value rules (indent, escapes) as the Structurizr reference gives them |
 | DSL keyword | `--<archetype>->` relationship | 2 | Needs archetypes |
 | DSL keyword | `-/>` remove relationship (deployment environment) | 3 | Deployment |
 | DSL keyword | `deploymentEnvironment <name>` | 3 | |
@@ -368,9 +372,10 @@ are the only escapes. `[x]` means optional; `<id>` may be a dotted path
 | `size` | `<id> <w> <h>` | per kind (CORE-2) | c4rizer extension: box size in px, multiples of 20 so half-sizes stay on the grid |
 | `styles` | `{ }` inside `views` | — | holds `element` styles |
 | `element` | `"<tag>" { }` in `styles` | — | style for every element with that tag |
+| `relationship` | `"<tag>" { ... }` in `styles` | — | accepted and kept byte for byte, no effect until P2-12 (so the prototype example opens, DSL-14) |
 | `background` | `#rrggbb` | `#dddddd` | box fill |
 | `color` | `#rrggbb` | `#000000` | box text colour |
-| `shape` | `Person\|Cylinder\|Box` | `Box` | box shape |
+| `shape` | `Person\|Cylinder\|Box` | `Person` for people, else `Box` | box shape |
 
 The prototype's `tries` and `seed` options are dropped: routing is
 deterministic (CORE-25).
@@ -401,7 +406,8 @@ Model
   its declared tags, and every relationship has `Relationship`; style
   is resolved per property across the element's tags in tag order,
   later tags overriding, and a property no tag sets takes the default
-  in the keyword table. `TODO(srs)`: confirm the cascade order against
+  in the keyword table (shape: `Person` for a person, `Box` otherwise).
+  `TODO(srs)`: confirm the cascade order against
   the Structurizr reference.
 - **DSL-16** Every span the parser records carries a source-file id
   (in phase 1 always the root file), so that `!include` (P2-5) needs no
@@ -417,7 +423,12 @@ Views and positions (replaces the prototype's `layout.json`)
 - **DSL-7** A view's box positions are `at <id> <x> <y>` lines (box
   centre, multiples of 10) and its size overrides are
   `size <id> <w> <h>` lines (multiples of 20), at most one of each per
-  box; `<id>` may be a dotted path.
+  box; `<id>` may be a dotted path `a.b.c`, naming the element keyed
+  `c` whose parent is keyed `b` inside `a`. In phase 1 every element
+  and no relationship has an identifier: an element without `<id> =`
+  and a named relationship `r = a -> b` are DSL-4 errors naming
+  phase 2. A view with no key gets `<Kind>-NNN` (`SystemContext-001`,
+  numbered per kind in declaration order), as Structurizr does.
 - **DSL-8** An element included in a view but without an `at` line is
   placed automatically (CORE-22); positions are written back only as
   EDIT-26 says.
@@ -450,8 +461,8 @@ Migration and fixtures
 
 - **DSL-12** `example/workspace.dsl` + `example/layout.json` from the
   prototype are converted once by hand into `tests/data/example.dsl`, a
-  c4rizer file that renders the same four views (`c1`, `c2`, `c3`,
-  `c3-startup`); it is checked in and is the golden-test input.
+  c4rizer file that renders the same four views (keys as in the prototype:
+  `C1`, `C2`, `C3-serving`, `C3-startup`); it is checked in and is the golden-test input.
 - **DSL-14** `docs/workspace.dsl` as checked in and
   `tests/data/example/workspace.dsl` (a checked-in copy of the
   prototype's `example/workspace.dsl`) parse with no error and every
