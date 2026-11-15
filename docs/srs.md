@@ -911,6 +911,17 @@ Working beside a text editor
 - **EDIT-29** On `example/`, a save from another program shows the
   updated view in under 200 ms in a release build, measured from the
   file event to the scene handed to the canvas.
+- **EDIT-30** The first time a view is shown in a session, the camera
+  fits the whole scene (drawing, title and key) into the canvas with a
+  20px margin, never zooming above 100%; "Fit view" (F key and a
+  toolbar button) does the same on demand; reloads keep zoom and pan
+  (EDIT-1).
+- **EDIT-31** The canvas draws the scene on a page the colour of the
+  export background (white in phase 1), so the canvas and the exported
+  SVG/PNG look the same whatever the window theme.
+- **EDIT-32** The canvas keeps at least 60% of the window width: side
+  panels are resizable and collapsible, and at a window width under
+  1000px they start collapsed.
 
 ### 4.5 Diagram exports
 
