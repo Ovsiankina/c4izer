@@ -950,14 +950,14 @@ compat-fixtures
   coordinate mapping (Structurizr stores top-left corners; `at` is the
   centre).
 
-cli-breadth (`TODO(srs)`: needs a ROADMAP phase 2 row)
+cli-breadth (ROADMAP row `cli-breadth`, phase 2)
 
 - **P2-22** The CLI adds `validate`, `inspect` (exit code = violation
   count), `list` (lists elements), `version` and `help`, with the
   meaning of the Structurizr commands of the same name.
   `TODO(srs)`: argument names and output format.
 
-editor-breadth (`TODO(srs)`: needs a ROADMAP phase 2 row)
+editor-breadth (ROADMAP row `editor-breadth`, phase 2)
 
 - **P2-23** Canvas commands of the Structurizr diagram editor: run
   auto-layout again on demand, bring all boxes back onto the canvas,
@@ -1019,7 +1019,7 @@ exporters
   to a workspace, and `generate system-landscape` merges several
   workspaces into one landscape. `TODO(srs)`: argument names.
 
-explore (`TODO(srs)`: needs a ROADMAP phase 3 row)
+explore (ROADMAP row `explore`, phase 3)
 
 - **P3-9** The editor offers graph exploration and a viewer for the
   documentation and decisions attached by `!docs` and `!adrs` (P2-7).
