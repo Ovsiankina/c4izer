@@ -5,9 +5,10 @@
 //!
 //! Depends on: `view`, `geom`.
 
-// Shape of the API: `route` takes `(&ViewPlan, &[Point], &RouteConfig)`
-// (the plan and the centres `place` returned, indexed by `BoxId`) and
-// returns `Routes`, plain data indexed by `EdgeId`, which `label`,
+// Shape of the API: `route` takes `(&ViewPlan, &[Point], &RouteConfig,
+// &AtomicBool)` (the plan, the centres `place` returned, indexed by
+// `BoxId`, and a stop flag) and returns `Result<Routes, Stopped>`;
+// `Routes` is plain data indexed by `EdgeId`, which `label`,
 // `scene` and `pipeline` read. `Routes` records the centres it was
 // built at, so `reroute` works out by itself which boxes moved and
 // re-routes only the lines that move broke (EDIT-2, EDIT-25 drag
@@ -34,11 +35,26 @@
 // `repr(C)`, fields `at: Point` then `side: Side`, 12 bytes, pinned by
 // `port_size_is_pinned`.
 //
-// TODO(srs): CORE-13 says an unroutable line is reported (L1), not
-// whether it is drawn. Stubbed against: route gives it no polyline
-// (`Routes::lines[e] == None`); whether and how `scene` draws it (a
-// straight fallback, as Structurizr draws every line) is scene's call.
-// See docs/deferred.md.
+// CORE-13: route gives an unroutable line no polyline
+// (`Routes::lines[e] == None`); `scene` draws it straight from its source
+// box's edge to its destination box's edge, along the line between their
+// centres, with an arrowhead and no label, outside the CORE-6..9 checks,
+// and L1 names it.
+//
+// Cooperative stop (EDIT-25, owner's ruling): `route` and `reroute` take
+// a `&AtomicBool` stop flag (std only). They read it at least once per
+// rip-up round and once per edge order; once it reads true they return
+// `Err(Stopped)` promptly and yield no routes, never a partial `Routes`.
+// A run whose flag is never set returns exactly what it returned before
+// the flag existed (CORE-25). The editor's worker sets it to drop a stale
+// build (crates/editor/src/worker.rs); the CLI passes a flag never set.
+// DECISION: `Result<Routes, Stopped>` over `Option<Routes>`: the
+// pipeline forwards it with `?`, and `Stopped` says why there is no value.
+// DECISION: the flag is read with `Ordering::Relaxed`: it carries no data,
+// only "give up", so no ordering with other memory is needed.
+
+use std::fmt;
+use std::sync::atomic::AtomicBool;
 
 use crate::geom::{Point, Segment};
 use crate::view::{EdgeId, ViewPlan};
@@ -239,6 +255,20 @@ impl Routes {
     }
 }
 
+/// A routing run gave up because its stop flag was set (EDIT-25): no
+/// routes are returned, partial or otherwise. Serves EDIT-25.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct Stopped;
+
+impl fmt::Display for Stopped {
+    /// `routing stopped` (a newer request superseded this one).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+impl std::error::Error for Stopped {}
+
 /// Routes every edge of `plan` with every box at `centres[box]`: ports
 /// per box side, A* on the grid with 45° turns, negotiated-congestion
 /// rip-up and retry over `config.orders` edge orders, up to
@@ -247,13 +277,26 @@ impl Routes {
 /// `plan.options.bus` (CORE-8). Lines may leave the bounding rectangle
 /// of all boxes; they are never clipped, and `scene` sizes the canvas
 /// to contain every line point (CORE-7). Deterministic (CORE-25).
-/// Serves CORE-6..13, CORE-25, CORE-32.
+///
+/// `stop` is read at least once per rip-up round and once per edge
+/// order; a run that never sees it set returns `Ok` with the same
+/// `Routes` as a run without the flag (CORE-25). Serves CORE-6..13,
+/// CORE-25, CORE-32, EDIT-25.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` reads true at one of those checks: the run
+/// returns promptly and yields no routes (EDIT-25).
 ///
 /// # Panics
 ///
 /// When `centres` is shorter than `plan.boxes`, or `config.orders == 0`.
-#[must_use]
-pub fn route(plan: &ViewPlan, centres: &[Point], config: &RouteConfig) -> Routes {
+pub fn route(
+    plan: &ViewPlan,
+    centres: &[Point],
+    config: &RouteConfig,
+    stop: &AtomicBool,
+) -> Result<Routes, Stopped> {
     todo!()
 }
 
@@ -274,11 +317,20 @@ pub fn route(plan: &ViewPlan, centres: &[Point], config: &RouteConfig) -> Routes
 /// set; the full `route` after the drag retries the rest. When
 /// `centres` equals `previous.centres` the set is empty and the result
 /// equals `previous`. `crossings` is recounted over the whole view and
-/// `centres` set to the new centres. Deterministic (CORE-25). Neither
-/// function can be stopped mid-run: preview callers bound the cost with
-/// a smaller `RouteConfig` cap and drop stale results; there is no
-/// cancel parameter in phase 1 (EDIT-25, CORE-24). Serves EDIT-2,
-/// EDIT-25, CORE-13, CORE-25, CORE-32.
+/// `centres` set to the new centres. Deterministic (CORE-25).
+///
+/// Both functions stop cooperatively: `stop` is read at least once per
+/// rip-up round and once per edge order, and a set flag ends the run
+/// promptly with `Err(Stopped)`, so the editor's worker can drop a stale
+/// preview or build without waiting for it (EDIT-25); preview callers
+/// still bound the cost with a smaller `RouteConfig` cap (CORE-24). A
+/// run that never sees the flag set returns the same `Routes` as before
+/// (CORE-25). Serves EDIT-2, EDIT-25, CORE-13, CORE-25, CORE-32.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` reads true at one of those checks; no routes are
+/// yielded (EDIT-25).
 ///
 /// # Panics
 ///
@@ -286,13 +338,13 @@ pub fn route(plan: &ViewPlan, centres: &[Point], config: &RouteConfig) -> Routes
 /// or `previous` is a `Routes` of another plan (`previous.lines` not as
 /// long as `plan.edges`, or `previous.centres` not as long as
 /// `plan.boxes`).
-#[must_use]
 pub fn reroute(
     plan: &ViewPlan,
     centres: &[Point],
     previous: &Routes,
     config: &RouteConfig,
-) -> Routes {
+    stop: &AtomicBool,
+) -> Result<Routes, Stopped> {
     todo!()
 }
 
@@ -405,6 +457,16 @@ mod tests {
     #[test]
     fn core_32_iteration_cap_always_returns() {
         // Also `max_iterations: 0` returns one pass with no rip-up.
+        todo!()
+    }
+
+    #[test]
+    fn edit_25_stopped_route_returns_promptly_without_routes() {
+        // A flag already set, and one set from another thread while a
+        // heavy plan routes: `route` and `reroute` return `Err(Stopped)`
+        // promptly (within one rip-up round or edge order) and yield no
+        // routes. The same inputs with a flag never set give `Ok` with
+        // the routes of an unstopped run (CORE-25).
         todo!()
     }
 

@@ -42,9 +42,9 @@
 // and kept byte for byte in the tree, with no effect until P2-12 (keyword
 // table, DSL-14).
 //
-// TODO(srs): DSL-15 cascade order is to be confirmed against the
-// Structurizr reference (SRS 4.1 open holes); drafted as written in
-// DSL-15 (tag order, later tags win, per property).
+// DSL-15: styles cascade per property in the element's tag order
+// (`Element`, the kind tag, then the declared tags); a later tag wins,
+// and when the same tag has two style blocks the later block wins.
 
 use std::fmt;
 

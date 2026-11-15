@@ -132,14 +132,11 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
     todo!()
 }
 
-/// Registers the bundled font (CORE-30, HLD §6) with egui as the
-/// proportional family, regular and bold, so the canvas paints with the
-/// same face the scene measured and the SVG names. Serves EDIT-12,
-/// CORE-30.
-// Blocked: no pub item gives the font bytes yet (docs/deferred.md row
-// "editor: EDIT-7 PNG and canvas font", on top of the scene/export
-// `FONT_BYTES` and assets rows); `edit_12_canvas_uses_bundled_font` is
-// ignored until then. No fallback face is part of this contract.
+/// Registers the bundled font (`scene::FONT_REGULAR` and
+/// `scene::FONT_BOLD`, CORE-30, HLD §6) with egui as the proportional
+/// family, regular and bold, so the canvas paints with the same face the
+/// scene measured and the SVG names. No fallback face is part of this
+/// contract. Serves EDIT-12, CORE-30.
 pub fn install_fonts(ctx: &eframe::egui::Context) {
     todo!()
 }
@@ -170,11 +167,9 @@ mod tests {
     }
 
     /// EDIT-12, CORE-30: after `install_fonts`, egui's proportional
-    /// family is the bundled face (regular and bold), no other face.
-    /// Needs the font bytes as a pub item (docs/deferred.md row "editor:
-    /// EDIT-7 PNG and canvas font").
+    /// family is the bundled face (`scene::FONT_REGULAR`,
+    /// `scene::FONT_BOLD`), no other face.
     #[test]
-    #[ignore = "deferred"]
     fn edit_12_canvas_uses_bundled_font() {
         todo!()
     }

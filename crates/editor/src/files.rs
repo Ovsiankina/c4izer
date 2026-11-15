@@ -284,14 +284,10 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
     todo!()
 }
 
-/// The folder dialog for "Export all views" (EDIT-7), starting in `dir`;
-/// each view is then written as `<view key>.<ext>` in the chosen folder.
-/// `None` on cancel.
-// TODO(srs): EDIT-7 gives one default name per save dialog but "Export
-// all views" writes several files; stubbed as a folder dialog with one
-// `<view key>.<ext>` per view, existing files overwritten (Structurizr's
-// "export all" writes one file per view under its key). docs/deferred.md
-// row.
+/// The folder dialog for "Export all views" (EDIT-7), starting in `dir`
+/// (the diagram file's folder); every declared view is then written as
+/// `<view key>.svg` or `<view key>.png` in the chosen folder, replacing
+/// files of the same name. `None` on cancel.
 #[must_use]
 pub fn folder_dialog(dir: &Path) -> Option<PathBuf> {
     todo!()

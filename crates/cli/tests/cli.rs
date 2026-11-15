@@ -23,10 +23,10 @@ fn cli_3_lint_writes_nothing() {
 /// CLI-4: `render ... -o DIR --png` writes `<view key>.png` beside each
 /// `<view key>.svg`, a valid PNG twice the SVG width; with `--width 400`
 /// it is 400px wide.
-// Ignored until docs/deferred.md rows "cli ... png feature" (this crate
-// forwards `c4rizer-core/png`) and "scene/export" (FONT_BYTES) are done.
+// Needs this crate's `png` feature (`cargo test -p c4rizer-cli --features
+// png`); without it `--png` exits 2 (`png_without_feature_exits_2`).
+#[cfg(feature = "png")]
 #[test]
-#[ignore = "deferred"]
 fn cli_4_png_written() {
     todo!()
 }

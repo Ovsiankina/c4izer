@@ -79,6 +79,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cScene -> cLabel "Draws labels of"
         cLint -> cScene "Measures geometry of"
         cLint -> cModel "Checks C4 rules against"
+        cLint -> cText "Reads source spans from"
         cExport -> cScene "Serialises"
 
         cView -> cGeom "Sizes boxes on the grid of"

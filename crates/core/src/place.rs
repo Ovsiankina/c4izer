@@ -50,12 +50,10 @@
 // reload during a drag shrank the plan) is ignored, as `previous`
 // ignores undrawn elements; no panic.
 //
-// TODO(srs): CORE-22 (auto-placed boxes do not overlap) and CORE-29 (a
-// box drawn in the previous scene keeps its position) conflict when a
+// CORE-29: a kept position wins over CORE-22's no-overlap rule. When a
 // kept previous centre now overlaps a box whose `at` line changed or a
-// box that was dragged. Stubbed against CORE-29 read literally: the
-// previous centre is kept and the overlap left to lint. Row in
-// docs/deferred.md.
+// box that was dragged, the previous centre is kept and lint reports the
+// overlap (L6).
 //
 // CORE-23's routed clauses (no unroutable line, no label without room,
 // crossings within cap) need `route` and `label`, which depend on

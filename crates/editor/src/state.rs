@@ -67,25 +67,19 @@
 // are refused with a status notice; a diagram write is one syscall batch,
 // so this is never visible in practice.
 //
-// TODO(srs): EDIT-19 and EDIT-28 give no keys for undo and redo; stubbed
-// against Structurizr and the platform convention: Ctrl+Z undo,
-// Ctrl+Shift+Z and Ctrl+Y redo, plus menu commands (docs/deferred.md row).
-// TODO(srs): EDIT-16 does not say what the workspace crumb (and Alt+Left
-// or Backspace on a system context view) opens, since no view is scoped
-// to the workspace in phase 1; stubbed as the first declared system
-// context view, else the first declared view, else nothing
-// (docs/deferred.md row).
-// TODO(srs): EDIT-15 lists move, resize and style as the writes that add
-// a default view to the file, but not a title or subtitle edit; stubbed
-// as "a default view's title and subtitle are not editable until the
-// view is written" (`text_fields` gives no view field for
-// `ViewRef::Default`) (docs/deferred.md row).
-// TODO(srs): EDIT-15 calls a box enterable when "a view is scoped to it",
-// which by its wording includes a childless system with only a system
-// context view scoped to it, a view that is not "its view" (container of
-// a system, component of a container); stubbed as: only a container view
-// (for a system) or a component view (for a container) counts
-// (`enterable`, `view_into`) (docs/deferred.md row).
+// EDIT-28: Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z and Ctrl+Y redo
+// (EDIT-19); menu commands do the same.
+// EDIT-16: the workspace crumb, and Alt+Left or Backspace on a system
+// context view, open the first declared system context view, else the
+// first declared view (nothing when the file declares no view).
+// EDIT-15: a title or subtitle edit is also a write that adds the default
+// view, like a move, resize or style; a default view has no title line
+// and its drawn title is the scope's name.
+// EDIT-15: a box is enterable when its element has at least one child in
+// the model (opening the default view when no view is scoped to it), or
+// a container view scoped to it (for a system) or a component view
+// scoped to it (for a container); a system context view does not count
+// (`enterable`, `view_into`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -256,8 +250,8 @@ pub enum Command {
     /// Open the `n`-th crumb of `State::breadcrumb` (EDIT-16): the
     /// first declared view scoped to the crumb's element (container view
     /// of a system, component view of a container), else its default
-    /// view, as `view_into` gives it; the workspace crumb as the
-    /// `TODO(srs)` in this module's header says.
+    /// view, as `view_into` gives it; the workspace crumb opens the first
+    /// declared system context view, else the first declared view.
     Crumb(usize),
     /// Set a style property on every selected box, one undo step
     /// (EDIT-17, DSL-13).
@@ -847,7 +841,8 @@ impl State {
     /// only `action` and `parsed`, never `self.view` or the shown scene,
     /// so a view switch while the write is in flight changes nothing:
     /// - when the action's view is a `ViewRef::Default` not declared in
-    ///   `parsed` (EDIT-15), a layout or style write starts with
+    ///   `parsed` (EDIT-15), a layout, style, title or subtitle write
+    ///   starts with
     ///   `Edit::AddDefaultView` for that view's scope and kind, and its
     ///   other edits target `ViewRef::key`;
     /// - a move or resize whose view has no `at` line for any of its
@@ -912,8 +907,7 @@ pub fn distribute(boxes: &BTreeMap<BoxId, Rect>, axis: Axis) -> BTreeMap<BoxId, 
 /// True when `element` is enterable (EDIT-15): it has a child in the
 /// model, or `view_into` finds a declared view of the counting kind
 /// scoped to it (a container view for a system, a component view for a
-/// container; a system context view does not count, `TODO(srs)` in this
-/// module's header).
+/// container; a system context view does not count).
 #[must_use]
 pub fn enterable(model: &Model, element: ElementId) -> bool {
     todo!()
@@ -946,9 +940,9 @@ pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewR
 /// `model` (EDIT-5): element name, description, technology (the last for
 /// containers and components only); relationship description,
 /// technology (of the winning relationship, so a lifted line edits the
-/// relationship it was lifted from); view title, subtitle of
-/// `ViewRef::Declared` only: none for a `ViewRef::Default` not yet
-/// written (`TODO(srs)` in this module's header).
+/// relationship it was lifted from); view title, subtitle, for a
+/// `ViewRef::Default` not yet written too: confirming one writes the
+/// default view first (EDIT-15).
 #[must_use]
 pub fn text_fields(model: &Model, view: &ViewRef, selected: &Selected) -> Vec<TextField> {
     todo!()
@@ -1042,12 +1036,10 @@ mod tests {
     }
 
     /// EDIT-7 (PNG half): `ExportFormat::Png` asks for `<key>.png`, and
-    /// the job writes `export::png` at twice the scene width. Needs core
-    /// feature `png` on the editor's `c4rizer-core` dependency and the
-    /// bundled font bytes (docs/deferred.md row "editor: EDIT-7 PNG and
-    /// canvas font").
+    /// the job writes `export::png` at twice the scene width, through
+    /// core feature `png` (on in the editor's dependency) and the bundled
+    /// font (`scene::FONT_REGULAR`, `scene::FONT_BOLD`).
     #[test]
-    #[ignore = "deferred"]
     fn edit_7_export_png() {
         todo!()
     }
@@ -1115,7 +1107,7 @@ mod tests {
     /// EDIT-15: with several container views scoped to a system, a click
     /// opens the first declared one and the view list shows the others;
     /// a childless system with only a system context view scoped to it
-    /// is not enterable (`TODO(srs)` in this module's header).
+    /// is not enterable (EDIT-15).
     #[test]
     fn edit_15_several_views_first_declared_opens() {
         todo!()
@@ -1127,6 +1119,14 @@ mod tests {
     /// in and moves its boxes, not the new view's.
     #[test]
     fn edit_15_reapply_after_view_switch_targets_action_view() {
+        todo!()
+    }
+
+    /// EDIT-15: confirming a title or subtitle edit in a default view not
+    /// yet written is a write: its batch starts with `AddDefaultView`,
+    /// then sets the text; before it the drawn title is the scope's name.
+    #[test]
+    fn edit_15_title_edit_writes_default_view() {
         todo!()
     }
 

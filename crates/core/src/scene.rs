@@ -62,32 +62,26 @@
 // DECISION: a joined line (CORE-8) ends in `Tip::Dot`, never an arrow;
 // its trunk is `SceneLine::joins`.
 //
-// TODO(srs): CORE-13 / route.rs leave open whether an unroutable line
-// is drawn (docs/deferred.md row of route, CORE-13). Stubbed against
-// Structurizr, which draws every relationship: a straight line from the
-// source box's edge to the destination box's edge on the centre line,
-// arrow at the destination, `routed: false`, no label (label.rs gives
-// it none); lint skips CORE-6..9 geometry for it and reports L1 only.
-// This differs from route's proposal (not drawn, or centre to centre);
-// one docs/deferred.md row asks the owner to settle CORE-13 for both.
-// TODO(srs): CORE-1/CORE-2 give no font sizes, line pitch, paddings,
-// stroke widths, arrowhead/chevron/dot sizes, person and cylinder
-// proportions, or title and key placement. Stubbed against the
-// prototype golden SVGs and Structurizr: name 14px bold, type line and
-// description 11px regular, title 18px bold and subtitle 12px regular at
-// the bottom left below the drawing, key below the title; row in
-// docs/deferred.md. The values live in the scene items (`size_px`,
-// `Stroke::width_px`, `Outline`), never as pub constants, so filling the
-// hole changes no signature.
-// TODO(srs): CORE-1 says the key covers every shape, colour and line
-// style drawn but not what each entry is called. Stubbed against
-// Structurizr's key (one entry per element style, named by its tag):
-// boxes grouped by (shape, fill, text colour, stroke), each entry named
-// by the distinct last effective tag of its boxes in box order (so
-// "Person", "Software System", "External", ...; two tags with the same
-// look share one entry with both names); lines grouped by stroke and
-// tip kind (arrow or dot, never the tip's coordinates), named "Relationship" (arrow) or "Joined relationship" (dot). Row in
-// docs/deferred.md.
+// CORE-13: an unroutable line is drawn straight from its source box's
+// edge to its destination box's edge, on the line between their centres,
+// with an arrowhead at the destination, `routed: false` and no label
+// (label.rs gives it none); it is outside the CORE-6..9 checks, so lint
+// skips that geometry for it and L1 names it.
+// CORE-1, CORE-2: box name 14px Inter Bold; type line and description
+// 11px Inter Regular on a 14px pitch; 10px padding; lines 2px wide,
+// arrowheads 10px, chevrons 6px, join dot radius 4px; title 18px bold
+// and subtitle 12px regular at the bottom left below the drawing, the
+// key below them. The values live in the scene items (`size_px`,
+// `Stroke::width_px`, `Outline`), never as pub constants. Person and
+// cylinder proportions are not in the SRS; they follow the prototype
+// golden SVGs (a step-5 choice that changes no signature).
+// CORE-1: one key entry per distinct box look (shape, fill, text colour)
+// or line look (colour, end: arrow or dot, never the tip's coordinates),
+// labelled with the most specific tag of the boxes drawn that way (the
+// distinct last effective tag of its boxes in box order, so "Person",
+// "Software System", "External", ...; several tags with the same look
+// share one entry, names joined by commas); every line entry reads
+// "Relationship".
 
 use crate::geom::{Dir, Point, Rect};
 use crate::label::{Fit, Labels, Weight};
@@ -102,9 +96,17 @@ use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, ViewPlan};
 /// and the PNG rasterizer load the bundled file of that family. Every
 /// `TextBlock` is measured with its width table (`label::text_advance`).
 /// Serves CORE-30, EXP-1, EXP-2.
-// TODO(srs): the font bytes (`FONT_BYTES`) have no owner and
-// assets/fonts does not exist yet; docs/deferred.md rows.
 pub const FONT_FAMILY: &str = "Inter";
+
+/// The bundled Inter Regular file (assets/fonts, version and sha256 in
+/// its README): the face the PNG rasterizer (EXP-2) and the editor
+/// canvas (EDIT-12) draw regular text with, and the face the CORE-30
+/// width table was derived from. Serves CORE-30, EXP-2, EDIT-12.
+pub const FONT_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+
+/// The bundled Inter Bold file, for `Weight::Bold` text (box names,
+/// title, boundary tag). Serves CORE-30, EXP-2, EDIT-12.
+pub const FONT_BOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-Bold.ttf");
 
 /// A view-local key: one drawn item of one scene. Valid for that scene
 /// only; identity across scenes is the model id (`Scene::model_id`).
@@ -427,8 +429,10 @@ pub struct LegendEntry {
 }
 
 /// The generated key (CORE-1): one entry per distinct box look (shape,
-/// fill, text colour, stroke) and per distinct line look (stroke and tip
-/// kind, arrow or dot; the tip's coordinates do not count) drawn in the view; an unstyled element still gets an entry, in the
+/// fill, text colour) and per distinct line look (colour and end, arrow
+/// or dot; the tip's coordinates do not count) drawn in the view, box
+/// entries named by the most specific tag of their boxes, line entries
+/// `Relationship`; an unstyled element still gets an entry, in the
 /// Structurizr default colours. Laid out clear of every box, line and
 /// label (CORE-14). Serves CORE-1, CORE-14.
 #[non_exhaustive]
@@ -683,8 +687,9 @@ mod tests {
 
     #[test]
     fn core_13_unroutable_line_drawn_and_listed() {
-        // TODO(srs) stub: straight fallback, `routed: false`, in
-        // `unroutable()`, no label.
+        // CORE-13: drawn straight from source box edge to destination
+        // box edge on the centre line, with an arrowhead, `routed:
+        // false`, in `unroutable()`, no label.
         todo!()
     }
 

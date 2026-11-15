@@ -69,13 +69,14 @@
 // the variant-to-code mapping is a `match` in step 5, which leaves room
 // for P2-22 `inspect` (exit code = violation count).
 //
-// TODO(deferred): `--png` needs the `png` feature of `c4rizer-core`
-// forwarded by a `png` feature of this crate (a feature-flag decision,
-// docs/deferred.md row "cli ... png feature"), and the bundled font bytes
-// that `export::png` takes (docs/deferred.md row "scene/export"
-// FONT_BYTES). Until then `--png` parses but `run` returns
-// `CliError::PngUnavailable` (exit 2 with a clear message, plan Review
-// Focus) and `cli_4_png_written` is `#[ignore = "deferred"]`.
+// `--png` needs this crate's `png` feature (`png = ["c4rizer-core/png"]`),
+// which turns on core's `export::png`; it renders with the bundled font
+// (`scene::FONT_REGULAR`, `scene::FONT_BOLD`). Built without the feature,
+// `--png` still parses and `run` returns `CliError::PngUnavailable` (exit
+// 2 with a clear message, plan Review Focus).
+// Every build passes the pipeline a stop flag that is never set: a CLI
+// run is never stopped, and gives the same result as an unstopped run
+// (CORE-25).
 
 mod report;
 
@@ -237,9 +238,8 @@ pub(crate) enum CliError {
     },
     /// The report could not be written to stdout (e.g. a closed pipe).
     Report(io::Error),
-    /// `--png` on a build without PNG support (no `png` feature, or no
-    /// bundled font): says to rebuild with the feature (plan Review
-    /// Focus).
+    /// `--png` on a build without the `png` feature: says to rebuild
+    /// with `--features png` (plan Review Focus).
     PngUnavailable,
     /// `export::png` refused a view (CLI-4, EXP-2).
     // DECISION: the `PngError` is kept as its `Display` text, so this type
@@ -281,7 +281,8 @@ where
 
 /// Runs `command`: reads the input (the whole file, or `stdin` read to
 /// the end for `Input::Stdin`; never written to), parses it
-/// (`model::parse`), builds every view (`pipeline::build_all`), prints the
+/// (`model::parse`), builds every view (`pipeline::build_all`, with a
+/// stop flag that is never set, so it never returns `Stopped`), prints the
 /// report to `stdout` (`report::view` per view in declaration order,
 /// `report::no_views` when there is none, `report::coverage` after all
 /// views) and, for `render`, creates the output directory and writes
@@ -366,9 +367,8 @@ mod tests {
 
     /// Review Focus: `--png` on a build without PNG support is
     /// `CliError::PngUnavailable` (exit 2) before any file is read or
-    /// written. Becomes `#[cfg(not(feature = "png"))]` in the same change
-    /// as docs/deferred.md row "cli png feature" (it cannot be gated now:
-    /// a cfg on a feature that does not exist trips `unexpected_cfgs`).
+    /// written. Runs on builds without the `png` feature only.
+    #[cfg(not(feature = "png"))]
     #[test]
     fn png_without_feature_exits_2() {
         todo!()

@@ -407,8 +407,10 @@ Model
   is resolved per property across the element's tags in tag order,
   later tags overriding, and a property no tag sets takes the default
   in the keyword table (shape: `Person` for a person, `Box` otherwise).
-  `TODO(srs)`: confirm the cascade order against
-  the Structurizr reference.
+  The tag order is `Element`, then the kind tag, then the declared tags
+  in the order written; each property takes the value of the last tag
+  in that order that sets it, and when the same tag has two style
+  blocks, the later block wins.
 - **DSL-16** Every span the parser records carries a source-file id
   (in phase 1 always the root file), so that `!include` (P2-5) needs no
   change to the span type.
@@ -486,7 +488,6 @@ Migration and fixtures
 
 #### Open holes
 
-- DSL-15 cascade order against the Structurizr reference.
 - Constructs of later phases are rejected per DSL-4 during phase 1;
   from phase 2 they are parsed (P2-1, P2-2).
 
@@ -507,13 +508,23 @@ Views and rendering
   and a list of nested dashed boundaries (phase 1 fills at most one:
   the scope's children plus 40px, with the scope's name tag at its
   bottom left). The canvas and the exporters draw only what the scene
-  holds.
+  holds. The name tag reads the scope's name followed by its type in
+  brackets (`[Software System]` on a container view, `[Container]` on
+  a component view), in bold. The title (18px Inter Bold) and subtitle
+  (12px Inter Regular) sit at the bottom left below the drawing, the
+  key below them. Each key entry is one distinct box look (shape,
+  fill, text colour) or line look (colour, end), labelled with the
+  most specific tag of the boxes drawn that way (several tags joined
+  by commas); line entries read `Relationship`.
 - **CORE-2** People draw as the person shape and `Cylinder` elements as
   cylinders; every box shows name, `[type: technology]` (type
   `External Software System` for a software system tagged `External`)
   and a wrapped description; a box with no `size` line is 200x180
   (person), 240x140 (software system, container) or 200x120
-  (component).
+  (component). The box name is 14px Inter Bold, the type line and
+  description 11px Inter Regular on a 14px pitch, with 10px padding;
+  lines are 2px wide, arrowheads 10px, chevrons 6px, and join dots
+  have a 4px radius.
 - **CORE-3** Every line takes the colour of the box it points to,
   unless a relationship style sets its colour (P2-12).
 - **CORE-4** With `technology off`, no technology appears on any line
@@ -572,7 +583,10 @@ Router (`SKILL.md` "Lines", `c4.py` `route`)
   building each `example/` view twice and comparing SVG bytes.
 - **CORE-13** When a line cannot be routed, routing does not stop: the
   router retries (other edge orders or rip-up); a line still unroutable
-  is reported by id (L1), never dropped silently.
+  is reported by id (L1), never dropped silently. An unroutable line is
+  drawn straight from its source box's edge to its destination box's
+  edge, on the line between their centres, with an arrowhead and no
+  label, outside the CORE-6..9 checks; L1 names it.
 - **CORE-32** Routing has an iteration cap and always returns a scene,
   with any line it could not route reported per CORE-13.
 
@@ -584,7 +598,9 @@ Labels
   arrowhead, and overlaps no box, no other label, no other line, the
   title, the key or the boundary name tag, except as CORE-15 allows; a line joining a trunk whose
   label has the same description and technology has no label of its
-  own.
+  own. Label text is 11px Inter Regular on a 13px line pitch, padded
+  5px left and right and 3px top and bottom; the 30px and 50px gaps are
+  measured along the line to the label's centre.
 - **CORE-15** A label that can only be placed over another line is
   drawn and reported as warning L23; a label with no clear spot is
   drawn at the middle of its line and reported as warning L24; both
@@ -594,7 +610,11 @@ Lint (exit-code rules from `SKILL.md` and `c4.py` `lint`)
 
 - **CORE-16** Lint reports, per view, each rule of the lint table
   below that is broken, with the ids involved, at the level the table
-  gives; errors fail the run (CLI-2), warnings do not.
+  gives; errors fail the run (CLI-2), warnings do not. Each finding's
+  text is the prototype `c4.py` `lint` message for that rule, naming
+  elements by quoted name; L4 ends with the CORE-26 split hint
+  `split the view (focus, hide); boxes involved: "<name>", ...`; in
+  L22, `<src>`, `<dst>` and `<scope>` are element names.
 - **CORE-17** Crossings above the view's `maxCrossings` (default 0)
   are an error (L4).
 - **CORE-18** A box whose centre or half-size is off the 10px grid, or
@@ -610,6 +630,8 @@ Lint (exit-code rules from `SKILL.md` and `c4.py` `lint`)
 - **CORE-21** For each container with at least one component view,
   every relationship with one of its components at either end is drawn
   on at least one of those views, otherwise an error names it (L22).
+  L22's `<scope>` is the source's container if the relationship fails
+  there, else the destination's.
 
 Lint table. "Box" and "line" mean what the view draws, after lifting.
 
@@ -632,7 +654,7 @@ Lint table. "Box" and "line" mean what the view draws, after lifting.
 | L15 | error | a C1 line shows a technology |
 | L16 | error | a C1 box is not a person or a software system |
 | L17 | warning | a C1 view has more than 8 boxes |
-| L18 | error | a C1 box name or line label contains, as a whole word and case-sensitive, one of `SMTP`, `HTTP`, `HTTPS`, `SQL`, `JSON`, `REST`, `gRPC`, `TCP`, `API`, `VAPID` |
+| L18 | error | a C1 box name or line label contains, as a whole word and case-sensitive, one of `SMTP`, `HTTP`, `HTTPS`, `SQL`, `JSON`, `REST`, `gRPC`, `TCP`, `API`, `VAPID`; a word is a maximal run of ASCII letters and digits |
 | L19 | error | a C2 view shows a component |
 | L20 | warning | a C2 line has a container at one end, no person at either end, and no technology |
 | L21 | error | a C3 view shows no component whose parent is the scope |
@@ -658,7 +680,8 @@ Placement
   (`focus`, `hide`), naming the boxes involved in the crossings.
 - **CORE-29** Adding an unplaced box to a view never changes the
   position of a box that was already drawn in the previous scene of
-  the same session.
+  the same session. A kept position wins over CORE-22's no-overlap
+  rule; lint reports the overlap (L6).
 
 Speed (checked by the release perf oracle, 5.2)
 
@@ -759,7 +782,10 @@ owner, 2026-11-15); the bundled font of CORE-30.
 - **EDIT-7** "Export view" and "Export all views" write SVG or PNG
   through a save dialog that defaults to the diagram file's folder and
   the name `<view key>.svg` or `<view key>.png`, PNG at twice the SVG
-  width by default.
+  width by default. "Export all views" asks for a folder, defaulting
+  to the diagram file's folder, and writes every declared view there
+  as `<view key>.svg` or `<view key>.png`, replacing files of the same
+  name.
 - **EDIT-8** All views of the file are listed; picking one shows it.
 - **EDIT-9** The canvas pans and zooms with the gestures of EDIT-28;
   zoom does not change the diagram, only the view of it.
@@ -794,14 +820,16 @@ Opening and starting
 C4 levels
 
 - **EDIT-15** A box is enterable when its element has at least one
-  child in the model or a view is scoped to it; a left click on an
+  child in the model (opens the default view when no view is scoped to
+  it), or a container view scoped to it (for a system) or a component
+  view scoped to it (for a container); a left click on an
   enterable box opens its view (container view of a system, component
   view of a container), and on any other box selects it; enterable
   boxes show a hover mark; when several views are scoped to it, the
   first declared opens and the view list (EDIT-8) shows the others;
   when none exists, a default view (`include *`, every box auto-placed)
   opens, and it is written to the file on the first write made in it
-  (move, resize, style), appended as the last view in `views` with key
+  (move, resize, style, or a title or subtitle edit), appended as the last view in `views` with key
   `<scope id>-<kind>` (`<kind>` is the view keyword: `container`,
   `component`, `systemContext`); `edit` writes it, as the first patch of that
   write. In a file with no `views` block (model only, valid Structurizr)
@@ -810,12 +838,15 @@ C4 levels
   the first write in one `edit` first creates the `views` block as the last block of the
   workspace body, indented per DSL-9; undoing that write removes the
   `views` block only when it holds nothing but what `edit` wrote.
-  Gestures per EDIT-28.
+  A default view has no title line; its drawn title is the scope's
+  name. Gestures per EDIT-28.
 - **EDIT-16** The breadcrumb is derived from the open view's scope in
   the model (workspace / system / container), not from click history;
   clicking a crumb opens the first declared view scoped to that
   element; Alt+Left or Backspace opens the parent crumb, and Backspace
-  is ignored while a text field has focus.
+  is ignored while a text field has focus. The workspace crumb, and
+  Alt+Left or Backspace on a system context view, open the first
+  declared system context view, else the first declared view.
 
 Editing
 
@@ -847,7 +878,8 @@ Editing
   or Space+drag pans; the wheel zooms at the cursor; Ctrl-click or
   right-click selects without entering; Shift-click toggles selection
   and never enters; a click on empty canvas or Escape deselects; Enter
-  or F2 edits (EDIT-5).
+  or F2 edits (EDIT-5); Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z
+  and Ctrl+Y redo (EDIT-19).
 
 Working beside a text editor
 
@@ -869,7 +901,10 @@ Working beside a text editor
   follow when routing finishes; no UI update waits on the worker
   (test: 100 drag events with a stalled worker); after release the
   full view is re-routed and the scene shown equals the scene the core
-  builds from the saved file alone.
+  builds from the saved file with the session's previous positions
+  (CORE-29). With EDIT-26, every box has an `at` line after the first
+  write, so from then on the editor and the CLI give the same scene
+  from the file alone.
 - **EDIT-27** If the diagram file disappears, the last diagram stays
   read-only until it reappears; a failed write reverts the canvas to
   the file's state and shows the I/O error; if the open view no longer
@@ -882,7 +917,9 @@ Working beside a text editor
 
 - **EXP-1** Exported SVG has no script and no external reference
   (tested by scanning the output) and names the bundled font first
-  (CORE-30).
+  (CORE-30). The SVG does not embed the font: it names it in
+  `font-family` with a `sans-serif` fallback and carries no
+  `@font-face`.
 - **EXP-2** PNG export of a view is its SVG rasterized at the requested
   width with the bundled font only (no system fonts).
 
@@ -985,6 +1022,9 @@ cli-breadth (ROADMAP row `cli-breadth`, phase 2)
   count), `list` (lists elements), `version` and `help`, with the
   meaning of the Structurizr commands of the same name.
   `TODO(srs)`: argument names and output format.
+- **P2-25** SVG export (CLI `render` and the editor's export) offers an
+  option to embed the font or outline the text, instead of naming it
+  (EXP-1). Not built in phase 1.
 
 editor-breadth (ROADMAP row `editor-breadth`, phase 2)
 
@@ -1098,8 +1138,9 @@ in phase 2, `tests/data/structurizr/` (P2-14).
 - **Port**: the point on a box edge where one line starts or ends.
 - **Lifting**: drawing a relationship between two hidden elements as a
   line between their visible ancestors.
-- **Enterable**: a box whose element has a child in the model or a
-  view scoped to it (EDIT-15).
+- **Enterable**: a box whose element has a child in the model, or a
+  container view (system) or component view (container) scoped to it
+  (EDIT-15).
 - **View-local key**: the id of one drawn item in one view; maps to a
   model id.
 - **Golden test**: rendering `example/` and comparing with the

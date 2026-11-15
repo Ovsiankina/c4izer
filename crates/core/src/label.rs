@@ -29,14 +29,13 @@
 // gives a string's advance in thousandths of an em from the bundled
 // Inter width table; `scene` sizes and wraps box texts, the key and the
 // title with the same function, so label and scene cannot disagree.
-// HLD §4 gives CORE-30 to `scene`: row in docs/deferred.md asks the HLD
-// to say the table lives here and scene's contract reuses it.
+// HLD §4 says the CORE-30 width table lives here and scene uses it.
 //
 // DECISION: the width table is font-size agnostic (thousandths of an em,
 // integers), so any font size a caller uses gives the same exact,
 // deterministic arithmetic (CORE-25); the caller multiplies by its size.
-// DECISION: `Weight` covers regular and bold (box names are bold); the
-// HLD's single bundled Inter file is the variable font, which has both.
+// DECISION: `Weight` covers regular and bold (box names are bold), the
+// two bundled static faces (`scene::FONT_REGULAR`, `scene::FONT_BOLD`).
 // DECISION: title and key are not label obstacles here: their place is
 // `scene`'s, which lays them outside the bounds of every box, line and
 // label (`Label::bounds`), so CORE-14's "no title, no key" holds there.
@@ -44,15 +43,16 @@
 // in docs/deferred.md; scene-03 at step 4). The boundary name tag is an
 // obstacle, and its rectangle is `boundary_tag`, which `scene` draws at,
 // so both agree.
-// DECISION: an edge with no line (`Routes::lines[e] == None`, CORE-13,
-// see route.rs TODO(srs)) has no label; its L1 finding names it.
+// DECISION: an edge with no line (`Routes::lines[e] == None`) has no
+// label: CORE-13 draws an unroutable line with no label, and its L1
+// finding names it.
 // DECISION: an edge with no description and no shown technology has no
 // label (lint L12 reports it from the plan, not from `Labels`).
 // DECISION: a label with no clear spot is drawn centred on the grid
 // point of its line nearest half the line's length (CORE-15 "middle of
-// its line"); ties go to the point nearer the start. The plan's Review
-// Focus ("never overlapping the boxes") is read as "never chosen as a
-// clear spot"; row in docs/deferred.md for the owner to confirm.
+// its line"); ties go to the point nearer the start. CORE-15 wins over
+// the plan's Review Focus, which now reads "reported, never placed over
+// a box as a clear spot": a spot over a box is never chosen as clear.
 // DECISION: a joined line shares its trunk's label when both have the
 // same `description` and the same `technology` as written, not the shown
 // technology: CORE-14 says "description and technology", so under
@@ -65,16 +65,13 @@
 // model, HLD): row in docs/deferred.md asks scene's label item to carry
 // `Fit` and the edge's winning relationship id.
 //
-// TODO(srs): CORE-14 and CORE-30 give no label font size, line height or
-// padding, and do not say what the 30px/50px gaps are measured to.
-// Stubbed against the prototype (`c4.py` `place_labels`, the golden-1
-// reference): 11px text, 13px line pitch, 5px side and 3px top/bottom
-// padding; the gaps measured along the line from its start port, and
-// back from its last vertex, to the label centre. Row in docs/deferred.md.
-// TODO(srs): CORE-1 says "the scope's name tag" but not its text. Stubbed
-// against Structurizr: the boundary name, then the scope's type in
+// CORE-14: label text is 11px Inter Regular on a 13px line pitch,
+// padded 5px left and right and 3px top and bottom; the 30px and 50px
+// gaps are measured along the line, from its start port and back from
+// its last vertex, to the label's centre.
+// CORE-1: the boundary name tag reads the scope's name, then its type in
 // brackets (`[Software System]` on a container view, `[Container]` on a
-// component view), as `boundary_tag` sizes it. Row in docs/deferred.md.
+// component view), in bold, as `boundary_tag` sizes it.
 
 use crate::geom::{Point, Rect};
 use crate::model::ViewOptions;
@@ -109,34 +106,30 @@ pub fn text_advance(text: &str, weight: Weight) -> i32 {
     todo!()
 }
 
-/// Label text size in px (regular weight). Serves CORE-14, CORE-30.
-// TODO(srs): value from the prototype, not the SRS (header, deferred.md).
+/// Label text size in px (Inter Regular, CORE-14). Serves CORE-14,
+/// CORE-30.
 pub const LABEL_FONT_PX: i32 = 11;
 
 /// Distance in px between the baselines of two label lines. Serves
-/// CORE-14, CORE-30.
-// TODO(srs): value from the prototype, not the SRS (header, deferred.md).
+/// CORE-14 (13px pitch), CORE-30.
 pub const LABEL_LINE_PX: i32 = 13;
 
 /// Padding in px between a label's text and its rectangle, left and
-/// right. Serves CORE-14, CORE-30.
-// TODO(srs): value from the prototype, not the SRS (header, deferred.md).
+/// right (CORE-14: 5px). Serves CORE-14, CORE-30.
 pub const LABEL_PAD_X_PX: i32 = 5;
 
 /// Padding in px between a label's text and its rectangle, top and
-/// bottom. Serves CORE-14, CORE-30.
-// TODO(srs): value from the prototype, not the SRS (header, deferred.md).
+/// bottom (CORE-14: 3px). Serves CORE-14, CORE-30.
 pub const LABEL_PAD_Y_PX: i32 = 3;
 
 /// Least distance in px along a line from its start port to its label's
-/// centre (CORE-14).
-// TODO(srs): "measured to the centre" is the prototype's reading.
+/// centre (CORE-14: measured along the line to the label's centre).
 pub const START_GAP_PX: i32 = 30;
 
 /// Least distance in px along a line back from its arrowhead to its
 /// label's centre (CORE-14). A joined line ends in a dot, not an
-/// arrowhead: the gap does not apply at its end.
-// TODO(srs): "measured to the centre" is the prototype's reading.
+/// arrowhead: the gap does not apply at its end. Measured along the line
+/// to the label's centre (CORE-14).
 pub const ARROW_GAP_PX: i32 = 50;
 
 /// The text lines of `edge`'s label: its description wrapped at
@@ -376,9 +369,8 @@ mod tests {
     fn core_15_no_room_reported() {
         // Very short line between adjacent boxes: reported as L24 and
         // drawn at the middle of its line, as CORE-15 says, even when
-        // that covers a box (Review Focus "never overlapping the boxes"
-        // is read as: never chosen as a clear spot; owner to confirm, row
-        // in docs/deferred.md).
+        // that covers a box: CORE-15 wins; such a spot is never chosen
+        // as a clear spot (plan Review Focus).
         todo!()
     }
 

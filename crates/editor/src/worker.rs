@@ -20,11 +20,25 @@
 // (EDIT-25: no UI update waits).
 // DECISION: a waker closure (`Wake`) is called after each reply so the
 // eframe shell can `request_repaint`; the worker never names an egui type.
+//
+// Cooperative stop (EDIT-25, owner's ruling): each job the thread runs
+// gets a fresh stop flag (`Arc<AtomicBool>`), published with the job in
+// `Worker::running`. `Worker::send` sets that flag when a newer shown
+// `Build` or a `Drag` arrives for a running job that `latest` would have
+// dropped (`stops`): a running `Build` (shown or background) on a newer
+// shown `Build`; a running `Drag` on a newer shown `Build` or `Drag`; a
+// running background `Build` on a `Drag`. The pipeline then returns
+// `Stopped` within one rip-up round or edge order, `serve` returns `None`
+// (no reply: the request that stopped it brings its own), and the thread
+// takes the newer request without waiting for the stale build to finish.
+// An `Export` is never stopped: it is never dropped by `latest`, so its
+// flag is never set.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
@@ -84,11 +98,9 @@ impl ViewRef {
 pub enum ExportFormat {
     /// `export::svg`.
     Svg,
-    /// `export::png` at `Job::Export::png_width` (EXP-2). Blocked until
-    /// the editor's `c4rizer-core` dependency enables feature `png` and
-    /// the font bytes are a pub item (docs/deferred.md row "editor: EDIT-7
-    /// PNG and canvas font"); `state::tests::edit_7_export_png` is
-    /// ignored until then.
+    /// `export::png` at `Job::Export::png_width` (EXP-2), with the
+    /// bundled font (`scene::FONT_REGULAR`, `scene::FONT_BOLD`); the
+    /// editor's `c4rizer-core` dependency enables feature `png`.
     Png,
 }
 
@@ -142,7 +154,8 @@ pub enum Job {
         /// Dragged boxes at their snapped centres, grid units.
         moved: BTreeMap<BoxId, Point>,
     },
-    /// Write SVG or PNG files (EDIT-7); never dropped as stale.
+    /// Write SVG or PNG files (EDIT-7); never dropped as stale and never
+    /// stopped.
     Export {
         /// The parse to build from (`Parsed::model`).
         parsed: Arc<Parsed>,
@@ -211,6 +224,18 @@ pub enum Reply {
 /// shown without waiting for input (EDIT-25).
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// The job the worker thread is running and its stop flag (EDIT-25).
+#[derive(Debug, Clone)]
+pub struct Running {
+    /// The running job's generation.
+    pub generation: Generation,
+    /// The running job (a cheap clone: its parse and builds are `Arc`s).
+    pub job: Job,
+    /// Its stop flag, passed to the pipeline; set by `Worker::send` when
+    /// `stops` says so.
+    pub stop: Arc<AtomicBool>,
+}
+
 /// The worker thread and its two channels. Dropping it closes the
 /// request channel and joins the thread. Serves EDIT-25.
 pub struct Worker {
@@ -220,19 +245,28 @@ pub struct Worker {
     pub replies: Receiver<Reply>,
     /// The thread, joined on drop.
     pub thread: Option<JoinHandle<()>>,
+    /// The job the thread is running, `None` while it idles; shared
+    /// between the thread (which sets it around each `serve`) and `send`
+    /// (which sets its stop flag, EDIT-25).
+    pub running: Arc<Mutex<Option<Running>>>,
 }
 
 impl Worker {
     /// Starts the thread: it drains every queued request, keeps
-    /// `latest` of them, runs them with `serve` in order, sends each
-    /// reply and calls `wake`. Serves EDIT-25.
+    /// `latest` of them, runs them with `serve` in order, each with a
+    /// fresh stop flag published in `running`, sends each reply (none for
+    /// a stopped job) and calls `wake`. Serves EDIT-25.
     #[must_use]
     pub fn spawn(wake: Wake) -> Worker {
         todo!()
     }
 
-    /// Queues `request`; never blocks (EDIT-25). A closed thread is
-    /// ignored: the status bar learns it from the missing replies.
+    /// Queues `request`; never blocks (EDIT-25). When `request` is a
+    /// shown `Build` or a `Drag` and `stops(running job, request)` holds,
+    /// it first sets the running job's stop flag, so the thread serves
+    /// `request` without waiting for the stale job to finish; an `Export`
+    /// is never stopped. A closed thread is ignored: the status bar
+    /// learns it from the missing replies.
     pub fn send(&self, request: Request) {
         todo!()
     }
@@ -265,12 +299,27 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
     todo!()
 }
 
-/// Runs one request synchronously and returns its reply: the thread's
-/// body, and how tests drive the worker without a thread. Deterministic
-/// for `Build` and `Drag` (CORE-25). Serves EDIT-1, EDIT-2, EDIT-7,
-/// EDIT-14, EDIT-25.
+/// True when a newly arrived `incoming` job must stop the `running` one
+/// (EDIT-25): `incoming` is a shown `Build` or a `Drag`, and
+/// `latest(vec![running, incoming])` would drop `running`. So a running
+/// `Build` stops on a shown `Build`; a running `Drag` on a shown `Build`
+/// or a `Drag`; a running background `Build` on a `Drag`. A running
+/// shown `Build` keeps going on a `Drag`, and a running `Export` is never
+/// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
 #[must_use]
-pub fn serve(request: Request) -> Reply {
+pub fn stops(running: &Job, incoming: &Job) -> bool {
+    todo!()
+}
+
+/// Runs one request synchronously and returns its reply: the thread's
+/// body, and how tests drive the worker without a thread. `stop` goes to
+/// the pipeline's build functions; `None` when they returned `Stopped`
+/// (no reply is sent). An `Export` ignores `stop` and always replies. A
+/// run whose flag is never set gives the same reply as before the flag
+/// existed; deterministic for `Build` and `Drag` (CORE-25). Serves
+/// EDIT-1, EDIT-2, EDIT-7, EDIT-14, EDIT-25.
+#[must_use]
+pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
     todo!()
 }
 
@@ -309,6 +358,23 @@ mod tests {
     /// follows it.
     #[test]
     fn edit_7_export_never_dropped() {
+        todo!()
+    }
+
+    /// EDIT-25: with a background build of a heavy view running on the
+    /// thread, a drag request sent after it is served (its `Dragged`
+    /// reply arrives) without waiting for that build to finish: `send`
+    /// sets the build's stop flag, the build gives no reply.
+    #[test]
+    fn edit_25_drag_served_without_waiting_for_background_build() {
+        todo!()
+    }
+
+    /// EDIT-7, EDIT-25: an `Export` is never stopped: `stops` is false for
+    /// a running export whatever arrives, and `serve` of an export with a
+    /// set flag still writes its files and replies `Exported`.
+    #[test]
+    fn edit_7_export_never_stopped() {
         todo!()
     }
 

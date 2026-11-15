@@ -32,7 +32,7 @@
 // DECISION: a view with no title prints `== <key>: ` (the prototype
 // prints `spec.get("title", "")`); lint reports it as L8.
 // DECISION: `<text>` is the finding's `Display` (`Finding::message`) as
-// is; lint owns the wording (lint.rs header `TODO(srs)`), the report only
+// is; lint owns the wording (CORE-16, lint.rs header), the report only
 // adds the prefix. Lines end in `\n` on every platform (CORE-25 spirit:
 // same bytes everywhere).
 // DECISION: `wrote <path>` prints the path as `main` built it
@@ -123,7 +123,7 @@ mod tests {
     /// writes exactly the one line
     /// `ERROR: <src> -> <dst> is in the model but on no component view of "<scope>"\n`,
     /// full text compared. `<src>`, `<dst>`, `<scope>` are filled as lint
-    /// renders them (names or ids: docs/deferred.md lint row on L22).
+    /// renders them: element names (CORE-16, CORE-21).
     #[test]
     fn cli_1_coverage_line_exact_text() {
         todo!()

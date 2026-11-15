@@ -9,11 +9,13 @@
 //
 //   model::parse(text)                  -> Parsed | ModelError
 //                                          (not wrapped here)
-//   build_view(model, key, keep)        -> ViewBuild | UnknownView
-//   build_spec(model, spec, keep)       -> ViewBuild          (any spec,
+//   build_view(model, key, keep, stop)  -> ViewBuild | BuildError
+//                                          (UnknownView or Stopped)
+//   build_spec(model, spec, keep, stop) -> ViewBuild | Stopped (any spec,
 //                                          EDIT-15 default views too)
-//   build_all(model)                    -> AllViews           (CLI)
-//   rebuild_after_move(model, prev, moved, config) -> ViewBuild
+//   build_all(model, stop)              -> AllViews | Stopped (CLI)
+//   rebuild_after_move(model, prev, moved, config, stop)
+//                                       -> ViewBuild | Stopped
 //                                          (drag preview, EDIT-2/25)
 //   keep_across_reparse(old, plan, centres, new) -> Keep
 //                                          (CORE-29 after a reload)
@@ -34,7 +36,16 @@
 // Focus, test `parse_error_leaks_no_model`).
 // DECISION: an unknown view key is its own error type (`UnknownView`),
 // naming the key and listing the valid keys in declaration order (plan
-// Review Focus); `build_spec` and `build_all` cannot fail.
+// Review Focus); `build_spec` and `build_all` fail only by being stopped.
+// Cooperative stop (EDIT-25, owner's ruling): every build function takes
+// the stop flag `route::route` / `route::reroute` read and passes it
+// through; a stopped route makes the build return `Stopped` instead of a
+// build, never a partial one. The editor's worker sets the flag; the CLI
+// passes one never set, and a build that is not stopped gives the same
+// result as before the flag existed (CORE-25).
+// DECISION: `build_view` returns `BuildError` (unknown key or stopped),
+// so the editor tells "no such view" from "superseded" in one match; the
+// others return `route::Stopped` itself.
 // DECISION: a file with no views gives an empty `AllViews` (the CLI says
 // "no views", plan Review Focus), not an error.
 // DECISION: full builds (`build_view`, `build_spec`, `build_all`) always
@@ -59,25 +70,23 @@
 // `#[ignore = "deferred"]`, so the oracle does not run it until the
 // budget exists (docs/deferred.md row).
 //
-// TODO(srs): EDIT-25 ("after release ... equals the scene the core builds
-// from the saved file alone") and CORE-29 (a box drawn in the previous
-// scene keeps its position) disagree for auto-placed boxes: from the
-// file alone they are placed afresh, with the session's `Keep` they stay
-// where they were. Stubbed against CORE-29 (Structurizr never moves a box
-// the user has seen): the release build equals `build_view` of the saved
-// file with the same `Keep::previous` and an empty `Keep::moved`; it
-// equals the build from the file alone whenever every box has an `at`
-// line. Row in docs/deferred.md.
+// EDIT-25: after release the scene shown equals the scene built from the
+// saved file with the session's previous positions (CORE-29): `build_view`
+// of the saved file with the same `Keep::previous` and an empty
+// `Keep::moved`. With EDIT-26 every box has an `at` line after the first
+// write, so from then on that equals the build from the file alone, and
+// the editor and the CLI give the same scene.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 
 use crate::geom::Point;
 use crate::label::Labels;
 use crate::lint::{Finding, Report};
 use crate::model::{ElementId, Model, ViewKind, ViewSpec};
 use crate::place::Keep;
-use crate::route::{RouteConfig, Routes};
+use crate::route::{RouteConfig, Routes, Stopped};
 use crate::scene::Scene;
 use crate::view::{BoxId, ViewPlan};
 
@@ -169,31 +178,82 @@ impl fmt::Display for UnknownView {
 
 impl std::error::Error for UnknownView {}
 
+/// Why `build_view` gave no build: the key is not in the file, or the
+/// run was stopped through its stop flag (EDIT-25). `#[non_exhaustive]`
+/// for later causes. Serves CORE-28, EDIT-25.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BuildError {
+    /// No view of the file has that key.
+    UnknownView(UnknownView),
+    /// The stop flag was set; no build was produced.
+    Stopped(Stopped),
+}
+
+impl From<UnknownView> for BuildError {
+    /// Wraps the unknown key. Serves CORE-28.
+    fn from(e: UnknownView) -> BuildError {
+        todo!()
+    }
+}
+
+impl From<Stopped> for BuildError {
+    /// Wraps the stop. Serves EDIT-25.
+    fn from(e: Stopped) -> BuildError {
+        todo!()
+    }
+}
+
+impl fmt::Display for BuildError {
+    /// The `UnknownView` or `Stopped` text. Serves CORE-28, SRS 5.1.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+impl std::error::Error for BuildError {}
+
 /// Builds the view keyed `key` of `model` and only that view: plan,
 /// place with `keep`, route with `RouteConfig::DEFAULT`, labels, scene,
 /// lint; no other view is planned or routed (CORE-28). The editor shows
 /// its first view from this before routing the rest in the background
 /// (EDIT-14). Deterministic: same model, key and keep give an equal
-/// build (CORE-25). Serves CORE-28, CORE-27, CORE-24, CORE-29, EDIT-14.
+/// build (CORE-25). `stop` goes to `route::route`; a build that is not
+/// stopped is the same as without the flag. Serves CORE-28, CORE-27,
+/// CORE-24, CORE-29, EDIT-14, EDIT-25.
 ///
 /// # Errors
 ///
-/// `UnknownView` when no view of `model.views` has that key, listing the
-/// valid ones.
-pub fn build_view(model: &Model, key: &str, keep: &Keep) -> Result<ViewBuild, UnknownView> {
+/// `BuildError::UnknownView` when no view of `model.views` has that key,
+/// listing the valid ones; `BuildError::Stopped` when `stop` was set
+/// while routing (EDIT-25).
+pub fn build_view(
+    model: &Model,
+    key: &str,
+    keep: &Keep,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, BuildError> {
     todo!()
 }
 
 /// Builds `view` of `model` as `build_view` does, for a spec that need
 /// not be in `model.views`: the EDIT-15 default views of `default_view`.
-/// Serves CORE-28, EDIT-15.
+/// Serves CORE-28, EDIT-15, EDIT-25.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` was set while routing (EDIT-25).
 ///
 /// # Panics
 ///
 /// When `view` does not belong to `model` (its element ids index out of
 /// range).
-#[must_use]
-pub fn build_spec(model: &Model, view: &ViewSpec, keep: &Keep) -> ViewBuild {
+pub fn build_spec(
+    model: &Model,
+    view: &ViewSpec,
+    keep: &Keep,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, Stopped> {
     todo!()
 }
 
@@ -201,10 +261,16 @@ pub fn build_spec(model: &Model, view: &ViewSpec, keep: &Keep) -> ViewBuild {
 /// `Keep::default()` (the CLI's case: positions from the file only), then
 /// runs L22 once over the scenes of every component view (CORE-21).
 /// A file with no views gives empty `views` and `coverage`.
-/// Deterministic (CORE-25). Serves CORE-11, CORE-21, CORE-25, CLI-1,
-/// CLI-3, CLI-5.
-#[must_use]
-pub fn build_all(model: &Model) -> AllViews {
+/// Deterministic (CORE-25). `stop` goes to every view's route; the CLI
+/// passes a flag never set, so its run is never stopped and gives the
+/// same result as before the flag existed. Serves CORE-11, CORE-21,
+/// CORE-25, CLI-1, CLI-3, CLI-5.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` was set while routing any view; no partial
+/// `AllViews` is returned.
+pub fn build_all(model: &Model, stop: &AtomicBool) -> Result<AllViews, Stopped> {
     todo!()
 }
 
@@ -216,19 +282,24 @@ pub fn build_all(model: &Model) -> AllViews {
 /// or one whose centres equal `previous`'s, gives a build equal to
 /// `previous`. A `BoxId` out of range is ignored. After release the
 /// editor runs a full `build_view` on the saved file instead (EDIT-25).
-/// Deterministic (CORE-25). Serves EDIT-2, EDIT-20, EDIT-25, CORE-24.
+/// Deterministic (CORE-25). `stop` goes to `route::reroute`. Serves
+/// EDIT-2, EDIT-20, EDIT-25, CORE-24.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` was set while re-routing (EDIT-25).
 ///
 /// # Panics
 ///
 /// When `previous` was not built from `model` (its plan's element ids
 /// index out of range), or `config.orders == 0`.
-#[must_use]
 pub fn rebuild_after_move(
     model: &Model,
     previous: &ViewBuild,
     moved: &BTreeMap<BoxId, Point>,
     config: &RouteConfig,
-) -> ViewBuild {
+    stop: &AtomicBool,
+) -> Result<ViewBuild, Stopped> {
     todo!()
 }
 
@@ -281,10 +352,8 @@ pub fn keep_across_reparse(
 ///   kind: the default view cannot be opened, because `edit`'s
 ///   `AddDefaultView` would refuse its first write.
 ///
-/// Serves EDIT-15.
-// TODO(srs): EDIT-15 does not say what a default view's drawn title is
-// (L8 needs one). Stubbed against Structurizr's generated view
-// description: the scope's name (docs/deferred.md row).
+/// EDIT-15: a default view has no title line; its drawn title is the
+/// scope's name. Serves EDIT-15.
 #[must_use]
 pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<ViewSpec> {
     todo!()
@@ -393,9 +462,9 @@ mod tests {
         todo!()
     }
 
-    /// EDIT-25 after release (see TODO(srs) in the header): the full
-    /// build of the saved file with the session's `Keep` equals the build
-    /// from the file alone when every box has an `at` line.
+    /// EDIT-25 after release: the full build of the saved file with the
+    /// session's `Keep` equals the build from the file alone when every
+    /// box has an `at` line (EDIT-26).
     #[test]
     fn edit_25_release_build_equals_build_from_saved_file() {
         todo!()
@@ -433,6 +502,15 @@ mod tests {
     /// EDIT-15: `None` for a scope `ElementId` out of range.
     #[test]
     fn edit_15_default_view_none_for_out_of_range_scope() {
+        todo!()
+    }
+
+    /// EDIT-25: a set stop flag makes `build_view` (`BuildError::Stopped`),
+    /// `build_spec`, `build_all` and `rebuild_after_move` (`Stopped`)
+    /// yield no build; a flag never set gives the same build as an
+    /// unstopped run (CORE-25).
+    #[test]
+    fn edit_25_stopped_build_yields_no_build() {
         todo!()
     }
 

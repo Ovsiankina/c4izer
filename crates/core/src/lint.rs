@@ -54,22 +54,17 @@
 // the order of the first item involved (box, then edge order); same
 // scene and model give an equal report (CORE-25).
 //
-// TODO(srs): the SRS fixes the message text of L22 only (CLI-1:
-// `<src> -> <dst> is in the model but on no component view of "<scope>"`).
-// The text of every other rule, and of the CORE-26 split hint inside the
-// L4 message, is open. Stubbed against the prototype's `lint` in `c4.py`
-// as the plan asks: one sentence naming the ids (element names, quoted)
-// and, for L4, `<c> crossings (budget <b>): split the view (focus, hide);
-// boxes involved: "<name>", ...`. `<src>`, `<dst>` and `<scope>` of L22 are
-// element names (Structurizr shows names, keys are optional). L22's one
-// `<scope>` for a relationship that fails two containers is stubbed as
-// in `coverage`. Row in docs/deferred.md.
-// TODO(srs): L18 says "as a whole word" without defining a word boundary,
-// and the plan's Review Focus says case-insensitive where L18 says
-// case-sensitive. Stubbed against L18 (the SRS wins over the plan):
-// case-sensitive, a word is a maximal run of ASCII letters and digits, so
-// `HTTP/2` and `gRPC-web` match and `HTTPServer` does not. Row in
-// docs/deferred.md.
+// CORE-16: each finding's text is the prototype `c4.py` `lint` message
+// for that rule (~/Projects/c4-design/scripts/c4.py), naming elements by
+// quoted name. L4 ends with the CORE-26 split hint: `<c> crossings
+// (budget <b>): split the view (focus, hide); boxes involved: "<name>",
+// ...`. L22 reads as CLI-1 (`<src> -> <dst> is in the model but on no
+// component view of "<scope>"`), with `<src>`, `<dst>` and `<scope>`
+// element names; CORE-21: `<scope>` is the source's container if the
+// relationship fails there, else the destination's.
+// L18: a word is a maximal run of ASCII letters and digits, and matching
+// is case-sensitive, so `HTTP/2` and `gRPC-web` match and `HTTPServer`
+// and `https` do not.
 
 use std::fmt;
 
@@ -345,10 +340,7 @@ pub fn lint(model: &Model, scene: &Scene) -> Report {
 /// container (when the source is a component of a checked container) if
 /// the relationship fails there, else the destination's.
 /// A relationship that fails both containers is still one finding, named
-/// with the source's container.
-// TODO(srs): CORE-21 / CLI-1 do not say which container is `<scope>` when
-// a relationship joins components of two checked containers and fails
-// one or both. Stubbed as above; row 43 in docs/deferred.md.
+/// with the source's container (CORE-21).
 ///
 /// # Panics
 ///
@@ -474,8 +466,8 @@ mod tests {
 
     #[test]
     fn core_19_protocol_word_whole_word_case_sensitive() {
-        // TODO(srs) stub: `HTTPS` and `HTTP/2` match; `https`,
-        // `HTTPServer` and "chattiness" do not.
+        // L18: `HTTPS` and `HTTP/2` match; `https`, `HTTPServer` and
+        // "chattiness" do not.
         todo!()
     }
 
@@ -521,7 +513,7 @@ mod tests {
         // stands for. A relationship between components of two checked
         // containers that neither covers is one L22, `<scope>` the
         // source's container; covered by the source's only, `<scope>` the
-        // destination's (TODO(srs) stub). A container with a component
+        // destination's (CORE-21). A container with a component
         // view missing from `scenes` is skipped.
         todo!()
     }

@@ -8,6 +8,10 @@ license.workspace = true
 name = "c4rizer"
 path = "src/main.rs"
 
+[features]
+# CLI-4: `--png` needs core's PNG export; without it `--png` exits 2.
+png = ["c4rizer-core/png"]
+
 [dependencies]
 c4rizer-core = { path = "../core" }
 
