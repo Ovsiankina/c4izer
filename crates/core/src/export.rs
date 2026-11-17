@@ -69,14 +69,16 @@ use crate::scene::{FONT_BOLD, FONT_REGULAR};
 ///
 /// One `<svg>` whose `viewBox`, `width` and `height` are `scene.bounds`
 /// in px, `scene.background` filled over `bounds`, then every item in the
-/// scene's paint order (boundaries, lines with chevrons and tip, boxes,
+/// scene's paint order (an image view's picture or placeholder,
+/// boundaries, lines with chevrons and tip, boxes,
 /// labels, title, subtitle, key), each in its own `<g>`. Texts are drawn
 /// line by line exactly as `TextBlock::lines` holds them, never
 /// re-wrapped, with `font-family` naming `scene::FONT_FAMILY` first and a
 /// `sans-serif` fallback (CORE-30), bold for `Weight::Bold`. No external
 /// reference (EXP-1): no `<script>`, no event attribute, no `xlink:`
-/// attribute and no `href` except an icon's `<image href="data:...">`
-/// (P2-409, a `data:` URI fetches nothing; so no `<use>` either), no
+/// attribute and no `href` except an icon's or an image view's
+/// `<image href="data:...">` (P2-409, P2-340; a `data:` URI fetches
+/// nothing, so no `<use>` either), no
 /// `<foreignObject>`, no `url(...)`, no `@import` or `@font-face`; the
 /// only URI in the document is the `xmlns` namespace
 /// `http://www.w3.org/2000/svg`, which nothing fetches. Text and
@@ -101,6 +103,25 @@ pub fn svg(scene: &Scene) -> String {
     w.raw(" xml:space=\"preserve\">\n");
     w.rect(b, 0, Some(scene.background), None);
     w.raw("\n");
+    if let Some(image) = &scene.image {
+        // P2-320, P2-340: the file inside a `data:` URI; P2-321: a dashed
+        // placeholder naming the source.
+        w.open("image");
+        match (&image.asset_drawn(), crate::scene::placeholder_text(image)) {
+            (Some(asset), _) => w.picture(image.rect, asset),
+            (None, Some(text)) => {
+                let stroke = Stroke {
+                    colour: text.colour,
+                    width_px: 1,
+                    dash_px: Some([8, 6]),
+                };
+                w.rect(image.rect, 0, None, Some(&stroke));
+                w.text(&text);
+            }
+            (None, None) => {}
+        }
+        w.close();
+    }
     for boundary in &scene.boundaries {
         w.open_with("boundary", boundary.opacity);
         w.rect(boundary.rect, 0, boundary.fill, Some(&boundary.stroke));
@@ -454,18 +475,24 @@ impl Writer {
     // DECISION: `preserveAspectRatio` is left at its default (centre,
     // meet), so a non-square image keeps its shape inside the square.
     fn image(&mut self, icon: &SceneIcon) {
-        let mime = match icon.asset.mime {
+        self.picture(icon.rect, &icon.asset);
+    }
+
+    /// `asset` as `<image href="data:<mime>;base64,...">` over `rect`: an
+    /// icon (P2-409) or an image view's picture (P2-320, P2-340).
+    fn picture(&mut self, rect: Rect, asset: &crate::model::Asset) {
+        let mime = match asset.mime {
             Mime::Png => "image/png",
             Mime::Jpeg => "image/jpeg",
             _ => "image/svg+xml",
         };
         self.raw("<image");
-        self.attr_num("x", icon.rect.min.x);
-        self.attr_num("y", icon.rect.min.y);
-        self.attr_num("width", icon.rect.width());
-        self.attr_num("height", icon.rect.height());
+        self.attr_num("x", rect.min.x);
+        self.attr_num("y", rect.min.y);
+        self.attr_num("width", rect.width());
+        self.attr_num("height", rect.height());
         let _ = write!(self.out, " href=\"data:{mime};base64,");
-        base64_into(&mut self.out, &icon.asset.bytes);
+        base64_into(&mut self.out, &asset.bytes);
         self.raw("\"/>");
     }
 

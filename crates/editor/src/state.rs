@@ -1070,9 +1070,18 @@ impl State {
         let Some(model) = self.model() else {
             return Vec::new();
         };
+        // P2-314: a filtered view's base is left out of the list, unless
+        // it is on screen (opened by EDIT-15 or EDIT-16).
+        // TODO(srs): P2-314, EDIT-15/16 opening a base view. DECISION:
+        // reading taken (B landscape-filtered 5): they may open it, and it
+        // shows in the list until another view is opened.
+        let hidden = model.filtered_bases();
         let mut out: Vec<ViewEntry> = model
             .views
             .iter()
+            .filter(|v| {
+                !hidden.contains(&v.key.as_str()) || self.view.as_ref().is_some_and(|s| s.key() == v.key)
+            })
             .map(|v| {
                 let view = ViewRef::Declared(v.key.clone());
                 ViewEntry {
@@ -1427,6 +1436,7 @@ impl State {
         let model = &parsed.model;
         match action {
             Action::Move { view, boxes, layout } => {
+                let view = &layout_view(model, view);
                 let own: Vec<Edit> = boxes
                     .iter()
                     .map(|(element, &centre)| Edit::Move {
@@ -1443,6 +1453,7 @@ impl State {
                 size,
                 layout,
             } => {
+                let view = &layout_view(model, view);
                 let own = vec![Edit::Resize {
                     view: view.key(),
                     element: element.clone(),
@@ -1642,6 +1653,9 @@ pub fn enterable(model: &Model, element: ElementId) -> bool {
     let Some(e) = model.elements.get(element.0 as usize) else {
         return false;
     };
+    if image_view_of(model, element).is_some() {
+        return true;
+    }
     if !matches!(e.kind, ElementKind::SoftwareSystem | ElementKind::Container) {
         return false;
     }
@@ -1664,18 +1678,35 @@ pub fn enterable(model: &Model, element: ElementId) -> bool {
 #[must_use]
 pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
     let e = model.elements.get(element.0 as usize)?;
-    let kind = counting_kind(e.kind)?;
+    let counting = counting_kind(e.kind);
     if let Some(v) = model
         .views
         .iter()
-        .find(|v| v.kind == kind && v.scope.element() == Some(element))
+        .find(|v| Some(v.kind) == counting && v.scope.element() == Some(element))
     {
         return Some(ViewRef::Declared(v.key.clone()));
     }
+    if let Some(key) = image_view_of(model, element) {
+        return Some(ViewRef::Declared(key.to_owned()));
+    }
+    let kind = counting?;
     Some(ViewRef::Default {
         scope: e.key.as_ref()?.value.clone(),
         kind,
     })
+}
+
+/// The first image view scoped to `element` (P2-322 f).
+// TODO(srs): P2-322 (f). DECISION: reading taken (B landscape-filtered
+// 10f): an element-scoped image view makes its element enterable, and a
+// click opens it when no container or component view of the element is
+// declared (the cookbook's "level 4" zoom-in).
+fn image_view_of(model: &Model, element: ElementId) -> Option<&str> {
+    model
+        .views
+        .iter()
+        .find(|v| v.kind == ViewKind::Image && v.scope.element() == Some(element))
+        .map(|v| v.key.as_str())
 }
 
 /// The view shown on opening `model` (EDIT-13, EDIT-15, EDIT-27):
@@ -1694,6 +1725,12 @@ pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewR
             ViewRef::Default { .. } if model.view(&view.key()).is_some() => ViewRef::Declared(view.key()),
             _ => view.clone(),
         });
+    }
+    // P2-338: the view carrying `default`, when it is drawn.
+    if let Some(v) = model.default_view_key().and_then(|k| model.view(k))
+        && v.kind.drawable()
+    {
+        return Some(ViewRef::Declared(v.key.clone()));
     }
     // P2-123: the editor never opens an unsupported view by itself.
     if let Some(v) = model.views.iter().find(|v| v.kind.drawable()) {
@@ -2683,10 +2720,15 @@ impl State {
             Command::Crumb(n) => {
                 let Some(model) = self.model() else { return Vec::new() };
                 let target = if n == 0 {
+                    // TODO(srs): P2-305, the workspace crumb. DECISION:
+                    // reading taken (B landscape-filtered 8): the first
+                    // system landscape view, else the first system context
+                    // view (EDIT-16), else the first view.
                     model
                         .views
                         .iter()
-                        .find(|v| v.kind == ViewKind::SystemContext)
+                        .find(|v| v.kind == ViewKind::SystemLandscape)
+                        .or_else(|| model.views.iter().find(|v| v.kind == ViewKind::SystemContext))
                         .or_else(|| model.views.first())
                         .map(|v| ViewRef::Declared(v.key.clone()))
                 } else {
@@ -3254,6 +3296,22 @@ fn add_default(model: &Model, view: &ViewRef) -> Vec<Edit> {
             kind: *kind,
         }],
         _ => Vec::new(),
+    }
+}
+
+/// The view whose `at` and `size` lines a move or resize in `view`
+/// writes: the base view for a filtered view (P2-9 shares its lines),
+/// else `view` itself.
+// TODO(srs): P2-313, a move or resize in a filtered view. DECISION:
+// reading taken (B landscape-filtered 1): it writes the base view's line,
+// in one undo step, as the layout is shared.
+fn layout_view(model: &Model, view: &ViewRef) -> ViewRef {
+    match view {
+        ViewRef::Declared(key) => model
+            .view(key)
+            .and_then(|v| model.base_view(v))
+            .map_or_else(|| view.clone(), |b| ViewRef::Declared(b.key.clone())),
+        ViewRef::Default { .. } => view.clone(),
     }
 }
 

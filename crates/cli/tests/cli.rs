@@ -297,3 +297,64 @@ fn cli_2_binary_exit_codes() {
         assert!(err.contains("usage: c4rizer render FILE -o DIR"), "{err}");
     }
 }
+
+/// P2-314: a view that is the base of a filtered view still renders
+/// (`<baseKey>.svg`), next to the filtered view's own file.
+// TODO(srs): P2-314, `render` on a base view. Reading taken (B
+// landscape-filtered 5): it still writes `<baseKey>.svg`; this test pins
+// it until the owner settles the TODO.
+#[test]
+fn p2_314_cli_still_renders_base_view() {
+    let dir = Scratch::new("filtered-base");
+    let file = dir.file(
+        "estate.dsl",
+        r#"workspace {
+    model {
+        operator = person "Operator" "Runs the shop." "Staff"
+        shop = softwareSystem "Shop" "Sells goods."
+        operator -> shop "Uses"
+    }
+    views {
+        systemLandscape "estate" "The estate" {
+            include *
+        }
+        filtered "estate" include "Staff" "staff" "Staff only"
+    }
+}
+"#,
+    );
+    let out = dir.path().join("out");
+    let run = c4rizer(
+        dir.path(),
+        &["render", file.to_str().unwrap(), "-o", out.to_str().unwrap()],
+    );
+    assert!(matches!(run.status.code(), Some(0 | 1)), "{}", stderr(&run));
+    assert_eq!(names(&out), ["estate.svg", "staff.svg"]);
+}
+
+/// CLI-1 on the landscape-filtered fixture: one SVG per view, landscape,
+/// filtered, custom and image views included.
+#[test]
+fn cli_1_renders_landscape_and_filtered() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/landscape_filtered.dsl");
+    let dir = Scratch::new("landscape-filtered");
+    let out = dir.path().join("out");
+    let run = c4rizer(dir.path(), &["render", fixture, "-o", out.to_str().unwrap()]);
+    assert!(matches!(run.status.code(), Some(0 | 1)), "{}", stderr(&run));
+    assert_eq!(
+        names(&out),
+        [
+            "board.svg",
+            "containers.svg",
+            "flow.svg",
+            "landscape-all.svg",
+            "landscape-tagged.svg",
+            "landscape-untagged.svg",
+            "landscape.svg",
+            "shop-picture.svg"
+        ]
+    );
+    let picture = fs::read_to_string(out.join("shop-picture.svg")).unwrap();
+    assert!(picture.contains("href=\"data:image/svg+xml;base64,"));
+    assert!(stderr(&run).contains("plantuml is accepted and has no effect") || stdout(&run).contains("plantuml is accepted"));
+}

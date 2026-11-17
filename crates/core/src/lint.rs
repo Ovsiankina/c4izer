@@ -857,7 +857,9 @@ impl<'a> Lint<'a> {
     /// L5, from the `at` and `size` lines as written.
     fn off_grid(&mut self) {
         let (model, scene) = (self.model, self.scene);
-        let Some(view) = model.view(&scene.key) else {
+        // DECISION: a filtered view's boxes take its base view's `at` and
+        // `size` lines (P2-9), so L5 reads and points at those.
+        let Some(view) = model.view(&scene.key).map(|v| model.base_view(v).unwrap_or(v)) else {
             return;
         };
         let off = |v: i32| v.rem_euclid(GRID) != 0;
@@ -1038,12 +1040,26 @@ impl<'a> Lint<'a> {
         }
     }
 
-    /// L15..L18 on a context view.
+    /// L15..L18 on a context view; L15, L16 and L18 on a system
+    /// landscape view (P2-304).
+    // TODO(srs): P2-304, the C1 rules on a landscape view. DECISION:
+    // reading taken (B landscape-filtered 7): L15, L16 and L18 run; L17
+    // (more than 8 boxes) does not, as a landscape shows the whole estate.
     fn c1(&mut self) {
         let scene = self.scene;
-        if scene.kind != ViewKind::SystemContext {
-            return;
-        }
+        let landscape = match scene.kind {
+            ViewKind::SystemContext => false,
+            ViewKind::SystemLandscape => true,
+            // P2-303, P2-342: filtered, custom and image views run only the
+            // rules no view kind owns.
+            ViewKind::Container
+            | ViewKind::Component
+            | ViewKind::Filtered
+            | ViewKind::Custom
+            | ViewKind::Image
+            | ViewKind::Dynamic
+            | ViewKind::Deployment => return,
+        };
         // DECISION: L15 and L16 are one finding per view, as the
         // prototype prints them, carrying every line or box involved.
         let teched: Vec<&SceneLine> = scene
@@ -1075,7 +1091,7 @@ impl<'a> Lint<'a> {
             );
             self.push_boxes(Rule::C1BoxKind, &bad, msg);
         }
-        if scene.boxes.len() > MAX_C1_BOXES {
+        if !landscape && scene.boxes.len() > MAX_C1_BOXES {
             let spans = self.view_spans();
             self.push(
                 Rule::C1TooManyBoxes,

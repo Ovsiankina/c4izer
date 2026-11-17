@@ -533,10 +533,31 @@ pub(crate) fn tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>) -> Stri
     }
     let kind = match plan.kind {
         ViewKind::Component => words.container,
-        // DECISION: the kinds after phase 1 draw no scope boundary in phase
-        // 2 (P2-2); a boundary of one would surround a software system's
-        // boxes, as on context and container views.
-        _ => words.software_system,
+        // A filtered view keeps its base view's scope boundary (P2-9): a
+        // container's when it surrounds components (component base).
+        ViewKind::Filtered => {
+            let components = boundary.members.iter().any(|m| {
+                plan.boxes
+                    .get(m.0 as usize)
+                    .is_some_and(|b| b.kind == crate::model::ElementKind::Component)
+            });
+            if components {
+                words.container
+            } else {
+                words.software_system
+            }
+        }
+        // DECISION: landscape, custom and image views draw no scope
+        // boundary (P2-8, P2-19), and dynamic and deployment views are not
+        // drawn in phase 2; a scope boundary of one would surround a
+        // software system's boxes, as on context and container views.
+        ViewKind::SystemContext
+        | ViewKind::Container
+        | ViewKind::SystemLandscape
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => words.software_system,
     };
     format!("{} [{kind}]", boundary.name)
 }

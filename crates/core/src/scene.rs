@@ -89,8 +89,8 @@ use crate::label::{
     boundary_tag_text, boundary_tag_with, text_advance,
 };
 use crate::model::{
-    Asset, Border, Colour, ElementId, ElementKind, MetadataSymbols, Mode, RelationshipId, Shape, ViewKind, ViewOptions,
-    ViewScope,
+    Asset, Border, Colour, ElementId, ElementKind, ImageSource, MetadataSymbols, Mime, Mode, RelationshipId, Shape,
+    ViewKind, ViewOptions, ViewImage, ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
@@ -360,6 +360,27 @@ pub struct SceneIcon {
     pub rect: Rect,
     /// The image file.
     pub asset: Asset,
+}
+
+/// The picture of an `image` view, drawn under the title (P2-320), or
+/// the placeholder of a source c4rizer does not draw (P2-321). Serves
+/// P2-19, P2-320, P2-321, P2-340.
+// TODO(srs): P2-340, an SVG source holding a script or an external
+// reference. Reading taken (B landscape-filtered 11): embedded as
+// `<image href="data:image/svg+xml;base64,...">`, which browsers render
+// without running scripts or loading references; the EXP-1 scan checks
+// the exported document, not the bytes inside the data URI.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneImage {
+    /// Where the picture (or placeholder) is drawn, in px.
+    pub rect: Rect,
+    /// The view's source line and, for a local file, its bytes.
+    pub image: ViewImage,
+    /// The placeholder text naming the source kind and the file, URL or
+    /// view key as written (`plantuml`, `mermaid`, an `https://` image);
+    /// `None` when the picture itself is drawn.
+    pub placeholder: Option<String>,
 }
 
 /// One box (CORE-2): an element drawn with its shape, fill, name, type
@@ -652,6 +673,9 @@ pub struct Scene {
     // box fill #333333, line and boundary #aaaaaa; every other default
     // unchanged.
     pub mode: Mode,
+    /// The picture of an `image` view, from `plan.image`; `None` for
+    /// every other kind. Serves P2-19, P2-320, P2-321.
+    pub image: Option<SceneImage>,
 }
 
 impl Scene {
@@ -943,7 +967,11 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         .map(|e| scene_line(e, routes, &boxes, &label_rects, pal))
         .collect();
     add_jumps(plan, &mut lines);
+    let image = plan.image.clone().map(scene_image);
     let mut extent = Extent::default();
+    if let Some(image) = &image {
+        extent.add_rect(&image.rect);
+    }
     for b in &boxes {
         extent.add_rect(&b.rect);
     }
@@ -1000,6 +1028,152 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         legend,
         crossings: routes.crossings,
         mode: plan.mode,
+        image,
+    }
+}
+
+/// The px size of a placeholder (P2-321).
+const PLACEHOLDER_PX: (i32, i32) = (480, 160);
+/// The px size of an image whose size cannot be read from its bytes.
+const IMAGE_FALLBACK_PX: (i32, i32) = (400, 300);
+/// The largest drawn image side, px.
+const IMAGE_MAX_PX: i32 = 20_000;
+
+/// The scene picture of an image view: the file at its intrinsic size
+/// with its top left at the origin, or a placeholder naming the source.
+// TODO(srs): P2-322 (c), the drawn size. DECISION: reading taken (B
+// landscape-filtered 10c): the image's intrinsic size in px (PNG and JPEG
+// headers, SVG `width`/`height`, else `viewBox`), unscaled; the title and
+// subtitle sit below it, as on every other view (Structurizr draws the
+// title below the diagram too; B said above).
+fn scene_image(image: ViewImage) -> SceneImage {
+    let placeholder = match (&image.source, &image.asset) {
+        (ImageSource::File(_), Some(_)) => None,
+        (ImageSource::File(f), None) => Some(format!("image {}", f.value)),
+        (ImageSource::Url(u), _) => Some(format!("image {}", u.value)),
+        (ImageSource::PlantUml(v), _) => Some(format!("plantuml {}", v.value)),
+        (ImageSource::Mermaid(v), _) => Some(format!("mermaid {}", v.value)),
+        (ImageSource::Kroki { format, source }, _) => {
+            Some(format!("kroki {} {}", format.value, source.value))
+        }
+    };
+    let (w, h) = match (&placeholder, &image.asset) {
+        (None, Some(asset)) => intrinsic_size(asset.mime, &asset.bytes).unwrap_or(IMAGE_FALLBACK_PX),
+        _ => PLACEHOLDER_PX,
+    };
+    SceneImage {
+        rect: Rect::from_corners(Point::new(0, 0), Point::new(w, h)),
+        image,
+        placeholder,
+    }
+}
+
+impl SceneImage {
+    /// The file drawn, `None` for a placeholder.
+    pub(crate) fn asset_drawn(&self) -> Option<&Asset> {
+        self.image.asset.as_ref().filter(|_| self.placeholder.is_none())
+    }
+}
+
+/// The text of a placeholder, centred in its rectangle; `None` when the
+/// picture itself is drawn. `export` draws it.
+pub(crate) fn placeholder_text(image: &SceneImage) -> Option<TextBlock> {
+    let text = image.placeholder.as_ref()?;
+    let font = SUBTITLE_FONT;
+    let mut block = text_block(
+        vec![format!("{text} (not drawn)")],
+        Font {
+            size_px: 14,
+            line_px: 18,
+            weight: font.weight,
+        },
+        SUBTITLE_COLOUR,
+        middle(image.rect.centre().x, image.rect.centre().y - 9),
+        &image.rect,
+    );
+    block.fits = true;
+    Some(block)
+}
+
+/// The width and height in px an image file declares: the PNG `IHDR`, the
+/// JPEG start-of-frame, the SVG root's `width`/`height` (px or unitless)
+/// or else its `viewBox`. `None` when they cannot be read.
+fn intrinsic_size(mime: Mime, bytes: &[u8]) -> Option<(i32, i32)> {
+    let clamp = |w: f64, h: f64| -> Option<(i32, i32)> {
+        let fit = |v: f64| {
+            // DECISION: sizes are rounded to whole px and kept within
+            // 1..=20000, so a broken header cannot make a huge canvas.
+            let r = v.round().clamp(1.0, f64::from(IMAGE_MAX_PX));
+            #[expect(clippy::cast_possible_truncation, reason = "clamped to 1..=20000")]
+            let px = r as i32;
+            px
+        };
+        (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then(|| (fit(w), fit(h)))
+    };
+    match mime {
+        Mime::Png => {
+            let w = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+            let h = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+            clamp(f64::from(w), f64::from(h))
+        }
+        Mime::Jpeg => {
+            let mut i = 2;
+            while i + 9 < bytes.len() {
+                if bytes[i] != 0xff {
+                    i += 1;
+                    continue;
+                }
+                let marker = bytes[i + 1];
+                let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
+                let frame = matches!(marker, 0xc0..=0xcf) && !matches!(marker, 0xc4 | 0xc8 | 0xcc);
+                if frame {
+                    let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]);
+                    let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]);
+                    return clamp(f64::from(w), f64::from(h));
+                }
+                i += 2 + len;
+            }
+            None
+        }
+        _ => svg_size(std::str::from_utf8(bytes).ok()?).and_then(|(w, h)| clamp(w, h)),
+    }
+}
+
+/// `width`/`height` of the `<svg>` root in px, else its `viewBox` size.
+fn svg_size(text: &str) -> Option<(f64, f64)> {
+    let start = text.find("<svg")?;
+    let end = start + text[start..].find('>')?;
+    let tag = &text[start..end];
+    let attr = |name: &str| -> Option<&str> {
+        let mut rest = tag;
+        loop {
+            let at = rest.find(name)?;
+            let before = rest[..at].chars().last();
+            let after = rest[at + name.len()..].trim_start();
+            rest = &rest[at + name.len()..];
+            if before.is_some_and(char::is_whitespace) && after.starts_with('=') {
+                let value = after[1..].trim_start();
+                let quote = value.chars().next()?;
+                if quote != '"' && quote != '\'' {
+                    return None;
+                }
+                let value = &value[1..];
+                return value.find(quote).map(|e| &value[..e]);
+            }
+        }
+    };
+    let px = |v: &str| -> Option<f64> { v.trim().strip_suffix("px").unwrap_or(v.trim()).parse().ok() };
+    if let (Some(w), Some(h)) = (attr("width").and_then(px), attr("height").and_then(px)) {
+        return Some((w, h));
+    }
+    let numbers: Vec<f64> = attr("viewBox")?
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    match numbers[..] {
+        [_, _, w, h] => Some((w, h)),
+        _ => None,
     }
 }
 
@@ -1268,12 +1442,15 @@ struct BoxTexts {
 
 /// The CORE-2 type line text: `[type: technology]` or `[type]`.
 fn type_text(b: &PlanBox, words: &Words<'_>) -> String {
-    // DECISION: a custom element's type line is its metadata, which
-    // `view` puts in `technology` (P2-170), else the word `Element`.
+    // TODO(srs): P2-319, the type line of a custom element. DECISION:
+    // reading taken (B landscape-filtered 12), checked against Structurizr
+    // 2026.10.26 (`structurizr-diagram.js` `formatMetaData`): its metadata
+    // in brackets, which `view` puts in `technology` (P2-170), else no
+    // type line at all.
     let Some(kind) = words.kind(b.kind, b.external) else {
         return match b.technology.as_deref().map(str::trim) {
             Some(meta) if !meta.is_empty() => words.bracket(meta),
-            _ => words.bracket("Element"),
+            _ => String::new(),
         };
     };
     match b.technology.as_deref().map(str::trim) {
@@ -1609,8 +1786,9 @@ fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
     let width = area.width();
     let (name_font, small_font) = box_fonts(b.style.font_size);
     let name = wrap(&b.name, name_font.size_px, Weight::Bold, width);
-    let type_line = if b.style.metadata {
-        wrap(&type_text(b, words), small_font.size_px, Weight::Regular, width)
+    let text = type_text(b, words);
+    let type_line = if b.style.metadata && !text.is_empty() {
+        wrap(&text, small_font.size_px, Weight::Regular, width)
     } else {
         Vec::new()
     };

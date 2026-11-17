@@ -138,6 +138,37 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         });
     };
 
+    if let Some(image) = &scene.image {
+        // DECISION: an image view's picture belongs to no box or line; it
+        // is painted under the title's source (EDIT-12: from the scene).
+        let source = Source::Scene(ItemKey::Title);
+        if let Some(asset) = image.image.asset.as_ref().filter(|_| image.placeholder.is_none()) {
+            // P2-320: the same file as the SVG and PNG exports.
+            push(source, Primitive::Image {
+                min: cam.to_screen(image.rect.min),
+                max: cam.to_screen(image.rect.max),
+                asset: asset.clone(),
+            });
+        } else {
+            // P2-321: the dashed placeholder naming the source.
+            let grey = [0x66, 0x66, 0x66];
+            push(source, Primitive::Polygon {
+                points: rect_points(cam, image.rect, 0),
+                fill: None,
+                stroke: Some((grey, cam.zoom)),
+                dash: Some([8.0 * cam.zoom, 6.0 * cam.zoom]),
+            });
+            let centre = image.rect.centre();
+            push(source, Primitive::Text {
+                at: cam.to_screen(Point::new(centre.x, centre.y + 5)),
+                text: format!("{} (not drawn)", image.placeholder.as_deref().unwrap_or("image")),
+                size: 14.0 * cam.zoom,
+                bold: false,
+                centred: true,
+                colour: grey,
+            });
+        }
+    }
     for (i, b) in scene.boundaries.iter().enumerate() {
         let source = Source::Scene(ItemKey::Boundary(u32::try_from(i).unwrap_or(u32::MAX)));
         opacity.set(b.opacity);

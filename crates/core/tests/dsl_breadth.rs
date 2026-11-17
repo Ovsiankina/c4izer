@@ -1272,7 +1272,7 @@ fn p2_124_generated_keys_for_new_view_kinds() {
             include *
         }
         custom "Custom-001" "Written" {
-            include user
+            include *
         }
         custom {
         }
@@ -1318,7 +1318,7 @@ fn p2_2_unsupported_view_kinds_in_model_views() {
         }
         filtered "landscape" exclude "Person" "people-free" "No people"
         custom "board" "Whiteboard" {
-            include user web
+            include *
         }
         image web "picture" {
             image diagram.png
@@ -1348,10 +1348,11 @@ fn p2_2_unsupported_view_kinds_in_model_views() {
         got,
         [
             (Container, "c2", None, true),
-            (SystemLandscape, "landscape", Some("Everything"), false),
-            (Filtered, "people-free", Some("No people"), false),
-            (Custom, "board", Some("Whiteboard"), false),
-            (Image, "picture", Some("A picture"), false),
+            // landscape-filtered draws the landscape view (P2-8).
+            (SystemLandscape, "landscape", Some("Everything"), true),
+            (Filtered, "people-free", Some("No people"), true),
+            (Custom, "board", Some("Whiteboard"), true),
+            (Image, "picture", Some("A picture"), true),
             (Dynamic, "flow", Some("The flow"), false),
             (Deployment, "live", Some("Live system"), false),
         ]

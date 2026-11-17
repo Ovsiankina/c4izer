@@ -313,7 +313,7 @@ pub fn build_view(
     };
     // DECISION: like an unknown key, an unsupported view is reported
     // before the stop flag is read: there is nothing to route.
-    if !view.kind.drawable() {
+    if !drawn(model, view) {
         return Err(BuildError::Unsupported(UnsupportedView::of(view)));
     }
     Ok(build_spec(model, view, keep, stop)?)
@@ -343,10 +343,7 @@ pub fn build_spec(
         "build_spec: {} views are not drawn (P2-2)",
         view.kind.keyword()
     );
-    let plan = view::plan(model, view);
-    let centres = place::place(&plan, keep);
-    let routes = route::route(&plan, &centres, &RouteConfig::DEFAULT, stop)?;
-    Ok(finish(model, plan, routes))
+    build_in(model, view, keep, Mode::Light, stop)
 }
 
 /// Labels, scene and lint report of a routed plan: the stages after
@@ -384,13 +381,13 @@ pub fn build_all(model: &Model, stop: &AtomicBool) -> Result<AllViews, Stopped> 
     let views = model
         .views
         .iter()
-        .filter(|v| v.kind.drawable())
+        .filter(|v| drawn(model, v))
         .map(|v| build_spec(model, v, &keep, stop))
         .collect::<Result<Vec<_>, _>>()?;
     let unsupported = model
         .views
         .iter()
-        .filter(|v| !v.kind.drawable())
+        .filter(|v| !drawn(model, v))
         .map(UnsupportedView::of)
         .collect();
     // DECISION: every scene goes to `lint::coverage`, which itself keeps
@@ -449,7 +446,7 @@ pub fn build_spec_in(
     mode: Mode,
     stop: &AtomicBool,
 ) -> Result<ViewBuild, BuildError> {
-    if !view.kind.drawable() {
+    if !drawn(model, view) {
         return Err(BuildError::Unsupported(UnsupportedView::of(view)));
     }
     Ok(build_in(model, view, keep, mode, stop)?)
@@ -464,9 +461,36 @@ fn build_in(
     stop: &AtomicBool,
 ) -> Result<ViewBuild, Stopped> {
     let plan = view::plan_in(model, view, mode);
-    let centres = place::place(&plan, keep);
+    let shared = shared_layout(model, view, keep, mode);
+    let centres = place::place(&plan, shared.as_ref().unwrap_or(keep));
     let routes = route::route(&plan, &centres, &RouteConfig::DEFAULT, stop)?;
     Ok(finish(model, plan, routes))
+}
+
+/// For a `filtered` view, the `Keep` that puts every box where its base
+/// view's build puts it (P2-9, P2-312): the base plan placed from its own
+/// lines, each centre kept, plus `keep.moved` (a drag in the filtered
+/// view). `None` for any other view.
+// TODO(srs): P2-312, a box with no `at` line in the base view. DECISION:
+// reading taken (B landscape-filtered 1): it takes the centre the base
+// view's build gives it with nothing kept (`Keep::default()`, as `render`
+// builds the base), so the filtered view and the base view agree.
+fn shared_layout(model: &Model, view: &ViewSpec, keep: &Keep, mode: Mode) -> Option<Keep> {
+    let base = model.base_view(view)?;
+    let base_plan = view::plan_in(model, base, mode);
+    let centres = place::place(&base_plan, &Keep::default());
+    let mut shared = Keep::default();
+    for b in &base_plan.boxes {
+        shared.previous.entry(b.element).or_insert(centres[b.id.0 as usize]);
+    }
+    shared.moved.clone_from(&keep.moved);
+    Some(shared)
+}
+
+/// True when `view` is drawn: its kind is drawable and, for a filtered
+/// view, so is its base's (a deployment base waits for phase 3).
+fn drawn(model: &Model, view: &ViewSpec) -> bool {
+    view.kind.drawable() && model.base_view(view).is_none_or(|b| b.kind.drawable())
 }
 
 /// `build_all` in `mode`: every drawable view built with
@@ -481,7 +505,7 @@ pub fn build_all_in(model: &Model, mode: Mode, stop: &AtomicBool) -> Result<AllV
     let mut views = Vec::new();
     let mut skipped = Vec::new();
     for v in &model.views {
-        if v.kind.drawable() {
+        if drawn(model, v) {
             views.push(build_in(model, v, &keep, mode, stop)?);
         } else {
             skipped.push(UnsupportedView::of(v));
@@ -615,7 +639,10 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
             element.kind == ElementKind::SoftwareSystem
         }
         ViewKind::Component => element.kind == ElementKind::Container,
-        // No default view of a kind c4rizer does not draw (P2-2).
+        // EDIT-15 default views are context, container and component
+        // views only: a landscape, filtered, custom or image view has no
+        // scope element to default from, and dynamic and deployment views
+        // are not drawn in phase 2 (P2-2).
         ViewKind::SystemLandscape
         | ViewKind::Filtered
         | ViewKind::Custom
@@ -671,6 +698,9 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         sizes: Vec::new(),
         span: none,
         properties: Vec::new(),
+        filter: None,
+        image: None,
+        default: None,
     })
 }
 

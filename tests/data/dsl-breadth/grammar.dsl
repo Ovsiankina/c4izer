@@ -190,10 +190,10 @@ workspace extends grammar/base.dsl {
             autoLayout
         }
         custom "board" "Whiteboard" {
-            include customer shop
+            include scanner
         }
         image * "picture" {
-            image grammar/docs/01-shop.md
+            image grammar/pic.svg
         }
         styles {
             element "Person" {

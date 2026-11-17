@@ -102,7 +102,74 @@ pub(super) fn apply(
     mut files: Option<Files<'_>>,
 ) -> Result<(), ModelError> {
     apply_themes(model, trees, &mut files)?;
-    file_icons(model, trees, &mut files)
+    file_icons(model, trees, &mut files)?;
+    view_images(model, trees, &mut files)
+}
+
+/// Reads the file of every `image <file>` view source (P2-320) through
+/// the loader into `ViewImage::asset` and `Model::assets`, after the
+/// themes and icons. A file is read once, keyed by its path relative to
+/// the diagram's folder.
+///
+/// # Errors
+///
+/// `PathOutsideRoot`, `FileRead`, `FileFormat` (not a PNG, JPEG or SVG
+/// image), at the source line.
+// TODO(srs): P2-322 (a), (b). DECISION: readings taken (B
+// landscape-filtered 10a, 10b) and checked against Structurizr 6.2.4: the
+// path is relative to the diagram file's folder and must stay under it;
+// a missing file is `FileRead`; a file that is no image is `FileFormat`
+// naming the path. Structurizr also takes JPEG files ("not a supported
+// image file" otherwise), so JPEG is accepted too (B 10b said PNG or SVG).
+// DECISION: text parsed with no path (`parse`, stdin) keeps the source as
+// written and reads nothing; the view then draws a placeholder naming the
+// file, as an icon is then not drawn (B styles-themes 7e).
+fn view_images(
+    model: &mut Model,
+    trees: &[SyntaxTree],
+    files: &mut Option<Files<'_>>,
+) -> Result<(), ModelError> {
+    let no_path = files.as_ref().is_none_or(|f| f.path.is_none());
+    if no_path {
+        return Ok(());
+    }
+    for index in 0..model.views.len() {
+        let Some(image) = &model.views[index].image else {
+            continue;
+        };
+        let super::ImageSource::File(written) = &image.source else {
+            continue;
+        };
+        let (written, span) = (written.value.clone(), image.span);
+        let path = normalise(&written);
+        let error = |kind| ModelError {
+            kind,
+            span,
+            position: position(trees, span),
+        };
+        let asset = if let Some(a) = model.assets.iter().find(|a| a.path == path) {
+            a.clone()
+        } else {
+            let Some(files) = files.as_mut() else {
+                return Ok(());
+            };
+            let bytes = read(files, &path).map_err(error)?;
+            let Some(mime) = sniff(&bytes) else {
+                return Err(error(format_error(&path, "the image is not a PNG, JPEG or SVG file")));
+            };
+            let asset = Asset {
+                path,
+                mime,
+                bytes: Arc::from(bytes),
+            };
+            model.assets.push(asset.clone());
+            asset
+        };
+        if let Some(image) = model.views[index].image.as_mut() {
+            image.asset = Some(asset);
+        }
+    }
+    Ok(())
 }
 
 /// Loads the `icon` of every file element style (P2-409): a local file

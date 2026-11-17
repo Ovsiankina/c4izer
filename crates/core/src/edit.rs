@@ -1989,7 +1989,10 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
             model.element(id).kind == ElementKind::SoftwareSystem
         }
         ViewKind::Component => model.element(id).kind == ElementKind::Container,
-        // No default view of a kind c4rizer does not draw (P2-2).
+        // EDIT-15 default views are context, container and component
+        // views only: a landscape, filtered, custom or image view has no
+        // scope element to default from, and dynamic and deployment views
+        // are not drawn in phase 2 (P2-2).
         ViewKind::SystemLandscape
         | ViewKind::Filtered
         | ViewKind::Custom

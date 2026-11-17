@@ -188,6 +188,20 @@ fn intersect<T: Ord + Clone>(mut sets: impl Iterator<Item = BTreeSet<T>>) -> BTr
     sets.fold(first, |acc, s| acc.intersection(&s).cloned().collect())
 }
 
+/// True when `operand` is a relationship-expression operand: a
+/// `relationship` form, or an arrow with something on each side (`*->*`,
+/// `a -> b`); `->x`, `x->` and `->x->` are element couplings.
+fn is_relationship_operand(operand: &str) -> bool {
+    let lower = operand.to_ascii_lowercase();
+    if lower.starts_with("relationship") {
+        return true;
+    }
+    let coupling = lower.strip_prefix("element==").unwrap_or(&lower).trim();
+    coupling
+        .split_once("->")
+        .is_some_and(|(s, d)| !s.trim().is_empty() && !d.trim().is_empty())
+}
+
 /// The element kind of an `element.type` name, ignoring case; `None` for
 /// a type phase 2 does not build.
 fn type_kind(name: &str) -> Option<ElementKind> {
@@ -244,6 +258,32 @@ impl Builder<'_> {
             _ if text.contains("&&") => Expression::And(atoms),
             _ => Expression::Or(atoms),
         })
+    }
+
+    /// An expression in a view's `include` or `exclude` (P2-20): a
+    /// relationship expression when its first operand is one (a
+    /// `relationship...` form, or `a -> b` with something on both sides
+    /// of the arrow), else an element expression; every operand is read
+    /// as that kind.
+    // DECISION: Structurizr reads each operand on its own and intersects
+    // or unites what they select; an element operand next to a
+    // relationship operand selects nothing useful there, so c4rizer reads
+    // every operand as the first one's kind, and a mismatched one is an
+    // error naming it.
+    pub(super) fn view_expression(&self, text: &str, span: Span) -> Result<Expression, ModelError> {
+        let first = if text.contains("&&") {
+            text.split("&&").next()
+        } else {
+            text.split("||").next()
+        }
+        .unwrap_or(text)
+        .trim();
+        let items = if is_relationship_operand(first) {
+            Items::Relationships
+        } else {
+            Items::Elements
+        };
+        self.expression(text, items, span, None)
     }
 
     /// The error for an operand that is no expression form.
@@ -349,6 +389,20 @@ impl Builder<'_> {
                 self.operand_id(t, span, context).map(Some)
             }
         };
+        // P2-333: a side of `a -> b` may be an element expression; it
+        // stands for the elements it selects when the line is read.
+        let side = |t: &str| -> Result<Vec<Option<ElementId>>, ModelError> {
+            let lower = t.to_ascii_lowercase();
+            let expression = t != "*"
+                && self.resolve(t, context).is_none()
+                && (lower.starts_with("element") || t.contains("==") || t.contains("!="));
+            if expression {
+                let e = self.element_atom(t, span, context)?;
+                Ok(self.model.select_elements(&e).into_iter().map(Some).collect())
+            } else {
+                Ok(vec![end(t)?])
+            }
+        };
         let lower = text.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("relationship.") {
             let raw = &text["relationship.".len()..];
@@ -386,9 +440,22 @@ impl Builder<'_> {
         let Some((s, d)) = pattern.split_once("->") else {
             return Err(self.bad_operand(text, Items::Relationships, span));
         };
-        Ok(Expression::Relationships {
-            source: end(s.trim())?,
-            destination: end(d.trim())?,
+        let (sources, destinations) = (side(s.trim())?, side(d.trim())?);
+        let mut pairs: Vec<Expression> = sources
+            .iter()
+            .flat_map(|&source| {
+                destinations.iter().map(move |&destination| Expression::Relationships {
+                    source,
+                    destination,
+                })
+            })
+            .collect();
+        // DECISION: an expression side that selects no element gives an
+        // empty `Or`, which matches nothing.
+        Ok(if pairs.len() == 1 {
+            pairs.remove(0)
+        } else {
+            Expression::Or(pairs)
         })
     }
 

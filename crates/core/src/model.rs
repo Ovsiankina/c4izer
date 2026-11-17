@@ -773,7 +773,13 @@ impl ViewKind {
     pub const fn drawable(self) -> bool {
         matches!(
             self,
-            ViewKind::SystemContext | ViewKind::Container | ViewKind::Component
+            ViewKind::SystemContext
+                | ViewKind::Container
+                | ViewKind::Component
+                | ViewKind::SystemLandscape
+                | ViewKind::Filtered
+                | ViewKind::Custom
+                | ViewKind::Image
         )
     }
 }
@@ -827,6 +833,25 @@ pub enum Selector {
     All,
     /// One element, by id or dotted path.
     Element(ElementId),
+    /// `*?` (P2-323): on a system context, container or component view,
+    /// the elements of `*` with only the relationships to or from the
+    /// scoped element (C1) or the scope's children (C2, C3). Serves
+    /// P2-20, P2-323.
+    // TODO(srs): P2-323, `*?` on any other view kind. Reading taken (B
+    // landscape-filtered 15, Structurizr 6.2.4 `StaticViewContentParser`
+    // calls `addDefaultElements(false)` for every static view): it means
+    // the same as `*`.
+    AllReluctant,
+    /// A named relationship `r = a -> b` (dsl-breadth P2-146) in
+    /// `include` or `exclude`: adds or removes that relationship's line,
+    /// drawn only when both ends are in the view. Serves P2-20, P2-341.
+    Relationship(RelationshipId),
+    /// An element or relationship expression (/dsl/expressions), written
+    /// in double quotes when it holds whitespace (P2-337). Element
+    /// expressions add or remove boxes; relationship expressions act on
+    /// the drawn lines after lifting (CORE-5) and never add a box
+    /// (P2-334). Serves P2-20, P2-324..P2-337.
+    Expression(Expression),
 }
 
 /// `hide <src> -> <dst>`: leave out the line from `source` to
@@ -957,8 +982,129 @@ pub struct ViewSpec {
     /// The whole view statement, block included; `edit` adds a missing
     /// `at` line before its closing brace (DSL-9).
     pub span: Span,
-    /// `properties { ... }` in the view body, in file order (P2-172).
+    /// `properties { ... }` in the view body, in file order (P2-172);
+    /// kept byte for byte, no effect on the scene (P2-339).
     pub properties: Vec<Property>,
+    /// The base key, mode and tags of a `filtered` view; `None` for any
+    /// other kind. Serves P2-9, P2-306..P2-311.
+    pub filter: Option<Filter>,
+    /// The source of an `image` view; `None` for any other kind. Serves
+    /// P2-19, P2-320, P2-321.
+    pub image: Option<ViewImage>,
+    /// The `default` line, if written: the view the editor opens when no
+    /// last-viewed view applies (EDIT-13). Serves P2-20, P2-338.
+    pub default: Option<Span>,
+}
+
+/// The mode of a `filtered` view. Serves P2-9, P2-308.
+// DECISION: closed set (the DSL has exactly these two words), so not
+// #[non_exhaustive].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FilterMode {
+    /// `include`: keep the boxes and lines carrying any listed tag.
+    Include,
+    /// `exclude`: drop the boxes and lines carrying any listed tag.
+    Exclude,
+}
+
+/// `filtered <baseKey> <include|exclude> "<tags>"`: the base view and the
+/// tag filter. Serves P2-9, P2-306..P2-311.
+// TODO(srs): P2-306, base kinds and declaration order. Reading taken (B
+// landscape-filtered 2; Structurizr 6.2.4 `FilteredViewParser`): the base
+// must be a system landscape, system context, container or component
+// view declared earlier in the file, else `InvalidBaseView` or
+// `UnknownView`.
+// TODO(srs): P2-307, c4rizer extensions in a filtered body. Reading taken
+// (B landscape-filtered 1): only `default`, `title`, `description` and
+// `properties`; any other line is an error naming it.
+// TODO(srs): P2-310, a lifted line merging several relationships. Reading
+// taken (B landscape-filtered 3): kept when at least one merged
+// relationship passes, drawn re-merged from the survivors only.
+// TODO(srs): P2-311, options of a filtered view. Reading taken (B
+// landscape-filtered 4): the base view's c4rizer options.
+// TODO(srs): P2-312, unplaced boxes. Reading taken (B landscape-filtered
+// 1): exactly where the base view places them, auto-placed centres
+// included.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Filter {
+    /// The base view's key, as written.
+    pub base: Literal,
+    /// `include` or `exclude`, as written.
+    pub mode: Spanned<FilterMode>,
+    /// The tags argument, as written (comma-separated).
+    pub tags: Literal,
+}
+
+impl Filter {
+    /// The tags of `self.tags`, split on `,` and trimmed, empty entries
+    /// dropped, in written order. Serves P2-308.
+    pub fn tags(&self) -> Vec<&str> {
+        self.tags
+            .value
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+
+    /// True when an item with `tags` passes the filter: in `include`
+    /// mode it has at least one listed tag, in `exclude` mode none
+    /// (P2-308, P2-309).
+    pub(crate) fn passes(&self, tags: &[String]) -> bool {
+        let listed = self.tags();
+        let any = tags.iter().any(|t| listed.contains(&t.as_str()));
+        match self.mode.value {
+            FilterMode::Include => any,
+            FilterMode::Exclude => !any,
+        }
+    }
+}
+
+/// Where an `image` view's picture comes from (the body's source line).
+/// Serves P2-19, P2-320, P2-321.
+// TODO(srs): P2-322, image views. Readings taken (B landscape-filtered
+// 10): (a) a file path is relative to the diagram file's directory and
+// must stay under it (`PathOutsideRoot`); (b) a missing file is
+// `FileRead`, bytes neither PNG nor SVG are `FileFormat`, both naming the
+// path; (c) drawn at intrinsic size in px (SVG `width`/`height`, else
+// `viewBox`) under the title; (d) an `https://` source draws a
+// placeholder naming the URL and adds a P2-3 notice (no network in phase
+// 2); (e) `image *` has no scope, `image <element>` is scoped to it; (f)
+// an element-scoped image view makes its element enterable (EDIT-15) when
+// no container or component view of it exists.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    /// `image <file>`: a local PNG or SVG file.
+    File(Literal),
+    /// `image <https url>`.
+    Url(Literal),
+    /// `plantuml <file|url|view key>`: drawn as a placeholder (P2-321).
+    PlantUml(Literal),
+    /// `mermaid <file|url|view key>`: drawn as a placeholder (P2-321).
+    Mermaid(Literal),
+    /// `kroki <format> <source>`: parsed, draws nothing, P2-3 notice
+    /// (P2-321).
+    Kroki {
+        /// The Kroki diagram format.
+        format: Literal,
+        /// The file, URL or view key.
+        source: Literal,
+    },
+}
+
+/// The picture of an `image` view. Serves P2-19, P2-320, P2-321.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ViewImage {
+    /// The source line, as written.
+    pub source: ImageSource,
+    /// The bytes of a local PNG or SVG file, read at parse time through
+    /// the `Loader` (O3); `None` for every other source.
+    pub asset: Option<Asset>,
+    /// The whole source line.
+    pub span: Span,
 }
 
 impl ViewSpec {
@@ -1830,24 +1976,104 @@ impl Model {
     // DECISION: an explicitly included element is kept whatever its kind
     // (docs/workspace.dsl includes containers in component views).
     pub fn included(&self, view: &ViewSpec) -> Vec<ElementId> {
+        if view.kind == ViewKind::Filtered {
+            // P2-9, P2-308: the base view's elements that pass the filter.
+            let (Some(base), Some(filter)) = (self.base_view(view), view.filter.as_ref()) else {
+                return Vec::new();
+            };
+            return self
+                .included(base)
+                .into_iter()
+                .filter(|&e| filter.passes(&self.element(e).tags))
+                .collect();
+        }
         let mut set = BTreeSet::new();
         for selector in &view.include {
-            match selector.value {
-                Selector::All => self.include_all(view, &mut set),
+            match &selector.value {
+                // TODO(srs): P2-323, `*?` on other kinds. DECISION: reading
+                // taken (B landscape-filtered 15; Structurizr 6.2.4, checked:
+                // a landscape `*?` equals `*`): the elements of `*`; only
+                // the lines differ, on C1..C3 (`view`).
+                Selector::All | Selector::AllReluctant => self.include_all(view, &mut set),
                 Selector::Element(id) => {
-                    set.insert(id);
+                    set.insert(*id);
+                }
+                // P2-334, P2-341: relationships add no box.
+                Selector::Relationship(_) => {}
+                Selector::Expression(e) if is_relationship_expression(e) => {}
+                Selector::Expression(e) => {
+                    set.extend(
+                        self.select_elements(e)
+                            .into_iter()
+                            .filter_map(|x| self.drawn_level(view, x)),
+                    );
                 }
             }
         }
         for selector in &view.exclude {
-            match selector.value {
-                Selector::All => set.clear(),
+            match &selector.value {
+                Selector::All | Selector::AllReluctant => set.clear(),
                 Selector::Element(id) => {
-                    set.remove(&id);
+                    set.remove(id);
+                }
+                // P2-332, P2-341: they remove lines only (`view`).
+                Selector::Relationship(_) => {}
+                Selector::Expression(e) if is_relationship_expression(e) => {}
+                // DECISION: an excluded expression removes the elements it
+                // selects as they are, never an ancestor drawn for them
+                // (Structurizr removes only elements in the view).
+                Selector::Expression(e) => {
+                    for x in self.select_elements(e) {
+                        set.remove(&x);
+                    }
                 }
             }
         }
         set.into_iter().collect()
+    }
+
+    /// The element a view of `view`'s kind draws for `element` when an
+    /// expression selects it: itself or its nearest ancestor of a kind the
+    /// view draws; `None` when there is none, or when that is the scope of
+    /// a container or component view (drawn as its boundary).
+    // TODO(srs): P2-325, a coupled element nested below the view's level.
+    // DECISION: reading taken (B landscape-filtered 13, a product choice):
+    // drawn as its nearest ancestor the kind draws, as `include *` lifts
+    // relationships (CORE-5); dropped when it has none. Structurizr 6.2.4
+    // (checked) drops such an element instead (docs/deferred.md).
+    fn drawn_level(&self, view: &ViewSpec, element: ElementId) -> Option<ElementId> {
+        let draws = |k: ElementKind| match view.kind {
+            ViewKind::SystemLandscape | ViewKind::SystemContext => {
+                matches!(k, ElementKind::Person | ElementKind::SoftwareSystem)
+            }
+            ViewKind::Container => matches!(
+                k,
+                ElementKind::Person | ElementKind::SoftwareSystem | ElementKind::Container
+            ),
+            ViewKind::Component => matches!(
+                k,
+                ElementKind::Person
+                    | ElementKind::SoftwareSystem
+                    | ElementKind::Container
+                    | ElementKind::Component
+            ),
+            ViewKind::Custom => k == ElementKind::Custom,
+            ViewKind::Filtered | ViewKind::Image | ViewKind::Dynamic | ViewKind::Deployment => false,
+        };
+        let mut current = Some(element);
+        while let Some(e) = current {
+            if draws(self.element(e).kind) {
+                break;
+            }
+            current = self.element(e).parent;
+        }
+        let found = current?;
+        let boundary = matches!(view.kind, ViewKind::Container | ViewKind::Component)
+            && view
+                .scope
+                .element()
+                .is_some_and(|scope| found == scope || self.is_inside(scope, found));
+        (!boundary).then_some(found)
     }
 
     /// True when `element` is strictly inside `ancestor`.
@@ -1884,6 +2110,30 @@ impl Model {
     fn include_all(&self, view: &ViewSpec, set: &mut BTreeSet<ElementId>) {
         // `include *` of the kinds not drawn yet selects nothing until
         // their rows land (P2-2).
+        if view.kind == ViewKind::Custom {
+            // P2-318: every custom element.
+            set.extend(
+                self.elements
+                    .iter()
+                    .filter(|e| e.kind == ElementKind::Custom)
+                    .map(|e| e.id),
+            );
+            return;
+        }
+        // TODO(srs): P2-302. Structurizr 6.2.4 (checked) also adds every
+        // custom element to a landscape `include *`; the SRS sentence
+        // (settled, "every person and every software system") is followed
+        // (docs/deferred.md).
+        if view.kind == ViewKind::SystemLandscape {
+            // P2-302: every person and software system, connected or not.
+            set.extend(
+                self.elements
+                    .iter()
+                    .filter(|e| matches!(e.kind, ElementKind::Person | ElementKind::SoftwareSystem))
+                    .map(|e| e.id),
+            );
+            return;
+        }
         let Some(scope) = view.scope.element().filter(|_| view.kind.drawable()) else {
             return;
         };
@@ -1937,6 +2187,52 @@ impl Model {
     /// Serves P2-168 (and landscape-filtered's view expressions).
     pub fn select_relationships(&self, expression: &Expression) -> Vec<RelationshipId> {
         self.select_relationships_impl(expression)
+    }
+
+    /// The base view of a `filtered` view: the view whose key is
+    /// `view.filter.base`; `None` for any other kind or an unknown key.
+    /// Serves P2-9, P2-306.
+    pub fn base_view(&self, view: &ViewSpec) -> Option<&ViewSpec> {
+        let filter = view.filter.as_ref().filter(|_| view.kind == ViewKind::Filtered)?;
+        self.view(&filter.base.value)
+    }
+
+    /// The keys of the views that are the base of at least one `filtered`
+    /// view, in declaration order, each once: the editor leaves them out
+    /// of its view list (EDIT-8). Serves P2-314.
+    // TODO(srs): P2-314, `render` and EDIT-15/16 on a base view. Reading
+    // taken (B landscape-filtered 5): `c4rizer render` still writes
+    // `<baseKey>.svg`; EDIT-15 and EDIT-16 may open it, and it then shows
+    // in the list until another view is opened.
+    pub fn filtered_bases(&self) -> Vec<&str> {
+        let bases: BTreeSet<&str> = self
+            .views
+            .iter()
+            .filter(|v| v.kind == ViewKind::Filtered)
+            .filter_map(|v| v.filter.as_ref())
+            .map(|f| f.base.value.as_str())
+            .collect();
+        self.views
+            .iter()
+            .map(|v| v.key.as_str())
+            .filter(|k| bases.contains(k))
+            .collect()
+    }
+
+    /// The key of the view the editor opens when no last-viewed view
+    /// applies (EDIT-13): the view carrying `default`; `None` when no view
+    /// does. Serves P2-338.
+    // TODO(srs): P2-338, several `default` views. Reading taken (B
+    // landscape-filtered 16, Structurizr: each `default` sets the view
+    // set's default key): the last one declared wins.
+    pub fn default_view_key(&self) -> Option<&str> {
+        // DECISION: the last `default` declared wins, as each Structurizr
+        // `default` line sets the view set's default key again.
+        self.views
+            .iter()
+            .rev()
+            .find(|v| v.default.is_some())
+            .map(|v| v.key.as_str())
     }
 
     /// The canonical edit key of `id`: its id under flat identifiers, its
@@ -2256,6 +2552,26 @@ pub enum ModelErrorKind {
         /// The expression as written.
         expression: String,
     },
+    /// A `filtered` view whose base key names no view declared before it
+    /// (P2-306, DSL-5).
+    UnknownView {
+        /// The base key as written.
+        key: String,
+    },
+    /// A `filtered` view whose base is not a system landscape, system
+    /// context, container or component view (P2-306).
+    InvalidBaseView {
+        /// The base key as written.
+        key: String,
+        /// The base view's kind.
+        kind: ViewKind,
+    },
+    /// An element other than a custom element (`element`, P2-17) in a
+    /// custom view's `include` (P2-317).
+    NotCustomElement {
+        /// The id as written.
+        id: String,
+    },
 }
 
 /// A model error: what, where, and its line and column (DSL-4, DSL-5).
@@ -2465,6 +2781,19 @@ fn phase_2_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
         ModelErrorKind::MixedOperators { expression } => write!(
             f,
             "`{expression}` mixes `&&` and `||` — split it into separate lines"
+        ),
+        ModelErrorKind::UnknownView { key } => write!(
+            f,
+            "no view with key `{key}` is declared before this line — declare the base view first or fix the key"
+        ),
+        ModelErrorKind::InvalidBaseView { key, kind } => write!(
+            f,
+            "`{key}` is a {} view, which cannot be the base of a filtered view — use a systemLandscape, systemContext, container or component view",
+            kind.keyword()
+        ),
+        ModelErrorKind::NotCustomElement { id } => write!(
+            f,
+            "`{id}` is not a custom element — a custom view can only include elements declared with `element`"
         ),
         _ => f.write_str("the file cannot become a model here"),
     }
@@ -4733,11 +5062,147 @@ impl Builder<'_> {
         }
         view.description = strings.next();
         if kind == ViewKind::Filtered {
-            self.no_block(statement, head)?;
+            view.filter = Some(self.filter(head)?);
+            if statement.block.is_some() {
+                self.filtered_body(statement, head, &mut view)?;
+            }
         } else if statement.block.is_some() {
             self.view_body(statement, head, &mut view)?;
         }
+        if kind == ViewKind::Custom {
+            self.check_custom(&view)?;
+        }
+        if kind.drawable() {
+            self.check_positions(&view)?;
+        }
         self.model.views.push(view);
+        Ok(())
+    }
+
+    /// P2-317: a custom view includes custom elements only. An id of
+    /// another element is `NotCustomElement`; an `element.type` of another
+    /// type is `InvalidValue` naming it, as Structurizr 6.2.4 refuses it
+    /// ("not valid for this view"). Other expressions keep only the custom
+    /// elements they select (`Model::included`), as there.
+    fn check_custom(&self, view: &ViewSpec) -> Result<(), ModelError> {
+        fn bad_type(e: &Expression) -> Option<&str> {
+            match e {
+                Expression::ElementType { kind, name } if *kind != Some(ElementKind::Custom) => Some(name),
+                Expression::And(parts) | Expression::Or(parts) => parts.iter().find_map(bad_type),
+                _ => None,
+            }
+        }
+        for selector in &view.include {
+            match &selector.value {
+                Selector::Element(id) if self.model.element(*id).kind != ElementKind::Custom => {
+                    return Err(self.error(
+                        ModelErrorKind::NotCustomElement {
+                            id: self.written(selector.span).trim_matches('"').to_owned(),
+                        },
+                        selector.span,
+                    ));
+                }
+                Selector::Expression(e) => {
+                    if let Some(name) = bad_type(e) {
+                        return Err(self.error(
+                            ModelErrorKind::InvalidValue {
+                                construct: "element.type".into(),
+                                value: name.to_owned(),
+                            },
+                            selector.span,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The base, mode and tags of `filtered <base> <include|exclude>
+    /// <tags>`; the base must be a static view declared above (P2-306).
+    // TODO(srs): P2-306, base kinds and declaration order. DECISION:
+    // reading taken (B landscape-filtered 2), checked against Structurizr
+    // 6.2.4 `FilteredViewParser`: the base is looked up when the line is
+    // read, so it must be declared above (`UnknownView`); a system
+    // landscape, system context, container or component view, and also a
+    // deployment view as Structurizr allows (drawn when phase 3 draws its
+    // base); any other kind is `InvalidBaseView`.
+    fn filter(&self, head: &Head<'_>) -> Result<Filter, ModelError> {
+        let base = head.literal(1);
+        let Some(found) = self.model.view(&base.value) else {
+            return Err(self.error(
+                ModelErrorKind::UnknownView {
+                    key: base.value.clone(),
+                },
+                base.span,
+            ));
+        };
+        let fits = matches!(
+            found.kind,
+            ViewKind::SystemLandscape
+                | ViewKind::SystemContext
+                | ViewKind::Container
+                | ViewKind::Component
+                | ViewKind::Deployment
+        );
+        if !fits {
+            return Err(self.error(
+                ModelErrorKind::InvalidBaseView {
+                    key: base.value.clone(),
+                    kind: found.kind,
+                },
+                base.span,
+            ));
+        }
+        let mode = if head.is_keyword(2, "include") {
+            FilterMode::Include
+        } else {
+            FilterMode::Exclude
+        };
+        Ok(Filter {
+            base,
+            mode: Spanned {
+                value: mode,
+                span: head.span(2),
+            },
+            tags: head.literal(3),
+        })
+    }
+
+    /// The body of a filtered view: `default`, `title`, `description` and
+    /// `properties` (P2-307); any other line is an error naming it.
+    // TODO(srs): P2-307, c4rizer extensions in a filtered body. DECISION:
+    // reading taken (B landscape-filtered 1): refused like `include`,
+    // naming the word (`UnknownConstruct`), never ignored (DSL-4); the
+    // layout lives in the base view's lines (P2-9).
+    fn filtered_body(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        view: &mut ViewSpec,
+    ) -> Result<(), ModelError> {
+        let mut seen_description = false;
+        self.each(self.block(statement, head)?, &mut |this, inner| {
+            let head = this.head(inner)?;
+            if this.common(inner, &head)? {
+                return Ok(());
+            }
+            if head.is_keyword(0, "properties") {
+                let properties = this.properties(inner, &head)?;
+                view.properties.extend(properties);
+                return Ok(());
+            }
+            let allowed = ["default", "title", "description"]
+                .iter()
+                .any(|k| head.is_keyword(0, k));
+            if !allowed {
+                return Err(this.reject(&head, 0));
+            }
+            this.view_line(&head, view, &mut seen_description)?;
+            this.no_block(inner, &head)?;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -4813,16 +5278,31 @@ impl Builder<'_> {
                 // P2-178: kept byte for byte, no effect.
                 this.no_arguments(&head)?;
                 this.block(inner, &head)?;
+                // P2-300, P2-316: on the kinds this row draws, the P2-3
+                // notice says it draws nothing until phase 3.
+                if matches!(view.kind, ViewKind::SystemLandscape | ViewKind::Custom) {
+                    this.notice("animation", Some(&view.key), head.span_of(0, head.len() - 1));
+                }
                 return Ok(());
             }
-            match view.kind {
+            let kind = view.kind;
+            match kind {
                 ViewKind::Dynamic if this.dynamic_step(&head)? => {
                     this.no_block(inner, &head)?;
                     return Ok(());
                 }
-                ViewKind::Image if this.image_source(&head, &view.key)? => {
+                ViewKind::Image if this.image_source(&head, view)? => {
                     this.no_block(inner, &head)?;
                     return Ok(());
+                }
+                // P2-320: besides the source, an image view holds only
+                // `default`, `title` and `description` (and `properties`).
+                ViewKind::Image
+                    if !["default", "title", "description"]
+                        .iter()
+                        .any(|k| head.is_keyword(0, k)) =>
+                {
+                    return Err(this.reject(&head, 0));
                 }
                 ViewKind::Deployment
                     if head.is_keyword(0, "include") || head.is_keyword(0, "exclude") =>
@@ -4901,9 +5381,16 @@ impl Builder<'_> {
         Ok(true)
     }
 
-    /// `plantuml|mermaid|kroki|image <source>` in an image view. False
-    /// when `head` is no source line.
-    fn image_source(&mut self, head: &Head<'_>, view: &str) -> Result<bool, ModelError> {
+    /// `plantuml|mermaid|kroki|image <source>` in an image view, kept in
+    /// `ViewSpec::image` (P2-320, P2-321). False when `head` is no source
+    /// line. A local file is read after the file is built (`theme::apply`
+    /// reads it through the loader into `ViewImage::asset`).
+    // DECISION: approved extra behaviour (landscape-filtered brief): a
+    // URL, PlantUML, Mermaid or Kroki source draws a placeholder naming
+    // it and gets a P2-3 notice; nothing is fetched (no network).
+    // DECISION: a second source line in one view is `DuplicateLine`, so no
+    // source is dropped silently (DSL-4).
+    fn image_source(&mut self, head: &Head<'_>, view: &mut ViewSpec) -> Result<bool, ModelError> {
         let min = if head.is_keyword(0, "kroki") { 3 } else { 2 };
         if !["plantuml", "mermaid", "kroki", "image"]
             .iter()
@@ -4917,12 +5404,38 @@ impl Builder<'_> {
         if head.len() > min {
             return Err(self.invalid(head, head.text(0), min));
         }
-        // P2-3: an external-source image view is accepted with no effect;
-        // `image <file>` is landscape-filtered's (P2-320).
-        if !head.is_keyword(0, "image") {
-            let subject = head.text(0).to_ascii_lowercase();
-            self.notice(&subject, Some(view), head.span_of(0, head.len() - 1));
+        if view.image.is_some() {
+            return Err(self.duplicate_line("image", head));
         }
+        let span = head.span_of(0, head.len() - 1);
+        let keyword = head.text(0).to_ascii_lowercase();
+        let value = head.literal(1);
+        let lower = value.value.to_ascii_lowercase();
+        let url = lower.starts_with("https://") || lower.starts_with("http://");
+        let source = match keyword.as_str() {
+            "plantuml" => ImageSource::PlantUml(value),
+            "mermaid" => ImageSource::Mermaid(value),
+            "kroki" => ImageSource::Kroki {
+                format: value,
+                source: head.literal(2),
+            },
+            _ if url => ImageSource::Url(value),
+            _ => ImageSource::File(value),
+        };
+        // P2-3 (P2-321, B landscape-filtered 10d): accepted, not drawn.
+        match &source {
+            ImageSource::Url(u) => {
+                let subject = format!("image {} (not fetched, a placeholder is drawn)", u.value);
+                self.notice(&subject, Some(&view.key), span);
+            }
+            ImageSource::File(_) => {}
+            _ => self.notice(&keyword, Some(&view.key), span),
+        }
+        view.image = Some(ViewImage {
+            source,
+            asset: None,
+            span,
+        });
         Ok(true)
     }
 
@@ -5074,8 +5587,12 @@ impl Builder<'_> {
                 }
             }
             "hide" => view.hide.push(self.hide(head)?),
-            // P2-178: no effect until landscape-filtered (P2-338).
-            "default" => self.no_arguments(head)?,
+            // P2-338. DECISION: a second `default` in the same view is
+            // accepted, as Structurizr just sets the default key again.
+            "default" => {
+                self.no_arguments(head)?;
+                view.default = Some(head.span_of(0, head.len() - 1));
+            }
             "at" => {
                 let (element, x, y) = self.box_line(head, false)?;
                 view.positions.push(At {
@@ -5099,7 +5616,13 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// The entries of an `include` or `exclude` line.
+    /// The entries of an `include` or `exclude` line: `*`, `*?` (P2-323),
+    /// an element id, a relationship id (P2-341) or an expression
+    /// (P2-324..P2-337).
+    // DECISION: a bare `&&`, `||` or `->` token is the unquoted half of an
+    // expression holding whitespace (P2-337): an error naming the token,
+    // as Structurizr reports "the element/relationship `&&` does not
+    // exist".
     fn selectors(&self, head: &Head<'_>) -> Result<Vec<Spanned<Selector>>, ModelError> {
         if head.len() < 2 {
             return Err(self.missing(head, "element"));
@@ -5107,18 +5630,33 @@ impl Builder<'_> {
         let mut out = Vec::new();
         for i in 1..head.len() {
             let span = head.span(i);
-            let t = head.text(i);
-            let expression = head.kind(i) != Some(TokenKind::Word) || is_expression(t);
-            if expression {
-                // DECISION: P2-178: an expression or relationship pattern
-                // is kept byte for byte and selects nothing until
-                // landscape-filtered (P2-20) gives it an effect.
-                continue;
+            if !matches!(head.kind(i), Some(TokenKind::Word | TokenKind::String)) {
+                return Err(self.invalid(head, head.text(0), i));
+            }
+            let t = head.literal(i).value;
+            if ["&&", "||", "->"].contains(&t.as_str()) {
+                return Err(self.invalid(head, head.text(0), i));
             }
             let value = if t == "*" {
                 Selector::All
+            } else if t == "*?" {
+                Selector::AllReluctant
+            } else if is_expression(&t) {
+                Selector::Expression(self.view_expression(&t, span)?)
+            } else if let Some(id) = self.resolve(&t, None) {
+                Selector::Element(id)
+            } else if let Some(&r) = self.relationship_keys.get(&t.to_ascii_lowercase()) {
+                Selector::Relationship(r)
+            } else if self
+                .model
+                .groups
+                .iter()
+                .any(|g| g.key.as_ref().is_some_and(|k| k.value.eq_ignore_ascii_case(&t)))
+            {
+                // A group id selects its members (Structurizr 6.2.4).
+                Selector::Expression(self.view_expression(&t, span)?)
             } else {
-                Selector::Element(self.view_element(head, i)?.value)
+                return Err(self.error(ModelErrorKind::UndeclaredId { id: t }, span));
             };
             out.push(Spanned { value, span });
         }
@@ -5771,6 +6309,22 @@ const DYNAMIC_LINES: &[&str] = &[
     "bus",
 ];
 
+/// True for a relationship expression (P2-332): a relationship form, or
+/// `&&`/`||` over relationship forms.
+pub(crate) fn is_relationship_expression(e: &Expression) -> bool {
+    match e {
+        Expression::Relationships { .. }
+        | Expression::RelationshipTag { .. }
+        | Expression::RelationshipProperty { .. } => true,
+        // An empty `Or` comes only from a relationship pattern whose
+        // expression side selects nothing.
+        Expression::And(parts) | Expression::Or(parts) => {
+            parts.first().is_none_or(is_relationship_expression)
+        }
+        _ => false,
+    }
+}
+
 /// True for an `include`/`exclude` entry that is an expression or a
 /// relationship pattern, not `*` or an id (P2-178).
 fn is_expression(t: &str) -> bool {
@@ -5810,6 +6364,9 @@ fn new_view(
         sizes: Vec::new(),
         span,
         properties: Vec::new(),
+        filter: None,
+        image: None,
+        default: None,
     }
 }
 

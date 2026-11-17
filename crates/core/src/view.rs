@@ -70,9 +70,12 @@ use std::collections::BTreeMap;
 
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
+    Expression, ImageSource, Selector, is_relationship_expression,
+};
+use crate::model::{
     ElementId, ElementKind, GroupId, ImpliedRelationships, Mode, Model, RelationshipId,
-    ResolvedBoundaryStyle, ResolvedRelationshipStyle, ResolvedStyle, ViewKind, ViewOptions,
-    ViewScope, ViewSpec,
+    ResolvedBoundaryStyle, ResolvedRelationshipStyle, ResolvedStyle, ViewImage, ViewKind,
+    ViewOptions, ViewScope, ViewSpec,
 };
 
 /// Index of a box in `ViewPlan::boxes`, valid for one plan only. It is
@@ -287,6 +290,10 @@ pub struct ViewPlan {
     /// The mode styles were resolved in; `scene` draws its defaults
     /// (P2-431). Serves P2-430.
     pub mode: Mode,
+    /// The picture of an `image` view, which holds no boxes, edges or
+    /// boundaries; `None` for every other kind. Serves P2-19, P2-320,
+    /// P2-321.
+    pub image: Option<ViewImage>,
 }
 
 impl ViewPlan {
@@ -416,6 +423,12 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
 ///
 /// As `plan`.
 pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
+    if view.kind == ViewKind::Filtered {
+        return filtered_plan(model, view, mode);
+    }
+    if view.kind == ViewKind::Image {
+        return image_plan(view, mode);
+    }
     let boxes: Vec<PlanBox> = model
         .included(view)
         .into_iter()
@@ -423,6 +436,7 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         .map(|(i, element)| plan_box(model, view, index_u32(i), element, mode))
         .collect();
     let mut edges = plan_edges(model, &boxes);
+    filter_relationships(model, view, &boxes, &mut edges);
     filter_focus_and_hide(model, view, &boxes, &mut edges);
     for (i, e) in edges.iter_mut().enumerate() {
         e.id = EdgeId(index_u32(i));
@@ -442,11 +456,216 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         edges,
         boundaries,
         mode,
+        image: None,
+    }
+}
+
+/// The plan of an `image` view (P2-320): no box, line or boundary, only
+/// its picture, its title and its subtitle.
+// DECISION: with no `title` and no description, the drawn title is the
+// file's name (the last segment of a file path or URL), as Structurizr
+// 6.2.4 titles such a view (checked).
+fn image_plan(view: &ViewSpec, mode: Mode) -> ViewPlan {
+    let title = view.drawn_title().map(|t| t.value.clone()).or_else(|| {
+        view.image.as_ref().and_then(|i| match &i.source {
+            ImageSource::File(f) | ImageSource::Url(f) => {
+                f.value.rsplit('/').next().filter(|n| !n.is_empty()).map(str::to_owned)
+            }
+            _ => None,
+        })
+    });
+    ViewPlan {
+        key: view.key.clone(),
+        kind: view.kind,
+        scope: view.scope.clone(),
+        title,
+        subtitle: view.subtitle.as_ref().map(|t| t.value.clone()),
+        options: view.options(),
+        boxes: Vec::new(),
+        edges: Vec::new(),
+        boundaries: Vec::new(),
+        mode,
+        image: view.image.clone(),
+    }
+}
+
+/// The plan of a `filtered` view (P2-9): its base view's plan, keeping
+/// the boxes whose element passes the tag filter and the lines whose two
+/// boxes are kept and whose relationships pass it (P2-308, P2-309). Boxes
+/// keep the base view's `at` and `size` lines; the key, title and
+/// description are the filtered view's own, the options and subtitle the
+/// base view's (P2-311). An unknown base (never built by `model`) gives
+/// an empty plan.
+// TODO(srs): P2-310, a lifted line merging several relationships.
+// DECISION: reading taken (B landscape-filtered 3): the line is kept when
+// at least one of its relationships passes, and drawn re-merged from the
+// survivors only, so its winner, label and style come from the first
+// survivor.
+// TODO(srs): P2-311, options of a filtered view. DECISION: reading taken
+// (B landscape-filtered 4): the base view's options, `subtitle` included
+// (a filtered body cannot hold one, P2-307).
+fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
+    let base = model.base_view(view);
+    let (Some(base), Some(filter)) = (base.filter(|b| b.kind != ViewKind::Filtered), view.filter.as_ref()) else {
+        return ViewPlan {
+            key: view.key.clone(),
+            kind: view.kind,
+            scope: view.scope.clone(),
+            title: view.drawn_title().map(|t| t.value.clone()),
+            subtitle: None,
+            options: view.options(),
+            boxes: Vec::new(),
+            edges: Vec::new(),
+            boundaries: Vec::new(),
+            mode,
+            image: None,
+        };
+    };
+    let full = plan_in(model, base, mode);
+    // Old box id -> new box id, for the kept boxes.
+    let mut renumber: BTreeMap<BoxId, BoxId> = BTreeMap::new();
+    let mut boxes = Vec::new();
+    for b in full.boxes {
+        if filter.passes(&b.tags) {
+            let id = BoxId(index_u32(boxes.len()));
+            renumber.insert(b.id, id);
+            boxes.push(PlanBox { id, ..b });
+        }
+    }
+    let mut edges: Vec<PlanEdge> = full
+        .edges
+        .into_iter()
+        .filter_map(|e| {
+            let source = *renumber.get(&e.source)?;
+            let destination = *renumber.get(&e.destination)?;
+            let survivors: Vec<RelationshipId> = e
+                .relationships
+                .iter()
+                .copied()
+                .filter(|&r| filter.passes(&model.relationship(r).tags))
+                .collect();
+            let winner = *survivors.first()?;
+            let r = model.relationship(winner);
+            Some(PlanEdge {
+                id: EdgeId(0),
+                source,
+                destination,
+                relationships: survivors,
+                description: r.description.as_ref().map(|d| d.value.clone()),
+                technology: r.technology.as_ref().map(|t| t.value.clone()),
+                style: model.relationship_style_of_in(winner, mode),
+                style_tag: style_tag(model, winner, mode),
+            })
+        })
+        .collect();
+    edges.sort_by_key(PlanEdge::winner);
+    for (i, e) in edges.iter_mut().enumerate() {
+        e.id = EdgeId(index_u32(i));
+    }
+    let boundaries = full
+        .boundaries
+        .into_iter()
+        .filter_map(|b| {
+            let members: Vec<BoxId> = b.members.iter().filter_map(|m| renumber.get(m).copied()).collect();
+            (!members.is_empty()).then_some(Boundary { members, ..b })
+        })
+        .collect();
+    ViewPlan {
+        key: view.key.clone(),
+        kind: view.kind,
+        scope: view.scope.clone(),
+        title: view.drawn_title().map(|t| t.value.clone()),
+        subtitle: full.subtitle,
+        options: full.options,
+        boxes,
+        edges,
+        boundaries,
+        mode,
+        image: None,
     }
 }
 
 /// The CORE-1 boundary margin: 40px.
 const BOUNDARY_MARGIN_UNITS: i32 = 4;
+
+/// The relationship selectors, on the lines after lifting (CORE-5):
+/// `include *?` keeps only the lines touching the scope (C1) or its
+/// children (C2, C3) (P2-323); `exclude <r>` (P2-341) and an excluded
+/// relationship expression or pattern (P2-332, P2-333) remove the lines
+/// they match. Boxes never change (P2-334).
+// DECISION: a drawn line is matched as Structurizr matches the implied
+// relationship it draws (checked against 6.2.4): its source and
+// destination are its boxes' elements, its tags and properties its
+// winner's; `exclude <r>` removes the line whose winner is `r`.
+// DECISION: with `*?`, a line touching an element that another `include`
+// entry names is kept too, as Structurizr adds that element with its
+// relationships to the elements already in the view.
+fn filter_relationships(model: &Model, view: &ViewSpec, boxes: &[PlanBox], edges: &mut Vec<PlanEdge>) {
+    let reluctant = view.include.iter().any(|s| s.value == Selector::AllReluctant)
+        && !view.include.iter().any(|s| s.value == Selector::All);
+    if reluctant && let Some(scope) = view.scope.element() {
+        let core = |b: BoxId| {
+            let e = boxes[b.0 as usize].element;
+            match view.kind {
+                ViewKind::SystemContext => e == scope,
+                ViewKind::Container | ViewKind::Component => model.element(e).parent == Some(scope),
+                _ => true,
+            }
+        };
+        let named: Vec<ElementId> = view
+            .include
+            .iter()
+            .flat_map(|s| match &s.value {
+                Selector::Element(id) => vec![*id],
+                Selector::Expression(e) if !is_relationship_expression(e) => model.select_elements(e),
+                _ => Vec::new(),
+            })
+            .collect();
+        let extra = |b: BoxId| named.contains(&boxes[b.0 as usize].element);
+        edges.retain(|e| core(e.source) || core(e.destination) || extra(e.source) || extra(e.destination));
+    }
+    for selector in &view.exclude {
+        match &selector.value {
+            Selector::Relationship(r) => edges.retain(|e| e.winner() != *r),
+            Selector::Expression(x) if is_relationship_expression(x) => edges.retain(|e| {
+                let source = boxes[e.source.0 as usize].element;
+                let destination = boxes[e.destination.0 as usize].element;
+                !line_matches(model, x, source, destination, e.winner())
+            }),
+            _ => {}
+        }
+    }
+}
+
+/// True when the line from `source` to `destination` drawing `winner`
+/// matches relationship expression `x`.
+fn line_matches(
+    model: &Model,
+    x: &Expression,
+    source: ElementId,
+    destination: ElementId,
+    winner: RelationshipId,
+) -> bool {
+    let r = model.relationship(winner);
+    match x {
+        Expression::Relationships {
+            source: s,
+            destination: d,
+        } => s.is_none_or(|s| s == source) && d.is_none_or(|d| d == destination),
+        Expression::RelationshipTag { tags, negated } => {
+            tags.iter().all(|t| r.tags.contains(t)) != *negated
+        }
+        Expression::RelationshipProperty { name, value } => r
+            .properties
+            .iter()
+            .any(|p| p.name.value == *name && p.value.value == *value),
+        Expression::And(parts) => {
+            !parts.is_empty() && parts.iter().all(|p| line_matches(model, p, source, destination, winner))
+        }
+        Expression::Or(parts) => parts.iter().any(|p| line_matches(model, p, source, destination, winner)),
+        _ => false,
+    }
+}
 
 /// Keeps only edges touching a `focus` box, then drops `hide` pairs;
 /// ids are lifted to their nearest drawn ancestor or ignored (DSL-7).
@@ -546,9 +765,17 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode)
     let scope = view.scope.element()?;
     match view.kind {
         ViewKind::Container | ViewKind::Component => {}
-        // A context view has none; the kinds after phase 1 are never
+        // A context view has none; landscape, custom and image views have
+        // no scope boundary (P2-8, P2-19); a filtered view keeps its base
+        // view's (`filtered_plan`); dynamic and deployment views are not
         // planned in phase 2 (P2-2).
-        _ => return None,
+        ViewKind::SystemContext
+        | ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => return None,
     }
     let members: Vec<BoxId> = boxes
         .iter()
