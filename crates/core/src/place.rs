@@ -1,6 +1,6 @@
 //! Automatic placement: gives a grid position to every box of a view
 //! plan that has none, never moving a placed box (CORE-22, 23). A view
-//! with no kept box is placed in layers (P2-26, P2-100..P2-110): ranks
+//! with no kept box is placed in layers (P2-26, P2-100..P2-114): ranks
 //! follow the edges, people on top, externals at the row ends, pitch
 //! grown where a box or label needs it, candidates compared by how they
 //! route; otherwise slots are scored by straight-line crossings.
@@ -145,8 +145,10 @@ impl Keep {
 /// boundary rectangle (`ViewPlan::boundary_rect`); auto-placed boxes
 /// sharing a row are at least 340px apart centre to centre and rows at
 /// least 280px apart (CORE-23). With no box kept, boxes sit in layers
-/// (P2-100..P2-110): an edge off every cycle and not into a person points
-/// down, people are on the top row, externals at the row ends, and row
+/// (P2-100..P2-110): an edge off every cycle and not into a person or an
+/// outward-facing external (an external whose lines all go to people)
+/// points down, people and outward-facing externals are on the top row,
+/// externals at the row ends, and row
 /// and column pitch grow where a box or a label needs room; of several
 /// searched layouts the one that routes best is returned. Otherwise slots
 /// are chosen to minimise straight-line crossings between edge ends, then
@@ -155,7 +157,7 @@ impl Keep {
 /// auto-placing it returns the kept centres without searching (EDIT-25).
 /// Out-of-range `keep.moved` entries and undrawn `keep.previous` entries
 /// are ignored. Serves CORE-22, CORE-23, CORE-25, CORE-29, EDIT-4,
-/// EDIT-20, EDIT-25, P2-26, P2-100..P2-110.
+/// EDIT-20, EDIT-25, P2-26, P2-100..P2-114.
 pub fn place(plan: &ViewPlan, keep: &Keep) -> Vec<Point> {
     let kept = kept_centres(plan, keep);
     if kept.iter().all(Option::is_some) {
@@ -170,7 +172,7 @@ pub fn place(plan: &ViewPlan, keep: &Keep) -> Vec<Point> {
     layout.finish()
 }
 
-// Layered placement (SRS 4.6 P2-26, P2-100..P2-110), used when no box of
+// Layered placement (SRS 4.6 P2-26, P2-100..P2-114), used when no box of
 // the view is kept. Stages: ranks (rows), a seed order per row, the
 // threshold-accepting search restricted to moves inside a row, then a
 // lattice whose per-gap pitch grows where a box needs it.
@@ -218,49 +220,59 @@ const TALL: Family = Family {
     through: W_THROUGH,
     sink: false,
 };
-// DECISION: eight candidates, each with its own search seed (its index),
-// and the one that routes best wins (`routed_score`). Measured on the
-// example (workspace.dsl and example.dsl without `at` lines) and the
-// place.py graph, 2026-11-15: a single search is noisy on the routed
-// result (C3-startup 8 to 16 crossings by seed alone), and the
-// straight-line cost does not rank layouts the way routing does. The
-// mix of families was the best of the sets tried; the `sink: true`
-// variants are skipped on views with nothing to sink.
+// DECISION: seven candidates, each a search family, the seed index of
+// its search (`SEED ^ k * 0x9E37_79B9`) and spare columns added to the
+// family's own; the one that routes best wins (`routed_score`). A
+// single search is noisy on the routed result (C3-startup 8 to 16
+// crossings by seed alone), and the straight-line cost does not rank
+// layouts the way routing does; the `sink: true` variants are skipped on
+// views with nothing to sink.
+// DECISION: the set, measured 2026-11-17 on tests/data/example/
+// workspace.dsl, example.dsl without `at` lines, the core_31 file without
+// `at` lines and the place.py graph (prototype pq2-measure ca5f510):
+// dev's candidates 5 and 7 never won on any input and are dropped; the
+// extra-spare-column copies (1,1) and (4,1) are where the length gains
+// come from (C2 3554 -> 2778 px, C3-serving 14 161 -> 9272 px, same
+// crossings), and C3-startup stays on a 1000-weight candidate (8
+// crossings, 17 733 px). (6,0) is kept because
+// `core_23_example_no_worse_than_place_py` pins straight-line crossings
+// on the place.py graph and its best layout comes from seed 6 (without
+// it: 32 straight crossings against a pin of 4); dropping it would save
+// about 170 ms on C3-startup. The seed index is the original family's,
+// so dropping a candidate never renumbers the others.
 // DECISION: the two sunk NARROW candidates search with a straight-line
 // crossing worth 100 instead of 1000 (`W_CROSS_LOOSE`): at 1000 one
 // straight crossing outweighs 10 000 px of line length, and the search
-// stretched C3-serving to 17 003 px and 3 routed crossings. Measured
-// 2026-11-15 on tests/data/example/workspace.dsl: these two candidates
-// win C2 (3554 px) and C3-serving (1 crossing, 14 161 px); C3-startup is
-// still won by a 1000-weight candidate (8 crossings, 17 733 px).
-/// Candidates searched for a view with no kept box.
-const FAMILIES: [Family; 8] = [
-    NARROW,
-    Family {
-        sink: true,
-        cross: W_CROSS_LOOSE,
-        ..NARROW
-    },
-    NARROW,
-    Family {
-        sink: true,
-        cross: W_CROSS_LOOSE,
-        ..NARROW
-    },
-    TALL,
-    Family { sink: true, ..TALL },
-    TALL,
-    NARROW,
+// stretched C3-serving to 17 003 px and 3 routed crossings (2026-11-15).
+/// Candidates searched for a view with no kept box: (family, seed index,
+/// extra spare columns).
+const CANDIDATES: [(Family, u64, i32); 7] = [
+    (NARROW, 0, 0),
+    (NARROW_SUNK_LOOSE, 1, 1),
+    (NARROW, 2, 0),
+    (NARROW_SUNK_LOOSE, 3, 0),
+    (TALL, 4, 0),
+    (TALL, 4, 1),
+    (TALL, 6, 0),
 ];
+/// NARROW with outside sinks lowered and a loose straight-crossing
+/// weight.
+const NARROW_SUNK_LOOSE: Family = Family {
+    sink: true,
+    cross: W_CROSS_LOOSE,
+    ..NARROW
+};
 
 // DECISION: candidates are compared after a cheap routing pass (one edge
-// order, four rip-up rounds), not the full `RouteConfig::DEFAULT`: about a
-// third of the time on the example, and the same choice on every example
-// view but C3-serving of workspace.dsl (3 routed crossings instead of 2).
+// order, one rip-up round), not the full `RouteConfig::DEFAULT`, which
+// only the winner gets. Measured 2026-11-17: one round instead of four
+// cuts placement time by about 35% with the same winner on every example
+// view under dev's eight candidates; under the seven above the results
+// are C2 2778 px, C3-serving 9272 px, C3-startup 17 733 px.
 /// Router settings used to compare candidates.
 const PROBE: RouteConfig = RouteConfig {
     orders: 1,
-    max_iterations: 4,
+    max_iterations: 1,
 };
 // DECISION: one routed crossing is worth 10 000 px of line length and
 // straight-line crossings between box centres are not scored. Measured on
@@ -276,7 +288,7 @@ const SCORE_CROSSING_PX: i64 = 10_000;
 /// `routed_score`: px one label over another line (L23) is worth.
 const SCORE_OVER_LINE_PX: i64 = 3_000;
 
-/// Centres of every box of a plan with no kept box (P2-100..P2-110).
+/// Centres of every box of a plan with no kept box (P2-100..P2-114).
 fn layered(plan: &ViewPlan) -> Vec<Point> {
     let rank = ranks(plan);
     let mut sunk = rank.clone();
@@ -291,9 +303,10 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
         base.ranked.below[s].push(d);
     }
     base.ranked.top_row = i32::from(plan.boxes.iter().any(|b| b.kind == ElementKind::Person));
+    base.ranked.pinned = outward_facing(plan);
     let never = AtomicBool::new(false);
     let mut best: Option<((usize, usize, i64), Vec<Point>)> = None;
-    for (k, fam) in FAMILIES.iter().enumerate() {
+    for &(fam, k, extra_cols) in &CANDIDATES {
         if fam.sink && sunk == rank {
             continue;
         }
@@ -302,11 +315,11 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
         l.tune.through = fam.through;
         l.tune.threshold = fam.threshold;
         l.tune.moves_per_box = fam.moves_per_box;
-        l.tune.seed = SEED ^ u64::try_from(k).unwrap_or(0).wrapping_mul(0x9E37_79B9);
+        l.tune.seed = SEED ^ k.wrapping_mul(0x9E37_79B9);
         l.seed_layered(
             if fam.sink { &sunk } else { &rank },
             fam.spare_rows,
-            fam.spare_cols,
+            fam.spare_cols + extra_cols,
         );
         l.search();
         let centres = l.finish_layered();
@@ -374,10 +387,44 @@ fn lower_outside_sinks(plan: &ViewPlan, rank: &mut [i32]) {
     }
 }
 
-/// The edges between two boxes that are not people, as box indices, in
-/// plan order: the edges ranks are taken over.
-fn inner_edges(plan: &ViewPlan) -> Vec<(usize, usize)> {
+/// The outward-facing externals of `plan` (P2-100, P2-103): boxes with
+/// `PlanBox::external` that are not people, with at least one drawn
+/// outgoing edge, every one ending on a person (Push services). They
+/// rank with the people.
+// DECISION: a self-edge is not an outgoing edge here, as everywhere in
+// ranking (`inner_edges`, `ranks` skip `s == d`).
+// DECISION: "only when the view has a person" (P2-103) needs no test of
+// its own: an outward-facing external has an edge to a person, so a view
+// without one has none.
+// DECISION: such a box keeps `PlanBox::external` for the row-end rule
+// (P2-104, `Ranked::level` 0), so on the people row it sits at an end.
+fn outward_facing(plan: &ViewPlan) -> Vec<bool> {
+    let n = plan.boxes.len();
     let person = |b: usize| plan.boxes[b].kind == ElementKind::Person;
+    let mut to_person = vec![false; n];
+    let mut to_other = vec![false; n];
+    for e in &plan.edges {
+        let (s, d) = (e.source.0 as usize, e.destination.0 as usize);
+        if s == d {
+            continue;
+        }
+        if person(d) {
+            to_person[s] = true;
+        } else {
+            to_other[s] = true;
+        }
+    }
+    (0..n)
+        .map(|b| plan.boxes[b].external && !person(b) && to_person[b] && !to_other[b])
+        .collect()
+}
+
+/// The edges between two boxes that are neither people nor outward-facing
+/// externals, as box indices, in plan order: the edges ranks are taken
+/// over.
+fn inner_edges(plan: &ViewPlan) -> Vec<(usize, usize)> {
+    let facing = outward_facing(plan);
+    let person = |b: usize| plan.boxes[b].kind == ElementKind::Person || facing[b];
     plan.edges
         .iter()
         .map(|e| (e.source.0 as usize, e.destination.0 as usize))
@@ -430,12 +477,13 @@ fn ranks(plan: &ViewPlan) -> Vec<i32> {
         }
     }
     let layer = layers(n, &inner_edges(plan));
+    let facing = outward_facing(plan);
     let top = i32::from(person.iter().any(|&p| p));
     let mut rank = vec![0_i32; n];
     let mut width = BTreeMap::<i32, usize>::new();
     let mut loose = Vec::new();
     for b in 0..n {
-        if person[b] {
+        if person[b] || facing[b] {
             rank[b] = 0;
         } else if degree[b] == 0 {
             loose.push(b);
@@ -617,6 +665,9 @@ struct Ranked {
     /// The first row a non-person may use (1 when the view has a person,
     /// P2-103).
     top_row: i32,
+    /// Boxes held on row 0 with the people: the outward-facing externals
+    /// (`outward_facing`, P2-103).
+    pinned: Vec<bool>,
 }
 
 /// Settings of the threshold-accepting search.
@@ -725,6 +776,12 @@ impl<'a> Layout<'a> {
 
     fn is_person(&self, b: usize) -> bool {
         self.plan.boxes[b].kind == ElementKind::Person
+    }
+
+    /// Layered mode: box `b` must sit on row 0 (a person or an
+    /// outward-facing external, P2-103).
+    fn on_people_row(&self, b: usize) -> bool {
+        self.is_person(b) || self.ranked.pinned.get(b).copied().unwrap_or(false)
     }
 
     fn rect(&self, b: usize) -> Rect {
@@ -1018,7 +1075,7 @@ impl<'a> Layout<'a> {
     fn row_range(&self, b: usize) -> (i32, i32) {
         let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
         let (_, r0, _, r1) = self.window;
-        if self.is_person(b) {
+        if self.on_people_row(b) {
             return (0, 0);
         }
         let lo = self.ranked.above[b]
@@ -1039,7 +1096,7 @@ impl<'a> Layout<'a> {
     fn rank_ok(&self, b: usize) -> bool {
         let row = |o: usize| self.slot_of[o].map_or(0, |s| s.1);
         let r = row(b);
-        if self.is_person(b) {
+        if self.on_people_row(b) {
             return r == 0;
         }
         r >= self.ranked.top_row
@@ -1661,12 +1718,32 @@ fn label_px(plan: &ViewPlan, e: usize) -> Option<(i32, i32)> {
 
 /// Grid units of clear gap two boxes need for a label `extent` px long
 /// along the line between them (P2-105: `max(30, e/2) + max(50, e/2)`,
-/// from CORE-14's start and arrowhead gaps), rounded up to the grid.
+/// from CORE-14's start and arrowhead gaps), rounded up to the grid, and
+/// wide enough that a label centred on the line's middle grid point
+/// leaves at least `ARROW_LEN_PX` of line visible on each side.
+// DECISION: P2-105 is a lower bound read by the label centre; with
+// `e >= 100` it equals `e`, so the label covered the whole line and its
+// arrowhead (C2 Push services -> Witness, review of place-quality-2).
+// CORE-14's "50px from its arrowhead" read by the label edge would add
+// 80px per such gap; the smallest gap that keeps the arrowhead and a
+// stub at the start visible is `e + 2 * ARROW_LEN_PX`, plus one grid
+// unit when an odd unit count puts the middle grid point 5px off centre
+// (`label::candidates` sorts by distance from the middle, ties to the
+// start). The P2-105 bound still holds since this only widens.
 fn label_gap(extent: i32) -> i32 {
     let half = (extent + 1) / 2;
     let px = label::START_GAP_PX.max(half) + label::ARROW_GAP_PX.max(half);
-    (px + GRID_PX - 1) / GRID_PX
+    let mut units = (px.max(extent + 2 * ARROW_LEN_PX) + GRID_PX - 1) / GRID_PX;
+    while (units * GRID_PX - extent) / 2 - (units % 2) * GRID_PX / 2 < ARROW_LEN_PX {
+        units += 1;
+    }
+    units
 }
+
+/// Length of a drawn arrowhead along its line in px (`scene`'s private
+/// `ARROW_LEN_PX`, CORE-9 prototype); a label leaves this much of its line
+/// visible at each end of a same-row or same-column gap.
+const ARROW_LEN_PX: i32 = 10;
 
 /// The phase-1 slot window, inclusive (min col, min row, max col, max
 /// row), and the compactness anchor, for kept centres `kept` and lattice
@@ -2430,6 +2507,48 @@ mod tests {
         assert!(y("user") < y("app"), "user {} app {}", y("user"), y("app"));
         assert!(y("user") < y("db"), "user {} db {}", y("user"), y("db"));
         assert!(y("app") < y("db"), "app {} db {}", y("app"), y("db"));
+    }
+
+    #[test]
+    fn p2_100_outward_facing_external_exempt() {
+        // `push` is external and its only line goes to a person: it ranks
+        // with the people, and `sys -> push` may point up.
+        let src = workspace(
+            r#"        user = person "User" "A role."
+        sys = softwareSystem "System" "Does things."
+        push = softwareSystem "Push" "Delivers notifications." "External"
+        user -> sys "Uses"
+        sys -> push "Sends through"
+        push -> user "Delivers to"
+"#,
+            "        systemContext sys \"V\" {\n            include *\n        }",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        let y = |k: &str| at(&c, box_of(&m, &p, k)).y;
+        assert_eq!(y("push"), y("user"), "push {} user {}", y("push"), y("user"));
+        assert!(y("sys") > y("user"), "sys {} user {}", y("sys"), y("user"));
+    }
+
+    #[test]
+    fn p2_103_outward_facing_needs_a_person() {
+        // No person: `push` has a line to a non-person, so it is not
+        // outward-facing and stays under its caller.
+        let src = workspace(
+            r#"        sys = softwareSystem "System" "Does things."
+        push = softwareSystem "Push" "Delivers notifications." "External"
+        sys2 = softwareSystem "Other" "Receives."
+        sys -> push "Sends through"
+        push -> sys2 "Delivers to"
+"#,
+            "        systemContext sys \"V\" {\n            include *\n        }",
+        );
+        let m = model(&src);
+        let p = plan_of(&m, "V");
+        let c = place(&p, &Keep::default());
+        let y = |k: &str| at(&c, box_of(&m, &p, k)).y;
+        assert!(y("sys") < y("push"), "sys {} push {}", y("sys"), y("push"));
     }
 
     #[test]

@@ -975,11 +975,14 @@ with an `at` line, a `Keep::moved` entry or a `Keep::previous` entry.
   below, and its numbers are in P2-107/P2-108. `TODO(srs)`: the owner
   approves those numbers before they freeze.
 - **P2-100** In a view with no kept box, ranks run top to bottom
-  (Structurizr's `tb` default). Consider every drawn edge whose
-  destination is not a person and that lies on no directed cycle of the
-  view's edges, counting only edges that do not end on a person. For
-  each such edge, the source box's centre has a strictly smaller y than
-  the destination box's centre.
+  (Structurizr's `tb` default). An *outward-facing external* is an
+  auto-placed box with `PlanBox::external` that is not a person, has at
+  least one drawn outgoing edge, and whose drawn outgoing edges all end
+  on a person. Consider every drawn edge whose destination is neither a
+  person nor an outward-facing external, and that lies on no directed
+  cycle of the view's edges (counting only edges that end on neither).
+  For each such edge, the source box's centre has a strictly smaller y
+  than the destination box's centre.
 - **P2-101** A view whose edges, not counting edges that end on a
   person, contain a directed cycle is still placed in full and
   terminates: every box gets a centre (CORE-22), the edges outside every
@@ -991,7 +994,8 @@ with an `at` line, a `Keep::moved` entry or a `Keep::previous` entry.
 - **P2-103** In a view with no kept box, no auto-placed box has a centre
   y smaller than that of any auto-placed person (CORE-23 "people on the
   top row"), including when an edge points from a non-person to a
-  person.
+  person. When the view has a person, every outward-facing external
+  (P2-100) has the same centre y as the people.
 - **P2-104** In a view with no kept box, sort the auto-placed boxes that
   share a centre y by centre x. They read as zero or more external boxes
   (`PlanBox::external`, people excluded), then every non-external box,
@@ -1043,6 +1047,28 @@ with an `at` line, a `Keep::moved` entry or a `Keep::previous` entry.
   change auto-placed centres (parity table: "the arguments have no
   effect"). The same view with `autoLayout`, with `autoLayout lr 100
   50`, and with no `autoLayout` gives equal centres.
+- **P2-111** On each example view, `pipeline::build_view` with
+  `Keep::default()` takes under 1000 ms, and `place::place` alone under
+  600 ms. Both are measured as the median of 5 runs after one warm-up,
+  in a release build, checked by the release perf oracle
+  (`perf_p2_111_*`, 5.2). Placement reads no clock and has no time cap
+  (CORE-22, CORE-25, CORE-29).
+- **P2-112** On example view C2, Push services (an outward-facing
+  external, P2-100) has the same centre y as the people, sits at an end
+  of that row (P2-104), and no line from Push services crosses the
+  boundary rectangle more than once. On C3-serving, Push services has
+  the same centre y as the people.
+- **P2-113** On example views C2 and C3-serving, total line length
+  (P2-108 metric) is at most 2840 px and 9400 px, routed crossings stay
+  at 0 and 1, and L23 findings are at most 0 and 1. Measured 2026-11-17
+  after the CORE-14 arrowhead fix: 2838 px and 9370 px.
+- **P2-114** On example view C3-startup, routed crossings are at most 8,
+  L23 findings at most 5, and total length at most 17733 px. No-room
+  labels and labels over a box stay at 0 on every view (P2-107).
+- **P2-115** `TODO(srs)` (owner): on example view C3-startup, routed
+  crossings are at most 6, L23 findings at most 3, and total length at
+  most 25 000 px, within P2-111. Evidence: a routed hill climb reached
+  5 / 3 / 24665 px in 25 s (2026-11-17).
 
 dsl-breadth
 
