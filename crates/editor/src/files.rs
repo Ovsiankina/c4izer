@@ -281,6 +281,148 @@ impl Watcher {
     }
 }
 
+/// `model::FsLoader` that remembers every file a parse read and the hash
+/// of its bytes, in read order (P2-136, P2-141): core gives each file read
+/// the next `FileId` from 1 and reads each file once, so `read[i]` is
+/// `FileId(i + 1)`, also when the parse fails and returns no
+/// `Parsed::paths`. The hashes are the per-file own-write hashes
+/// (EDIT-22).
+// DECISION: the parse reads included files from disk through this loader
+// while `state` handles the root file's text event: the model needs every
+// file at once, and `model::parse_with` is the only way to get it. The
+// root text still comes through `FileEvent`s, so EDIT-22/EDIT-24 keep
+// working on it unchanged.
+#[derive(Debug, Default)]
+pub(crate) struct Reads {
+    /// Every file read, in read order, with the hash of its bytes.
+    pub(crate) read: Vec<(PathBuf, ContentHash)>,
+}
+
+impl c4rizer_core::model::Loader for Reads {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        let bytes = c4rizer_core::model::FsLoader.read(path)?;
+        self.read.push((path.to_path_buf(), hash(&bytes)));
+        Ok(bytes)
+    }
+
+    fn read_dir(&mut self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        c4rizer_core::model::FsLoader.read_dir(path)
+    }
+
+    fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
+        c4rizer_core::model::FsLoader.canonicalize(path)
+    }
+
+    fn env(&self, name: &str) -> Option<String> {
+        c4rizer_core::model::FsLoader.env(name)
+    }
+}
+
+/// Watches the files a diagram includes (P2-141): their directories, so
+/// a save by rename is seen (EDIT-23), with one `(path, Changed)` or
+/// `(path, Removed)` per burst of events for each file after `QUIET`
+/// (EDIT-1). Dropping it stops watching.
+// DECISION: a second watcher type next to `Watcher`, not a change to
+// `Watcher::start`'s signature (pub, step-4 contract): the root file
+// keeps its watcher and its `FileEvent` channel, and included files come
+// with their path on a channel of their own, which `state` reads through
+// `State::included_file`.
+#[allow(dead_code, reason = "fields are held for their lifetime, not read")]
+pub(crate) struct FilesWatcher {
+    /// The files watched (absolute paths as the parse read them).
+    pub(crate) paths: Vec<PathBuf>,
+    /// The `notify` watcher on their directories.
+    inner: notify::RecommendedWatcher,
+    /// The debounce thread that reads the files and sends events.
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Starts a `FilesWatcher` on `paths`; events go to `events`, and `wake`
+/// is called after each one. Serves P2-141, EDIT-1, EDIT-23.
+///
+/// # Errors
+///
+/// The `notify` error when a directory cannot be watched.
+pub(crate) fn watch_files(
+    paths: &[PathBuf],
+    events: Sender<(PathBuf, FileEvent)>,
+    wake: Wake,
+) -> notify::Result<FilesWatcher> {
+    let (tx, rx) = mpsc::channel::<notify::Event>();
+    let mut inner = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            let _ = tx.send(event);
+        }
+    })?;
+    let mut dirs: Vec<PathBuf> = paths.iter().map(|p| parent_dir(p)).collect();
+    dirs.sort();
+    dirs.dedup();
+    for dir in &dirs {
+        notify::Watcher::watch(&mut inner, dir, notify::RecursiveMode::NonRecursive)?;
+    }
+    let names = paths.to_vec();
+    let thread = std::thread::Builder::new()
+        .name("c4rizer-watch-includes".to_owned())
+        .spawn(move || debounce_files(&rx, &names, &events, &wake))
+        .map_err(notify::Error::io)?;
+    Ok(FilesWatcher {
+        paths: paths.to_vec(),
+        inner,
+        thread: Some(thread),
+    })
+}
+
+/// The `FilesWatcher` thread: per file of `names`, after `QUIET` with no
+/// event for it, reads it and sends `(path, Changed)` or `(path,
+/// Removed)`; ends when the `notify` watcher is dropped.
+fn debounce_files(
+    rx: &mpsc::Receiver<notify::Event>,
+    names: &[PathBuf],
+    events: &Sender<(PathBuf, FileEvent)>,
+    wake: &Wake,
+) {
+    // DECISION: a `BTreeMap` of deadlines, so files due at once are read
+    // in path order (deterministic order of reloads).
+    let mut due: BTreeMap<PathBuf, Instant> = BTreeMap::new();
+    loop {
+        let event = match due.values().min().copied() {
+            None => match rx.recv() {
+                Ok(e) => Some(e),
+                Err(_) => return,
+            },
+            Some(deadline) => match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(e) => Some(e),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            },
+        };
+        if let Some(event) = event {
+            if changes_content(&event) {
+                for p in event.paths.iter().filter(|p| names.contains(p)) {
+                    due.insert(p.clone(), Instant::now() + QUIET);
+                }
+            }
+            continue;
+        }
+        let now = Instant::now();
+        let ready: Vec<PathBuf> = due.iter().filter(|(_, d)| **d <= now).map(|(p, _)| p.clone()).collect();
+        for path in ready {
+            due.remove(&path);
+            let event = match read(&path) {
+                Ok((text, hash)) => FileEvent::Changed { text, hash },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => FileEvent::Removed,
+                // DECISION: as `debounce`: a file caught mid-write is
+                // skipped; its close event brings another read.
+                Err(_) => continue,
+            };
+            if events.send((path, event)).is_err() {
+                return;
+            }
+            wake();
+        }
+    }
+}
+
 /// Camera and view remembered for one diagram file (EDIT-13). Never
 /// holds diagram content.
 #[derive(Debug, Clone, PartialEq)]

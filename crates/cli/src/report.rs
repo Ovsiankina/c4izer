@@ -1,7 +1,8 @@
 //! Prints the per-view report: boxes, lines, crossings against budget,
 //! warnings and errors (CLI-1).
 //!
-//! Depends on: `c4rizer-core` (lint).
+//! Depends on: `c4rizer-core` (lint, model notices, pipeline's
+//! unsupported views).
 
 // Shape: plain functions writing lines to any `io::Write`, in the order
 // CLI-1 gives, so `main::run` calls them as it goes and the unit test
@@ -43,6 +44,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use c4rizer_core::lint::{Finding, Report};
+use c4rizer_core::model::Notice;
+use c4rizer_core::pipeline::UnsupportedView;
 
 /// Writes one view's block (CLI-1): `== <key>: <title>` with `key` =
 /// `report.view` and `title` empty when `None`; then, indented by three
@@ -100,6 +103,39 @@ pub(crate) fn coverage(out: &mut impl Write, findings: &[Finding]) -> io::Result
         writeln!(out, "ERROR: {f}")?;
     }
     Ok(())
+}
+
+/// Writes one notice line (P2-125): `notice: <file>:<line>:<column>:
+/// <construct> is accepted and has no effect`, `file` being the path of
+/// the notice's file as the CLI names it; without a span, `notice:
+/// <construct> is accepted and has no effect`. Serves P2-125.
+// TODO(srs): P2-125, the exact line format. Reading taken (B dsl-breadth
+// 24): `notice: <path>:<line>:<column>: <construct> is accepted and has
+// no effect`.
+///
+/// # Errors
+///
+/// The first error of `out`.
+pub(crate) fn notice(out: &mut impl Write, notice: &Notice, file: Option<&str>) -> io::Result<()> {
+    match file {
+        Some(file) => writeln!(out, "notice: {file}:{notice}"),
+        None => writeln!(out, "notice: {notice}"),
+    }
+}
+
+/// Writes an unsupported view's block (P2-122): `== <key>: <title>` as
+/// for a drawn view, then `   ` and the `UnsupportedView` line. No count
+/// lines, no findings, no file. Serves P2-122, CLI-1.
+// TODO(srs): P2-122, the exact line text. Reading taken (B dsl-breadth
+// 24): `not yet supported: <keyword> views are not drawn by this
+// version`, from `UnsupportedView`'s `Display`.
+///
+/// # Errors
+///
+/// The first error of `out`.
+pub(crate) fn unsupported(out: &mut impl Write, view: &UnsupportedView) -> io::Result<()> {
+    writeln!(out, "== {}: {}", view.key, view.title.as_deref().unwrap_or(""))?;
+    writeln!(out, "   {view}")
 }
 
 /// Writes `no views` for a file without views (pipeline plan: the CLI

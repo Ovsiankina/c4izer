@@ -11,9 +11,13 @@
 //     parse_args(args)             -> Command | UsageError   (exit 2 + USAGE)
 //     run(&command, stdin, stdout) -> Exit | CliError        (exit 2)
 //       read FILE or stdin         -> String | CliError
-//       model::parse(text)         -> Parsed | ModelError    (exit 2)
+//       model::parse_with(text, path, FsLoader)
+//                                  -> Parsed | ModelError    (exit 2)
 //       pipeline::build_all(model) -> AllViews
-//       per view: report::view, then (render) export::svg [+ export::png]
+//       report::notice per model notice, before any view (P2-125)
+//       per view, declaration order: an unsupported view prints
+//                 report::unsupported (P2-122) and writes nothing;
+//                 else report::view, then (render) export::svg [+ export::png]
 //                 to `<out>/<view key>.svg|.png`, then report::wrote
 //       report::coverage(all.coverage) after every view (CLI-1)
 //       Exit::LintErrors if all.has_errors(), else Exit::Clean (CLI-2)
@@ -46,8 +50,8 @@
 // DECISION: parse and I/O errors go to stderr as one line
 // `c4rizer: <path>:<line>:<column>: <what> — <what to change>` (SRS 5.1;
 // `ModelError`'s `Display` gives `line:column: ...` and asks the caller to
-// prefix the path of `span.file`; in phase 1 that is always FILE); stdin
-// is named `<stdin>`. The report goes to stdout.
+// prefix the path of `span.file`: FILE, or the included file the error
+// is in, P2-136); stdin is named `<stdin>`. The report goes to stdout.
 // DECISION: a file with no views prints `no views` on stdout and exits 0
 // (pipeline plan: "CLI reports \"no views\""; CLI-2: no view has a lint
 // error).
@@ -89,6 +93,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::model::{self, ModelError};
+use c4rizer_core::text::FileId;
 use c4rizer_core::{export, pipeline};
 
 /// The usage text printed to stderr on every usage error (exit 2). Names
@@ -230,10 +235,14 @@ pub(crate) enum CliError {
     },
     /// FILE is not a valid diagram (DSL-4, DSL-5): printed as
     /// `<path>:<line>:<column>: ...`, where `<path>` is the path of
-    /// `error.span.file`; in phase 1 always FILE (`<stdin>` for `-`).
+    /// `error.span.file`: FILE (`<stdin>` for `-`), or the included file
+    /// the error is in (P2-136).
     Parse {
-        /// What was parsed.
-        input: Input,
+        /// The file holding the error as messages name it: FILE as given
+        /// (`<stdin>`), or the included file's path.
+        // DECISION: the name, not the `Input`, so the variant stays as small
+        // as in phase 1 (clippy `result_large_err`).
+        file: String,
         /// The model error, whose `Display` starts at `line:column:`.
         error: ModelError,
     },
@@ -294,7 +303,7 @@ impl fmt::Display for CliError {
                 "{}: cannot read ({source}) — check the path and that the file is UTF-8 text",
                 InputName(input)
             ),
-            CliError::Parse { input, error } => write!(f, "{}:{error}", InputName(input)),
+            CliError::Parse { file, error } => write!(f, "{file}:{error}"),
             CliError::KeyCollision { first, second } => write!(
                 f,
                 "view keys \"{first}\" and \"{second}\" differ only in case, so their files would overwrite each other — rename one of the views"
@@ -447,6 +456,71 @@ fn read_input(input: &Input, stdin: &mut impl Read) -> Result<String, CliError> 
         })
 }
 
+/// `FsLoader` that remembers every file it read, in order (P2-136): core
+/// gives each file read the next `FileId` from 1 in first-read order and
+/// reads each file once, so `read[i]` is the path of `FileId(i + 1)`,
+/// also when the parse fails and no `Parsed::paths` comes back.
+// DECISION: the CLI recovers the path of an error's file this way because
+// `ModelError` names only the `FileId`, and a parse error returns no
+// `Parsed`; adding a path to `ModelError` would be a pub change.
+#[derive(Debug, Default)]
+struct Recording {
+    /// Every file read, in read order.
+    read: Vec<PathBuf>,
+}
+
+impl model::Loader for Recording {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        let bytes = model::FsLoader.read(path)?;
+        self.read.push(path.to_path_buf());
+        Ok(bytes)
+    }
+
+    fn read_dir(&mut self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        model::FsLoader.read_dir(path)
+    }
+
+    fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
+        model::FsLoader.canonicalize(path)
+    }
+
+    fn env(&self, name: &str) -> Option<String> {
+        model::FsLoader.env(name)
+    }
+}
+
+impl Recording {
+    /// The included file `file` (`FileId(i)`, `i >= 1`), `None` for the
+    /// root file or an id never read.
+    fn path(&self, file: FileId) -> Option<&Path> {
+        let i = usize::try_from(file.0).ok()?.checked_sub(1)?;
+        self.read.get(i).map(PathBuf::as_path)
+    }
+
+    /// `file` as the report names it: FILE as given (`<stdin>`), or the
+    /// included file's path.
+    fn name(&self, input: &Input, file: FileId) -> String {
+        self.path(file).map_or_else(
+            || InputName(input).to_string(),
+            |p| p.display().to_string(),
+        )
+    }
+}
+
+/// Parses `text`, read from `input`: FILE through `FsLoader` with its
+/// path, so `!include` and `workspace extends` resolve beside it; stdin
+/// with no path, so an include from stdin is `NeedsFile` (A.2 cli).
+fn parse(input: &Input, text: &str, loader: &mut Recording) -> Result<model::Parsed, CliError> {
+    let path = match input {
+        Input::Path(path) => Some(path.as_path()),
+        Input::Stdin => None,
+    };
+    model::parse_with(text, path, loader).map_err(|error| CliError::Parse {
+        file: loader.name(input, error.span.file),
+        error,
+    })
+}
+
 /// The first pair of view keys equal up to ASCII case, in declaration
 /// order (header DECISION).
 fn key_collision(keys: &[&str]) -> Option<CliError> {
@@ -527,10 +601,8 @@ pub(crate) fn run(
         return Err(CliError::PngUnavailable);
     }
     let text = read_input(input, stdin)?;
-    let parsed = model::parse(&text).map_err(|error| CliError::Parse {
-        input: input.clone(),
-        error,
-    })?;
+    let mut loader = Recording::default();
+    let parsed = parse(input, &text, &mut loader)?;
     // A flag that is never set: `build_all` cannot return `Stopped`.
     let Ok(all) = pipeline::build_all(&parsed.model, &AtomicBool::new(false)) else {
         unreachable!("the stop flag is never set");
@@ -547,10 +619,23 @@ pub(crate) fn run(
             source,
         })?;
     }
-    if all.views.is_empty() {
+    for notice in &parsed.model.notices {
+        let file = notice.span.map(|s| loader.name(input, s.file));
+        report::notice(stdout, notice, file.as_deref()).map_err(CliError::Report)?;
+    }
+    if all.views.is_empty() && all.unsupported.is_empty() {
         report::no_views(stdout).map_err(CliError::Report)?;
     }
-    for view in &all.views {
+    // Every view in declaration order: drawn ones with their report and
+    // files, unsupported ones with their line (P2-122).
+    for spec in &parsed.model.views {
+        if let Some(u) = all.unsupported.iter().find(|u| u.key == spec.key) {
+            report::unsupported(stdout, u).map_err(CliError::Report)?;
+            continue;
+        }
+        let Some(view) = all.view(&spec.key) else {
+            continue;
+        };
         report::view(stdout, &view.report, view.plan.title.as_deref()).map_err(CliError::Report)?;
         if let Some((out_dir, png)) = render {
             let key = &view.plan.key;

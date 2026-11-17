@@ -512,6 +512,8 @@ const THRESHOLD: i64 = 600;
 const SEED: u64 = 0x5EED_C4C4_0000_0001;
 /// Barycentre sweeps each way in the layered seed.
 const SWEEPS: usize = 4;
+/// Gap between two boundaries that do not nest, in grid units (20px).
+const APART_UNITS: i32 = 2;
 /// Most gap widenings `finish_layered` makes to clear the boundaries.
 const PUSH_ROUNDS: usize = 4000;
 /// Window growths tried with every constraint before the seed falls back
@@ -580,6 +582,9 @@ struct Layout<'a> {
     /// Per boundary: kept non-members already inside the rectangle of
     /// the kept members, exempt from the boundary rule.
     exempt: Vec<Vec<bool>>,
+    /// Pairs of boundaries that do not nest and must keep apart (P2-130):
+    /// every such pair but those whose kept members already overlap.
+    apart: Vec<(usize, usize)>,
     origin: Point,
     anchor: Point,
     /// Window of lattice slots, inclusive: (min col, min row, max col,
@@ -684,6 +689,7 @@ impl<'a> Layout<'a> {
             ends,
             incident,
             exempt: Vec::new(),
+            apart: Vec::new(),
             member,
             origin,
             anchor,
@@ -703,6 +709,15 @@ impl<'a> Layout<'a> {
                             && r.is_some_and(|r| r.overlaps(&layout.rect(b)))
                     })
                     .collect()
+            })
+            .collect();
+        let nb = plan.boundaries.len();
+        layout.apart = (0..nb)
+            .flat_map(|k| (k + 1..nb).map(move |j| (k, j)))
+            .filter(|&(k, j)| !plan.nests(k, j) && !plan.nests(j, k))
+            .filter(|&(k, j)| {
+                !matches!((layout.boundary_rect(k), layout.boundary_rect(j)),
+                    (Some(a), Some(b)) if a.inflate(APART_UNITS).overlaps(&b))
             })
             .collect();
         layout
@@ -726,16 +741,10 @@ impl<'a> Layout<'a> {
     /// Rectangle of boundary `k` over its active members, `None` when
     /// none is active (`ViewPlan::boundary_rect` rule: bounds plus 40px).
     fn boundary_rect(&self, k: usize) -> Option<Rect> {
-        let bounds = (0..self.pos.len())
-            .filter(|&b| self.member[k][b] && self.active[b])
-            .map(|b| self.rect(b))
-            .reduce(|a, b| {
-                Rect::from_corners(
-                    Point::new(a.min.x.min(b.min.x), a.min.y.min(b.min.y)),
-                    Point::new(a.max.x.max(b.max.x), a.max.y.max(b.max.y)),
-                )
-            })?;
-        Some(bounds.inflate(4))
+        self.plan.boundary_rect_by(k, &|id| {
+            let b = id.0 as usize;
+            self.active[b].then(|| self.rect(b))
+        })
     }
 
     /// True when the active layout keeps the rules for the boxes in `m`
@@ -777,12 +786,18 @@ impl<'a> Layout<'a> {
     }
 
     /// No active non-member overlaps a boundary rectangle, except kept
-    /// boxes already inside the kept members' rectangle (CORE-23, L26).
+    /// boxes already inside the kept members' rectangle (CORE-23, L26),
+    /// and two boundaries that do not nest keep apart (P2-130), except
+    /// pairs whose kept members already overlap.
     // DECISION: a kept non-member already inside the kept members'
     // rectangle is the author's choice (lint L26 reports it); it does not
     // make every slot invalid.
     fn boundaries_ok(&self) -> bool {
-        (0..self.member.len()).all(|k| {
+        let apart = self.apart.iter().all(|&(k, j)| {
+            !matches!((self.boundary_rect(k), self.boundary_rect(j)),
+                (Some(a), Some(b)) if a.inflate(APART_UNITS).overlaps(&b))
+        });
+        apart && (0..self.member.len()).all(|k| {
             let Some(r) = self.boundary_rect(k) else {
                 return true;
             };
@@ -1061,19 +1076,16 @@ impl<'a> Layout<'a> {
     /// Layered mode: no box outside boundary `k` sits on a slot inside
     /// the row span and the column span of `k`'s members (P2-109). The
     /// per-gap pitch of `finish_layered` then keeps such a box outside the
-    /// boundary rectangle.
+    /// boundary rectangle. Two boundaries that must keep apart (`apart`)
+    /// have member spans that share no column or share no row (P2-130),
+    /// so `push_apart` can always widen a gap between them.
+    // DECISION: the span rule for boundary pairs, not only boxes: without
+    // it an out-of-scope group with members on both sides of the scope
+    // band, on a row the scope has no member on, passes the box rule
+    // while its rectangle crosses the scope boundary (grammar.dsl).
     fn boundary_slots_ok(&self) -> bool {
-        (0..self.member.len()).all(|k| {
-            let span = |f: fn(Slot) -> i32| {
-                let v = (0..self.pos.len())
-                    .filter(|&b| self.member[k][b])
-                    .filter_map(|b| self.slot_of[b].map(f));
-                (v.clone().min(), v.max())
-            };
-            let (Some(c0), Some(c1)) = span(|s| s.0) else {
-                return true;
-            };
-            let (Some(r0), Some(r1)) = span(|s| s.1) else {
+        let boxes_ok = (0..self.member.len()).all(|k| {
+            let Some((c0, c1, r0, r1)) = self.slot_span(k) else {
                 return true;
             };
             (0..self.pos.len()).all(|b| {
@@ -1081,13 +1093,36 @@ impl<'a> Layout<'a> {
                     || self.slot_of[b]
                         .is_none_or(|(c, r)| !((c0..=c1).contains(&c) && (r0..=r1).contains(&r)))
             })
-        })
+        });
+        boxes_ok
+            && self.apart.iter().all(|&(k, j)| {
+                let (Some(a), Some(b)) = (self.slot_span(k), self.slot_span(j)) else {
+                    return true;
+                };
+                a.1 < b.0 || b.1 < a.0 || a.3 < b.2 || b.3 < a.2
+            })
+    }
+
+    /// The slot span of boundary `k`'s placed members: (first column, last
+    /// column, first row, last row); `None` when none is placed.
+    fn slot_span(&self, k: usize) -> Option<(i32, i32, i32, i32)> {
+        let slots: Vec<Slot> = (0..self.pos.len())
+            .filter(|&b| self.member[k][b])
+            .filter_map(|b| self.slot_of[b])
+            .collect();
+        let c = slots.iter().map(|s| s.0);
+        let r = slots.iter().map(|s| s.1);
+        Some((c.clone().min()?, c.max()?, r.clone().min()?, r.max()?))
     }
 
     /// Layered seed: each box on the row of its rank, rows ordered, then
     /// laid on columns so that boxes outside a boundary sit beside the
     /// members' columns on the rows the members span.
     fn seed_layered(&mut self, rank: &[i32], spare_rows: i32, spare_cols: i32) {
+        if self.plan.boundaries.len() > 1 {
+            self.seed_banded(rank, spare_rows, spare_cols);
+            return;
+        }
         let n = self.pos.len();
         let mut rows: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
         for (b, &r) in rank.iter().enumerate() {
@@ -1181,6 +1216,120 @@ impl<'a> Layout<'a> {
         }
     }
 
+    /// Layered seed for a plan with several boundaries (groups, P2-130,
+    /// P2-132): each box on the row of its rank, and every boundary a band
+    /// of columns of its own across all rows, so no box outside a
+    /// boundary sits inside its members' row and column span
+    /// (`boundary_slots_ok`) and two boundaries that do not nest share no
+    /// column. A band holds its own members' columns, then the bands of
+    /// the boundaries nested in it. From left to right: externals outside
+    /// every boundary (first half of each row), the other boxes outside
+    /// every boundary, the outermost boundaries' bands in plan order, the
+    /// remaining externals (P2-104).
+    // DECISION: a column band per boundary rather than the one-boundary
+    // seed's centred span: with several boundaries the members of each
+    // must keep one column span across their rows, and bands are the
+    // simplest seed that always meets the slot rule; the search then
+    // moves boxes inside the rules. Columns no box uses are dropped in
+    // `finish_layered`. The one-boundary seed (phase-1 views) is
+    // unchanged, so phase-1 layouts are byte-identical.
+    fn seed_banded(&mut self, rank: &[i32], spare_rows: i32, spare_cols: i32) {
+        let n = self.pos.len();
+        let plan = self.plan;
+        let nb = plan.boundaries.len();
+        let size = |k: usize| plan.boundaries[k].members.len();
+        // The closest boundary around boundary `j`, and around box `b`.
+        let parent: Vec<Option<usize>> = (0..nb)
+            .map(|j| {
+                (0..nb)
+                    .filter(|&k| plan.nests(k, j))
+                    .min_by_key(|&k| (size(k), std::cmp::Reverse(k)))
+            })
+            .collect();
+        let home: Vec<Option<usize>> = (0..n)
+            .map(|b| {
+                (0..nb)
+                    .filter(|&k| self.member[k][b])
+                    .min_by_key(|&k| (size(k), std::cmp::Reverse(k)))
+            })
+            .collect();
+        let outer_external: Vec<bool> = (0..n)
+            .map(|b| {
+                home[b].is_none()
+                    && plan.boxes[b].external
+                    && plan.boxes[b].kind != ElementKind::Person
+            })
+            .collect();
+        let edge_external = |b: usize| outer_external[b];
+        self.ranked.level = (0..n).map(|b| if edge_external(b) { 0 } else { 2 }).collect();
+        let mut rows: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+        for (b, &r) in rank.iter().enumerate() {
+            rows.entry(r).or_default().push(b);
+        }
+        self.sweep(&mut rows);
+        // Externals outside every boundary: the first half of each row's
+        // go left, the rest right.
+        let mut left = vec![false; n];
+        for row in rows.values() {
+            let ext: Vec<usize> = row.iter().copied().filter(|&b| edge_external(b)).collect();
+            for &b in &ext[..ext.len().div_ceil(2)] {
+                left[b] = true;
+            }
+        }
+        // Width of a block: the most of its boxes on one row.
+        let width = |pick: &dyn Fn(usize) -> bool| -> i32 {
+            rows.values()
+                .map(|row| row.iter().filter(|&&b| pick(b)).count())
+                .max()
+                .map_or(0, |w| i32::try_from(w).unwrap_or(0))
+        };
+        // Every block in column order: its first column and its boxes.
+        let mut blocks: Vec<(i32, Vec<bool>)> = Vec::new();
+        let mut col = 0;
+        let mut add = |pick: &dyn Fn(usize) -> bool, col: &mut i32| {
+            let w = width(pick);
+            blocks.push((*col, (0..n).map(pick).collect()));
+            *col += w;
+        };
+        add(&|b| edge_external(b) && left[b], &mut col);
+        add(&|b| home[b].is_none() && !edge_external(b), &mut col);
+        // Bands depth first: a boundary's own members, then its children.
+        let mut stack: Vec<usize> = (0..nb).rev().filter(|&k| parent[k].is_none()).collect();
+        while let Some(k) = stack.pop() {
+            add(&|b| home[b] == Some(k), &mut col);
+            stack.extend((0..nb).rev().filter(|&j| parent[j] == Some(k)));
+        }
+        add(&|b| edge_external(b) && !left[b], &mut col);
+        for (&r, row) in &rows {
+            for (start, pick) in &blocks {
+                for (c, &b) in (*start..).zip(row.iter().filter(|&&b| pick[b])) {
+                    self.active[b] = true;
+                    self.put(b, (c, r));
+                }
+            }
+        }
+        self.set_window(spare_rows, spare_cols);
+    }
+
+    /// Layered seed tail: the search window around the seeded slots, with
+    /// `spare_cols` columns each side and `spare_rows` rows below, and the
+    /// anchor at its centre; order rules off when the seed breaks the
+    /// boundary slot rule.
+    fn set_window(&mut self, spare_rows: i32, spare_cols: i32) {
+        let cols = self.slot_of.iter().flatten().map(|s| s.0);
+        let (c0, c1) = (cols.clone().min().unwrap_or(0), cols.max().unwrap_or(0));
+        let used_rows = self.slot_of.iter().flatten().map(|s| s.1);
+        let (r0, r1) = (
+            used_rows.clone().min().unwrap_or(0),
+            used_rows.max().unwrap_or(0),
+        );
+        self.window = (c0 - spare_cols, r0, c1 + spare_cols, r1 + spare_rows);
+        self.anchor = Point::new((c0 + c1) * COL_PITCH / 2, (r0 + r1) * ROW_PITCH / 2);
+        if !self.boundary_slots_ok() {
+            self.strict = false;
+        }
+    }
+
     /// Barycentre sweeps over the rows (P2-102): each box is keyed by the
     /// mean position of its neighbours on the rows above (down sweep) or
     /// below (up sweep), rows re-sorted by key, `SWEEPS` times each way.
@@ -1259,7 +1408,17 @@ impl<'a> Layout<'a> {
         // Empty rows are dropped: row index = rank among the used rows.
         let used: std::collections::BTreeSet<i32> = slot.iter().map(|s| s.1).collect();
         let dense: Vec<usize> = (0..n).map(|b| used.range(..slot[b].1).count()).collect();
-        let ci = |b: usize| usize::try_from(slot[b].0 - c0).unwrap_or(0);
+        // With several boundaries (`seed_banded`) empty columns are dropped
+        // too; the one-boundary layout keeps its columns as before.
+        let used_cols: std::collections::BTreeSet<i32> = slot.iter().map(|s| s.0).collect();
+        let banded = self.plan.boundaries.len() > 1;
+        let ci = |b: usize| {
+            if banded {
+                used_cols.range(..slot[b].0).count()
+            } else {
+                usize::try_from(slot[b].0 - c0).unwrap_or(0)
+            }
+        };
         let ri = |b: usize| dense[b];
         let ncols = (0..n).map(ci).max().map_or(0, |m| m + 1);
         let nrows = (0..n).map(ri).max().map_or(0, |m| m + 1);
@@ -1369,6 +1528,65 @@ impl<'a> Layout<'a> {
                     col_gap[c_hi] += 1;
                 } else if c < c_lo {
                     col_gap[c_lo - 1] += 1;
+                } else {
+                    continue;
+                }
+                return true;
+            }
+        }
+        self.push_apart(at, cell, col_gap, row_gap)
+    }
+
+    /// One push-out step for two boundaries that do not nest and whose
+    /// rectangles overlap at centres `at` (P2-130: a group of boxes outside
+    /// the scope keeps clear of the scope boundary): widen the gap between
+    /// their member spans by one grid unit and return true; false when no
+    /// such pair overlaps.
+    fn push_apart(
+        &self,
+        at: &[Point],
+        cell: &[(usize, usize)],
+        col_gap: &mut [i32],
+        row_gap: &mut [i32],
+    ) -> bool {
+        let nb = self.member.len();
+        let span = |k: usize| {
+            let inner = (0..at.len()).filter(|&b| self.member[k][b]);
+            let c = inner.clone().map(|b| cell[b].0);
+            let r = inner.map(|b| cell[b].1);
+            (
+                c.clone().min().unwrap_or(0),
+                c.max().unwrap_or(0),
+                r.clone().min().unwrap_or(0),
+                r.max().unwrap_or(0),
+            )
+        };
+        for k in 0..nb {
+            for j in k + 1..nb {
+                if self.plan.nests(k, j) || self.plan.nests(j, k) {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (
+                    self.plan.boundary_rect(k, at),
+                    self.plan.boundary_rect(j, at),
+                ) else {
+                    continue;
+                };
+                // DECISION: two boundaries that do not nest keep 20px apart
+                // (2 grid units), so their dashed edges never touch.
+                if !a.inflate(APART_UNITS).overlaps(&b) {
+                    continue;
+                }
+                let (kc0, kc1, kr0, kr1) = span(k);
+                let (jc0, jc1, jr0, jr1) = span(j);
+                if jr0 > kr1 {
+                    row_gap[kr1] += 1;
+                } else if kr0 > jr1 {
+                    row_gap[jr1] += 1;
+                } else if jc0 > kc1 {
+                    col_gap[kc1] += 1;
+                } else if kc0 > jc1 {
+                    col_gap[jc1] += 1;
                 } else {
                     continue;
                 }

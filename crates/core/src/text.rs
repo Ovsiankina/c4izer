@@ -374,10 +374,26 @@ impl Lexer<'_> {
     }
 
     /// End of the word at `pos`: up to whitespace, `"`, `{`, `}` or a
-    /// line continuation.
+    /// line continuation. A `${NAME}` reference (P2-150) is part of the
+    /// word, braces included.
     fn word_end(&self) -> usize {
         let rest = self.rest();
-        for (i, c) in rest.char_indices() {
+        let mut chars = rest.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c == '$' && rest[i + 1..].starts_with('{') {
+                let name = &rest[i + 2..];
+                let len = name
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+                    .unwrap_or(name.len());
+                if len > 0 && name[len..].starts_with('}') {
+                    // Skip `{NAME}`; the loop resumes after the `}`.
+                    let end = i + 2 + len + 1;
+                    while chars.peek().is_some_and(|&(j, _)| j < end) {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
             if c.is_whitespace() || matches!(c, '"' | '{' | '}') {
                 return self.pos + i;
             }

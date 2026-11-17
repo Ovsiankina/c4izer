@@ -142,6 +142,11 @@ pub struct AllViews {
     /// L22 findings (`lint::coverage` over the scenes of every component
     /// view), printed after all views (CLI-1); `view: None` on each.
     pub coverage: Vec<Finding>,
+    /// Every view of `Model::views` whose kind is not
+    /// `ViewKind::drawable`, in declaration order; none of them is in
+    /// `views`, and none adds to `has_errors` (CLI-2). Serves P2-2,
+    /// P2-122.
+    pub unsupported: Vec<UnsupportedView>,
 }
 
 impl AllViews {
@@ -193,6 +198,47 @@ impl fmt::Display for UnknownView {
 
 impl std::error::Error for UnknownView {}
 
+/// A view c4rizer does not draw yet (`ViewKind::drawable` is false):
+/// `dynamic`, `deployment`, and `systemLandscape`, `filtered`, `custom`
+/// and `image` until landscape-filtered lands. Serves P2-2, P2-122,
+/// P2-123, P2-180.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnsupportedView {
+    /// The view's effective key (`ViewSpec::key`).
+    pub key: String,
+    /// The drawn title (`ViewSpec::drawn_title`), if any.
+    pub title: Option<String>,
+    /// The view kind.
+    pub kind: ViewKind,
+}
+
+impl fmt::Display for UnsupportedView {
+    /// The CLI's indented line after `== <key>: <title>` (P2-122),
+    /// without the three-space indent.
+    // TODO(srs): P2-122, the exact line text. Reading taken (B
+    // dsl-breadth 24): `not yet supported: <keyword> views are not drawn
+    // by this version`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "not yet supported: {} views are not drawn by this version",
+            self.kind.keyword()
+        )
+    }
+}
+
+impl UnsupportedView {
+    /// The entry for `view`, a view whose kind is not drawable.
+    fn of(view: &ViewSpec) -> UnsupportedView {
+        UnsupportedView {
+            key: view.key.clone(),
+            title: view.drawn_title().map(|t| t.value.clone()),
+            kind: view.kind,
+        }
+    }
+}
+
 /// Why `build_view` gave no build: the key is not in the file, or the
 /// run was stopped through its stop flag (EDIT-25). `#[non_exhaustive]`
 /// for later causes. Serves CORE-28, EDIT-25.
@@ -203,6 +249,9 @@ pub enum BuildError {
     UnknownView(UnknownView),
     /// The stop flag was set; no build was produced.
     Stopped(Stopped),
+    /// The key names a view whose kind is not drawable yet; nothing is
+    /// planned, placed or routed (P2-2).
+    Unsupported(UnsupportedView),
 }
 
 impl From<UnknownView> for BuildError {
@@ -225,6 +274,7 @@ impl fmt::Display for BuildError {
         match self {
             BuildError::UnknownView(e) => e.fmt(f),
             BuildError::Stopped(e) => e.fmt(f),
+            BuildError::Unsupported(e) => e.fmt(f),
         }
     }
 }
@@ -243,8 +293,9 @@ impl std::error::Error for BuildError {}
 /// # Errors
 ///
 /// `BuildError::UnknownView` when no view of `model.views` has that key,
-/// listing the valid ones; `BuildError::Stopped` when `stop` was set
-/// while routing (EDIT-25).
+/// listing the valid ones; `BuildError::Unsupported` when that view's
+/// kind is not drawable (P2-2: nothing is planned, placed or routed);
+/// `BuildError::Stopped` when `stop` was set while routing (EDIT-25).
 pub fn build_view(
     model: &Model,
     key: &str,
@@ -260,6 +311,11 @@ pub fn build_view(
             valid: model.views.iter().map(|v| v.key.clone()).collect(),
         }));
     };
+    // DECISION: like an unknown key, an unsupported view is reported
+    // before the stop flag is read: there is nothing to route.
+    if !view.kind.drawable() {
+        return Err(BuildError::Unsupported(UnsupportedView::of(view)));
+    }
     Ok(build_spec(model, view, keep, stop)?)
 }
 
@@ -274,13 +330,19 @@ pub fn build_view(
 /// # Panics
 ///
 /// When `view` does not belong to `model` (its element ids index out of
-/// range).
+/// range), or when `!view.kind.drawable()` (P2-2: callers check the kind,
+/// or go through `build_view`, which returns `BuildError::Unsupported`).
 pub fn build_spec(
     model: &Model,
     view: &ViewSpec,
     keep: &Keep,
     stop: &AtomicBool,
 ) -> Result<ViewBuild, Stopped> {
+    assert!(
+        view.kind.drawable(),
+        "build_spec: {} views are not drawn (P2-2)",
+        view.kind.keyword()
+    );
     let plan = view::plan(model, view);
     let centres = place::place(&plan, keep);
     let routes = route::route(&plan, &centres, &RouteConfig::DEFAULT, stop)?;
@@ -290,8 +352,9 @@ pub fn build_spec(
 /// Labels, scene and lint report of a routed plan: the stages after
 /// routing, shared by full builds and the drag preview.
 fn finish(model: &Model, plan: ViewPlan, routes: Routes) -> ViewBuild {
-    let labels = label::place_labels(&plan, &routes);
-    let scene = scene::build(&plan, &routes, &labels);
+    let words = label::Words::of(&model.terminology);
+    let labels = label::place_labels_with(&plan, &routes, &words);
+    let scene = scene::build_with(&plan, &routes, &labels, &words);
     let report = lint::lint(model, &scene);
     ViewBuild {
         plan,
@@ -302,8 +365,9 @@ fn finish(model: &Model, plan: ViewPlan, routes: Routes) -> ViewBuild {
     }
 }
 
-/// Builds every view of `model.views` in declaration order, each from
-/// `Keep::default()` (the CLI's case: positions from the file only), then
+/// Builds every drawable view of `model.views` in declaration order, each
+/// from `Keep::default()` (the CLI's case: positions from the file only),
+/// listing the others in `unsupported` (P2-2), then
 /// runs L22 once over the scenes of every component view (CORE-21).
 /// A file with no views gives empty `views` and `coverage`.
 /// Deterministic (CORE-25). `stop` goes to every view's route; the CLI
@@ -320,13 +384,24 @@ pub fn build_all(model: &Model, stop: &AtomicBool) -> Result<AllViews, Stopped> 
     let views = model
         .views
         .iter()
+        .filter(|v| v.kind.drawable())
         .map(|v| build_spec(model, v, &keep, stop))
         .collect::<Result<Vec<_>, _>>()?;
+    let unsupported = model
+        .views
+        .iter()
+        .filter(|v| !v.kind.drawable())
+        .map(UnsupportedView::of)
+        .collect();
     // DECISION: every scene goes to `lint::coverage`, which itself keeps
     // only the component views; filtering here would duplicate its rule.
     let scenes: Vec<&Scene> = views.iter().map(|v| &v.scene).collect();
     let coverage = lint::coverage(model, &scenes);
-    Ok(AllViews { views, coverage })
+    Ok(AllViews {
+        views,
+        coverage,
+        unsupported,
+    })
 }
 
 /// The drag preview (EDIT-2, EDIT-20, EDIT-25): `previous` with the boxes
@@ -448,6 +523,13 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
             element.kind == ElementKind::SoftwareSystem
         }
         ViewKind::Component => element.kind == ElementKind::Container,
+        // No default view of a kind c4rizer does not draw (P2-2).
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => false,
     };
     if !fits {
         return None;
@@ -496,6 +578,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         positions: Vec::new(),
         sizes: Vec::new(),
         span: none,
+        properties: Vec::new(),
     })
 }
 

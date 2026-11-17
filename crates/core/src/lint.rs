@@ -72,7 +72,7 @@ use std::fmt;
 use crate::geom::Segment;
 use crate::label::Fit;
 use crate::model::{ElementId, ElementKind, Model, RelationshipId, ViewKind};
-use crate::scene::{ItemKey, ModelId, Scene, SceneBox, SceneLine};
+use crate::scene::{ItemKey, ModelId, Scene, SceneBox, SceneBoundary, SceneLine};
 use crate::text::Span;
 use crate::view::{BoundaryOf, BoxId, EdgeId};
 
@@ -660,6 +660,21 @@ impl<'a> Lint<'a> {
         self.model.element(e).span
     }
 
+    /// What a boundary stands for in a finding: its model ids, the span
+    /// to point at and its name. A group boundary (L25, L26 per B
+    /// dsl-breadth 14e) has no model id and points at the group block.
+    // DECISION: `ModelId` gains no group variant (pub surface frozen), so
+    // a group finding names the group in its message and span only.
+    fn boundary_subject(&self, of: BoundaryOf) -> (Vec<ModelId>, Span, &'a str) {
+        match of {
+            BoundaryOf::Element(e) => (vec![ModelId::Element(e)], self.el_span(e), self.name(e)),
+            BoundaryOf::Group(g) => {
+                let group = &self.model.groups[g.0 as usize];
+                (Vec::new(), group.span, group.name.value.as_str())
+            }
+        }
+    }
+
     /// The winning relationship's description, if any.
     fn description(&self, r: RelationshipId) -> Option<&'a str> {
         self.model
@@ -1214,13 +1229,13 @@ impl<'a> Lint<'a> {
             if bd.tag.fits {
                 continue;
             }
-            let BoundaryOf::Element(e) = bd.of;
+            let (subjects, span, name) = self.boundary_subject(bd.of);
             self.push(
                 Rule::TextFit,
-                vec![ModelId::Element(e)],
+                subjects,
                 vec![ItemKey::Boundary(count(i))],
-                vec![self.el_span(e)],
-                format!("name tag of the \"{}\" boundary does not fit", self.name(e)),
+                vec![span],
+                format!("name tag of the \"{name}\" boundary does not fit"),
             );
         }
     }
@@ -1229,22 +1244,45 @@ impl<'a> Lint<'a> {
     fn boundary_intrusion(&mut self) {
         let scene = self.scene;
         for (i, bd) in scene.boundaries.iter().enumerate() {
-            let BoundaryOf::Element(scope) = bd.of;
+            let (owner, _, name) = self.boundary_subject(bd.of);
             for b in &scene.boxes {
                 if bd.members.contains(&b.id) || !b.rect.overlaps(&bd.rect) {
                     continue;
                 }
                 let msg = format!(
-                    "box \"{}\" is not part of \"{}\" but overlaps its boundary",
+                    "box \"{}\" is not part of \"{name}\" but overlaps its boundary",
                     self.name(b.element),
-                    self.name(scope)
                 );
+                let mut subjects = vec![ModelId::Element(b.element)];
+                subjects.extend(owner.iter().copied());
                 self.push(
                     Rule::BoundaryIntrusion,
-                    vec![ModelId::Element(b.element), ModelId::Element(scope)],
+                    subjects,
                     vec![ItemKey::Box(b.id), ItemKey::Boundary(count(i))],
                     vec![self.el_span(b.element)],
                     msg,
+                );
+            }
+        }
+        // DECISION: L26 also covers two boundaries that do not nest (neither
+        // holds all the other's members) and whose rectangles overlap
+        // (P2-130, B dsl-breadth 14e); the 20px gap `place` keeps is not
+        // linted, only an overlap.
+        let holds = |o: &SceneBoundary, n: &SceneBoundary| n.members.iter().all(|m| o.members.contains(m));
+        for (i, a) in scene.boundaries.iter().enumerate() {
+            for (j, b) in scene.boundaries.iter().enumerate().skip(i + 1) {
+                if holds(a, b) || holds(b, a) || !a.rect.overlaps(&b.rect) {
+                    continue;
+                }
+                let (mut subjects, span_a, name_a) = self.boundary_subject(a.of);
+                let (more, span_b, name_b) = self.boundary_subject(b.of);
+                subjects.extend(more);
+                self.push(
+                    Rule::BoundaryIntrusion,
+                    subjects,
+                    vec![ItemKey::Boundary(count(i)), ItemKey::Boundary(count(j))],
+                    vec![span_a, span_b],
+                    format!("boundaries \"{name_a}\" and \"{name_b}\" overlap but neither holds the other"),
                 );
             }
         }
@@ -2002,6 +2040,71 @@ mod tests {
         assert!(of_rule(&lint(&model, &scene), Rule::BoundaryIntrusion).is_empty());
     }
 
+    /// P2-130, B dsl-breadth 14e: two boundaries that do not nest and
+    /// whose rectangles overlap are an L26 finding too.
+    #[test]
+    fn p2_130_overlapping_boundaries_l26() {
+        let model = model_of(
+            r#"workspace {
+  model {
+    group "Partners" {
+      bank = softwareSystem "Bank"
+    }
+    shop = softwareSystem "Shop" {
+      web = container "Web" "Serves." "Rust"
+    }
+    web -> bank "Charges" "HTTPS"
+  }
+  views {
+    container shop "c2" {
+      include *
+      title "Shop"
+    }
+  }
+}
+"#,
+        );
+        let mut scene = scene_of(&model, "c2");
+        assert!(of_rule(&lint(&model, &scene), Rule::BoundaryIntrusion).is_empty());
+        let g = scene
+            .boundaries
+            .iter()
+            .position(|b| matches!(b.of, BoundaryOf::Group(_)))
+            .expect("group boundary");
+        // The group's rectangle reaching 10px into the scope boundary,
+        // with no box of either inside the other.
+        let scope = scene.boundaries[0].rect;
+        let r = scene.boundaries[g].rect;
+        let dx = if r.min.x >= scope.max.x {
+            scope.max.x - 10 - r.min.x
+        } else if r.max.x <= scope.min.x {
+            scope.min.x + 10 - r.max.x
+        } else {
+            0
+        };
+        let dy = if dx != 0 {
+            0
+        } else if r.min.y >= scope.max.y {
+            scope.max.y - 10 - r.min.y
+        } else {
+            scope.min.y + 10 - r.max.y
+        };
+        let moved = |p: Point| Point::new(p.x + dx, p.y + dy);
+        scene.boundaries[g].rect = Rect::from_corners(moved(r.min), moved(r.max));
+        let report = lint(&model, &scene);
+        let l26 = of_rule(&report, Rule::BoundaryIntrusion);
+        assert_eq!(l26.len(), 1, "{l26:?}");
+        assert_eq!(l26[0].subjects, vec![ModelId::Element(el(&model, "shop"))]);
+        assert_eq!(
+            l26[0].items,
+            vec![ItemKey::Boundary(0), ItemKey::Boundary(count(g))]
+        );
+        assert_eq!(
+            l26[0].message,
+            r#"boundaries "Shop" and "Partners" overlap but neither holds the other"#
+        );
+    }
+
     #[test]
     fn core_16_stats_rows_columns_budget() {
         // `Stats` counts as CLI-1 prints them.
@@ -2311,7 +2414,9 @@ mod tests {
         assert!(of_rule(&lint(&model, &scene), Rule::C3NoScopeComponent).is_empty());
         // The same boxes on a view of another container.
         let store = el(&model, "store");
-        let ViewScope::Element(mut scope) = scene.scope.clone();
+        let ViewScope::Element(mut scope) = scene.scope.clone() else {
+            unreachable!("phase-1 scoped view")
+        };
         scope.value = store;
         scene.scope = ViewScope::Element(scope);
         let report = lint(&model, &scene);

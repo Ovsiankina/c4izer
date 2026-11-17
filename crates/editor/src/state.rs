@@ -81,8 +81,8 @@
 // scoped to it (for a container); a system context view does not count
 // (`enterable`, `view_into`).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use c4rizer_core::edit::{
@@ -92,7 +92,7 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, Model, ModelError, Parsed, RelationshipId, Shape, ViewKind, parse,
+    Colour, ElementId, ElementKind, Model, ModelError, Parsed, RelationshipId, Shape, ViewKind, parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
 use c4rizer_core::place::Keep;
@@ -100,7 +100,7 @@ use c4rizer_core::scene::{ItemKey, ModelId, Scene, texts_fit};
 use c4rizer_core::view::{BoxId, PlanBox};
 
 use crate::camera::{Camera, ScenePoint, ScreenPoint, ZOOM_STEP};
-use crate::files::{ContentHash, FileEvent, FileMemory, UiState, WriteRequest, export_dir, export_name};
+use crate::files::{self, ContentHash, FileEvent, FileMemory, UiState, WriteRequest, export_dir, export_name};
 use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
@@ -773,6 +773,26 @@ pub struct State {
     view_cameras: BTreeMap<(PathBuf, ViewRef), Camera>,
     /// True while the view on screen waits for its first fit (EDIT-30).
     fit_pending: bool,
+    // DECISION: the dsl-breadth bookkeeping (included files, P2-136,
+    // P2-139, P2-141) is private fields and `pub(crate)` methods, like the
+    // EDIT-30 fields above, so the step-4 contract of `State`, `Doc`,
+    // `Event`, `Effect` and `WriteRequest` stays as it is.
+    /// The root file's text as last read or written: what an included
+    /// file's change re-parses with (P2-141).
+    root_text: Option<String>,
+    /// Every file the last parse read besides the root, by the path the
+    /// parse read it at, with the hash of its bytes as read or last
+    /// written by the app: the per-file own-write hash (EDIT-22, P2-141).
+    included: BTreeMap<PathBuf, ContentHash>,
+    /// The included file holding `Doc::parse_error`, `None` when the
+    /// error is in the root file (P2-136).
+    error_file: Option<PathBuf>,
+    /// The file of the write in flight (EDIT-22), so its result event is
+    /// told apart: the root file's path as opened, or an included file's.
+    in_flight: Option<PathBuf>,
+    /// The writes of the pending batch still to go after `in_flight`, in
+    /// order: included files first, the root file last (P2-139).
+    queued: VecDeque<WriteRequest>,
 }
 
 impl State {
@@ -805,6 +825,11 @@ impl State {
             camera_of: None,
             view_cameras: BTreeMap::new(),
             fit_pending: false,
+            root_text: None,
+            included: BTreeMap::new(),
+            error_file: None,
+            in_flight: None,
+            queued: VecDeque::new(),
         }
     }
 
@@ -1207,6 +1232,110 @@ impl State {
         }
     }
 
+    /// Every notice of the open file's last good parse (P2-126), in file
+    /// order: `<path>:<line>:<column>: <construct> is accepted and has no
+    /// effect`, `<path>` being the file it is in. The findings panel lists
+    /// them.
+    #[must_use]
+    pub(crate) fn notices(&self) -> Vec<String> {
+        let (Some(doc), Some(parsed)) = (&self.doc, self.parsed()) else {
+            return Vec::new();
+        };
+        parsed
+            .model
+            .notices
+            .iter()
+            .map(|n| match n.span {
+                Some(span) => {
+                    let path = match span.file.0 {
+                        0 => doc.path.as_path(),
+                        i => parsed.paths.get(i as usize).map_or(doc.path.as_path(), PathBuf::as_path),
+                    };
+                    format!("{}:{n}", path.display())
+                }
+                None => n.to_string(),
+            })
+            .collect()
+    }
+
+    /// The files the open diagram includes, as the last parse read them
+    /// (also a failed one), in path order: what the shell watches
+    /// besides the root file (P2-141).
+    #[must_use]
+    pub(crate) fn included_files(&self) -> Vec<PathBuf> {
+        self.included.keys().cloned().collect()
+    }
+
+    /// The included file the current parse error is in; `None` with no
+    /// parse error or an error in the root file (P2-136, EDIT-11).
+    #[must_use]
+    pub(crate) fn parse_error_file(&self) -> Option<&Path> {
+        self.doc.as_ref()?.parse_error.as_ref()?;
+        self.error_file.as_deref()
+    }
+
+    /// A watcher event for an included file (P2-141): a change whose hash
+    /// is the one last read or written by the app is ignored (EDIT-22);
+    /// any other change, or the file going away, re-parses the root text
+    /// with the files on disk, as an EDIT-1 reload.
+    pub(crate) fn included_file(&mut self, path: &Path, event: &FileEvent) -> Vec<Effect> {
+        self.notice = None;
+        let Some(&known) = self.included.get(path) else {
+            return Vec::new();
+        };
+        match event {
+            FileEvent::Changed { hash, .. } if *hash == known => return Vec::new(),
+            FileEvent::Changed { .. } | FileEvent::Removed => {}
+            _ => return Vec::new(),
+        }
+        let (Some(doc), Some(text)) = (&self.doc, self.root_text.clone()) else {
+            return Vec::new();
+        };
+        if doc.missing {
+            return Vec::new();
+        }
+        let hash = doc.hash;
+        self.reload(&text, hash)
+    }
+
+    /// True when `view` is a declared view whose kind is not drawn yet
+    /// (P2-2, P2-123).
+    fn unsupported(&self, view: &ViewRef) -> bool {
+        self.model().is_some_and(|m| is_unsupported(m, view))
+    }
+
+    /// Parses `text`, the root file at `path`, reading its included files
+    /// through `files::Reads` (P2-5), and records the root text, the files
+    /// read with their hashes (P2-141) and the included file an error is
+    /// in (P2-136).
+    fn parse_doc(&mut self, path: &Path, text: &str) -> Result<Parsed, ModelError> {
+        let mut reads = files::Reads::default();
+        let result = parse_with(text, Some(path), &mut reads);
+        self.root_text = Some(text.to_owned());
+        self.error_file = match &result {
+            Ok(_) => None,
+            Err(e) => (e.span.file.0 as usize)
+                .checked_sub(1)
+                .and_then(|i| reads.read.get(i))
+                .map(|(p, _)| p.clone()),
+        };
+        let read: BTreeMap<PathBuf, ContentHash> = reads.read.into_iter().collect();
+        if result.is_err() {
+            // DECISION: after a failed parse the files of the last parse
+            // stay watched too (one that failed to read was not read), with
+            // a hash no content has, so any change to them re-parses.
+            for path in std::mem::take(&mut self.included).into_keys() {
+                if !read.contains_key(&path) {
+                    self.included.insert(path, ContentHash::default());
+                }
+            }
+            self.included.extend(read);
+        } else {
+            self.included = read;
+        }
+        result
+    }
+
     /// True when edits are refused: no parse, a parse error, the file
     /// missing (EDIT-11, EDIT-27). Undo and redo are refused too.
     #[must_use]
@@ -1501,20 +1630,23 @@ pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
 
 /// The view shown on opening `model` (EDIT-13, EDIT-15, EDIT-27):
 /// `remembered` if it still exists (declared, or a default view that
-/// still opens), else the first declared view, else (a model-only file)
-/// the system context default view of the first software system; `None`
-/// when the model has no software system.
+/// still opens) and is drawn, else the first declared view that is drawn
+/// (P2-123: never an unsupported one), else (a model-only file, or only
+/// unsupported views) the system context default view of the first
+/// software system; `None` when the model has no software system.
 #[must_use]
 pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewRef> {
     if let Some(view) = remembered
         && view_exists(model, view)
+        && !is_unsupported(model, view)
     {
         return Some(match view {
             ViewRef::Default { .. } if model.view(&view.key()).is_some() => ViewRef::Declared(view.key()),
             _ => view.clone(),
         });
     }
-    if let Some(v) = model.views.first() {
+    // P2-123: the editor never opens an unsupported view by itself.
+    if let Some(v) = model.views.iter().find(|v| v.kind.drawable()) {
         return Some(ViewRef::Declared(v.key.clone()));
     }
     let system = model
@@ -1745,6 +1877,13 @@ impl State {
         let (Some(parsed), Some(view)) = (self.parsed(), self.view.clone()) else {
             return Vec::new();
         };
+        if self.unsupported(&view) {
+            // P2-123: an unsupported view draws nothing; a build in flight
+            // for the previous view is stale.
+            self.shown = None;
+            self.awaited_build = Some(self.next_generation());
+            return Vec::new();
+        }
         let keep = match &self.shown {
             Some((old, build)) if build.scene.key == view.key() => {
                 let centres = &self.scene().unwrap_or(&build.scene).centres;
@@ -1775,6 +1914,7 @@ impl State {
             .model
             .views
             .iter()
+            .filter(|v| v.kind.drawable())
             .map(|v| ViewRef::Declared(v.key.clone()))
             .filter(|v| Some(v) != self.view.as_ref() && !self.cache.contains_key(v))
             .collect();
@@ -1875,13 +2015,42 @@ impl State {
         }
         match apply(parsed, &edits) {
             Ok(applied) => {
-                let text = applied.text.clone();
+                // P2-139: the patched included files first, each checked
+                // against its own hash (EDIT-24), then the root file when
+                // its text changed; one at a time, each after the last
+                // landed, so a refused write stops the batch.
+                // DECISION: the root file is not rewritten when only
+                // included files changed (its bytes stay, P2-139); a batch
+                // with no included file always writes the root, as before.
+                let mut queue: VecDeque<WriteRequest> = applied
+                    .files
+                    .iter()
+                    .filter_map(|(file, text)| {
+                        let p = parsed.paths.get(file.0 as usize)?.clone();
+                        let expected = self.included.get(&p).copied().unwrap_or_default();
+                        Some(WriteRequest {
+                            path: p,
+                            text: text.clone(),
+                            expected,
+                        })
+                    })
+                    .collect();
+                if queue.is_empty() || parsed.trees.first().is_none_or(|t| t.print() != applied.text) {
+                    queue.push_back(WriteRequest {
+                        path,
+                        text: applied.text.clone(),
+                        expected,
+                    });
+                }
                 self.pending = Some(Pending {
                     action,
                     inverse: applied.inverse,
                     text: applied.text,
                 });
-                vec![Effect::Write(WriteRequest { path, text, expected })]
+                let first = queue.pop_front();
+                self.queued = queue;
+                self.in_flight = first.as_ref().map(|r| r.path.clone());
+                first.map(Effect::Write).into_iter().collect()
             }
             Err(e) => {
                 // EDIT-19, EDIT-24: the action or step is dropped.
@@ -2392,6 +2561,10 @@ impl State {
         if self.read_only() || self.selection.len() != 1 {
             return;
         }
+        // P2-123: an unsupported view changes no file.
+        if self.view.as_ref().is_some_and(|v| self.unsupported(v)) {
+            return;
+        }
         let (Some(model), Some(view)) = (self.model(), self.view.as_ref()) else { return };
         let Some(item) = self.selection.iter().next().cloned() else { return };
         let fields = text_fields(model, view, &item);
@@ -2526,6 +2699,13 @@ impl State {
             }
             Command::ExportView(format) => {
                 let (Some(doc), Some(view)) = (&self.doc, &self.view) else { return Vec::new() };
+                if let Some(kind) = self.model().and_then(|m| unsupported_kind(m, view)) {
+                    self.notice = Some(format!(
+                        "nothing to export: {} views are not drawn by this version",
+                        kind.keyword()
+                    ));
+                    return Vec::new();
+                }
                 vec![Effect::Dialog(Dialog::ExportView {
                     view: view.clone(),
                     dir: export_dir(&doc.path),
@@ -2542,6 +2722,13 @@ impl State {
             }
             Command::Export { targets, format } => {
                 let Some(parsed) = self.parsed() else { return Vec::new() };
+                // P2-180: unsupported views are never exported.
+                let targets: Vec<(ViewRef, PathBuf)> =
+                    targets.into_iter().filter(|(v, _)| !is_unsupported(&parsed.model, v)).collect();
+                if targets.is_empty() {
+                    self.notice = Some("nothing to export: those views are not drawn by this version".to_owned());
+                    return Vec::new();
+                }
                 let shown_keep = self.shown.as_ref().map(|(p, b)| {
                     (b.scene.key.clone(), if Arc::ptr_eq(p, &parsed) {
                         Keep::from_previous(&b.plan, &b.scene.centres)
@@ -2600,6 +2787,14 @@ impl State {
     // ---------------------------------------------------------- files
 
     fn file(&mut self, event: FileEvent) -> Vec<Effect> {
+        if matches!(
+            event,
+            FileEvent::Written { .. } | FileEvent::ChangedOnDisk { .. } | FileEvent::WriteFailed { .. }
+        ) && let Some(path) = self.in_flight.take()
+            && self.doc.as_ref().is_some_and(|d| d.path != path)
+        {
+            return self.included_written(path, event);
+        }
         match event {
             FileEvent::Loaded { path, text, hash } => self.loaded(path, &text, hash),
             FileEvent::OpenFailed { path, error } => {
@@ -2626,6 +2821,7 @@ impl State {
             }
             FileEvent::Written { hash } => self.written(hash),
             FileEvent::ChangedOnDisk { text, hash } => {
+                self.queued.clear();
                 let pending = self.pending.take();
                 let mut effects = self.reload(&text, hash);
                 let Some(pending) = pending else { return effects };
@@ -2641,6 +2837,7 @@ impl State {
                 effects
             }
             FileEvent::WriteFailed { error } => {
+                self.queued.clear();
                 self.io_error = Some(error);
                 if let Some(pending) = self.pending.take() {
                     self.give_back(pending.action);
@@ -2655,7 +2852,10 @@ impl State {
 
     /// A file was opened (EDIT-13, EDIT-11).
     fn loaded(&mut self, path: PathBuf, text: &str, hash: ContentHash) -> Vec<Effect> {
-        let (parsed, parse_error) = match parse(text) {
+        self.included.clear();
+        self.in_flight = None;
+        self.queued.clear();
+        let (parsed, parse_error) = match self.parse_doc(&path, text) {
             Ok(p) => (Some(Arc::new(p)), None),
             Err(e) => (None, Some(e)),
         };
@@ -2689,10 +2889,12 @@ impl State {
 
     /// The file changed on disk (EDIT-1, EDIT-11, EDIT-23, EDIT-27).
     fn reload(&mut self, text: &str, hash: ContentHash) -> Vec<Effect> {
+        let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) else { return Vec::new() };
+        let result = self.parse_doc(&path, text);
         let Some(doc) = self.doc.as_mut() else { return Vec::new() };
         doc.hash = hash;
         doc.missing = false;
-        match parse(text) {
+        match result {
             Ok(p) => {
                 doc.parsed = Some(Arc::new(p));
                 doc.parse_error = None;
@@ -2734,9 +2936,11 @@ impl State {
             Action::Redo(_) => self.history.push_redone(step),
             _ => self.history.record(step),
         }
+        let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) else { return Vec::new() };
+        let result = self.parse_doc(&path, &pending.text);
         let Some(doc) = self.doc.as_mut() else { return Vec::new() };
         doc.hash = hash;
-        match parse(&pending.text) {
+        match result {
             Ok(p) => {
                 doc.parsed = Some(Arc::new(p));
                 doc.parse_error = None;
@@ -2746,6 +2950,58 @@ impl State {
         self.cache.clear();
         self.normalise_view();
         self.request_shown()
+    }
+
+    /// The result of the in-flight write to the included file `path`
+    /// (P2-139): on `Written` its own-write hash is kept (EDIT-22) and the
+    /// next write of the batch goes, or the batch is done; a file changed
+    /// on disk re-parses and re-applies the action (EDIT-24); a failure
+    /// gives the action back (EDIT-27).
+    fn included_written(&mut self, path: PathBuf, event: FileEvent) -> Vec<Effect> {
+        match event {
+            FileEvent::Written { hash } => {
+                self.included.insert(path, hash);
+                if let Some(next) = self.queued.pop_front() {
+                    self.in_flight = Some(next.path.clone());
+                    return vec![Effect::Write(next)];
+                }
+                let Some(hash) = self.doc.as_ref().map(|d| d.hash) else { return Vec::new() };
+                self.written(hash)
+            }
+            FileEvent::ChangedOnDisk { .. } => {
+                // DECISION: the files of the batch written before this one
+                // keep their new text; the action is re-applied to the files
+                // as they are now, like a root-file EDIT-24 conflict.
+                self.queued.clear();
+                let pending = self.pending.take();
+                let (Some(text), Some(hash)) = (self.root_text.clone(), self.doc.as_ref().map(|d| d.hash)) else {
+                    return Vec::new();
+                };
+                let mut effects = self.reload(&text, hash);
+                let Some(pending) = pending else { return effects };
+                let (Some(parsed), Some(doc)) = (self.parsed(), self.doc.as_ref()) else {
+                    return effects;
+                };
+                if doc.parse_error.is_some() {
+                    self.notice = Some("change dropped: an included file on disk does not parse".to_owned());
+                    return effects;
+                }
+                let (path, expected) = (doc.path.clone(), doc.hash);
+                effects.extend(self.write_to(pending.action, &parsed, path, expected));
+                effects
+            }
+            FileEvent::WriteFailed { error } => {
+                self.queued.clear();
+                self.io_error = Some(error);
+                if let Some(pending) = self.pending.take() {
+                    self.give_back(pending.action);
+                }
+                self.preview = None;
+                self.dragged = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
     }
 
     // ---------------------------------------------------------- replies
@@ -2895,6 +3151,20 @@ fn view_kind(model: &Model, view: &ViewRef) -> Option<ViewKind> {
 
 /// True when `view` can be shown from `model`: declared, or a default
 /// view written or still opening.
+/// The kind of `view` when it is a declared view that is not drawn yet
+/// (P2-2, P2-123).
+fn unsupported_kind(model: &Model, view: &ViewRef) -> Option<ViewKind> {
+    match view {
+        ViewRef::Declared(key) => model.view(key).map(|v| v.kind).filter(|k| !k.drawable()),
+        ViewRef::Default { .. } => None,
+    }
+}
+
+/// True when `view` is a declared view that is not drawn yet.
+fn is_unsupported(model: &Model, view: &ViewRef) -> bool {
+    unsupported_kind(model, view).is_some()
+}
+
 fn view_exists(model: &Model, view: &ViewRef) -> bool {
     match view {
         ViewRef::Declared(key) => model.view(key).is_some(),

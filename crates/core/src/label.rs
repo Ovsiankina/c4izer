@@ -81,9 +81,9 @@
 // component view), in bold, as `boundary_tag` sizes it.
 
 use crate::geom::{GRID_PX, Point, Rect, Segment, grid_to_px};
-use crate::model::{ViewKind, ViewOptions};
+use crate::model::{ElementKind, MetadataSymbols, Terminology, ViewKind, ViewOptions};
 use crate::route::{Line, Routes};
-use crate::view::{EdgeId, PlanEdge, ViewPlan};
+use crate::view::{BoundaryOf, EdgeId, PlanEdge, ViewPlan};
 
 /// Thousandths of an em: the unit of `text_advance`. A text's width in
 /// px at font size `s` px is `text_advance(..) * s / EM` (round up to be
@@ -392,8 +392,18 @@ impl Labels {
 /// When `centres` is shorter than `plan.boxes`.
 #[must_use]
 pub fn boundary_tag(plan: &ViewPlan, index: usize, centres: &[Point]) -> Option<Rect> {
+    boundary_tag_with(plan, index, centres, &Words::DEFAULT)
+}
+
+/// `boundary_tag` with the tag's type word from `words` (P2-161).
+pub(crate) fn boundary_tag_with(
+    plan: &ViewPlan,
+    index: usize,
+    centres: &[Point],
+    words: &Words<'_>,
+) -> Option<Rect> {
     let outer = plan.boundary_rect(index, centres)?;
-    let text = tag_text(plan, &plan.boundaries[index].name);
+    let text = tag_text(plan, index, words);
     let text_px = (text_advance(&text, Weight::Bold) * TAG_FONT_PX + EM - 1) / EM;
     let right_px = grid_to_px(outer.min.x) + TAG_TEXT_INSET_PX + text_px + TAG_PAD_RIGHT_PX;
     Some(Rect::from_corners(
@@ -415,18 +425,102 @@ const TAG_TEXT_INSET_PX: i32 = 12;
 const TAG_PAD_RIGHT_PX: i32 = 8;
 const TAG_HEIGHT_UNITS: i32 = 3;
 
-/// The boundary tag text: the name, then the scope's type in brackets
-/// (CORE-1).
+/// The text of boundary `index`'s tag: the name, then the scope's type
+/// in brackets (CORE-1); a group's tag is its name alone (P2-130).
 // DECISION: the type follows the view kind (phase 1's one boundary is
 // the scope's): a container view's scope is a software system, a
 // component view's a container; a context view draws no boundary in
 // phase 1, and its scope is a software system too.
-fn tag_text(plan: &ViewPlan, name: &str) -> String {
+pub(crate) fn tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>) -> String {
+    let boundary = &plan.boundaries[index];
+    if matches!(boundary.of, BoundaryOf::Group(_)) {
+        return boundary.name.clone();
+    }
     let kind = match plan.kind {
-        ViewKind::SystemContext | ViewKind::Container => "Software System",
-        ViewKind::Component => "Container",
+        ViewKind::Component => words.container,
+        // DECISION: the kinds after phase 1 draw no scope boundary in phase
+        // 2 (P2-2); a boundary of one would surround a software system's
+        // boxes, as on context and container views.
+        _ => words.software_system,
     };
-    format!("{name} [{kind}]")
+    format!("{} [{kind}]", boundary.name)
+}
+
+/// The type words and brackets texts are drawn with: the CORE-1/CORE-2
+/// words, or those of the model's `terminology` block (P2-161..P2-163).
+/// `pipeline` builds it from `Model::terminology` and passes it to
+/// `place_labels_with` and `scene::build_with`; the pub `place_labels`,
+/// `boundary_tag`, `scene::build` and `scene::texts_fit` use `DEFAULT`.
+// DECISION: terminology reaches `label` and `scene` as a crate-private
+// argument from `pipeline`, not a `ViewPlan` field, so no pub signature
+// or layout changes (docs/deferred.md had it as a pub `ViewPlan` field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Words<'a> {
+    pub(crate) person: &'a str,
+    pub(crate) software_system: &'a str,
+    pub(crate) container: &'a str,
+    pub(crate) component: &'a str,
+    /// The word of every key line entry (P2-162).
+    pub(crate) relationship: &'a str,
+    /// The box type line's brackets (P2-163).
+    pub(crate) metadata: MetadataSymbols,
+}
+
+impl<'a> Words<'a> {
+    /// The phase-1 words: Person, Software System, Container, Component,
+    /// Relationship, square brackets.
+    pub(crate) const DEFAULT: Words<'static> = Words {
+        person: "Person",
+        software_system: "Software System",
+        container: "Container",
+        component: "Component",
+        relationship: "Relationship",
+        metadata: MetadataSymbols::Square,
+    };
+
+    /// The words of `t`, each unwritten one the default.
+    pub(crate) fn of(t: &'a Terminology) -> Self {
+        let d = Words::DEFAULT;
+        let word = |l: &'a Option<crate::model::Literal>, default: &'static str| {
+            l.as_ref().map_or(default, |l| l.value.as_str())
+        };
+        Words {
+            person: word(&t.person, d.person),
+            software_system: word(&t.software_system, d.software_system),
+            container: word(&t.container, d.container),
+            component: word(&t.component, d.component),
+            relationship: word(&t.relationship, d.relationship),
+            metadata: t.metadata.as_ref().map_or(d.metadata, |m| m.value),
+        }
+    }
+
+    /// The type word of a box of `kind` (`External <word>` for an external
+    /// software system, B dsl-breadth 18b); `None` for a custom element.
+    pub(crate) fn kind(&self, kind: ElementKind, external: bool) -> Option<String> {
+        Some(match kind {
+            ElementKind::Person => self.person.to_owned(),
+            ElementKind::SoftwareSystem if external => format!("External {}", self.software_system),
+            ElementKind::SoftwareSystem => self.software_system.to_owned(),
+            ElementKind::Container => self.container.to_owned(),
+            ElementKind::Component => self.component.to_owned(),
+            _ => return None,
+        })
+    }
+
+    /// `inner` in the box type line's brackets (P2-163).
+    // DECISION: only the box type line takes them (P2-163 names only it);
+    // boundary name tags keep `[...]`.
+    pub(crate) fn bracket(&self, inner: &str) -> String {
+        let (open, close) = match self.metadata {
+            MetadataSymbols::Round => ("(", ")"),
+            MetadataSymbols::Curly => ("{", "}"),
+            MetadataSymbols::Angle => ("<", ">"),
+            MetadataSymbols::DoubleAngle => ("\u{ab}", "\u{bb}"),
+            MetadataSymbols::None => ("", ""),
+            _ => ("[", "]"),
+        };
+        format!("{open}{inner}{close}")
+    }
 }
 
 /// Places the label of every routed edge of `plan` on its own line, with
@@ -453,6 +547,11 @@ fn tag_text(plan: &ViewPlan, name: &str) -> String {
 /// `plan.boxes`).
 #[must_use]
 pub fn place_labels(plan: &ViewPlan, routes: &Routes) -> Labels {
+    place_labels_with(plan, routes, &Words::DEFAULT)
+}
+
+/// `place_labels` with boundary tags sized from `words` (P2-161).
+pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels {
     assert_eq!(
         routes.lines.len(),
         plan.edges.len(),
@@ -463,7 +562,7 @@ pub fn place_labels(plan: &ViewPlan, routes: &Routes) -> Labels {
         plan.boxes.len(),
         "place_labels: routes of another plan (centres)"
     );
-    let scene = Obstacles::new(plan, routes);
+    let scene = Obstacles::new(plan, routes, words);
     let mut labels: Vec<Option<Label>> = Vec::with_capacity(plan.edges.len());
     let mut shared = Vec::new();
     for edge in &plan.edges {
@@ -532,7 +631,7 @@ struct Obstacles {
 }
 
 impl Obstacles {
-    fn new(plan: &ViewPlan, routes: &Routes) -> Self {
+    fn new(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Self {
         let centres = &routes.centres;
         let boxes = plan
             .boxes
@@ -540,7 +639,7 @@ impl Obstacles {
             .map(|b| rect_px(&b.rect_at(centres[b.id.0 as usize])))
             .collect();
         let tags = (0..plan.boundaries.len())
-            .filter_map(|i| boundary_tag(plan, i, centres))
+            .filter_map(|i| boundary_tag_with(plan, i, centres, words))
             .map(|t| rect_px(&t))
             .collect();
         // DECISION: an unroutable line is still drawn (CORE-13: straight,

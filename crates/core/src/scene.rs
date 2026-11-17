@@ -85,11 +85,11 @@
 
 use crate::geom::{Dir, GRID_PX, Point, Rect, crossings};
 use crate::label::{
-    EM, Fit, LABEL_FONT_PX, LABEL_LINE_PX, LABEL_PAD_Y_PX, Label, Labels, Weight, boundary_tag,
-    text_advance,
+    EM, Fit, LABEL_FONT_PX, LABEL_LINE_PX, LABEL_PAD_Y_PX, Label, Labels, Weight, Words,
+    boundary_tag_with, text_advance,
 };
 use crate::model::{
-    Colour, ElementId, ElementKind, RelationshipId, Shape, ViewKind, ViewOptions, ViewScope,
+    Colour, ElementId, ElementKind, MetadataSymbols, RelationshipId, Shape, ViewKind, ViewOptions, ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
@@ -519,8 +519,12 @@ impl Scene {
             ItemKey::Label(edge) => self
                 .label(edge)
                 .map(|l| ModelId::Relationship(l.relationship)),
-            ItemKey::Boundary(i) => self.boundaries.get(i as usize).map(|b| match b.of {
-                BoundaryOf::Element(e) => ModelId::Element(e),
+            // DECISION: a group boundary has no model id: a group is not an
+            // element or a relationship, and `ModelId` gains no variant in
+            // phase 2 (pub surface frozen); the editor selects nothing.
+            ItemKey::Boundary(i) => self.boundaries.get(i as usize).and_then(|b| match b.of {
+                BoundaryOf::Element(e) => Some(ModelId::Element(e)),
+                BoundaryOf::Group(_) => None,
             }),
             ItemKey::Title | ItemKey::Subtitle | ItemKey::Legend => None,
         }
@@ -732,10 +736,13 @@ impl Scene {
 /// size already fails (an `at`/`size` line written by hand) may keep
 /// that size and grow, but a resize never makes it smaller. Serves
 /// EDIT-18, CORE-30.
+// DECISION: sized with the default type words (`Words::DEFAULT`): the
+// signature has no terminology, so a longer `terminology` word than the
+// default can still overflow at the editor's smallest size (L25 reports it).
 #[must_use]
 pub fn texts_fit(plan_box: &PlanBox, half_width: i32, half_height: i32) -> bool {
     let rect = Rect::from_centre(Point::default(), half_width, half_height);
-    let texts = box_texts(plan_box, &px_rect(rect));
+    let texts = box_texts(plan_box, &px_rect(rect), &Words::DEFAULT);
     texts.name.fits && texts.type_line.fits && texts.description.as_ref().is_none_or(|d| d.fits)
 }
 
@@ -757,6 +764,12 @@ pub fn texts_fit(plan_box: &PlanBox, half_width: i32, half_height: i32) -> bool 
 /// shorter than `plan.boxes`).
 #[must_use]
 pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
+    build_with(plan, routes, labels, &Words::DEFAULT)
+}
+
+/// `build` with type words, key line entries and type-line brackets from
+/// `words` (`terminology`, P2-161..P2-163); `pipeline` calls it.
+pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, words: &Words<'_>) -> Scene {
     assert_eq!(
         routes.lines.len(),
         plan.edges.len(),
@@ -775,7 +788,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
     let boxes: Vec<SceneBox> = plan
         .boxes
         .iter()
-        .map(|b| scene_box(b, centres[b.id.0 as usize]))
+        .map(|b| scene_box(b, centres[b.id.0 as usize], words))
         .collect();
     let labels: Vec<SceneLabel> = labels
         .labels
@@ -800,7 +813,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
         extent.add_rect(&l.rect);
     }
     let boundaries: Vec<SceneBoundary> = (0..plan.boundaries.len())
-        .filter_map(|i| scene_boundary(plan, i, &centres))
+        .filter_map(|i| scene_boundary(plan, i, &centres, words))
         .collect();
     for b in &boundaries {
         extent.add_rect(&b.rect);
@@ -817,7 +830,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
         below = block.bounds.max.y;
         block
     });
-    let legend = legend(plan, &boxes, &lines, &drawing, below + KEY_GAP_PX);
+    let legend = legend(looks(plan, &boxes, &lines, words), &drawing, below + KEY_GAP_PX);
     for r in [
         title.as_ref().map(|t| t.bounds),
         subtitle.as_ref().map(|t| t.bounds),
@@ -1057,17 +1070,18 @@ struct BoxTexts {
 }
 
 /// The CORE-2 type line text: `[type: technology]` or `[type]`.
-fn type_text(b: &PlanBox) -> String {
-    let kind = match b.kind {
-        ElementKind::Person => "Person",
-        ElementKind::SoftwareSystem if b.external => "External Software System",
-        ElementKind::SoftwareSystem => "Software System",
-        ElementKind::Container => "Container",
-        ElementKind::Component => "Component",
+fn type_text(b: &PlanBox, words: &Words<'_>) -> String {
+    // DECISION: a custom element's type line is its metadata, which
+    // `view` puts in `technology` (P2-170), else the word `Element`.
+    let Some(kind) = words.kind(b.kind, b.external) else {
+        return match b.technology.as_deref().map(str::trim) {
+            Some(meta) if !meta.is_empty() => words.bracket(meta),
+            _ => words.bracket("Element"),
+        };
     };
     match b.technology.as_deref().map(str::trim) {
-        Some(tech) if !tech.is_empty() => format!("[{kind}: {tech}]"),
-        _ => format!("[{kind}]"),
+        Some(tech) if !tech.is_empty() => words.bracket(&format!("{kind}: {tech}")),
+        _ => words.bracket(&kind),
     }
 }
 
@@ -1112,11 +1126,11 @@ fn text_area(shape: Shape, rect: Rect) -> Rect {
 /// Name, type line and description of `b` wrapped to the text area of
 /// a box at `rect` (px) and stacked, centred vertically in it (top
 /// aligned when they overflow it).
-fn box_texts(b: &PlanBox, rect: &Rect) -> BoxTexts {
+fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
     let area = text_area(b.style.shape, *rect);
     let width = area.width();
     let name = wrap(&b.name, NAME_PX, Weight::Bold, width);
-    let type_line = wrap(&type_text(b), SMALL_PX, Weight::Regular, width);
+    let type_line = wrap(&type_text(b, words), SMALL_PX, Weight::Regular, width);
     let description = b
         .description
         .as_deref()
@@ -1148,9 +1162,9 @@ fn box_texts(b: &PlanBox, rect: &Rect) -> BoxTexts {
 }
 
 /// The box of `b` with its centre at `centre` (grid units).
-fn scene_box(b: &PlanBox, centre: Point) -> SceneBox {
+fn scene_box(b: &PlanBox, centre: Point, words: &Words<'_>) -> SceneBox {
     let rect = px_rect(b.rect_at(centre));
-    let texts = box_texts(b, &rect);
+    let texts = box_texts(b, &rect, words);
     SceneBox {
         id: b.id,
         element: b.element,
@@ -1414,24 +1428,19 @@ const TAG_FONT: Font = Font {
 };
 const TAG_INSET_PX: i32 = 12;
 
-/// The tag text: the name, then the scope's type in brackets (CORE-1),
-/// as `label::boundary_tag` measures it.
-fn tag_text(plan: &ViewPlan, name: &str) -> String {
-    let kind = match plan.kind {
-        ViewKind::SystemContext | ViewKind::Container => "Software System",
-        ViewKind::Component => "Container",
-    };
-    format!("{name} [{kind}]")
-}
-
 /// Boundary `index` of `plan` in px, `None` when it has no member.
-fn scene_boundary(plan: &ViewPlan, index: usize, centres: &[Point]) -> Option<SceneBoundary> {
+fn scene_boundary(
+    plan: &ViewPlan,
+    index: usize,
+    centres: &[Point],
+    words: &Words<'_>,
+) -> Option<SceneBoundary> {
     let boundary = &plan.boundaries[index];
     let rect = px_rect(plan.boundary_rect(index, centres)?);
-    let tag_rect = px_rect(boundary_tag(plan, index, centres)?);
+    let tag_rect = px_rect(boundary_tag_with(plan, index, centres, words)?);
     let baseline = rect.max.y - TAG_INSET_PX;
     let tag = text_block(
-        vec![tag_text(plan, &boundary.name)],
+        vec![crate::label::tag_text(plan, index, words)],
         TAG_FONT,
         BOUNDARY_COLOUR,
         start(rect.min.x + TAG_INSET_PX, baseline - TAG_FONT.baseline_px()),
@@ -1544,7 +1553,12 @@ fn swatch_outline(shape: Shape, at: Point) -> Outline {
 
 /// Every distinct look drawn, boxes then lines, each in first-drawn
 /// order, with the names it stands for (CORE-1).
-fn looks(plan: &ViewPlan, boxes: &[SceneBox], lines: &[SceneLine]) -> Vec<(Look, Vec<String>)> {
+fn looks(
+    plan: &ViewPlan,
+    boxes: &[SceneBox],
+    lines: &[SceneLine],
+    words: &Words<'_>,
+) -> Vec<(Look, Vec<String>)> {
     let mut looks: Vec<(Look, Vec<String>)> = Vec::new();
     let mut add = |look: Look, name: &str| {
         if let Some((_, names)) = looks.iter_mut().find(|(l, _)| *l == look) {
@@ -1557,11 +1571,14 @@ fn looks(plan: &ViewPlan, boxes: &[SceneBox], lines: &[SceneLine]) -> Vec<(Look,
     };
     for b in boxes {
         let pb = &plan.boxes[b.id.0 as usize];
-        let fallback = type_text(pb);
-        let name = pb.tags.last().map_or_else(
-            || fallback.trim_matches(['[', ']']).to_owned(),
-            Clone::clone,
-        );
+        let bare = Words {
+            metadata: MetadataSymbols::None,
+            ..*words
+        };
+        let name = pb
+            .tags
+            .last()
+            .map_or_else(|| type_text(pb, &bare), Clone::clone);
         add(
             Look::Box {
                 shape: b.shape,
@@ -1578,7 +1595,7 @@ fn looks(plan: &ViewPlan, boxes: &[SceneBox], lines: &[SceneLine]) -> Vec<(Look,
                 stroke: l.stroke,
                 dot: matches!(l.tip, Tip::Dot { .. }),
             },
-            "Relationship",
+            words.relationship,
         );
     }
     looks
@@ -1616,16 +1633,9 @@ fn swatch(look: Look, x: i32, mid: i32) -> Swatch {
     }
 }
 
-/// The key of the drawn boxes and lines, laid out in rows from the
-/// drawing's left edge, its top at `top` (CORE-1).
-fn legend(
-    plan: &ViewPlan,
-    boxes: &[SceneBox],
-    lines: &[SceneLine],
-    drawing: &Rect,
-    top: i32,
-) -> Legend {
-    let looks = looks(plan, boxes, lines);
+/// The key of `looks` (the drawn boxes and lines), laid out in rows from
+/// the drawing's left edge, its top at `top` (CORE-1).
+fn legend(looks: Vec<(Look, Vec<String>)>, drawing: &Rect, top: i32) -> Legend {
     let left = drawing.min.x;
     let limit = left + drawing.width().max(KEY_MIN_WIDTH_PX);
     let mut extent = Extent::default();
@@ -2839,7 +2849,9 @@ mod tests {
                 Some(ModelId::Relationship(winner))
             );
         }
-        let BoundaryOf::Element(scope) = scene.boundaries[0].of;
+        let BoundaryOf::Element(scope) = scene.boundaries[0].of else {
+            unreachable!("phase-1 scope boundary")
+        };
         assert_eq!(
             scene.model_id(ItemKey::Boundary(0)),
             Some(ModelId::Element(scope))
@@ -2866,7 +2878,9 @@ mod tests {
             assert_eq!(scene.boxes_of(b.element), vec![b.id]);
         }
         // The scope is a boundary on a container view, not a box.
-        let BoundaryOf::Element(shop) = scene.boundaries[0].of;
+        let BoundaryOf::Element(shop) = scene.boundaries[0].of else {
+            unreachable!("phase-1 scope boundary")
+        };
         assert!(scene.boxes_of(shop).is_empty());
         assert!(scene.boxes_of(ElementId(999)).is_empty());
     }

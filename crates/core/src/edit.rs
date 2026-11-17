@@ -13,9 +13,16 @@
 // inverse list; the editor keeps both, nothing here does I/O.
 //
 // Element key: every `element: String` in this module is the canonical
-// element key, which in phase 1 is the bare `model::Element::key` (the
-// identifier written before `=`), the same string `model::Model::find`
-// resolves. The editor gets it from a hit-tested `ElementId` as
+// element key, `model::Model::full_key`: the identifier written before
+// `=` under flat ids, the dotted full id under `!identifiers hierarchical`
+// (P2-142), the same string `model::Model::find` resolves.
+//
+// Files (P2-139, P2-140): each step plans on one file and re-parses
+// through `model::reparse`, which reads no file: a text edit goes to the
+// file holding its target's statement, an `at`/`size` line to the file
+// holding the view block, a per-box `tags` line to the file declaring the
+// element, style blocks and default views to the root file.
+// `Applied::files` lists the other files whose bytes changed. The editor gets it from a hit-tested `ElementId` as
 // `model.element(id).key`; for a relationship it uses
 // `RelationshipRef::of`. Nothing else is a valid key.
 //
@@ -448,6 +455,17 @@ pub struct Applied {
     /// (EDIT-21). The inverse of a text insertion that added `""`
     /// placeholders also takes those placeholders out.
     pub inverse: Vec<Edit>,
+    /// The patched files other than the root, by `FileId`, ascending: a
+    /// text edit goes to the file its literal came from (P2-139), and an
+    /// `at`/`size` line to the file holding the view block (P2-140).
+    /// Empty when only the root changed.
+    // TODO(srs): P2-140, `at`/`size` for a view declared in an included
+    // file. Reading taken (B dsl-breadth 7): the file holding the view's
+    // block. P2-139, a DSL-13 per-box `tags` line for an element declared
+    // in an included file: the file holding its declaration (B 8). P2-16,
+    // a text edit to a literal from a `workspace extends` base: the base
+    // file (B 9).
+    pub files: Vec<(FileId, String)>,
 }
 
 /// Applies `edits` in order to the root file of `parsed`, finding each
@@ -492,9 +510,19 @@ pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
         Some(tree) => tree.source().to_owned(),
         None => String::new(),
     };
+    // P2-139, P2-140: every other file whose bytes changed, by `FileId`.
+    let files = current
+        .trees
+        .iter()
+        .zip(&parsed.trees)
+        .skip(1)
+        .filter(|(now, before)| now.source() != before.source())
+        .map(|(now, _)| (now.file(), now.source().to_owned()))
+        .collect();
     Ok(Applied {
         text,
         inverse: steps.into_iter().rev().flatten().collect(),
+        files,
     })
 }
 
@@ -520,6 +548,15 @@ pub enum EditErrorKind {
     },
     /// A text value contains `\n` or `\r` (DSL-10).
     Newline,
+    /// The literal's written bytes hold a `${NAME}` substitution
+    /// (P2-150): rewriting it would drop the reference, so the edit is
+    /// refused and no file changes.
+    // TODO(srs): P2-151, a DSL-10 edit of a literal holding `${...}`.
+    // Reading taken (B dsl-breadth 3): refused, naming the constant.
+    Substituted {
+        /// The constant or variable name.
+        name: String,
+    },
     /// A value the file cannot hold, shaped like
     /// `model::ModelErrorKind::InvalidValue` so `Display` can quote it.
     InvalidValue {
@@ -570,6 +607,10 @@ impl fmt::Display for EditError {
             EditErrorKind::InvalidValue { value, reason } => {
                 write!(f, "change not written: `{value}`: {reason}")
             }
+            EditErrorKind::Substituted { name } => write!(
+                f,
+                "change not written: this text uses `${{{name}}}` — change the `!const`/`!var` `{name}` instead"
+            ),
         }
     }
 }
@@ -637,34 +678,40 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
     }
 }
 
-/// Applies `patches` to the root text and re-parses it into `current`.
-fn commit(current: &mut Parsed, mut patches: Vec<Patch>) -> Res<()> {
+/// Applies `patches` to the text of `file` and re-parses `current`
+/// through `model::reparse`, which reads no file (P2-139).
+fn commit(current: &mut Parsed, file: FileId, mut patches: Vec<Patch>) -> Res<()> {
     if patches.is_empty() {
         return Ok(());
     }
     patches.sort_by_key(|p| std::cmp::Reverse(p.range.start));
-    let mut text = root(current).source().to_owned();
+    let mut text = tree_of(current, file).source().to_owned();
     for patch in patches {
         text.replace_range(patch.range, &patch.text);
     }
-    *current = model::parse(&text).map_err(|e| EditErrorKind::InvalidValue {
+    *current = model::reparse(current, file, &text).map_err(|e| EditErrorKind::InvalidValue {
         value: e.to_string(),
         reason: "the changed file would not parse",
     })?;
     Ok(())
 }
 
-/// Plans one step on `current` and commits it, splitting one-line blocks
-/// first when the plan asks for it.
+/// Plans one step on the root file of `current` and commits it.
 fn run(current: &mut Parsed, plan: impl Fn(&Ctx<'_>) -> Res<Plan>) -> Res<()> {
+    run_in(current, FileId::ROOT, plan)
+}
+
+/// Plans one step on file `file` of `current` and commits it, splitting
+/// one-line blocks first when the plan asks for it.
+fn run_in(current: &mut Parsed, file: FileId, plan: impl Fn(&Ctx<'_>) -> Res<Plan>) -> Res<()> {
     // DECISION: a step splits at most a few blocks (each split puts that
     // block's braces on their own lines for good); the bound only guards
     // against a planning bug looping forever.
     for _ in 0..8 {
-        let planned = plan(&Ctx::new(current))?;
+        let planned = plan(&Ctx::in_file(current, file))?;
         match planned {
-            Plan::Patches(patches) => return commit(current, patches),
-            Plan::Split(patch) => commit(current, vec![patch])?,
+            Plan::Patches(patches) => return commit(current, file, patches),
+            Plan::Split(patch) => commit(current, file, vec![patch])?,
         }
     }
     Err(EditErrorKind::InvalidValue {
@@ -675,6 +722,11 @@ fn run(current: &mut Parsed, plan: impl Fn(&Ctx<'_>) -> Res<Plan>) -> Res<()> {
 
 fn root(parsed: &Parsed) -> &SyntaxTree {
     &parsed.trees[FileId::ROOT.0 as usize]
+}
+
+/// The tree of `file`, the root when there is no such file.
+fn tree_of(parsed: &Parsed, file: FileId) -> &SyntaxTree {
+    parsed.trees.get(file.0 as usize).unwrap_or_else(|| root(parsed))
 }
 
 // ------------------------------------------------------- text and lines
@@ -759,8 +811,9 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(parsed: &'a Parsed) -> Ctx<'a> {
-        let tree = root(parsed);
+    /// The planners' view of file `file` (P2-139, P2-140).
+    fn in_file(parsed: &'a Parsed, file: FileId) -> Ctx<'a> {
+        let tree = tree_of(parsed, file);
         let src = tree.source();
         Ctx {
             tree,
@@ -1145,7 +1198,14 @@ fn no_workspace() -> EditErrorKind {
 }
 
 /// The bare key of `id` (phase 1: always written).
+/// The canonical element key: `Model::full_key`, the dotted full id
+/// under hierarchical ids (P2-142).
 fn element_key(model: &model::Model, id: ElementId) -> String {
+    model.full_key(id).unwrap_or_default()
+}
+
+/// The identifier written before `=`, without its parents.
+fn bare_key(model: &model::Model, id: ElementId) -> String {
     model
         .element(id)
         .key
@@ -1244,7 +1304,10 @@ fn box_line(
     let (spec, id) = find_box(&current.model, view, element)?;
     let old = kind.find(spec, id).map(|(_, _, _, v)| v);
     let inverse = vec![kind.edit(view, element, old)];
-    run(current, |cx| {
+    // DECISION: B dsl-breadth 7: the line goes into the file holding the
+    // view block, the root file when the root declares the view (P2-140).
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
         let (spec, id) = find_box(cx.model, view, element)?;
         let existing = kind.find(spec, id);
         Ok(match (existing, value) {
@@ -1297,7 +1360,13 @@ fn set_text(
     if let Some(v) = value {
         check_value(v)?;
     }
-    let field = TextField::resolve(&Ctx::new(current), target, value)?;
+    // P2-139: the file the target's statement is in; a literal from a
+    // `workspace extends` base patches the base (B dsl-breadth 9).
+    let file = target_file(&current.model, target)?;
+    let field = TextField::resolve(&Ctx::in_file(current, file), target, value)?;
+    if let Some(name) = field.current.as_ref().and_then(|l| substituted(current, l.span)) {
+        return Err(EditErrorKind::Substituted { name });
+    }
     let found = field.current.as_ref().map(|l| l.value.clone());
     if let Some(expected) = expected
         && found.as_deref() != Some(expected)
@@ -1312,8 +1381,42 @@ fn set_text(
         value: found,
         expected: value.map(str::to_owned),
     }];
-    run(current, |cx| Ok(TextField::resolve(cx, target, value)?.plan(cx, value)))?;
+    run_in(current, file, |cx| {
+        Ok(TextField::resolve(cx, target, value)?.plan(cx, value))
+    })?;
     Ok(inverse)
+}
+
+/// The name of the first `${NAME}` in the bytes `span` covers, if any:
+/// rewriting that literal would drop the reference (P2-151).
+// DECISION: B dsl-breadth 3: the edit is refused and names the constant.
+fn substituted(parsed: &Parsed, span: Span) -> Option<String> {
+    let tree = parsed.trees.get(span.file.0 as usize)?;
+    let written = tree.source().get(span.range())?;
+    let at = written.find("${")?;
+    let rest = &written[at + 2..];
+    let end = rest.find('}').unwrap_or(rest.len());
+    Some(rest[..end].to_owned())
+}
+
+/// The file holding the statement a text target belongs to.
+fn target_file(model: &model::Model, target: &TextTarget) -> Res<FileId> {
+    Ok(match target {
+        TextTarget::Element { element, .. } => model.element(find_element(model, element)?).span.file,
+        TextTarget::Relationship { relationship, .. } => {
+            model
+                .relationship(resolve_relationship(model, relationship)?)
+                .span
+                .file
+        }
+        TextTarget::View { view, .. } => model.view(view).ok_or_else(|| gone(view))?.span.file,
+    })
+}
+
+/// The file declaring the element keyed `element`: a per-box `tags` line
+/// goes there (B dsl-breadth 8).
+fn element_file(model: &model::Model, element: &str) -> Res<FileId> {
+    Ok(model.element(find_element(model, element)?).span.file)
 }
 
 /// DSL-10: one line, no control character but tab.
@@ -1431,6 +1534,8 @@ impl<'a> TextField<'a> {
         };
         match (&self.current, value, &self.place) {
             (None, None, _) => Plan::Patches(Vec::new()),
+            // DECISION: a bare word (P2-149) or a text block (P2-148) is
+            // rewritten as a quoted literal in its place.
             (Some(lit), Some(v), _) => replace(lit.span, text::quote(v)),
             (Some(lit), None, Place::Positional { base, keep, .. }) => {
                 match head.iter().position(|&i| cx.tree.span(i) == lit.span) {
@@ -1533,7 +1638,8 @@ fn set_style(
                 // removing it would drop a style `edit` did not write.
                 let unstyled = !current.model.element_styles.iter().any(|s| s.tag.value == tag);
                 if prop_parts(property).1.is_none() && unstyled {
-                    run(current, |cx| plan_remove_tag(cx, element, &tag))?;
+                    let file = element_file(&current.model, element)?;
+                    run_in(current, file, |cx| plan_remove_tag(cx, element, &tag))?;
                 }
                 Ok(inverse)
             }
@@ -1541,7 +1647,8 @@ fn set_style(
             None => {
                 let tag = new_per_box_tag(model, id);
                 let inverse = undo(cleared(property));
-                run(current, |cx| plan_add_tag(cx, element, &tag))?;
+                let file = element_file(&current.model, element)?;
+                run_in(current, file, |cx| plan_add_tag(cx, element, &tag))?;
                 run(current, |cx| plan_tag_style(cx, &tag, property))?;
                 Ok(inverse)
             }
@@ -1579,7 +1686,8 @@ fn reset_style(current: &mut Parsed, element: &str) -> Res<Vec<Edit>> {
             break;
         }
     }
-    run(current, |cx| plan_remove_tag(cx, element, &tag))?;
+    let file = element_file(&current.model, element)?;
+    run_in(current, file, |cx| plan_remove_tag(cx, element, &tag))?;
     Ok(inverse)
 }
 
@@ -1719,10 +1827,10 @@ fn plan_clear_block(cx: &Ctx<'_>, tag: &str) -> Plan {
 
 /// The element's full dotted id (`a.b.c`, DSL-7, DSL-13).
 fn dotted_id(model: &model::Model, id: ElementId) -> String {
-    let mut parts = vec![element_key(model, id)];
+    let mut parts = vec![bare_key(model, id)];
     let mut parent = model.element(id).parent;
     while let Some(p) = parent {
-        parts.push(element_key(model, p));
+        parts.push(bare_key(model, p));
         parent = model.element(p).parent;
     }
     parts.reverse();
@@ -1871,6 +1979,13 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
             model.element(id).kind == ElementKind::SoftwareSystem
         }
         ViewKind::Component => model.element(id).kind == ElementKind::Container,
+        // No default view of a kind c4rizer does not draw (P2-2).
+        ViewKind::SystemLandscape
+        | ViewKind::Filtered
+        | ViewKind::Custom
+        | ViewKind::Image
+        | ViewKind::Dynamic
+        | ViewKind::Deployment => false,
     };
     if !fits {
         return Err(EditErrorKind::InvalidValue {

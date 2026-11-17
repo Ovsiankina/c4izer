@@ -29,7 +29,7 @@ use eframe::egui;
 use crate::camera::ScreenPoint;
 use crate::canvas;
 use crate::files::{self, FileEvent, UiState, Watcher};
-use crate::state::{Alignment, Axis, Command, Dialog, Effect, Event, Problem, State};
+use crate::state::{Alignment, Axis, Command, Dialog, Effect, Event, Problem, State, ViewEntry};
 use crate::worker::{ExportFormat, ViewRef, Wake, Worker};
 
 /// The startup report request (EDIT-14).
@@ -71,6 +71,13 @@ pub struct App {
     /// Left and right side panels open (EDIT-32); `None` until the first
     /// frame knows the window width.
     panels: Option<(bool, bool)>,
+    /// The watcher of the open diagram's included files (P2-141), `None`
+    /// when it includes none or watching failed.
+    includes: Option<files::FilesWatcher>,
+    /// Sender cloned into each include watcher.
+    include_tx: Sender<(PathBuf, FileEvent)>,
+    /// Included-file events from the include watcher.
+    include_rx: Receiver<(PathBuf, FileEvent)>,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -130,6 +137,7 @@ impl App {
         let ui = ui_state_path.as_deref().map(UiState::load).unwrap_or_default();
         let worker = Worker::spawn(waker(&cc.egui_ctx));
         let (file_tx, file_rx) = mpsc::channel();
+        let (include_tx, include_rx) = mpsc::channel();
         let mut app = App {
             state: State::new(ui),
             worker,
@@ -140,6 +148,9 @@ impl App {
             startup,
             presented: false,
             panels: None,
+            includes: None,
+            include_tx,
+            include_rx,
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -151,6 +162,30 @@ impl App {
     pub fn dispatch(&mut self, ctx: &egui::Context, event: Event) {
         let effects = self.state.handle(event);
         self.run(ctx, effects);
+        self.watch_includes(ctx);
+    }
+
+    /// Restarts the include watcher when the set of included files of the
+    /// last parse changed (P2-141).
+    // DECISION: the shell polls `State::included_files` after each event
+    // instead of a new `Effect` variant (pub, step-4 contract), like the
+    // canvas size of EDIT-30.
+    fn watch_includes(&mut self, ctx: &egui::Context) {
+        let wanted = self.state.included_files();
+        let watched = self.includes.as_ref().map_or(&[][..], |w| w.paths.as_slice());
+        if wanted == watched {
+            return;
+        }
+        self.includes = None;
+        if wanted.is_empty() {
+            return;
+        }
+        match files::watch_files(&wanted, self.include_tx.clone(), waker(ctx)) {
+            Ok(w) => self.includes = Some(w),
+            Err(e) => {
+                self.state.io_error = Some(format!("cannot watch the included files: {e}; their live reload is off"));
+            }
+        }
     }
 
     /// Runs effects in order: reads and checked writes through `files`
@@ -262,7 +297,7 @@ impl App {
         ui.separator();
         ui.strong("Views");
         for entry in self.state.views() {
-            let label = format!("{} ({})", entry.label, entry.kind.keyword());
+            let label = view_label(&entry);
             if ui.selectable_label(entry.current, label).clicked() && !entry.current {
                 out.push(Event::Command(Command::ShowView(entry.view)));
             }
@@ -313,13 +348,19 @@ impl App {
             }
             ui.strong("Lint");
             let findings = self.state.findings();
-            if findings.is_empty() {
+            let notices = self.state.notices();
+            if findings.is_empty() && notices.is_empty() {
                 ui.label("no findings");
             }
             for (i, f) in findings.iter().enumerate() {
                 if ui.selectable_label(false, &f.message).clicked() {
                     command(Command::PickFinding(i));
                 }
+            }
+            // P2-126: notices name the construct, its file and line; they
+            // select nothing.
+            for notice in &notices {
+                ui.label(format!("notice: {notice}"));
             }
             ui.separator();
             ui.strong("Export");
@@ -354,8 +395,9 @@ impl App {
                 None => ui.label("no file open"),
             };
             match &status.problem {
-                Some(Problem::Parse(e)) => {
-                    ui.colored_label(egui::Color32::RED, format!("parse error at {e}"));
+                Some(Problem::Parse(_)) => {
+                    let text = problem_text(&self.state).unwrap_or_default();
+                    ui.colored_label(egui::Color32::RED, text);
                 }
                 Some(Problem::Missing) => {
                     ui.colored_label(egui::Color32::RED, "the file is gone; showing the last diagram");
@@ -525,16 +567,42 @@ fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mu
 // DECISION: a private free function, not a `State` method, so the
 // frozen contract gains no item; the shell's folder answer goes through
 // it and the headless test calls it directly.
-fn export_all_targets(state: &State, folder: &Path, format: ExportFormat) -> Vec<(ViewRef, PathBuf)> {
+pub(crate) fn export_all_targets(state: &State, folder: &Path, format: ExportFormat) -> Vec<(ViewRef, PathBuf)> {
     state
         .views()
         .into_iter()
-        .filter(|v| matches!(v.view, ViewRef::Declared(_)))
+        // P2-180: unsupported views are skipped.
+        .filter(|v| matches!(v.view, ViewRef::Declared(_)) && v.kind.drawable())
         .map(|v| {
             let path = folder.join(files::export_name(&v.view.key(), format));
             (v.view, path)
         })
         .collect()
+}
+
+/// The view list's text for `entry` (EDIT-8): `<label> (<keyword>)`,
+/// then ` — not yet supported` for a view whose kind is not drawn
+/// (P2-123).
+pub(crate) fn view_label(entry: &ViewEntry) -> String {
+    if entry.kind.drawable() {
+        format!("{} ({})", entry.label, entry.kind.keyword())
+    } else {
+        format!("{} ({}) — not yet supported", entry.label, entry.kind.keyword())
+    }
+}
+
+/// The status bar's parse error text (EDIT-11, P2-136): `parse error at
+/// <line>:<column>: ...` for the root file (whose path the bar already
+/// shows), `parse error at <path>:<line>:<column>: ...` for an error in
+/// an included file; `None` without a parse error.
+pub(crate) fn problem_text(state: &State) -> Option<String> {
+    let Some(Problem::Parse(e)) = state.status().problem else {
+        return None;
+    };
+    Some(match state.parse_error_file() {
+        Some(path) => format!("parse error at {}:{e}", path.display()),
+        None => format!("parse error at {e}"),
+    })
 }
 
 fn waker(ctx: &egui::Context) -> Wake {
@@ -580,6 +648,12 @@ impl eframe::App for App {
         let events: Vec<FileEvent> = self.file_rx.try_iter().collect();
         for event in events {
             self.dispatch(ctx, Event::File(event));
+        }
+        let included: Vec<(PathBuf, FileEvent)> = self.include_rx.try_iter().collect();
+        for (path, event) in included {
+            let effects = self.state.included_file(&path, &event);
+            self.run(ctx, effects);
+            self.watch_includes(ctx);
         }
     }
 

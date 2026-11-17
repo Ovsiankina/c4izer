@@ -70,7 +70,7 @@ use std::collections::BTreeMap;
 
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
-    ElementId, ElementKind, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
+    ElementId, ElementKind, GroupId, ImpliedRelationships, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
     ViewSpec,
 };
 
@@ -206,6 +206,15 @@ impl PlanEdge {
 pub enum BoundaryOf {
     /// An element's drawn children (the view's scope in phase 1).
     Element(ElementId),
+    /// A group's drawn members: dashed, the group's name as its name tag
+    /// with no bracketed type, nested inside its enclosing group's
+    /// boundary. Emitted only when a member is drawn, outer before inner.
+    /// Serves P2-130, P2-132.
+    // TODO(srs): P2-130, the name tag of a nested group. Reading taken
+    // (Structurizr UI): the last segment of the full name. The default
+    // colour: the phase-1 boundary look (B dsl-breadth 14c). Whether
+    // `structurizr.groups false` hides it: yes (B dsl-breadth 14d).
+    Group(GroupId),
 }
 
 /// A dashed boundary around drawn boxes (CORE-1). Its rectangle is the
@@ -252,7 +261,9 @@ pub struct ViewPlan {
     /// Every line after lifting, de-duplication, `focus` and `hide`,
     /// `edges[i].id == EdgeId(i)`.
     pub edges: Vec<PlanEdge>,
-    /// The dashed boundaries; phase 1 holds at most one (CORE-1).
+    /// The dashed boundaries, outer before inner: the scope's first
+    /// (phase 1 holds at most that one, CORE-1), then one per group with a
+    /// drawn member (P2-130).
     pub boundaries: Vec<Boundary>,
 }
 
@@ -280,14 +291,20 @@ impl ViewPlan {
     }
 
     /// The rectangle of `boundaries[index]` in grid units with every box
-    /// at `centres[box]`: its members' bounds inflated by 4 grid units
-    /// (40px). `None` when `index` is out of range. `place` (CORE-23),
-    /// `label` (CORE-14 name tag), `scene` (CORE-1) and `lint` (L26) all
-    /// use it. Serves CORE-1.
+    /// at `centres[box]`: its members' bounds, together with the
+    /// rectangles of the boundaries nested in it (`nests`), inflated by
+    /// 4 grid units (40px). With one boundary (phase 1) that is the
+    /// members' bounds plus 40px. `None` when `index` is out of range.
+    /// `place` (CORE-23), `label` (CORE-14 name tag), `scene` (CORE-1) and
+    /// `lint` (L26) all use it. Serves CORE-1, P2-130.
     ///
     /// # Panics
     ///
     /// When `centres` is shorter than `boxes`.
+    // DECISION: a nested boundary's rectangle counts as content of the
+    // boundary around it (P2-130 "sits inside its enclosing group's
+    // boundary"), so an outer boundary can be wider than its members'
+    // bounds plus 40px; with one boundary nothing changes (docs/deferred.md).
     pub fn boundary_rect(&self, index: usize, centres: &[Point]) -> Option<Rect> {
         assert!(
             centres.len() >= self.boxes.len(),
@@ -295,19 +312,55 @@ impl ViewPlan {
             centres.len(),
             self.boxes.len()
         );
+        self.boundary_rect_by(index, &|id: BoxId| {
+            Some(self.boxes[id.0 as usize].rect_at(centres[id.0 as usize]))
+        })
+    }
+
+    /// `boundary_rect` with each member's rectangle from `rect` (`None`:
+    /// leave that member out); `place` passes only the boxes it has
+    /// placed so far. `None` when `index` is out of range or no member
+    /// has a rectangle.
+    pub(crate) fn boundary_rect_by(
+        &self,
+        index: usize,
+        rect: &dyn Fn(BoxId) -> Option<Rect>,
+    ) -> Option<Rect> {
         let boundary = self.boundaries.get(index)?;
+        let nested = (0..self.boundaries.len())
+            .filter(|&j| self.nests(index, j))
+            .filter_map(|j| self.boundary_rect_by(j, rect));
         let bounds = boundary
             .members
             .iter()
-            .map(|&id| self.boxes[id.0 as usize].rect_at(centres[id.0 as usize]))
-            .reduce(|a, b| {
-                Rect::from_corners(
-                    Point::new(a.min.x.min(b.min.x), a.min.y.min(b.min.y)),
-                    Point::new(a.max.x.max(b.max.x), a.max.y.max(b.max.y)),
-                )
-            })?;
+            .filter_map(|&id| rect(id))
+            .chain(nested)
+            .reduce(union)?;
         Some(bounds.inflate(BOUNDARY_MARGIN_UNITS))
     }
+
+    /// True when boundary `inner` sits inside boundary `outer`: its
+    /// members are a subset of `outer`'s, and with equal members the one
+    /// listed later is the inner one (outer before inner, P2-130).
+    /// Boundaries where neither nests in the other keep apart (`place`).
+    pub(crate) fn nests(&self, outer: usize, inner: usize) -> bool {
+        if outer == inner {
+            return false;
+        }
+        let (Some(o), Some(i)) = (self.boundaries.get(outer), self.boundaries.get(inner)) else {
+            return false;
+        };
+        i.members.iter().all(|m| o.members.contains(m))
+            && (i.members.len() < o.members.len() || outer < inner)
+    }
+}
+
+/// The smallest rectangle holding `a` and `b`.
+fn union(a: Rect, b: Rect) -> Rect {
+    Rect::from_corners(
+        Point::new(a.min.x.min(b.min.x), a.min.y.min(b.min.y)),
+        Point::new(a.max.x.max(b.max.x), a.max.y.max(b.max.y)),
+    )
 }
 
 /// Resolves `view` of `model` into its plan: boxes from
@@ -337,7 +390,8 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
     for (i, e) in edges.iter_mut().enumerate() {
         e.id = EdgeId(index_u32(i));
     }
-    let boundaries = scope_boundary(model, view, &boxes).into_iter().collect();
+    let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes).into_iter().collect();
+    boundaries.extend(group_boundaries(model, view, &boxes));
     ViewPlan {
         key: view.key.clone(),
         kind: view.kind,
@@ -383,14 +437,75 @@ fn filter_focus_and_hide(
     }
 }
 
+/// One boundary per group with a drawn member (P2-130), in
+/// `Model::groups` order, so an outer group comes before the groups
+/// nested in it. A group's members are the boxes whose element sits in
+/// it or in a group nested in it. None when `structurizr.groups` is
+/// `false` on the view, or on the view set when the view does not set it
+/// (B dsl-breadth 14d).
+// DECISION: the name tag is the group's own name (`Group::name`, the
+// last segment of a nested name), as the Structurizr UI draws it; the
+// look is the phase-1 boundary's (B dsl-breadth 14c). Both close the
+// P2-130 TODO(srs) readings in `BoundaryOf::Group`.
+fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Vec<Boundary> {
+    let setting = |props: &[crate::model::Property]| {
+        props
+            .iter()
+            .rev()
+            .find(|p| p.name.value == "structurizr.groups")
+            .map(|p| !p.value.value.trim().eq_ignore_ascii_case("false"))
+    };
+    let shown = setting(&view.properties)
+        .or_else(|| setting(&model.views_properties))
+        .unwrap_or(true);
+    if !shown || model.groups.is_empty() {
+        return Vec::new();
+    }
+    // Every group an element sits in, innermost first.
+    let chain = |e: ElementId| {
+        let mut out = Vec::new();
+        let mut g = model.element(e).group;
+        while let Some(id) = g {
+            // DECISION: a parent link that loops (never built by `model`)
+            // stops the walk instead of hanging.
+            if out.contains(&id) {
+                break;
+            }
+            out.push(id);
+            g = model.groups.get(id.0 as usize).and_then(|x| x.parent);
+        }
+        out
+    };
+    let chains: Vec<Vec<GroupId>> = boxes.iter().map(|b| chain(b.element)).collect();
+    model
+        .groups
+        .iter()
+        .filter_map(|g| {
+            let members: Vec<BoxId> = boxes
+                .iter()
+                .zip(&chains)
+                .filter(|(_, c)| c.contains(&g.id))
+                .map(|(b, _)| b.id)
+                .collect();
+            (!members.is_empty()).then(|| Boundary {
+                of: BoundaryOf::Group(g.id),
+                name: g.name.value.clone(),
+                members,
+            })
+        })
+        .collect()
+}
+
 /// The phase-1 boundary: on container and component views, the scope's
 /// drawn children; `None` on a context view or with no drawn child
 /// (CORE-1).
 fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Option<Boundary> {
     let scope = view.scope.element()?;
     match view.kind {
-        ViewKind::SystemContext => return None,
         ViewKind::Container | ViewKind::Component => {}
+        // A context view has none; the kinds after phase 1 are never
+        // planned in phase 2 (P2-2).
+        _ => return None,
     }
     let members: Vec<BoxId> = boxes
         .iter()
@@ -423,8 +538,9 @@ const fn default_half_size(kind: ElementKind) -> (i32, i32) {
     match kind {
         // 200x180 px
         ElementKind::Person => (10, 9),
-        // 240x140 px
-        ElementKind::SoftwareSystem | ElementKind::Container => (12, 7),
+        // 240x140 px. DECISION: a custom element (P2-170) takes the
+        // software system size: Structurizr gives every box one default.
+        ElementKind::SoftwareSystem | ElementKind::Container | ElementKind::Custom => (12, 7),
         // 200x120 px
         ElementKind::Component => (10, 6),
     }
@@ -452,7 +568,12 @@ fn plan_box(model: &Model, view: &ViewSpec, index: u32, element: ElementId) -> P
         style: model.style_of(element),
         name: e.name.value.clone(),
         description: e.description.as_ref().map(|d| d.value.clone()),
-        technology: e.technology.as_ref().map(|t| t.value.clone()),
+        // DECISION: a custom element shows its metadata where other boxes
+        // show their technology (P2-170; Structurizr draws `[metadata]`).
+        technology: match e.kind {
+            ElementKind::Custom => e.metadata.as_ref().map(|m| m.value.clone()),
+            _ => e.technology.as_ref().map(|t| t.value.clone()),
+        },
         centre,
         half_width,
         half_height,
@@ -522,6 +643,8 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         let direct = source_element == s && destination_element == d;
         if direct {
             edges.push(new_edge(r, source, destination));
+        } else if model.implied_relationships == ImpliedRelationships::False {
+            // P2-7: `!impliedRelationships false` lifts nothing.
         } else if is_ancestor(model, source_element, destination_element)
             || is_ancestor(model, destination_element, source_element)
         {
