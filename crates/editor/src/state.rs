@@ -92,7 +92,8 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, Model, ModelError, Parsed, RelationshipId, Shape, ViewKind, parse_with,
+    Colour, ElementId, ElementKind, Mode, Model, ModelError, Parsed, RelationshipId, Shape, ViewKind,
+    parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
 use c4rizer_core::place::Keep;
@@ -704,6 +705,31 @@ pub struct StylePanel {
     pub boxes: usize,
 }
 
+/// The shapes the style panel offers (EDIT-17, P2-417): all 19, in the
+/// notation page's order, shown in the reference spelling
+/// (`Shape::keyword`).
+pub(crate) const PANEL_SHAPES: [Shape; 19] = [
+    Shape::Box,
+    Shape::RoundedBox,
+    Shape::Circle,
+    Shape::Ellipse,
+    Shape::Hexagon,
+    Shape::Diamond,
+    Shape::Cylinder,
+    Shape::Bucket,
+    Shape::Pipe,
+    Shape::Person,
+    Shape::Robot,
+    Shape::Folder,
+    Shape::WebBrowser,
+    Shape::Window,
+    Shape::Terminal,
+    Shape::Shell,
+    Shape::MobileDevicePortrait,
+    Shape::MobileDeviceLandscape,
+    Shape::Component,
+];
+
 /// The editor's whole state. Fields are plain data; only `handle`
 /// changes them. Serves EDIT-1..29.
 #[derive(Debug, Clone)]
@@ -773,6 +799,8 @@ pub struct State {
     view_cameras: BTreeMap<(PathBuf, ViewRef), Camera>,
     /// True while the view on screen waits for its first fit (EDIT-30).
     fit_pending: bool,
+    /// Light or dark: the mode every build and export uses (P2-433).
+    mode: Mode,
     // DECISION: the dsl-breadth bookkeeping (included files, P2-136,
     // P2-139, P2-141) is private fields and `pub(crate)` methods, like the
     // EDIT-30 fields above, so the step-4 contract of `State`, `Doc`,
@@ -825,12 +853,34 @@ impl State {
             camera_of: None,
             view_cameras: BTreeMap::new(),
             fit_pending: false,
+            mode: Mode::Light,
             root_text: None,
             included: BTreeMap::new(),
             error_file: None,
             in_flight: None,
             queued: VecDeque::new(),
         }
+    }
+
+    /// The light/dark mode the canvas shows and exports in (P2-433).
+    pub(crate) fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The light/dark switch (P2-433): rebuilds the shown view in `mode`
+    /// and drops the other views' builds (they were in the old mode);
+    /// writes nothing and adds no undo step. Switching to the current mode
+    /// does nothing.
+    // DECISION: a crate-private method like `set_canvas_size`, not a
+    // `Command` variant, so the pub `Command` enum is unchanged; the shell
+    // calls it from the View menu and runs the effects.
+    pub(crate) fn set_mode(&mut self, mode: Mode) -> Vec<Effect> {
+        if self.mode == mode {
+            return Vec::new();
+        }
+        self.mode = mode;
+        self.cache.clear();
+        self.request_shown()
     }
 
     /// Feeds one event and returns the effects to execute, in order.
@@ -1900,6 +1950,7 @@ impl State {
                 view,
                 keep,
                 shown: true,
+                mode: self.mode,
             },
         })]
     }
@@ -1929,6 +1980,7 @@ impl State {
                         view,
                         keep: Keep::default(),
                         shown: false,
+                        mode: self.mode,
                     },
                 })
             })
@@ -2755,6 +2807,7 @@ impl State {
                         targets,
                         format,
                         png_width: None,
+                        mode: self.mode,
                     },
                 })]
             }
@@ -3032,7 +3085,8 @@ impl State {
                     self.hover = None;
                     return self.request_background();
                 }
-                if !shown && self.awaited_build.is_none_or(|g| generation > g) {
+                // A background build from before a mode switch is dropped.
+                if !shown && self.awaited_build.is_none_or(|g| generation > g) && build.scene.mode == self.mode {
                     self.cache.insert(view, build);
                 }
                 Vec::new()

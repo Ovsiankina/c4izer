@@ -6,11 +6,12 @@ license.workspace = true
 
 [features]
 # EXP-2: PNG through resvg, bundled font only, so no system-fonts or
-# memmap-fonts; no raster-images (a scene embeds no image).
+# memmap-fonts. raster-images draws PNG/JPEG icons (P2-409) and image
+# views (P2-320); owner sign-off O10, phase2-decisions Part C.
 png = ["dep:resvg"]
 
 [dependencies]
-resvg = { version = "0.50", optional = true, default-features = false, features = ["text"] }
+resvg = { version = "0.50", optional = true, default-features = false, features = ["text", "raster-images"] }
 
 [lints]
 workspace = true

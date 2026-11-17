@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, Shape};
+use c4rizer_core::model::{Colour, Mode};
 use eframe::egui;
 
 use crate::camera::ScreenPoint;
@@ -522,8 +522,8 @@ fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mu
     colour_row(ui, "Text", panel.color, StyleProperty::Color);
     ui.horizontal_wrapped(|ui| {
         ui.label("Shape");
-        for shape in [Shape::Box, Shape::Person, Shape::Cylinder] {
-            if ui.selectable_label(panel.shape == Some(shape), format!("{shape:?}")).clicked() {
+        for shape in crate::state::PANEL_SHAPES {
+            if ui.selectable_label(panel.shape == Some(shape), shape.keyword()).clicked() {
                 command(Command::SetStyle {
                     target: target.clone(),
                     property: StyleProperty::Shape(Some(shape)),
@@ -682,18 +682,28 @@ impl eframe::App for App {
             (open, open)
         });
         let mut fit = fit_key_pressed(&ctx);
+        let mut dark = self.state.mode() == Mode::Dark;
         egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut left, "Views");
                 if ui.button("Fit view").on_hover_text("F").clicked() {
                     fit = true;
                 }
+                // P2-433: rebuilds the shown view in that mode; writes
+                // nothing to the file.
+                ui.toggle_value(&mut dark, "Dark")
+                    .on_hover_text("Show and export the diagram in dark mode");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.toggle_value(&mut right, "Details");
                 });
             });
         });
         self.panels = Some((left, right));
+        let mode = if dark { Mode::Dark } else { Mode::Light };
+        if mode != self.state.mode() {
+            let effects = self.state.set_mode(mode);
+            self.run(&ctx, effects);
+        }
         egui::Panel::bottom("c4rizer-status").show(ui, |ui| self.status_bar(ui));
         let (min, max) = side_panel_range(width);
         if left {
@@ -812,6 +822,7 @@ mod tests {
                 view: view.clone(),
                 keep: c4rizer_core::place::Keep::default(),
                 shown: true,
+                mode: c4rizer_core::model::Mode::Light,
             };
             let request = worker::Request {
                 generation: worker::Generation(1),

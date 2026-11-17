@@ -83,13 +83,14 @@
 // share one entry, names joined by commas); every line entry reads
 // "Relationship".
 
-use crate::geom::{Dir, GRID_PX, Point, Rect, crossings};
+use crate::geom::{Contact, Dir, GRID_PX, Point, Rect, Segment, crossings};
 use crate::label::{
-    EM, Fit, LABEL_FONT_PX, LABEL_LINE_PX, LABEL_PAD_Y_PX, Label, Labels, Weight, Words,
-    boundary_tag_with, text_advance,
+    EM, Fit, LABEL_PAD_Y_PX, Label, Labels, Weight, Words, boundary_tag_font_px,
+    boundary_tag_text, boundary_tag_with, text_advance,
 };
 use crate::model::{
-    Colour, ElementId, ElementKind, MetadataSymbols, RelationshipId, Shape, ViewKind, ViewOptions, ViewScope,
+    Asset, Border, Colour, ElementId, ElementKind, MetadataSymbols, Mode, RelationshipId, Shape, ViewKind, ViewOptions,
+    ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
@@ -211,8 +212,15 @@ pub struct Stroke {
 }
 
 /// The exact geometry of a box shape in px, so the canvas and the SVG
-/// draw the same outline (EDIT-12). `#[non_exhaustive]`: phase 2 adds
-/// Structurizr's other shapes (P2-11). Serves CORE-2.
+/// draw the same outline (EDIT-12). Every outline lies inside the box
+/// rectangle and the box texts inside its text area (P2-413); lines end
+/// on the box rectangle, not the outline (P2-414). Serves CORE-2, P2-11,
+/// P2-413..P2-416.
+// TODO(srs): P2-413/P2-414. Reading taken (B styles-themes 6):
+// proportions per Structurizr's notation page; lines end on the box
+// rectangle, so CORE-6's grid ports hold for every shape.
+// TODO(srs): P2-415. Reading taken (B styles-themes 3): `Box` keeps the
+// phase-1 6px corner radius, `RoundedBox` uses 20px.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Outline {
@@ -245,6 +253,113 @@ pub enum Outline {
         /// Vertical radius of the caps.
         cap_ry_px: i32,
     },
+    /// `Shape::Circle` (a circle centred in `rect`, diameter its shorter
+    /// side) and `Shape::Ellipse` (the ellipse filling `rect`): told
+    /// apart by `circle`.
+    Ellipse {
+        /// The ellipse's bounding rectangle (a square for a circle).
+        rect: Rect,
+        /// True for `Shape::Circle`.
+        circle: bool,
+    },
+    /// `Shape::Hexagon`: flat top and bottom, the left and right points
+    /// `inset_px` in from the slanted sides' ends.
+    Hexagon {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Horizontal inset of the top and bottom corners.
+        inset_px: i32,
+    },
+    /// `Shape::Diamond`: the four side midpoints of `rect`.
+    Diamond {
+        /// Bounding rectangle.
+        rect: Rect,
+    },
+    /// `Shape::Bucket`: a cylinder whose bottom is narrower than its top.
+    Bucket {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Vertical radius of the top cap.
+        cap_ry_px: i32,
+    },
+    /// `Shape::Pipe`: a horizontal cylinder with caps left and right.
+    Pipe {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Horizontal radius of the caps.
+        cap_rx_px: i32,
+    },
+    /// `Shape::Robot`: a head above a body, with the texts in the body.
+    Robot {
+        /// The head rectangle.
+        head: Rect,
+        /// The body rectangle; the texts sit in it.
+        body: Rect,
+        /// Corner radius of both.
+        radius_px: i32,
+    },
+    /// `Shape::Folder`: a box with a tab on its top left.
+    Folder {
+        /// The folder body.
+        rect: Rect,
+        /// The tab above the body.
+        tab: Rect,
+    },
+    /// `Shape::WebBrowser`, `Window`, `Terminal`, `Shell`: a box with a
+    /// title bar `bar_px` tall, decorated per `kind`.
+    Window {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// Title bar height.
+        bar_px: i32,
+        /// Which of the four.
+        kind: WindowKind,
+    },
+    /// `Shape::MobileDevicePortrait`/`MobileDeviceLandscape`: a rounded
+    /// device with the screen `inset_px` inside it.
+    MobileDevice {
+        /// Bounding rectangle.
+        rect: Rect,
+        /// True for portrait.
+        portrait: bool,
+        /// Bezel width.
+        inset_px: i32,
+    },
+    /// `Shape::Component`: a box with two small tabs on its left side.
+    Component {
+        /// The component body.
+        rect: Rect,
+        /// The two tabs, top first.
+        tabs: [Rect; 2],
+    },
+}
+
+/// The decoration of an `Outline::Window`. Serves P2-11.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowKind {
+    /// `Shape::WebBrowser`: bar with an address field.
+    WebBrowser,
+    /// `Shape::Window`: bar with three buttons.
+    Window,
+    /// `Shape::Terminal`: dark screen.
+    Terminal,
+    /// `Shape::Shell`: dark screen with a prompt.
+    Shell,
+}
+
+/// An icon drawn inside a box or beside a boundary's name tag, the same
+/// in canvas, SVG (`<image>` with a `data:` URI) and PNG. Serves P2-409.
+// TODO(srs): P2-409 icon placement. Reading taken (B styles-themes 7a,
+// 7b): centred in the box's bottom band, at most 1/4 of the box height,
+// clear of the texts; a boundary icon left of its name tag.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneIcon {
+    /// Where it is drawn, in px.
+    pub rect: Rect,
+    /// The image file.
+    pub asset: Asset,
 }
 
 /// One box (CORE-2): an element drawn with its shape, fill, name, type
@@ -281,6 +396,11 @@ pub struct SceneBox {
     /// The description wrapped to the box's text width, `None` when the
     /// element has none.
     pub description: Option<TextBlock>,
+    /// 0..100: fill, outline, texts and icon drawn at `opacity`/100;
+    /// 100 draws no opacity attribute (P2-406).
+    pub opacity: u8,
+    /// The style's icon, inside `rect` and clear of the texts (P2-409).
+    pub icon: Option<SceneIcon>,
 }
 
 /// An open V (two strokes meeting at the apex) pointing along its
@@ -347,6 +467,13 @@ pub struct SceneLine {
     /// False when the router could not route it (CORE-13, L1): drawn as
     /// a straight fallback, outside the CORE-6..9 checks.
     pub routed: bool,
+    /// 0..100: polyline, chevrons and tip at `opacity`/100 (P2-426).
+    pub opacity: u8,
+    /// The crossing points (px) where this line hops over a line drawn
+    /// before it, or a later line that does not jump (`jump true`,
+    /// P2-422); empty otherwise. L4's crossing
+    /// count is unchanged.
+    pub jumps: Vec<Point>,
 }
 
 /// One placed label (CORE-14): `label::Label` in px, its text block and
@@ -368,6 +495,8 @@ pub struct SceneLabel {
     pub text: TextBlock,
     /// Clear, over lines (L23) or no room (L24), as `label` placed it.
     pub fit: Fit,
+    /// 0..100, the line's opacity (P2-426).
+    pub opacity: u8,
 }
 
 /// One dashed boundary (CORE-1): `ViewPlan::boundary_rect` in px and its
@@ -389,6 +518,13 @@ pub struct SceneBoundary {
     pub tag_rect: Rect,
     /// The tag text, bold: the name, then the scope's type in brackets.
     pub tag: TextBlock,
+    /// Fill from the boundary style's `background`; `None`: no fill
+    /// (P2-411, P2-412).
+    pub fill: Option<Colour>,
+    /// 0..100 (P2-411).
+    pub opacity: u8,
+    /// A boundary icon (P2-411; TODO(srs) on `ResolvedBoundaryStyle`).
+    pub icon: Option<SceneIcon>,
 }
 
 /// The sample drawn beside a key entry. `#[non_exhaustive]` so phase 2
@@ -438,6 +574,16 @@ pub struct LegendEntry {
 /// `Relationship`; an unstyled element still gets an entry, in the
 /// Structurizr default colours. Laid out clear of every box, line and
 /// label (CORE-14). Serves CORE-1, CORE-14.
+///
+/// Phase 2 (styles-themes step 5): a box look adds stroke colour,
+/// stroke width and border (P2-435); line entries are one per
+/// relationship-style tag (the last tag of the winner, in DSL-15 order,
+/// that has a relationship style block and is not `Relationship`), named
+/// by it and drawn with that style's colour, thickness and dash, plus one
+/// `Relationship` entry for every other drawn line (P2-27, P2-434).
+// TODO(srs): P2-27/P2-434/P2-435. Readings taken (B styles-themes 12):
+// join-dot lines keep their own entry; the `Relationship` entry's swatch
+// is #707070; opacity and icons do not split box entries.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Legend {
@@ -499,6 +645,13 @@ pub struct Scene {
     /// Crossings between routed lines, `Routes::crossings` as routed
     /// (L4, CORE-11, CORE-17). `move_box` leaves it unchanged.
     pub crossings: u32,
+    /// The plan's mode: the colour defaults it was drawn with (P2-431);
+    /// `pipeline::rebuild_after_move` keeps it. Serves P2-430, P2-433.
+    // TODO(srs): P2-431, dark-mode defaults. Reading taken (B
+    // styles-themes 10c): background #111111, box text #ffffff, default
+    // box fill #333333, line and boundary #aaaaaa; every other default
+    // unchanged.
+    pub mode: Mode,
 }
 
 impl Scene {
@@ -694,27 +847,10 @@ impl Scene {
         }
         let b = &mut self.boxes[i];
         b.rect = shift_rect(b.rect, dx, dy);
-        b.outline = match b.outline {
-            Outline::Rect { rect, radius_px } => Outline::Rect {
-                rect: shift_rect(rect, dx, dy),
-                radius_px,
-            },
-            Outline::Person {
-                head_centre,
-                head_radius_px,
-                body,
-                body_radius_px,
-            } => Outline::Person {
-                head_centre: shift(head_centre, dx, dy),
-                head_radius_px,
-                body: shift_rect(body, dx, dy),
-                body_radius_px,
-            },
-            Outline::Cylinder { rect, cap_ry_px } => Outline::Cylinder {
-                rect: shift_rect(rect, dx, dy),
-                cap_ry_px,
-            },
-        };
+        b.outline = shift_outline(b.outline, dx, dy);
+        if let Some(icon) = b.icon.as_mut() {
+            icon.rect = shift_rect(icon.rect, dx, dy);
+        }
         b.name.translate(dx, dy);
         b.type_line.translate(dx, dy);
         if let Some(d) = b.description.as_mut() {
@@ -784,24 +920,29 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         routes.centres.len() >= plan.boxes.len(),
         "scene::build: routes of another plan (centres)"
     );
+    let pal = palette(plan.mode);
     let centres: Vec<Point> = routes.centres[..plan.boxes.len()].to_vec();
     let boxes: Vec<SceneBox> = plan
         .boxes
         .iter()
         .map(|b| scene_box(b, centres[b.id.0 as usize], words))
         .collect();
+    let boundaries: Vec<SceneBoundary> = (0..plan.boundaries.len())
+        .filter_map(|i| scene_boundary(plan, i, &centres, pal, words))
+        .collect();
     let labels: Vec<SceneLabel> = labels
         .labels
         .iter()
         .flatten()
-        .map(|l| scene_label(plan, l, &boxes))
+        .map(|l| scene_label(plan, l, &boxes, &boundaries, pal))
         .collect();
     let label_rects: Vec<Rect> = labels.iter().map(|l| l.rect).collect();
-    let lines: Vec<SceneLine> = plan
+    let mut lines: Vec<SceneLine> = plan
         .edges
         .iter()
-        .map(|e| scene_line(e, routes, &boxes, &label_rects))
+        .map(|e| scene_line(e, routes, &boxes, &label_rects, pal))
         .collect();
+    add_jumps(plan, &mut lines);
     let mut extent = Extent::default();
     for b in &boxes {
         extent.add_rect(&b.rect);
@@ -812,25 +953,25 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
     for l in &labels {
         extent.add_rect(&l.rect);
     }
-    let boundaries: Vec<SceneBoundary> = (0..plan.boundaries.len())
-        .filter_map(|i| scene_boundary(plan, i, &centres, words))
-        .collect();
     for b in &boundaries {
         extent.add_rect(&b.rect);
     }
     let drawing = extent.rect();
     let mut below = drawing.max.y + TITLE_GAP_PX;
     let title = plan.title.as_ref().map(|t| {
-        let block = chrome_text(t, TITLE_FONT, drawing.min.x, below, TITLE_COLOUR);
+        let block = chrome_text(t, TITLE_FONT, drawing.min.x, below, pal.title);
         below = block.bounds.max.y;
         block
     });
     let subtitle = plan.subtitle.as_ref().map(|t| {
-        let block = chrome_text(t, SUBTITLE_FONT, drawing.min.x, below, SUBTITLE_COLOUR);
+        let block = chrome_text(t, SUBTITLE_FONT, drawing.min.x, below, pal.subtitle);
         below = block.bounds.max.y;
         block
     });
-    let legend = legend(looks(plan, &boxes, &lines, words), &drawing, below + KEY_GAP_PX);
+    let mut legend = legend(looks(plan, &boxes, &lines, words), &drawing, below + KEY_GAP_PX);
+    for entry in &mut legend.entries {
+        entry.text.colour = pal.key;
+    }
     for r in [
         title.as_ref().map(|t| t.bounds),
         subtitle.as_ref().map(|t| t.bounds),
@@ -848,7 +989,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         scope: plan.scope.clone(),
         options: plan.options,
         bounds,
-        background: WHITE,
+        background: pal.page,
         centres,
         boxes,
         lines,
@@ -858,6 +999,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         subtitle,
         legend,
         crossings: routes.crossings,
+        mode: plan.mode,
     }
 }
 
@@ -877,6 +1019,61 @@ const WHITE: Colour = Colour {
     g: 0xff,
     b: 0xff,
 };
+
+/// The colours a scene draws with where no style gives one (P2-431).
+#[derive(Clone, Copy)]
+struct Palette {
+    /// `Scene::background`, and the label backing.
+    page: Colour,
+    /// An unstyled line, `None`: the destination's fill (CORE-3).
+    line: Option<Colour>,
+    /// An unstyled boundary's outline and tag.
+    boundary: Colour,
+    /// Title text.
+    title: Colour,
+    /// Subtitle text.
+    subtitle: Colour,
+    /// Key text.
+    key: Colour,
+}
+
+const DARK_GREY: Colour = Colour {
+    r: 0xaa,
+    g: 0xaa,
+    b: 0xaa,
+};
+
+/// The palette of `mode`: light is phase 1.
+// TODO(srs): P2-431. Reading taken (B styles-themes 10c): dark page
+// #111111, unstyled lines and boundaries #aaaaaa (box defaults are set in
+// `view`). DECISION: the ruling leaves title, subtitle, key text and the
+// label backing "unchanged", which would draw #111111 text on the #111111
+// page; in dark mode they take #ffffff, #aaaaaa, #aaaaaa and the page
+// colour, so they stay readable (docs/deferred.md).
+const fn palette(mode: Mode) -> Palette {
+    match mode {
+        Mode::Dark => Palette {
+            page: Colour {
+                r: 0x11,
+                g: 0x11,
+                b: 0x11,
+            },
+            line: Some(DARK_GREY),
+            boundary: DARK_GREY,
+            title: WHITE,
+            subtitle: DARK_GREY,
+            key: DARK_GREY,
+        },
+        _ => Palette {
+            page: WHITE,
+            line: None,
+            boundary: BOUNDARY_COLOUR,
+            title: TITLE_COLOUR,
+            subtitle: SUBTITLE_COLOUR,
+            key: KEY_COLOUR,
+        },
+    }
+}
 /// Margin of `Scene::bounds` around everything drawn.
 const MARGIN_PX: i32 = 40;
 const PAD_PX: i32 = 10;
@@ -1085,6 +1282,61 @@ fn type_text(b: &PlanBox, words: &Words<'_>) -> String {
     }
 }
 
+/// The px sizes an outline is drawn with: the box's or the key swatch's.
+#[derive(Clone, Copy)]
+struct Dims {
+    box_radius: i32,
+    rounded_radius: i32,
+    cap: i32,
+    bar: i32,
+    inset: i32,
+    tab: i32,
+    component_tab: (i32, i32),
+}
+
+// DECISION: shape proportions (P2-413 gives none, B ruling 6 says "per
+// the notation page"): Box 6px and RoundedBox 20px corners (B ruling 3);
+// Circle the largest centred circle; Ellipse the inscribed ellipse;
+// Hexagon points a quarter of the height in from the sides; Bucket a
+// cylinder narrowing by a tenth of the width per side; Pipe 12px caps;
+// Robot a head half the width and a quarter of the height; Folder a tab a
+// third of the width and 10px tall; the four window shapes a 20px bar;
+// mobile devices a 10px bezel; Component two 20x10 tabs straddling a body
+// 10px in from the left edge.
+const BOX_DIMS: Dims = Dims {
+    box_radius: BOX_RADIUS_PX,
+    rounded_radius: 20,
+    cap: CAP_RY_PX,
+    bar: 20,
+    inset: 10,
+    tab: 10,
+    component_tab: (20, 10),
+};
+
+const SWATCH_DIMS: Dims = Dims {
+    box_radius: 3,
+    rounded_radius: 6,
+    cap: 4,
+    bar: 5,
+    inset: 3,
+    tab: 4,
+    component_tab: (8, 4),
+};
+
+/// The screen of an `Outline::MobileDevice` (P2-11): the bezel is
+/// `inset_px` on the device's long sides and twice that on its short
+/// sides (speaker and button), so a portrait phone's bezel is deep at
+/// top and bottom and a landscape phone's at left and right, in any box.
+// DECISION: portrait and landscape share the box size and differ by
+// where the deep bezel is, so both read as phones in a 240x140 box.
+pub(crate) fn mobile_screen(rect: Rect, portrait: bool, inset_px: i32) -> Rect {
+    let (dx, dy) = if portrait { (inset_px, 2 * inset_px) } else { (2 * inset_px, inset_px) };
+    Rect::from_corners(
+        Point::new(rect.min.x + dx, rect.min.y + dy),
+        Point::new(rect.max.x - dx, rect.max.y - dy),
+    )
+}
+
 /// The outline of a box of `shape` filling `rect` (px).
 fn outline(shape: Shape, rect: Rect) -> Outline {
     match shape {
@@ -1098,68 +1350,338 @@ fn outline(shape: Shape, rect: Rect) -> Outline {
                 body_radius_px: BODY_RADIUS_PX,
             }
         }
+        _ => shape_outline(shape, rect, BOX_DIMS),
+    }
+}
+
+/// The outline of every shape but the person's, in `rect` with `d`.
+fn shape_outline(shape: Shape, rect: Rect, d: Dims) -> Outline {
+    let (w, h) = (rect.width(), rect.height());
+    let clamp_r = |r: i32| r.min(w / 2).min(h / 2).max(0);
+    match shape {
         Shape::Cylinder => Outline::Cylinder {
             rect,
-            cap_ry_px: CAP_RY_PX,
+            cap_ry_px: d.cap.min(h / 4),
         },
+        Shape::RoundedBox => Outline::Rect {
+            rect,
+            radius_px: clamp_r(d.rounded_radius),
+        },
+        Shape::Circle => {
+            let side = w.min(h);
+            let c = rect.centre();
+            let min = Point::new(c.x - side / 2, c.y - side / 2);
+            Outline::Ellipse {
+                rect: Rect::from_corners(min, shift(min, side, side)),
+                circle: true,
+            }
+        }
+        Shape::Ellipse => Outline::Ellipse {
+            rect,
+            circle: false,
+        },
+        Shape::Hexagon => Outline::Hexagon {
+            rect,
+            inset_px: h / 4,
+        },
+        Shape::Diamond => Outline::Diamond { rect },
+        Shape::Bucket => Outline::Bucket {
+            rect,
+            cap_ry_px: d.cap.min(h / 4),
+        },
+        Shape::Pipe => Outline::Pipe {
+            rect,
+            cap_rx_px: d.cap.min(w / 4),
+        },
+        Shape::Robot => {
+            let head_h = h / 4;
+            let head_min = Point::new(rect.centre().x - w / 4, rect.min.y);
+            Outline::Robot {
+                head: Rect::from_corners(head_min, shift(head_min, w / 2, head_h)),
+                body: Rect::from_corners(Point::new(rect.min.x, rect.min.y + head_h), rect.max),
+                radius_px: clamp_r(d.box_radius),
+            }
+        }
+        Shape::Folder => {
+            let tab_h = d.tab.min(h / 4);
+            Outline::Folder {
+                rect: Rect::from_corners(Point::new(rect.min.x, rect.min.y + tab_h), rect.max),
+                tab: Rect::from_corners(rect.min, shift(rect.min, w / 3, tab_h)),
+            }
+        }
+        Shape::WebBrowser | Shape::Window | Shape::Terminal | Shape::Shell => Outline::Window {
+            rect,
+            bar_px: d.bar.min(h / 3),
+            kind: match shape {
+                Shape::WebBrowser => WindowKind::WebBrowser,
+                Shape::Window => WindowKind::Window,
+                Shape::Terminal => WindowKind::Terminal,
+                _ => WindowKind::Shell,
+            },
+        },
+        Shape::MobileDevicePortrait | Shape::MobileDeviceLandscape => Outline::MobileDevice {
+            rect,
+            portrait: shape == Shape::MobileDevicePortrait,
+            inset_px: d.inset.min(w / 4).min(h / 4),
+        },
+        Shape::Component => {
+            let (tw, th) = (d.component_tab.0.min(w / 4), d.component_tab.1.min(h / 6));
+            let body = Rect::from_corners(Point::new(rect.min.x + tw / 2, rect.min.y), rect.max);
+            let tab = |top: i32| Rect::from_corners(Point::new(rect.min.x, top), Point::new(rect.min.x + tw, top + th));
+            let (q1, q2) = (rect.min.y + h / 4 - th / 2, rect.min.y + h / 2);
+            Outline::Component {
+                rect: body,
+                tabs: [tab(q1), tab(q2.max(q1 + th + 1))],
+            }
+        }
         _ => Outline::Rect {
             rect,
-            radius_px: BOX_RADIUS_PX,
+            radius_px: clamp_r(d.box_radius),
         },
     }
 }
 
-/// The rectangle a box's texts must fit (CORE-30): the part of its
-/// outline free of head and caps, less the 10px padding.
+/// `outline` moved by `(dx, dy)` px.
+fn shift_outline(outline: Outline, dx: i32, dy: i32) -> Outline {
+    let r = |rect: Rect| shift_rect(rect, dx, dy);
+    match outline {
+        Outline::Rect { rect, radius_px } => Outline::Rect {
+            rect: r(rect),
+            radius_px,
+        },
+        Outline::Person {
+            head_centre,
+            head_radius_px,
+            body,
+            body_radius_px,
+        } => Outline::Person {
+            head_centre: shift(head_centre, dx, dy),
+            head_radius_px,
+            body: r(body),
+            body_radius_px,
+        },
+        Outline::Cylinder { rect, cap_ry_px } => Outline::Cylinder {
+            rect: r(rect),
+            cap_ry_px,
+        },
+        Outline::Ellipse { rect, circle } => Outline::Ellipse {
+            rect: r(rect),
+            circle,
+        },
+        Outline::Hexagon { rect, inset_px } => Outline::Hexagon {
+            rect: r(rect),
+            inset_px,
+        },
+        Outline::Diamond { rect } => Outline::Diamond { rect: r(rect) },
+        Outline::Bucket { rect, cap_ry_px } => Outline::Bucket {
+            rect: r(rect),
+            cap_ry_px,
+        },
+        Outline::Pipe { rect, cap_rx_px } => Outline::Pipe {
+            rect: r(rect),
+            cap_rx_px,
+        },
+        Outline::Robot {
+            head,
+            body,
+            radius_px,
+        } => Outline::Robot {
+            head: r(head),
+            body: r(body),
+            radius_px,
+        },
+        Outline::Folder { rect, tab } => Outline::Folder {
+            rect: r(rect),
+            tab: r(tab),
+        },
+        Outline::Window { rect, bar_px, kind } => Outline::Window {
+            rect: r(rect),
+            bar_px,
+            kind,
+        },
+        Outline::MobileDevice {
+            rect,
+            portrait,
+            inset_px,
+        } => Outline::MobileDevice {
+            rect: r(rect),
+            portrait,
+            inset_px,
+        },
+        Outline::Component { rect, tabs } => Outline::Component {
+            rect: r(rect),
+            tabs: [r(tabs[0]), r(tabs[1])],
+        },
+    }
+}
+
+/// `rect` scaled about its centre by `num / 1000` per axis.
+fn scaled_about_centre(rect: Rect, num: i32) -> Rect {
+    let c = rect.centre();
+    let (hw, hh) = (rect.width() * num / 2000, rect.height() * num / 2000);
+    Rect::from_corners(Point::new(c.x - hw, c.y - hh), Point::new(c.x + hw, c.y + hh))
+}
+
+/// The rectangle a box's texts must fit (CORE-30, P2-413): the part of
+/// its outline free of head, caps, bars, tabs and slanted sides, less
+/// the 10px padding.
 fn text_area(shape: Shape, rect: Rect) -> Rect {
     let inner = match outline(shape, rect) {
-        Outline::Person { body, .. } => body,
+        Outline::Person { body, .. } | Outline::Robot { body, .. } => body,
         Outline::Cylinder { rect, cap_ry_px } => Rect::from_corners(
             Point::new(rect.min.x, (rect.min.y + 2 * cap_ry_px).min(rect.max.y)),
             Point::new(rect.max.x, (rect.max.y - cap_ry_px).max(rect.min.y)),
         ),
-        Outline::Rect { rect, .. } => rect,
+        Outline::Rect { rect, .. } | Outline::Folder { rect, .. } => rect,
+        // 707/1000 ~ 1/sqrt(2): the largest rectangle of the same aspect
+        // inside an ellipse.
+        Outline::Ellipse { rect, .. } => scaled_about_centre(rect, 707),
+        Outline::Hexagon { rect, inset_px } => Rect::from_corners(
+            Point::new(rect.min.x + inset_px, rect.min.y),
+            Point::new(rect.max.x - inset_px, rect.max.y),
+        ),
+        Outline::Diamond { rect } => scaled_about_centre(rect, 500),
+        Outline::Bucket { rect, cap_ry_px } => {
+            let narrow = rect.width() / 10;
+            Rect::from_corners(
+                Point::new(rect.min.x + narrow, (rect.min.y + 2 * cap_ry_px).min(rect.max.y)),
+                Point::new(rect.max.x - narrow, rect.max.y),
+            )
+        }
+        Outline::Pipe { rect, cap_rx_px } => Rect::from_corners(
+            Point::new(rect.min.x + cap_rx_px, rect.min.y),
+            Point::new((rect.max.x - 2 * cap_rx_px).max(rect.min.x), rect.max.y),
+        ),
+        Outline::Window { rect, bar_px, .. } => {
+            Rect::from_corners(Point::new(rect.min.x, rect.min.y + bar_px), rect.max)
+        }
+        Outline::MobileDevice {
+            rect,
+            portrait,
+            inset_px,
+        } => mobile_screen(rect, portrait, inset_px),
+        Outline::Component { rect, tabs } => {
+            Rect::from_corners(Point::new(tabs[0].max.x, rect.min.y), rect.max)
+        }
     };
     inner.inflate(-PAD_PX)
 }
 
+/// The name and small-text fonts of a box styled with `font_size`
+/// (P2-407): `None` keeps phase 1 (14px on 18, 11px on 14).
+// TODO(srs): P2-407. Reading taken (B styles-themes 5): name N px on an
+// N+6 px pitch; type line and description round(N x 11/14) px on that
+// size plus 4.
+fn box_fonts(font_size: Option<u32>) -> (Font, Font) {
+    let Some(n) = font_size else {
+        return (NAME_FONT, SMALL_FONT);
+    };
+    let n = i32::try_from(n).unwrap_or(i32::MAX / 2).clamp(1, 1000);
+    let small = (n * 11 + 7) / 14;
+    (
+        Font {
+            size_px: n,
+            line_px: n + 6,
+            weight: Weight::Bold,
+        },
+        Font {
+            size_px: small,
+            line_px: small + 4,
+            weight: Weight::Regular,
+        },
+    )
+}
+
 /// Name, type line and description of `b` wrapped to the text area of
 /// a box at `rect` (px) and stacked, centred vertically in it (top
-/// aligned when they overflow it).
+/// aligned when they overflow it). `metadata false` gives a type line of
+/// no lines, `description false` no description (P2-408).
+// DECISION: a hidden type line is a `TextBlock` with no lines and zero
+// height (the field is not an `Option`); painters draw nothing for it and
+// it always fits.
 fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
-    let area = text_area(b.style.shape, *rect);
+    let mut area = text_area(b.style.shape, *rect);
+    if b.style.icon.is_some() {
+        // The texts stay above the icon (P2-409).
+        let icon = icon_rect(b.style.shape, *rect);
+        area.max.y = (icon.min.y - ICON_GAP_PX).max(area.min.y);
+    }
     let width = area.width();
-    let name = wrap(&b.name, NAME_PX, Weight::Bold, width);
-    let type_line = wrap(&type_text(b, words), SMALL_PX, Weight::Regular, width);
+    let (name_font, small_font) = box_fonts(b.style.font_size);
+    let name = wrap(&b.name, name_font.size_px, Weight::Bold, width);
+    let type_line = if b.style.metadata {
+        wrap(&type_text(b, words), small_font.size_px, Weight::Regular, width)
+    } else {
+        Vec::new()
+    };
     let description = b
         .description
         .as_deref()
-        .map(|d| wrap(d, SMALL_PX, Weight::Regular, width));
+        .filter(|_| b.style.description)
+        .map(|d| wrap(d, small_font.size_px, Weight::Regular, width));
     let count = |v: &Vec<String>| i32::try_from(v.len()).unwrap_or(i32::MAX);
-    let name_h = count(&name) * NAME_LINE_PX;
-    let type_h = count(&type_line) * SMALL_LINE_PX;
+    let name_h = count(&name) * name_font.line_px;
+    let type_h = count(&type_line) * small_font.line_px;
     let desc_h = description
         .as_ref()
-        .map_or(0, |d| DESC_GAP_PX + count(d) * SMALL_LINE_PX);
+        .map_or(0, |d| DESC_GAP_PX + count(d) * small_font.line_px);
     let block = name_h + type_h + desc_h;
     let top = area.min.y + ((area.height() - block) / 2).max(0);
     let x = area.centre().x;
     let colour = b.style.color;
+    let mut type_block = text_block(
+        type_line,
+        small_font,
+        colour,
+        middle(x, top + name_h),
+        &area,
+    );
+    if type_block.lines.is_empty() {
+        type_block.fits = true;
+    }
     BoxTexts {
-        name: text_block(name, NAME_FONT, colour, middle(x, top), &area),
-        type_line: text_block(
-            type_line,
-            SMALL_FONT,
-            colour,
-            middle(x, top + name_h),
-            &area,
-        ),
+        name: text_block(name, name_font, colour, middle(x, top), &area),
+        type_line: type_block,
         description: description.map(|d| {
             let top = top + name_h + type_h + DESC_GAP_PX;
-            text_block(d, SMALL_FONT, colour, middle(x, top), &area)
+            text_block(d, small_font, colour, middle(x, top), &area)
         }),
     }
 }
+
+/// Space between an icon and the texts above it.
+const ICON_GAP_PX: i32 = 4;
+
+/// Where a box of `shape` at `rect` draws its icon (P2-409): a square
+/// centred at the bottom of its text area, at most a quarter of the box
+/// height and half the text area's height.
+// TODO(srs): P2-409 icon placement. Reading taken (B styles-themes 7a):
+// centred in the box's bottom band, at most 1/4 of the box height, clear
+// of the texts.
+fn icon_rect(shape: Shape, rect: Rect) -> Rect {
+    let area = text_area(shape, rect);
+    let side = (rect.height() / 4)
+        .min(area.height() / 2)
+        .min(area.width())
+        .max(0);
+    let x = rect.centre().x - side / 2;
+    Rect::from_corners(Point::new(x, area.max.y - side), Point::new(x + side, area.max.y))
+}
+
+/// The dash array of a box outline or line drawn `border` (P2-405,
+/// P2-420); `None` for solid.
+// DECISION: dashed is the boundary's 8/6, dotted 2/4: shorter than the
+// dash, and still visible as dots at the 1px default stroke width.
+const fn dash_of(border: Border) -> Option<[i32; 2]> {
+    match border {
+        Border::Dashed => Some(DASHED_PX),
+        Border::Dotted => Some(DOTTED_PX),
+        _ => None,
+    }
+}
+
+const DASHED_PX: [i32; 2] = [8, 6];
+const DOTTED_PX: [i32; 2] = [2, 4];
 
 /// The box of `b` with its centre at `centre` (grid units).
 fn scene_box(b: &PlanBox, centre: Point, words: &Words<'_>) -> SceneBox {
@@ -1174,13 +1696,21 @@ fn scene_box(b: &PlanBox, centre: Point, words: &Words<'_>) -> SceneBox {
         outline: outline(b.style.shape, rect),
         fill: b.style.background,
         stroke: Stroke {
-            colour: darker(b.style.background, 72),
-            width_px: OUTLINE_PX,
-            dash_px: None,
+            colour: b
+                .style
+                .stroke
+                .unwrap_or_else(|| darker(b.style.background, 72)),
+            width_px: i32::from(b.style.stroke_width),
+            dash_px: dash_of(b.style.border),
         },
         name: texts.name,
         type_line: texts.type_line,
         description: texts.description,
+        opacity: b.style.opacity.min(100),
+        icon: b.style.icon.clone().map(|asset| SceneIcon {
+            rect: icon_rect(b.style.shape, rect),
+            asset,
+        }),
     }
 }
 
@@ -1241,12 +1771,23 @@ fn nearest_dir(dx: i32, dy: i32) -> Dir {
         .unwrap_or(Dir::E)
 }
 
-/// The arrowhead at `tip` for a segment arriving from `from`.
+/// The arrowhead at `tip` for a segment arriving from `from`, at the
+/// phase-1 size.
 fn arrow_tip(from: Point, tip: Point) -> Tip {
+    arrow_tip_scaled(from, tip, LINE_PX)
+}
+
+/// The arrowhead of a line `thickness` px wide: the phase-1 size times
+/// `thickness / 2`, never smaller (P2-418).
+// TODO(srs): P2-418. Reading taken (B styles-themes 9): the arrowhead and
+// join dot scale by thickness/2, never below the phase-1 size; the 20px
+// lane pitch does not change.
+fn arrow_tip_scaled(from: Point, tip: Point, thickness: i32) -> Tip {
     let (dx, dy) = (tip.x - from.x, tip.y - from.y);
-    let (bx, by) = along(dx, dy, ARROW_LEN_PX);
+    let scale = |n: i32| n * thickness.max(LINE_PX) / LINE_PX;
+    let (bx, by) = along(dx, dy, scale(ARROW_LEN_PX));
     let back = shift(tip, -bx, -by);
-    let (px, py) = along(-dy, dx, ARROW_HALF_PX);
+    let (px, py) = along(-dy, dx, scale(ARROW_HALF_PX));
     Tip::Arrow([tip, shift(back, px, py), shift(back, -px, -py)])
 }
 
@@ -1315,7 +1856,13 @@ fn edge_toward(rect: &Rect, toward: Point) -> Point {
 
 /// The drawn line of `edge`: its routed polyline in px, or the CORE-13
 /// straight fallback between its boxes' edges.
-fn scene_line(edge: &PlanEdge, routes: &Routes, boxes: &[SceneBox], labels: &[Rect]) -> SceneLine {
+fn scene_line(
+    edge: &PlanEdge,
+    routes: &Routes,
+    boxes: &[SceneBox],
+    labels: &[Rect],
+    pal: Palette,
+) -> SceneLine {
     let source = &boxes[edge.source.0 as usize];
     let destination = &boxes[edge.destination.0 as usize];
     let routed_line = routes.line(edge.id);
@@ -1328,13 +1875,15 @@ fn scene_line(edge: &PlanEdge, routes: &Routes, boxes: &[SceneBox], labels: &[Re
     };
     let joins = routed_line.and_then(Line::joins);
     let last = points[points.len() - 1];
+    let style = &edge.style;
+    let thickness = i32::try_from(style.thickness).unwrap_or(i32::MAX).clamp(1, 100);
     let tip = if joins.is_some() {
         Tip::Dot {
             at: last,
-            radius_px: DOT_RADIUS_PX,
+            radius_px: DOT_RADIUS_PX * thickness.max(LINE_PX) / LINE_PX,
         }
     } else {
-        arrow_tip(points[points.len() - 2], last)
+        arrow_tip_scaled(points[points.len() - 2], last, thickness)
     };
     let chevrons = points
         .windows(2)
@@ -1347,15 +1896,21 @@ fn scene_line(edge: &PlanEdge, routes: &Routes, boxes: &[SceneBox], labels: &[Re
         source: edge.source,
         destination: edge.destination,
         points,
+        // P2-419: a style colour replaces the destination's fill (CORE-3).
+        // DECISION: the dash sits on the line's stroke; painters draw the
+        // chevrons and the tip solid with the same colour and width, so a
+        // dashed line still shows whole direction marks (P2-420).
         stroke: Stroke {
-            colour: destination.fill,
-            width_px: LINE_PX,
-            dash_px: None,
+            colour: style.color.or(pal.line).unwrap_or(destination.fill),
+            width_px: thickness,
+            dash_px: dash_of(style.style),
         },
         chevrons,
         tip,
         joins,
         routed: routed_line.is_some(),
+        opacity: style.opacity.min(100),
+        jumps: Vec::new(),
     }
 }
 
@@ -1372,10 +1927,92 @@ fn line_bounds(line: &SceneLine) -> Rect {
     e.rect()
 }
 
+/// Fills `SceneLine::jumps` of every `jump true` line (P2-422): it hops
+/// over earlier lines and over later lines that do not jump themselves.
+fn add_jumps(plan: &ViewPlan, lines: &mut [SceneLine]) {
+    for (i, edge) in plan.edges.iter().enumerate() {
+        if edge.style.jump {
+            let crossed: Vec<&SceneLine> = lines
+                .iter()
+                .zip(&plan.edges)
+                .enumerate()
+                .filter(|&(j, (_, e))| j < i || (j > i && !e.style.jump))
+                .map(|(_, (l, _))| l)
+                .collect();
+            let hops = jumps(&lines[i], &crossed);
+            lines[i].jumps = hops;
+        }
+    }
+}
+
+/// Where `line` properly crosses one of the routed lines `earlier`, in
+/// its own order from start to end (P2-422). Touches and shared stretches
+/// are not hops.
+// TODO(srs): P2-422. Readings taken (B styles-themes 8, then checked
+// against the reference renderer, where Java wins: Structurizr draws
+// `jump true` with JointJS's `jumpover` connector, which hops over every
+// link before it and over every later link that is not itself a
+// `jumpover`): a `jump true` line hops at every crossing with a line
+// drawn before it and with a later line that does not jump, so when both
+// jump only the later one hops; the hop is a 6px half circle (export).
+fn jumps(line: &SceneLine, earlier: &[&SceneLine]) -> Vec<Point> {
+    if !line.routed {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for w in line.points.windows(2) {
+        let mine = Segment::new(w[0], w[1]);
+        let mut here: Vec<Point> = earlier
+            .iter()
+            .filter(|e| e.routed)
+            .flat_map(|e| e.points.windows(2).map(|v| Segment::new(v[0], v[1])))
+            .filter(|other| mine.contact(other) == Contact::Cross)
+            .filter_map(|other| intersection(&mine, &other))
+            .collect();
+        // Along the segment from its start, each point once.
+        here.sort_by_key(|p| {
+            (i64::from(p.x - w[0].x).abs(), i64::from(p.y - w[0].y).abs())
+        });
+        here.dedup();
+        for p in here {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// The crossing point of two segments that cross (`Contact::Cross`),
+/// rounded to the nearest px.
+fn intersection(first: &Segment, second: &Segment) -> Option<Point> {
+    let (x1, y1, x2, y2) = (i128::from(first.a.x), i128::from(first.a.y), i128::from(first.b.x), i128::from(first.b.y));
+    let (x3, y3, x4, y4) = (i128::from(second.a.x), i128::from(second.a.y), i128::from(second.b.x), i128::from(second.b.y));
+    let den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if den == 0 {
+        return None;
+    }
+    let cross_first = x1 * y2 - y1 * x2;
+    let cross_second = x3 * y4 - y3 * x4;
+    let num_x = cross_first * (x3 - x4) - (x1 - x2) * cross_second;
+    let num_y = cross_first * (y3 - y4) - (y1 - y2) * cross_second;
+    let round = |n: i128| {
+        let (n, d) = if den < 0 { (-n, -den) } else { (n, den) };
+        i32::try_from((2 * n + d).div_euclid(2 * d)).ok()
+    };
+    Some(Point::new(round(num_x)?, round(num_y)?))
+}
+
 // --------------------------------------------------------------- labels
 
 /// The label of one edge in px (`label::Label` geometry) with its text.
-fn scene_label(plan: &ViewPlan, label: &Label, boxes: &[SceneBox]) -> SceneLabel {
+fn scene_label(
+    plan: &ViewPlan,
+    label: &Label,
+    boxes: &[SceneBox],
+    boundaries: &[SceneBoundary],
+    pal: Palette,
+) -> SceneLabel {
     let edge = &plan.edges[label.edge.0 as usize];
     let centre = px_point(label.centre);
     let min = Point::new(
@@ -1386,17 +2023,39 @@ fn scene_label(plan: &ViewPlan, label: &Label, boxes: &[SceneBox]) -> SceneLabel
         min,
         Point::new(min.x + label.width_px, min.y + label.height_px),
     );
-    let colour = darker(boxes[edge.destination.0 as usize].fill, LABEL_TEXT_DARKEN);
+    // Approver ruling 2026-11-17: a backing inside a boundary takes that
+    // boundary's fill when it has one, else the page colour.
+    // DECISION: the colour actually behind the label's centre: every
+    // filled boundary holding it, outermost first (scene order), laid over
+    // the page at its own opacity, as the renderer draws them. An unfilled
+    // boundary adds nothing; opacity 100 gives the fill itself.
+    let backing = boundaries
+        .iter()
+        .filter(|b| b.rect.contains(centre))
+        .fold(pal.page, |under, b| match b.fill {
+            Some(fill) => over(fill, b.opacity.min(100), under),
+            None => under,
+        });
+    let mut colour = edge.style.color.or(pal.line).unwrap_or_else(|| {
+        darker(boxes[edge.destination.0 as usize].fill, LABEL_TEXT_DARKEN)
+    });
+    // Approver ruling 2026-11-17: in dark mode the text keeps the line's
+    // colour only at a contrast of 3:1 or more against its backing.
+    if let Some(fallback) = pal.line
+        && contrast(colour, backing) < MIN_LABEL_CONTRAST
+    {
+        colour = fallback;
+    }
     let font = Font {
-        size_px: LABEL_FONT_PX,
-        line_px: LABEL_LINE_PX,
+        size_px: label.font_px,
+        line_px: label.line_px,
         weight: Weight::Regular,
     };
     SceneLabel {
         edge: label.edge,
         relationship: edge.winner(),
         rect,
-        fill: Some(WHITE),
+        fill: Some(backing),
         text: text_block(
             label.lines.clone(),
             font,
@@ -1405,10 +2064,45 @@ fn scene_label(plan: &ViewPlan, label: &Label, boxes: &[SceneBox]) -> SceneLabel
             &rect,
         ),
         fit: label.fit.clone(),
+        opacity: edge.style.opacity.min(100),
     }
 }
 
 const LABEL_TEXT_DARKEN: u16 = 62;
+
+/// `top` at `opacity`/100 over `under`, each channel rounded to nearest.
+fn over(top: Colour, opacity: u8, under: Colour) -> Colour {
+    let a = u16::from(opacity.min(100));
+    let mix = |t: u8, u: u8| {
+        u8::try_from((u16::from(t) * a + u16::from(u) * (100 - a) + 50) / 100)
+            .unwrap_or(u8::MAX)
+    };
+    Colour {
+        r: mix(top.r, under.r),
+        g: mix(top.g, under.g),
+        b: mix(top.b, under.b),
+    }
+}
+
+/// The least contrast ratio a dark-mode label text keeps its line colour at.
+const MIN_LABEL_CONTRAST: f64 = 3.0;
+
+/// The WCAG 2 contrast ratio of two colours, 1 to 21.
+fn contrast(a: Colour, b: Colour) -> f64 {
+    fn luminance(c: Colour) -> f64 {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
 
 // ------------------------------------------------------------ boundary
 
@@ -1428,22 +2122,31 @@ const TAG_FONT: Font = Font {
 };
 const TAG_INSET_PX: i32 = 12;
 
-/// Boundary `index` of `plan` in px, `None` when it has no member.
+/// Boundary `index` of `plan` in px, `None` when it has no member; its
+/// look from `view::Boundary::style` (P2-411), phase 1 where unset.
 fn scene_boundary(
     plan: &ViewPlan,
     index: usize,
     centres: &[Point],
+    pal: Palette,
     words: &Words<'_>,
 ) -> Option<SceneBoundary> {
     let boundary = &plan.boundaries[index];
+    let style = &boundary.style;
     let rect = px_rect(plan.boundary_rect(index, centres)?);
     let tag_rect = px_rect(boundary_tag_with(plan, index, centres, words)?);
     let baseline = rect.max.y - TAG_INSET_PX;
+    let size_px = boundary_tag_font_px(boundary);
+    let font = Font {
+        size_px,
+        line_px: size_px + TAG_FONT.line_px - TAG_FONT.size_px,
+        weight: Weight::Bold,
+    };
     let tag = text_block(
-        vec![crate::label::tag_text(plan, index, words)],
-        TAG_FONT,
-        BOUNDARY_COLOUR,
-        start(rect.min.x + TAG_INSET_PX, baseline - TAG_FONT.baseline_px()),
+        vec![boundary_tag_text(plan, index, words)],
+        font,
+        style.color.unwrap_or(pal.boundary),
+        start(rect.min.x + TAG_INSET_PX, baseline - font.baseline_px()),
         &tag_rect,
     );
     Some(SceneBoundary {
@@ -1451,12 +2154,15 @@ fn scene_boundary(
         members: boundary.members.clone(),
         rect,
         stroke: Stroke {
-            colour: BOUNDARY_COLOUR,
-            width_px: OUTLINE_PX,
-            dash_px: Some(BOUNDARY_DASH_PX),
+            colour: style.stroke.unwrap_or(pal.boundary),
+            width_px: style.stroke_width.map_or(OUTLINE_PX, i32::from),
+            dash_px: style.border.map_or(Some(BOUNDARY_DASH_PX), dash_of),
         },
         tag_rect,
         tag,
+        fill: style.background,
+        opacity: style.opacity.min(100),
+        icon: None,
     })
 }
 
@@ -1536,7 +2242,17 @@ enum Look {
     },
 }
 
-/// The swatch outline of `shape` in the key, top left at `at`.
+/// The `Relationship` entry's swatch colour when its lines differ in
+/// colour (Structurizr's default relationship colour).
+// TODO(srs): P2-434. Reading taken (B styles-themes 12): #707070.
+const MIXED_LINE_COLOUR: Colour = Colour {
+    r: 0x70,
+    g: 0x70,
+    b: 0x70,
+};
+
+/// The swatch outline of `shape` in the key, top left at `at`: the
+/// box's own outline at key size (P2-416).
 fn swatch_outline(shape: Shape, at: Point) -> Outline {
     let rect = Rect::from_corners(at, shift(at, KEY_BOX_W_PX, KEY_BOX_H_PX));
     match shape {
@@ -1546,13 +2262,24 @@ fn swatch_outline(shape: Shape, at: Point) -> Outline {
             body: Rect::from_corners(shift(at, 3, 8), shift(at, KEY_BOX_W_PX - 3, KEY_BOX_H_PX)),
             body_radius_px: 4,
         },
-        Shape::Cylinder => Outline::Cylinder { rect, cap_ry_px: 4 },
-        _ => Outline::Rect { rect, radius_px: 3 },
+        _ => shape_outline(shape, rect, SWATCH_DIMS),
     }
 }
 
+/// One line key entry being collected: (style tag, dot), the first
+/// line's stroke, whether every line so far shares its colour.
+type LineGroup<'a> = ((Option<&'a str>, bool), Stroke, bool);
+
 /// Every distinct look drawn, boxes then lines, each in first-drawn
-/// order, with the names it stands for (CORE-1).
+/// order, with the names it stands for (CORE-1). A box look is shape,
+/// fill, text colour and stroke (colour, width, dash: P2-435; opacity and
+/// icon do not split). Lines get one entry per relationship-style tag
+/// (`PlanEdge::style_tag`) and end (arrow or join dot), named by the tag
+/// or `Relationship` (P2-27); the swatch takes the lines' colour when
+/// they share one, else #707070, and the first line's width and dash
+/// (P2-434).
+// TODO(srs): P2-27, P2-435. Readings taken (B styles-themes 12): join-dot
+// lines keep their own entry; opacity and icons do not split entries.
 fn looks(
     plan: &ViewPlan,
     boxes: &[SceneBox],
@@ -1560,15 +2287,6 @@ fn looks(
     words: &Words<'_>,
 ) -> Vec<(Look, Vec<String>)> {
     let mut looks: Vec<(Look, Vec<String>)> = Vec::new();
-    let mut add = |look: Look, name: &str| {
-        if let Some((_, names)) = looks.iter_mut().find(|(l, _)| *l == look) {
-            if !names.iter().any(|n| n == name) {
-                names.push(name.to_owned());
-            }
-        } else {
-            looks.push((look, vec![name.to_owned()]));
-        }
-    };
     for b in boxes {
         let pb = &plan.boxes[b.id.0 as usize];
         let bare = Words {
@@ -1579,24 +2297,41 @@ fn looks(
             .tags
             .last()
             .map_or_else(|| type_text(pb, &bare), Clone::clone);
-        add(
-            Look::Box {
-                shape: b.shape,
-                fill: b.fill,
-                text: b.name.colour,
-                stroke: b.stroke,
-            },
-            &name,
-        );
+        let look = Look::Box {
+            shape: b.shape,
+            fill: b.fill,
+            text: b.name.colour,
+            stroke: b.stroke,
+        };
+        if let Some((_, names)) = looks.iter_mut().find(|(l, _)| *l == look) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        } else {
+            looks.push((look, vec![name]));
+        }
     }
+    // (tag, dot) -> stroke of the first line, whether all colours agree.
+    let mut groups: Vec<LineGroup<'_>> = Vec::new();
     for l in lines {
-        add(
-            Look::Line {
-                stroke: l.stroke,
-                dot: matches!(l.tip, Tip::Dot { .. }),
-            },
-            words.relationship,
+        let key = (
+            plan.edges[l.edge.0 as usize].style_tag.as_deref(),
+            matches!(l.tip, Tip::Dot { .. }),
         );
+        if let Some((_, stroke, same)) = groups.iter_mut().find(|(k, _, _)| *k == key) {
+            *same &= stroke.colour == l.stroke.colour;
+        } else {
+            groups.push((key, l.stroke, true));
+        }
+    }
+    for ((tag, dot), mut stroke, same) in groups {
+        if !same {
+            stroke.colour = MIXED_LINE_COLOUR;
+        }
+        looks.push((
+            Look::Line { stroke, dot },
+            vec![tag.unwrap_or(words.relationship).to_owned()],
+        ));
     }
     looks
 }
@@ -1694,7 +2429,11 @@ fn legend(looks: Vec<(Look, Vec<String>)>, drawing: &Rect, top: i32) -> Legend {
 // few px of difference, and the selection mark is the rectangle anyway.
 fn outline_contains(outline: &Outline, at: Point) -> bool {
     match *outline {
-        Outline::Rect { rect, .. } => rect.contains(at),
+        Outline::Rect { rect, .. }
+        | Outline::Bucket { rect, .. }
+        | Outline::Pipe { rect, .. }
+        | Outline::Window { rect, .. }
+        | Outline::MobileDevice { rect, .. } => rect.contains(at),
         Outline::Person {
             head_centre,
             head_radius_px,
@@ -1722,6 +2461,34 @@ fn outline_contains(outline: &Outline, at: Point) -> bool {
             let (top, bottom) = (i64::from(rect.min.y) + ry, i64::from(rect.max.y) - ry);
             let y = i64::from(at.y);
             (top..=bottom).contains(&y) || in_cap(top) || in_cap(bottom)
+        }
+        Outline::Ellipse { rect, .. } => {
+            let c = rect.centre();
+            let (rx, ry) = (i64::from(rect.width()) / 2, i64::from(rect.height()) / 2);
+            let (dx, dy) = (i64::from(at.x - c.x), i64::from(at.y - c.y));
+            dx * dx * ry * ry + dy * dy * rx * rx <= rx * rx * ry * ry
+        }
+        Outline::Hexagon { rect, inset_px } => {
+            if !rect.contains(at) {
+                return false;
+            }
+            // The slanted sides: the inset shrinks to 0 at mid height.
+            let hh = i64::from(rect.height()) / 2;
+            let dy = i64::from(at.y - rect.centre().y).abs();
+            let inset = if hh == 0 { 0 } else { i64::from(inset_px) * dy / hh };
+            let x = i64::from(at.x);
+            x >= i64::from(rect.min.x) + inset && x <= i64::from(rect.max.x) - inset
+        }
+        Outline::Diamond { rect } => {
+            let c = rect.centre();
+            let (rx, ry) = (i64::from(rect.width()) / 2, i64::from(rect.height()) / 2);
+            let (dx, dy) = (i64::from(at.x - c.x).abs(), i64::from(at.y - c.y).abs());
+            dx * ry + dy * rx <= rx * ry
+        }
+        Outline::Robot { head, body, .. } => head.contains(at) || body.contains(at),
+        Outline::Folder { rect, tab } => rect.contains(at) || tab.contains(at),
+        Outline::Component { rect, tabs } => {
+            rect.contains(at) || tabs.iter().any(|t| t.contains(at))
         }
     }
 }
@@ -2059,8 +2826,9 @@ mod tests {
             .iter()
             .map(|e| e.names.iter().map(String::as_str).collect())
             .collect();
-        // Boxes in box order (operator, web, db, worker, bank), then the
-        // two line colours (into containers, into the bank).
+        // Boxes in box order (operator, web, db, worker, bank), then one
+        // `Relationship` entry for every unstyled line (P2-27; phase 1
+        // had one per line colour).
         assert_eq!(
             names,
             vec![
@@ -2068,7 +2836,6 @@ mod tests {
                 vec!["Container"],
                 vec!["Database"],
                 vec!["External"],
-                vec!["Relationship"],
                 vec!["Relationship"],
             ]
         );
@@ -2096,21 +2863,8 @@ mod tests {
                 Swatch::Box { .. } => panic!("line swatch expected"),
             })
             .collect();
-        assert_eq!(
-            line_colours,
-            vec![
-                Colour {
-                    r: 0x43,
-                    g: 0x8d,
-                    b: 0xd5
-                },
-                Colour {
-                    r: 0x99,
-                    g: 0x99,
-                    b: 0x99
-                }
-            ]
-        );
+        // The lines take two colours, so the one entry is #707070 (P2-434).
+        assert_eq!(line_colours, vec![MIXED_LINE_COLOUR]);
         for e in &scene.legend.entries {
             assert_eq!(e.text.lines, vec![e.names.join(", ")]);
             assert!(inside(&e.text.bounds, &scene.legend.rect));
@@ -2499,6 +3253,8 @@ mod tests {
             width_px: 50,
             height_px: 20,
             fit: Fit::Clear,
+            font_px: crate::label::LABEL_FONT_PX,
+            line_px: crate::label::LABEL_LINE_PX,
         });
         let scene = build(&plan, &routes, &labels);
         let at: Vec<Point> = scene.lines[0].chevrons.iter().map(|c| c.at).collect();

@@ -41,9 +41,8 @@
 // full id, `.`, its own id (`Model::full_key`), and relationship ids stay
 // global. A view with no key gets
 // `<Kind>-NNN` (`SystemContext-001`), numbered per kind in declaration
-// order. `relationship "<tag>" { ... }` blocks in `styles` are accepted
-// and kept byte for byte in the tree, with no effect until P2-12 (keyword
-// table, DSL-14).
+// order. `relationship "<tag>" { ... }` blocks in `styles` are parsed
+// into `Model::relationship_styles` (P2-12).
 //
 // DSL-15: styles cascade per property in the element's tag order
 // (`Element`, the kind tag, then the declared tags); a later tag wins,
@@ -57,6 +56,7 @@ use std::sync::Arc;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod theme;
 mod archetype;
 mod deploy;
 mod expr;
@@ -244,10 +244,16 @@ pub struct Relationship {
     pub properties: Vec<Property>,
     /// `perspectives { ... }`, either form, in file order (P2-173).
     pub perspectives: Vec<Perspective>,
+    /// The `!impliedRelationships` strategy in force where this
+    /// relationship was declared: a directive applies to the
+    /// relationships after it only, as in Structurizr. Lifting (CORE-5)
+    /// and `include *` read it per relationship. Approved pub addition
+    /// (2026-11-17). Serves P2-7, P2-153, P2-154.
+    pub implied_relationships: ImpliedRelationships,
 }
 
-/// A box shape. Phase 2 adds the rest of Structurizr's shapes (P2-11).
-/// Serves DSL-3, CORE-2.
+/// A box shape: the 19 shapes of Structurizr's notation page, parsed
+/// in any letter case. Serves DSL-3, CORE-2, P2-11.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum Shape {
@@ -258,6 +264,91 @@ pub enum Shape {
     Person,
     /// `shape Cylinder`.
     Cylinder,
+    /// `shape RoundedBox`: a box with a larger corner radius than `Box`
+    /// (P2-415).
+    RoundedBox,
+    /// `shape Circle`.
+    Circle,
+    /// `shape Ellipse`.
+    Ellipse,
+    /// `shape Hexagon`.
+    Hexagon,
+    /// `shape Diamond`.
+    Diamond,
+    /// `shape Bucket`.
+    Bucket,
+    /// `shape Pipe`: a horizontal cylinder.
+    Pipe,
+    /// `shape Robot`.
+    Robot,
+    /// `shape Folder`.
+    Folder,
+    /// `shape WebBrowser`.
+    WebBrowser,
+    /// `shape Window`.
+    Window,
+    /// `shape Terminal`.
+    Terminal,
+    /// `shape Shell`.
+    Shell,
+    /// `shape MobileDevicePortrait`.
+    MobileDevicePortrait,
+    /// `shape MobileDeviceLandscape`.
+    MobileDeviceLandscape,
+    /// `shape Component`.
+    Component,
+}
+
+impl Shape {
+    /// The reference's spelling (`"MobileDevicePortrait"`), which `edit`
+    /// writes (DSL-13) and the style panel shows. Serves P2-11, P2-417.
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            Shape::Box => "Box",
+            Shape::Person => "Person",
+            Shape::Cylinder => "Cylinder",
+            Shape::RoundedBox => "RoundedBox",
+            Shape::Circle => "Circle",
+            Shape::Ellipse => "Ellipse",
+            Shape::Hexagon => "Hexagon",
+            Shape::Diamond => "Diamond",
+            Shape::Bucket => "Bucket",
+            Shape::Pipe => "Pipe",
+            Shape::Robot => "Robot",
+            Shape::Folder => "Folder",
+            Shape::WebBrowser => "WebBrowser",
+            Shape::Window => "Window",
+            Shape::Terminal => "Terminal",
+            Shape::Shell => "Shell",
+            Shape::MobileDevicePortrait => "MobileDevicePortrait",
+            Shape::MobileDeviceLandscape => "MobileDeviceLandscape",
+            Shape::Component => "Component",
+        }
+    }
+
+    /// Every shape, in declaration order.
+    const ALL: [Shape; 19] = [
+        Shape::Box,
+        Shape::Person,
+        Shape::Cylinder,
+        Shape::RoundedBox,
+        Shape::Circle,
+        Shape::Ellipse,
+        Shape::Hexagon,
+        Shape::Diamond,
+        Shape::Bucket,
+        Shape::Pipe,
+        Shape::Robot,
+        Shape::Folder,
+        Shape::WebBrowser,
+        Shape::Window,
+        Shape::Terminal,
+        Shape::Shell,
+        Shape::MobileDevicePortrait,
+        Shape::MobileDeviceLandscape,
+        Shape::Component,
+    ];
 }
 
 /// A `#rrggbb` colour. Serves DSL-3.
@@ -279,6 +370,51 @@ impl fmt::Display for Colour {
     }
 }
 
+/// How a box outline or a line is stroked: `border` on an element style,
+/// `style` (and `dashed true|false`) on a relationship style. Serves
+/// P2-405, P2-420.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Border {
+    /// No dash array; the default for boxes and, unlike Structurizr, for
+    /// lines (CORE-10, B styles-themes 2).
+    #[default]
+    Solid,
+    /// A dash.
+    Dashed,
+    /// A dash shorter than `Dashed`'s.
+    Dotted,
+}
+
+/// Light or dark: which `light { }` / `dark { }` style blocks apply, and
+/// the colour defaults a view is drawn with. Serves P2-21, P2-430..P2-433.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub enum Mode {
+    /// The default (Structurizr `-mode light`).
+    #[default]
+    Light,
+    /// `dark`.
+    Dark,
+}
+
+/// A relationship style's or per-view line's `routing`. Parsed and kept;
+/// every value draws with c4rizer's router. Serves P2-421 (and
+/// editor-breadth P2-709, O8).
+// TODO(srs): P2-421, what each value means under the circuit-board
+// router. Reading taken (B styles-themes 1): parsed and stored, every
+// value draws with c4rizer's router (CORE-6..9), no notice.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Routing {
+    /// `routing Direct`.
+    Direct,
+    /// `routing Orthogonal`.
+    Orthogonal,
+    /// `routing Curved`.
+    Curved,
+}
+
 /// One `element "<tag>" { ... }` block in the `styles` block of `views`.
 /// Each property keeps the span of its value so `edit` rewrites only that
 /// value (DSL-13). Phase 2 adds the other style properties (P2-10).
@@ -296,6 +432,48 @@ pub struct ElementStyle {
     pub shape: Option<Spanned<Shape>>,
     /// The whole `element` statement, block included.
     pub span: Span,
+    /// `stroke <colour>`: the box outline colour (P2-403).
+    pub stroke: Option<Spanned<Colour>>,
+    /// `strokeWidth N`, 1..10 (P2-404).
+    // TODO(srs): P2-404/P2-406/P2-425/P2-426 say an out-of-range value
+    // is an invalid-value error; B styles-themes 13 [I] (Structurizr for
+    // Java's setters) clamps to the range with no error. Reading taken:
+    // clamp, the Structurizr-faithful one. Checked against Structurizr
+    // 6.2.4, the verified reference (approver ruling 2026-11-17):
+    // `ElementStyle.setStrokeWidth` clamps to 1..10, `setOpacity` and
+    // `RelationshipStyle.setOpacity`/`setPosition` to 0..100, and the DSL
+    // parsers call them with `Integer.parseInt`, a non-number being the
+    // only error. Same as here.
+    pub stroke_width: Option<Spanned<u8>>,
+    /// `width W` in px (P2-402).
+    // P2-402 (approver ruling 2026-11-17): literal px; a value that is
+    // not a multiple of 20 is rounded up to the next multiple of 20.
+    pub width: Option<Spanned<i32>>,
+    /// `height H` in px (P2-402).
+    pub height: Option<Spanned<i32>>,
+    /// `fontSize N`: the box name's px size (P2-407).
+    pub font_size: Option<Spanned<u32>>,
+    /// `border solid|dashed|dotted` (P2-405).
+    pub border: Option<Spanned<Border>>,
+    /// `opacity N`, 0..100 (P2-406).
+    pub opacity: Option<Spanned<u8>>,
+    /// `metadata true|false`: the `[type: technology]` line (P2-408).
+    pub metadata: Option<Spanned<bool>>,
+    /// `description true|false` (P2-408).
+    pub description: Option<Spanned<bool>>,
+    /// `icon <file>` as written (P2-409); the bytes are in
+    /// `ResolvedStyle::icon` and `Model::assets`.
+    pub icon: Option<Literal>,
+    /// `properties { name value }`, kept byte for byte, no effect
+    /// (P2-410).
+    pub properties: Vec<Property>,
+    /// `Some` when the block sits in `light { }` or `dark { }`, `None`
+    /// for a top-level block (P2-21, P2-430).
+    pub mode: Option<Mode>,
+    /// `Some(i)` for a style read from `Model::themes[i]`, `None` for the
+    /// file's own block; `edit` never edits a theme style (P2-13,
+    /// P2-439). A theme style's `span` is its `theme` statement's.
+    pub theme: Option<usize>,
 }
 
 /// The style an element ends up with: each property from the last of its
@@ -311,6 +489,34 @@ pub struct ResolvedStyle {
     pub color: Colour,
     /// Box shape.
     pub shape: Shape,
+    /// Outline colour; `None`: the fill darkened to 72% (P2-403).
+    pub stroke: Option<Colour>,
+    /// Outline width in px; 1 by default, as in phase 1 (P2-404).
+    pub stroke_width: u8,
+    /// Box width in px replacing the kind default (P2-402).
+    pub width: Option<i32>,
+    /// Box height in px replacing the kind default (P2-402).
+    pub height: Option<i32>,
+    /// Name size in px; `None`: the phase-1 14px (P2-407).
+    // TODO(srs): P2-407, how the type line and description scale. Reading
+    // taken (B styles-themes 5): name N px on an N+6 px pitch; type line
+    // and description round(N x 11/14) px on that size plus 4.
+    pub font_size: Option<u32>,
+    /// Outline dash (P2-405).
+    pub border: Border,
+    /// 0..100; 100 by default (P2-406).
+    pub opacity: u8,
+    /// Draw the `[type: technology]` line (P2-408).
+    pub metadata: bool,
+    /// Draw the description (P2-408).
+    pub description: bool,
+    /// The icon file's bytes (P2-409, P2-428, O3).
+    // TODO(srs): P2-409. Readings taken (B styles-themes 7): drawn centred
+    // in the box's bottom band, at most 1/4 of the box height, clear of
+    // the texts; PNG, JPEG and SVG local files and `data:` URIs accepted;
+    // a URL icon is not drawn and gets a P2-3 notice; a missing or
+    // unreadable file is a `FileRead` parse error naming the path.
+    pub icon: Option<Asset>,
 }
 
 impl ResolvedStyle {
@@ -329,8 +535,190 @@ impl ResolvedStyle {
                 ElementKind::Person => Shape::Person,
                 _ => Shape::Box,
             },
+            // DECISION: the phase-2 properties default to their phase-1
+            // look (P2-437), so phase-1 files draw unchanged.
+            stroke: None,
+            stroke_width: 1,
+            width: None,
+            height: None,
+            font_size: None,
+            border: Border::Solid,
+            opacity: 100,
+            metadata: true,
+            description: true,
+            icon: None,
         }
     }
+}
+
+/// One `relationship "<tag>" { ... }` block, top-level in `styles` or in
+/// `light`/`dark`, or read from a theme. Each property keeps its value
+/// span (DSL-13). Serves P2-12, P2-418..P2-426, P2-410.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RelationshipStyle {
+    /// The tag this style applies to.
+    pub tag: Literal,
+    /// `thickness N`: line and chevron width in px (P2-418).
+    pub thickness: Option<Spanned<u32>>,
+    /// `color`/`colour` (one property, P2-400, P2-401, P2-419).
+    pub color: Option<Spanned<Colour>>,
+    /// `style solid|dashed|dotted`, or `dashed true|false` (P2-420).
+    pub style: Option<Spanned<Border>>,
+    /// `routing Direct|Orthogonal|Curved` (P2-421).
+    pub routing: Option<Spanned<Routing>>,
+    /// `jump true|false` (P2-422).
+    pub jump: Option<Spanned<bool>>,
+    /// `fontSize N`: label size in px (P2-423).
+    pub font_size: Option<Spanned<u32>>,
+    /// `width W`: label text width in px (P2-424).
+    pub width: Option<Spanned<u32>>,
+    /// `position P`, 0..100 along the line (P2-425).
+    pub position: Option<Spanned<u8>>,
+    /// `opacity N`, 0..100 (P2-426).
+    pub opacity: Option<Spanned<u8>>,
+    /// `properties { name value }`, kept, no effect (P2-410).
+    pub properties: Vec<Property>,
+    /// As `ElementStyle::mode` (P2-21, P2-430).
+    pub mode: Option<Mode>,
+    /// As `ElementStyle::theme` (P2-13, P2-439).
+    pub theme: Option<usize>,
+    /// The whole `relationship` statement, block included.
+    pub span: Span,
+}
+
+/// The style a drawn line ends up with: each property from the last of
+/// its winning relationship's tags that sets it (DSL-15), else the
+/// phase-1 default (`DEFAULT`). `view::plan_in` folds the per-view
+/// `line` layout into it (O9). Serves P2-12, P2-418..P2-426.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedRelationshipStyle {
+    /// Line and chevron width in px (P2-418).
+    // TODO(srs): P2-418, scaling. Reading taken (B styles-themes 9): the
+    // arrowhead and join dot scale by thickness/2, never below the
+    // phase-1 size; the 20px lane pitch does not change.
+    pub thickness: u32,
+    /// `None`: the destination box's fill (CORE-3); `Some` overrides it
+    /// for line, chevrons, tip and label text (P2-419).
+    pub color: Option<Colour>,
+    /// Polyline dash (P2-420).
+    pub style: Border,
+    /// Parsed routing, no effect on the drawing (P2-421).
+    pub routing: Option<Routing>,
+    /// Hop at crossings (P2-422).
+    // TODO(srs): P2-422. Readings taken (B styles-themes 8): a `jump
+    // true` line hops at every crossing with a line drawn before it; when
+    // both jump, the later-drawn line hops; a hop is a 6px-radius half
+    // circle.
+    pub jump: bool,
+    /// Label size in px; `None`: the phase-1 11px (P2-423).
+    // TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal, as
+    // 11/13 in phase 1): N + 2.
+    pub font_size: Option<u32>,
+    /// Label text width in px; `None`: `labelWidth` characters (P2-424).
+    pub width: Option<u32>,
+    /// Label position in percent of the line's length; `None`: phase-1
+    /// placement (P2-425).
+    pub position: Option<u8>,
+    /// 0..100 (P2-426).
+    pub opacity: u8,
+}
+
+impl ResolvedRelationshipStyle {
+    /// The phase-1 line look: 2px, destination colour, solid, no routing,
+    /// no jump, phase-1 label, opacity 100 (CORE-2, CORE-3, CORE-10).
+    /// Serves P2-12, P2-437.
+    pub const DEFAULT: ResolvedRelationshipStyle = ResolvedRelationshipStyle {
+        thickness: 2,
+        color: None,
+        style: Border::Solid,
+        routing: None,
+        jump: false,
+        font_size: None,
+        width: None,
+        position: None,
+        opacity: 100,
+    };
+}
+
+/// The look of a boundary: element styles for `Boundary` then
+/// `Boundary:SoftwareSystem`/`Boundary:Container` (scope boundaries), or
+/// `Group` then `Group:<name>` (group boundaries), per property; `None`
+/// keeps the phase-1 value (dashed 8/6, 1px, #666666, no fill). Serves
+/// P2-411, P2-412.
+// TODO(srs): P2-411, a boundary `icon`. Reading taken (B styles-themes
+// 7b): drawn left of its name tag, at the tag's height.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedBoundaryStyle {
+    /// Fill; `None`: no fill.
+    pub background: Option<Colour>,
+    /// Outline colour.
+    pub stroke: Option<Colour>,
+    /// Outline width in px.
+    pub stroke_width: Option<u8>,
+    /// Name-tag text colour.
+    pub color: Option<Colour>,
+    /// Name-tag size in px.
+    pub font_size: Option<u32>,
+    /// Outline dash; `None`: the phase-1 8/6 dash.
+    pub border: Option<Border>,
+    /// 0..100.
+    pub opacity: u8,
+    /// `false` drops the bracketed type from the name tag (scope
+    /// boundaries only, P2-411).
+    pub metadata: bool,
+}
+
+impl ResolvedBoundaryStyle {
+    /// The phase-1 boundary look: every property `None`, opacity 100,
+    /// metadata shown (CORE-1). Serves P2-411, P2-437.
+    // DECISION: a pub const beside `ResolvedRelationshipStyle::DEFAULT`
+    // (not in A.2) so `view::plan` and test plans build a phase-1
+    // boundary without calling the model.
+    pub const DEFAULT: ResolvedBoundaryStyle = ResolvedBoundaryStyle {
+        background: None,
+        stroke: None,
+        stroke_width: None,
+        color: None,
+        font_size: None,
+        border: None,
+        opacity: 100,
+        metadata: true,
+    };
+}
+
+/// One `theme`/`themes` source in `views`, in theme order. Serves P2-13,
+/// P2-427..P2-429.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Theme {
+    /// The source as written.
+    pub source: Literal,
+    /// What the source names.
+    pub kind: ThemeSource,
+    /// The `theme`/`themes` statement.
+    pub span: Span,
+}
+
+/// What a theme source names. Serves P2-13, P2-427, P2-429.
+// TODO(srs): P2-429, bundled copies, a cache or a fetch. Reading taken (B
+// styles-themes 11 with approver note C): a name or URL draws nothing and
+// gets a P2-3 notice naming it (no network in phase 2; phase-3 row
+// `network`); `theme default` by name draws if its styles can be bundled
+// under their licence. A theme file must stay under the diagram's folder
+// (`PathOutsideRoot`).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ThemeSource {
+    /// A local Structurizr theme JSON file, relative to the diagram
+    /// file's folder (P2-427).
+    File(String),
+    /// A named theme (`default`, ...).
+    Name(String),
+    /// An `https://` URL.
+    Url(String),
 }
 
 /// The view kinds of phase 1. Phase 2 and 3 add `systemLandscape`,
@@ -728,13 +1116,11 @@ pub enum Identifiers {
 }
 
 /// The `!impliedRelationships` setting. Serves P2-7, P2-153, P2-154.
-// TODO(srs): P2-7, a directive placed between relationships. Reading taken
-// (B dsl-breadth 17, checked against Structurizr for Java): it applies to
-// relationships declared after it. This field holds the last value
-// written, and `view` and `include *` read it for the whole model: a
-// per-relationship record needs a field on `Relationship` (data layout,
-// docs/deferred.md), so a directive between relationships also applies to
-// the ones above it.
+// P2-7, a directive placed between relationships (B dsl-breadth 17,
+// checked against Structurizr for Java; approver ruling 2026-11-17): it
+// applies to relationships declared after it. `Model` holds the last
+// value written; each `Relationship::implied_relationships` holds the
+// one in force at its declaration, which `view` and `include *` read.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ImpliedRelationships {
@@ -1112,6 +1498,14 @@ pub struct Model {
     pub configuration_scope: Option<Spanned<ConfigurationScope>>,
     /// Workspace-level `!docs` / `!adrs` / `!decisions` (P2-159, P2-160).
     pub docs: Vec<Attachment>,
+    /// Every `relationship` style block: theme styles first in theme
+    /// order, then the file's own in source order (P2-12, P2-13).
+    pub relationship_styles: Vec<RelationshipStyle>,
+    /// Every `theme`/`themes` source in order (P2-13).
+    pub themes: Vec<Theme>,
+    /// Every file read at parse time (icons, image-view files), in load
+    /// order, de-duplicated by path (P2-409, P2-428, O3).
+    pub assets: Vec<Asset>,
 }
 
 impl Model {
@@ -1132,7 +1526,9 @@ impl Model {
         let mut loader = NoFiles;
         let mut builder = Builder::new(std::slice::from_ref(tree), &mut loader);
         builder.file()?;
-        Ok(builder.model)
+        let mut model = builder.model;
+        theme::apply(&mut model, std::slice::from_ref(tree), None)?;
+        Ok(model)
     }
 
     /// The element with this id. Panics on an id from another model.
@@ -1204,24 +1600,14 @@ impl Model {
     }
 
     /// The indices into `element_styles` of every block that applies to
-    /// `element`, in apply order: by the element's tag order, blocks for
-    /// the same tag in file order; later entries override earlier ones per
-    /// property. `edit` reads it to find the block a property came from
+    /// `element` in light mode (`styles_for_in(element, Mode::Light)`), in
+    /// apply order: by the element's tag order, blocks for the same tag in
+    /// file order; later entries override earlier ones per property. `edit` reads it to find the block a property came from
     /// (DSL-13). Serves DSL-15.
     // DECISION: plain `usize` indices; a style id newtype would add pub
     // surface for a list only `edit` and the style panel read.
     pub fn styles_for(&self, element: ElementId) -> Vec<usize> {
-        let mut out = Vec::new();
-        for tag in &self.element(element).tags {
-            out.extend(
-                self.element_styles
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.tag.value == *tag)
-                    .map(|(i, _)| i),
-            );
-        }
-        out
+        self.styles_for_in(element, Mode::Light)
     }
 
     /// The style of `element`: `styles_for` applied per property over
@@ -1229,8 +1615,14 @@ impl Model {
     /// takes its kind's default (shape `Person` for a person, else `Box`).
     /// Serves DSL-3, DSL-15, CORE-2, CORE-9.
     pub fn style_of(&self, element: ElementId) -> ResolvedStyle {
+        self.style_of_in(element, Mode::Light)
+    }
+
+    /// `blocks` (indices into `element_styles`) applied per property, in
+    /// order, over the kind default of `element`.
+    fn resolve_element(&self, element: ElementId, blocks: &[usize]) -> ResolvedStyle {
         let mut style = ResolvedStyle::default_for(self.element(element).kind);
-        for i in self.styles_for(element) {
+        for &i in blocks {
             let block = &self.element_styles[i];
             if let Some(c) = block.background {
                 style.background = c.value;
@@ -1240,6 +1632,189 @@ impl Model {
             }
             if let Some(s) = block.shape {
                 style.shape = s.value;
+            }
+            if let Some(c) = block.stroke {
+                style.stroke = Some(c.value);
+            }
+            if let Some(w) = block.stroke_width {
+                style.stroke_width = w.value;
+            }
+            if let Some(w) = block.width {
+                style.width = Some(round_up_to_grid(w.value));
+            }
+            if let Some(h) = block.height {
+                style.height = Some(round_up_to_grid(h.value));
+            }
+            if let Some(f) = block.font_size {
+                style.font_size = Some(f.value);
+            }
+            if let Some(b) = block.border {
+                style.border = b.value;
+            }
+            if let Some(o) = block.opacity {
+                style.opacity = o.value;
+            }
+            if let Some(m) = block.metadata {
+                style.metadata = m.value;
+            }
+            if let Some(d) = block.description {
+                style.description = d.value;
+            }
+            if let Some(icon) = &block.icon {
+                // The asset loaded for this path, if any (P2-409, O3).
+                if let Some(asset) = self.assets.iter().find(|a| a.path == icon.value) {
+                    style.icon = Some(asset.clone());
+                }
+            }
+        }
+        style
+    }
+
+    /// `styles_for` in `mode`: the top-level blocks and those of `mode`'s
+    /// `light`/`dark` block; theme styles (in both modes) resolve as if
+    /// written before the file's first block, so for one tag the file's
+    /// block beats a theme's and a later theme beats an earlier one
+    /// (P2-13). Serves P2-21, P2-430, P2-13, DSL-15.
+    // TODO(srs): P2-430. Readings taken (B styles-themes 10a, 10b): for
+    // one tag and mode, a `light`/`dark` block beats a top-level block
+    // wherever each is written; theme styles apply in both modes.
+    pub fn styles_for_in(&self, element: ElementId, mode: Mode) -> Vec<usize> {
+        let blocks: Vec<StyleKey<'_>> = self
+            .element_styles
+            .iter()
+            .map(|s| StyleKey {
+                tag: &s.tag.value,
+                mode: s.mode,
+                theme: s.theme,
+            })
+            .collect();
+        apply_order(&self.element(element).tags, &blocks, mode)
+    }
+
+    /// `style_of` in `mode`: `styles_for_in` applied per property over
+    /// `ResolvedStyle::default_for(kind)`. Serves P2-10, P2-400..P2-410,
+    /// P2-430, DSL-15.
+    pub fn style_of_in(&self, element: ElementId, mode: Mode) -> ResolvedStyle {
+        self.resolve_element(element, &self.styles_for_in(element, mode))
+    }
+
+    /// `relationship_style_of_in(relationship, Mode::Light)`. Serves
+    /// P2-12.
+    pub fn relationship_style_of(&self, relationship: RelationshipId) -> ResolvedRelationshipStyle {
+        self.relationship_style_of_in(relationship, Mode::Light)
+    }
+
+    /// The indices into `relationship_styles` that apply to
+    /// `relationship` in `mode`, in apply order (as `styles_for_in`).
+    fn relationship_styles_for(&self, relationship: RelationshipId, mode: Mode) -> Vec<usize> {
+        let blocks: Vec<StyleKey<'_>> = self
+            .relationship_styles
+            .iter()
+            .map(|s| StyleKey {
+                tag: &s.tag.value,
+                mode: s.mode,
+                theme: s.theme,
+            })
+            .collect();
+        apply_order(&self.relationship(relationship).tags, &blocks, mode)
+    }
+
+    /// `blocks` applied per property, in order, over
+    /// `ResolvedRelationshipStyle::DEFAULT`.
+    fn resolve_relationship(&self, blocks: &[usize]) -> ResolvedRelationshipStyle {
+        let mut style = ResolvedRelationshipStyle::DEFAULT;
+        for &i in blocks {
+            let block = &self.relationship_styles[i];
+            if let Some(v) = block.thickness {
+                style.thickness = v.value;
+            }
+            if let Some(v) = block.color {
+                style.color = Some(v.value);
+            }
+            if let Some(v) = block.style {
+                style.style = v.value;
+            }
+            if let Some(v) = block.routing {
+                style.routing = Some(v.value);
+            }
+            if let Some(v) = block.jump {
+                style.jump = v.value;
+            }
+            if let Some(v) = block.font_size {
+                style.font_size = Some(v.value);
+            }
+            if let Some(v) = block.width {
+                style.width = Some(v.value);
+            }
+            if let Some(v) = block.position {
+                style.position = Some(v.value);
+            }
+            if let Some(v) = block.opacity {
+                style.opacity = v.value;
+            }
+        }
+        style
+    }
+
+    /// The style of `relationship` in `mode`: `relationship_styles` for
+    /// `Relationship` then its declared tags (DSL-15 order, same mode
+    /// and theme rules as `styles_for_in`), applied per property over
+    /// `ResolvedRelationshipStyle::DEFAULT`. Serves P2-12, P2-13, P2-430.
+    pub fn relationship_style_of_in(
+        &self,
+        relationship: RelationshipId,
+        mode: Mode,
+    ) -> ResolvedRelationshipStyle {
+        self.resolve_relationship(&self.relationship_styles_for(relationship, mode))
+    }
+
+    /// The look of a boundary carrying `tags` (`["Boundary",
+    /// "Boundary:SoftwareSystem"]`, `["Group", "Group:<name>"]`) in
+    /// `mode`: element styles for those tags, in that order, per
+    /// property. `shape`, `width`, `height` and `description` are
+    /// ignored; `Boundary:Enterprise` changes nothing (P2-440). Serves
+    /// P2-411, P2-412, P2-440.
+    pub fn boundary_style_in(&self, tags: &[&str], mode: Mode) -> ResolvedBoundaryStyle {
+        let tags: Vec<String> = tags
+            .iter()
+            .filter(|t| **t != ENTERPRISE_BOUNDARY_TAG)
+            .map(|t| (*t).to_owned())
+            .collect();
+        let blocks: Vec<StyleKey<'_>> = self
+            .element_styles
+            .iter()
+            .map(|s| StyleKey {
+                tag: &s.tag.value,
+                mode: s.mode,
+                theme: s.theme,
+            })
+            .collect();
+        let mut style = ResolvedBoundaryStyle::DEFAULT;
+        for i in apply_order(&tags, &blocks, mode) {
+            let block = &self.element_styles[i];
+            if let Some(v) = block.background {
+                style.background = Some(v.value);
+            }
+            if let Some(v) = block.stroke {
+                style.stroke = Some(v.value);
+            }
+            if let Some(v) = block.stroke_width {
+                style.stroke_width = Some(v.value);
+            }
+            if let Some(v) = block.color {
+                style.color = Some(v.value);
+            }
+            if let Some(v) = block.font_size {
+                style.font_size = Some(v.value);
+            }
+            if let Some(v) = block.border {
+                style.border = Some(v.value);
+            }
+            if let Some(v) = block.opacity {
+                style.opacity = v.value;
+            }
+            if let Some(v) = block.metadata {
+                style.metadata = v.value;
             }
         }
         style
@@ -1323,10 +1898,9 @@ impl Model {
             ViewKind::Component => self.element(scope).parent,
             _ => None,
         };
-        // P2-7: under `!impliedRelationships false` only a relationship of
-        // a selected element itself, to the element shown, counts
-        // (Structurizr for Java, checked).
-        let direct_only = self.implied_relationships == ImpliedRelationships::False;
+        // P2-7: for a relationship declared under `!impliedRelationships
+        // false`, only one of a selected element itself, to the element
+        // shown, counts (Structurizr for Java, checked).
         let member = |e: ElementId| {
             if context {
                 e == scope
@@ -1344,6 +1918,7 @@ impl Model {
                     Some(sys) if self.is_inside(far, sys) => self.ancestor_under(far, Some(sys)),
                     _ => self.ancestor_under(far, None),
                 };
+                let direct_only = r.implied_relationships == ImpliedRelationships::False;
                 if direct_only && (shown != far || !member(near)) {
                     continue;
                 }
@@ -2195,6 +2770,9 @@ impl<'t> Builder<'t> {
                 configuration_properties: Vec::new(),
                 configuration_scope: None,
                 docs: Vec::new(),
+                relationship_styles: Vec::new(),
+                themes: Vec::new(),
+                assets: Vec::new(),
             },
             keys: BTreeMap::new(),
             relationship_keys: BTreeMap::new(),
@@ -3774,6 +4352,7 @@ impl<'t> Builder<'t> {
             url: a.url,
             properties: a.properties,
             perspectives: a.perspectives,
+            implied_relationships: self.model.implied_relationships.clone(),
         });
         if let Some(block) = &statement.block {
             for inner in &block.statements {
@@ -3918,14 +4497,7 @@ impl Builder<'_> {
             } else if head.is_keyword(0, "terminology") {
                 this.terminology(inner, &head)?;
             } else if head.is_keyword(0, "theme") || head.is_keyword(0, "themes") {
-                // P2-178: kept byte for byte, no effect until styles-themes.
-                if head.len() < 2 {
-                    return Err(this.missing(&head, "theme"));
-                }
-                if head.is_keyword(0, "theme") && head.len() > 2 {
-                    return Err(this.invalid(&head, "theme", 2));
-                }
-                this.no_block(inner, &head)?;
+                this.theme_line(inner, &head)?;
             } else {
                 return Err(this.reject(&head, 0));
             }
@@ -3984,6 +4556,34 @@ impl Builder<'_> {
                 "infrastructureNode" => t.infrastructure_node = value,
                 _ => t.relationship = value,
             }
+        }
+        Ok(())
+    }
+
+    /// `theme <source>` or `themes <source> [...]` (P2-13): appended to
+    /// `Model::themes`; read once the file is built (`theme::apply`).
+    // DECISION: any number of `theme`/`themes` lines, in file order, as
+    // the language page sets no limit.
+    fn theme_line(&mut self, statement: &Statement, head: &Head<'_>) -> Result<(), ModelError> {
+        self.no_block(statement, head)?;
+        if head.len() < 2 {
+            return Err(self.missing(head, "theme"));
+        }
+        let single = head.is_keyword(0, "theme");
+        if single && head.len() > 2 {
+            return Err(self.invalid(head, "theme", 2));
+        }
+        let span = head.span_of(0, head.len() - 1);
+        for i in 1..head.len() {
+            if !matches!(head.kind(i), Some(TokenKind::Word | TokenKind::String)) {
+                return Err(self.invalid(head, head.text(0), i));
+            }
+            let source = head.literal(i);
+            self.model.themes.push(Theme {
+                kind: theme::classify(&source.value),
+                source,
+                span,
+            });
         }
         Ok(())
     }
@@ -4681,32 +5281,125 @@ impl Builder<'_> {
             if this.common(inner, &head)? {
                 return Ok(());
             }
-            if head.is_keyword(0, "element") {
-                this.element_style(inner, &head)?;
-            } else if head.is_keyword(0, "light") || head.is_keyword(0, "dark") {
-                // P2-178: kept byte for byte, no effect until styles-themes.
-                this.no_arguments(&head)?;
-                this.block(inner, &head)?;
-            } else if head.is_keyword(0, "relationship") {
-                // Keyword table: accepted and kept in the tree, no effect
-                // until P2-12; its body is not read.
-                this.one_string(&head)?;
-                this.block(inner, &head)?;
+            let mode = if head.is_keyword(0, "light") {
+                Some(Mode::Light)
+            } else if head.is_keyword(0, "dark") {
+                Some(Mode::Dark)
             } else {
-                return Err(this.reject(&head, 0));
+                None
+            };
+            if let Some(mode) = mode {
+                // DECISION: any number of `light`/`dark` blocks, each
+                // read in file order (the language page sets no limit).
+                this.no_arguments(&head)?;
+                this.each(this.block(inner, &head)?, &mut |this, style| {
+                    let style_head = this.head(style)?;
+                    if this.common(style, &style_head)? {
+                        return Ok(());
+                    }
+                    this.style_statement(style, &style_head, Some(mode))
+                })?;
+            } else {
+                this.style_statement(inner, &head, None)?;
             }
             Ok(())
         })?;
         Ok(())
     }
 
-    fn element_style(&mut self, statement: &Statement, head: &Head<'_>) -> Result<(), ModelError> {
+    /// An `element` or `relationship` style block, top-level (`mode`
+    /// `None`) or in `light`/`dark` (P2-21); anything else is DSL-4.
+    fn style_statement(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        mode: Option<Mode>,
+    ) -> Result<(), ModelError> {
+        if head.is_keyword(0, "element") {
+            self.element_style(statement, head, mode)
+        } else if head.is_keyword(0, "relationship") {
+            self.relationship_style(statement, head, mode)
+        } else {
+            Err(self.reject(head, 0))
+        }
+    }
+
+    fn element_style(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        mode: Option<Mode>,
+    ) -> Result<(), ModelError> {
         let tag = self.one_string(head)?;
         let mut style = ElementStyle {
             tag,
             background: None,
             color: None,
             shape: None,
+            span: statement.span,
+            stroke: None,
+            stroke_width: None,
+            width: None,
+            height: None,
+            font_size: None,
+            border: None,
+            opacity: None,
+            metadata: None,
+            description: None,
+            icon: None,
+            properties: Vec::new(),
+            mode,
+            theme: None,
+        };
+        for inner in self.block(statement, head)? {
+            let head = self.head(inner)?;
+            if self.common(inner, &head)? {
+                continue;
+            }
+            if head.is_keyword(0, "properties") {
+                let properties = self.style_properties(inner, &head, !style.properties.is_empty())?;
+                style.properties = properties;
+                continue;
+            }
+            self.element_style_line(inner, &head, &mut style)?;
+        }
+        // P2-440: the deprecated enterprise boundary is accepted, kept and
+        // drawn nowhere, with a P2-3 notice naming it.
+        if style.tag.value == ENTERPRISE_BOUNDARY_TAG {
+            self.model.notices.push(Notice {
+                kind: NoticeKind::NoEffect,
+                subject: format!("element \"{ENTERPRISE_BOUNDARY_TAG}\""),
+                view: None,
+                span: Some(statement.span),
+                position: Some(text::position(self.tree.source(), statement.span.start)),
+            });
+        }
+        self.model.element_styles.push(style);
+        Ok(())
+    }
+
+    /// One `relationship "<tag>" { ... }` style block (P2-12).
+    fn relationship_style(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        mode: Option<Mode>,
+    ) -> Result<(), ModelError> {
+        let tag = self.one_string(head)?;
+        let mut style = RelationshipStyle {
+            tag,
+            thickness: None,
+            color: None,
+            style: None,
+            routing: None,
+            jump: None,
+            font_size: None,
+            width: None,
+            position: None,
+            opacity: None,
+            properties: Vec::new(),
+            mode,
+            theme: None,
             span: statement.span,
         };
         for inner in self.block(statement, head)? {
@@ -4715,40 +5408,288 @@ impl Builder<'_> {
                 continue;
             }
             if head.is_keyword(0, "properties") {
-                self.properties(inner, &head)?;
+                let properties = self.style_properties(inner, &head, !style.properties.is_empty())?;
+                style.properties = properties;
                 continue;
             }
-            let known = ["background", "color", "shape"]
-                .iter()
-                .any(|k| head.is_keyword(0, k));
-            if !known {
-                // P2-178: every other Structurizr element style property is
-                // accepted, kept byte for byte, with no effect until
-                // styles-themes.
-                if NO_EFFECT_STYLE.iter().any(|k| head.is_keyword(0, k)) {
-                    self.no_block(inner, &head)?;
-                    if head.len() < 2 {
-                        return Err(self.missing(&head, "value"));
-                    }
-                    continue;
-                }
-                return Err(self.reject(&head, 0));
+            self.relationship_style_line(inner, &head, &mut style)?;
+        }
+        self.model.relationship_styles.push(style);
+        Ok(())
+    }
+
+    /// One property line of a `relationship` style block (P2-12).
+    fn relationship_style_line(
+        &self,
+        statement: &Statement,
+        head: &Head<'_>,
+        style: &mut RelationshipStyle,
+    ) -> Result<(), ModelError> {
+        const KNOWN: &[&str] = &[
+            "thickness",
+            "color",
+            "colour",
+            "style",
+            "dashed",
+            "routing",
+            "jump",
+            "fontsize",
+            "width",
+            "position",
+            "opacity",
+        ];
+        let word = head.text(0).to_ascii_lowercase();
+        if head.kind(0) != Some(TokenKind::Word) || !KNOWN.contains(&word.as_str()) {
+            return Err(self.reject(head, 0));
+        }
+        self.no_block(statement, head)?;
+        let unsigned = |v: Spanned<i32>| Spanned {
+            value: v.value.unsigned_abs(),
+            span: v.span,
+        };
+        match word.as_str() {
+            "thickness" => {
+                let v = self.positive(head, style.thickness.is_some(), "thickness")?;
+                style.thickness = Some(unsigned(v));
             }
-            self.no_block(inner, &head)?;
-            if head.is_keyword(0, "background") {
-                let value = self.colour(&head, style.background.is_some(), "background")?;
-                style.background = Some(value);
-            } else if head.is_keyword(0, "color") {
-                let value = self.colour(&head, style.color.is_some(), "color")?;
-                style.color = Some(value);
-            } else if head.is_keyword(0, "shape") {
-                style.shape = self.shape(&head, style.shape.is_some())?;
-            } else {
-                return Err(self.reject(&head, 0));
+            "color" | "colour" => {
+                let construct = if word == "color" { "color" } else { "colour" };
+                style.color = Some(self.colour(head, style.color.is_some(), construct)?);
+            }
+            "style" => style.style = Some(self.border(head, style.style.is_some(), "style")?),
+            "dashed" => {
+                // DECISION: `dashed` (cookbook form) and `style` are one
+                // property, like `color`/`colour`: setting both is the
+                // duplicate-line error (P2-420).
+                let v = self.boolean(head, style.style.is_some(), "dashed")?;
+                style.style = Some(Spanned {
+                    value: if v.value { Border::Dashed } else { Border::Solid },
+                    span: v.span,
+                });
+            }
+            "routing" => {
+                let value = self.style_value(head, style.routing.is_some(), "routing")?;
+                let Some(routing) = parse_routing(&value) else {
+                    return Err(self.invalid(head, "routing", 1));
+                };
+                style.routing = Some(Spanned {
+                    value: routing,
+                    span: head.span(1),
+                });
+            }
+            "jump" => style.jump = Some(self.boolean(head, style.jump.is_some(), "jump")?),
+            "fontsize" => {
+                let v = self.positive(head, style.font_size.is_some(), "fontSize")?;
+                style.font_size = Some(unsigned(v));
+            }
+            "width" => {
+                let v = self.positive(head, style.width.is_some(), "width")?;
+                style.width = Some(unsigned(v));
+            }
+            "position" => {
+                let v = self.clamped(head, style.position.is_some(), "position", 0..=100)?;
+                style.position = Some(v);
+            }
+            _ => {
+                let v = self.clamped(head, style.opacity.is_some(), "opacity", 0..=100)?;
+                style.opacity = Some(v);
             }
         }
-        self.model.element_styles.push(style);
         Ok(())
+    }
+
+    /// One property line of an `element` style block (P2-10).
+    fn element_style_line(
+        &self,
+        statement: &Statement,
+        head: &Head<'_>,
+        style: &mut ElementStyle,
+    ) -> Result<(), ModelError> {
+        const KNOWN: &[&str] = &[
+            "background",
+            "color",
+            "colour",
+            "stroke",
+            "shape",
+            "icon",
+            "width",
+            "height",
+            "strokewidth",
+            "fontsize",
+            "border",
+            "opacity",
+            "metadata",
+            "description",
+        ];
+        let word = head.text(0).to_ascii_lowercase();
+        if head.kind(0) != Some(TokenKind::Word) || !KNOWN.contains(&word.as_str()) {
+            return Err(self.reject(head, 0));
+        }
+        self.no_block(statement, head)?;
+        match word.as_str() {
+            "background" => {
+                style.background = Some(self.colour(head, style.background.is_some(), "background")?);
+            }
+            "color" | "colour" => {
+                // P2-400: one property under two names.
+                let construct = if word == "color" { "color" } else { "colour" };
+                style.color = Some(self.colour(head, style.color.is_some(), construct)?);
+            }
+            "stroke" => style.stroke = Some(self.colour(head, style.stroke.is_some(), "stroke")?),
+            "shape" => style.shape = Some(self.shape(head, style.shape.is_some())?),
+            "icon" => {
+                let value = self.style_value(head, style.icon.is_some(), "icon")?;
+                style.icon = Some(Spanned {
+                    value,
+                    span: head.span(1),
+                });
+            }
+            "width" => {
+                let v = self.positive(head, style.width.is_some(), "width")?;
+                style.width = Some(v);
+            }
+            "height" => {
+                let v = self.positive(head, style.height.is_some(), "height")?;
+                style.height = Some(v);
+            }
+            "fontsize" => {
+                let v = self.positive(head, style.font_size.is_some(), "fontSize")?;
+                style.font_size = Some(Spanned {
+                    value: v.value.unsigned_abs(),
+                    span: v.span,
+                });
+            }
+            "strokewidth" => {
+                let v = self.clamped(head, style.stroke_width.is_some(), "strokeWidth", 1..=10)?;
+                style.stroke_width = Some(v);
+            }
+            "opacity" => {
+                let v = self.clamped(head, style.opacity.is_some(), "opacity", 0..=100)?;
+                style.opacity = Some(v);
+            }
+            "border" => style.border = Some(self.border(head, style.border.is_some(), "border")?),
+            "metadata" => {
+                style.metadata = Some(self.boolean(head, style.metadata.is_some(), "metadata")?);
+            }
+            _ => {
+                let v = self.boolean(head, style.description.is_some(), "description")?;
+                style.description = Some(v);
+            }
+        }
+        Ok(())
+    }
+
+    /// `properties { name value ... }` in a style block, kept with spans
+    /// and no effect (P2-410).
+    // DECISION: a private reader for style blocks only; dsl-breadth's
+    // P2-172 reader for every other owner may replace it at merge.
+    fn style_properties(
+        &self,
+        statement: &Statement,
+        head: &Head<'_>,
+        seen: bool,
+    ) -> Result<Vec<Property>, ModelError> {
+        if seen {
+            return Err(self.duplicate_line("properties", head));
+        }
+        self.no_arguments(head)?;
+        let mut out = Vec::new();
+        for inner in self.block(statement, head)? {
+            let line = self.head(inner)?;
+            self.no_block(inner, &line)?;
+            if line.len() < 2 {
+                return Err(self.missing(&line, "value"));
+            }
+            if line.len() > 2 {
+                return Err(self.invalid(&line, "properties", 2));
+            }
+            for i in 0..2 {
+                if !matches!(line.kind(i), Some(TokenKind::Word | TokenKind::String)) {
+                    return Err(self.invalid(&line, "properties", i));
+                }
+            }
+            out.push(Property {
+                name: line.literal(0),
+                value: line.literal(1),
+                span: line.span_of(0, 1),
+            });
+        }
+        Ok(out)
+    }
+
+    /// A whole number above 0 (`width`, `height`, `fontSize`).
+    fn positive(
+        &self,
+        head: &Head<'_>,
+        seen: bool,
+        construct: &'static str,
+    ) -> Result<Spanned<i32>, ModelError> {
+        let value = self.style_value(head, seen, construct)?;
+        match value.parse::<i32>() {
+            Ok(v) if v > 0 => Ok(Spanned {
+                value: v,
+                span: head.span(1),
+            }),
+            _ => Err(self.invalid(head, construct, 1)),
+        }
+    }
+
+    /// A whole number clamped to `min..=max` (`strokeWidth`, `opacity`,
+    /// `position`).
+    // DECISION: an out-of-range number is clamped with no error (B
+    // styles-themes 13 [I], Structurizr for Java's setters); a word that
+    // is no number at all is still an invalid value.
+    fn clamped(
+        &self,
+        head: &Head<'_>,
+        seen: bool,
+        construct: &'static str,
+        range: std::ops::RangeInclusive<u8>,
+    ) -> Result<Spanned<u8>, ModelError> {
+        let (min, max) = (*range.start(), *range.end());
+        let value = self.style_value(head, seen, construct)?;
+        let Ok(v) = value.parse::<i64>() else {
+            return Err(self.invalid(head, construct, 1));
+        };
+        let v = u8::try_from(v.clamp(i64::from(min), i64::from(max))).unwrap_or(max);
+        Ok(Spanned {
+            value: v,
+            span: head.span(1),
+        })
+    }
+
+    /// `solid|dashed|dotted`, any case (P2-405, P2-420).
+    fn border(
+        &self,
+        head: &Head<'_>,
+        seen: bool,
+        construct: &'static str,
+    ) -> Result<Spanned<Border>, ModelError> {
+        let value = self.style_value(head, seen, construct)?;
+        let Some(border) = parse_border(&value) else {
+            return Err(self.invalid(head, construct, 1));
+        };
+        Ok(Spanned {
+            value: border,
+            span: head.span(1),
+        })
+    }
+
+    /// `true|false`, any case.
+    fn boolean(
+        &self,
+        head: &Head<'_>,
+        seen: bool,
+        construct: &'static str,
+    ) -> Result<Spanned<bool>, ModelError> {
+        let value = self.style_value(head, seen, construct)?;
+        let Some(b) = parse_bool(&value) else {
+            return Err(self.invalid(head, construct, 1));
+        };
+        Ok(Spanned {
+            value: b,
+            span: head.span(1),
+        })
     }
 
     /// The single value of a style property line, as text and token index.
@@ -4793,24 +5734,18 @@ impl Builder<'_> {
         })
     }
 
-    fn shape(&self, head: &Head<'_>, seen: bool) -> Result<Option<Spanned<Shape>>, ModelError> {
+    fn shape(&self, head: &Head<'_>, seen: bool) -> Result<Spanned<Shape>, ModelError> {
         let value = self.style_value(head, seen, "shape")?;
-        let lower = value.to_ascii_lowercase();
-        let shape = match lower.as_str() {
-            "box" => Shape::Box,
-            "person" => Shape::Person,
-            "cylinder" => Shape::Cylinder,
-            _ if LATER_SHAPES.contains(&lower.as_str()) => {
-                // P2-178: accepted with no effect until styles-themes
-                // (P2-11); the kind's default shape stays.
-                return Ok(None);
-            }
-            _ => return Err(self.invalid(head, "shape", 1)),
+        let Some(shape) = Shape::ALL
+            .into_iter()
+            .find(|s| s.keyword().eq_ignore_ascii_case(&value))
+        else {
+            return Err(self.invalid(head, "shape", 1));
         };
-        Ok(Some(Spanned {
+        Ok(Spanned {
             value: shape,
             span: head.span(1),
-        }))
+        })
     }
 }
 
@@ -4821,42 +5756,6 @@ type BoxLine = (Spanned<ElementId>, Spanned<i32>, Spanned<i32>);
 fn once(seen: bool, error: impl FnOnce() -> ModelError) -> Result<(), ModelError> {
     if seen { Err(error()) } else { Ok(()) }
 }
-
-/// Element style properties accepted with no effect until styles-themes
-/// (P2-178), lowercase-insensitive.
-const NO_EFFECT_STYLE: &[&str] = &[
-    "icon",
-    "width",
-    "height",
-    "stroke",
-    "strokeWidth",
-    "fontSize",
-    "border",
-    "opacity",
-    "metadata",
-    "description",
-    "colour",
-];
-
-/// Structurizr shapes planned for phase 2 (P2-11), lowercase.
-const LATER_SHAPES: &[&str] = &[
-    "roundedbox",
-    "circle",
-    "ellipse",
-    "hexagon",
-    "diamond",
-    "bucket",
-    "pipe",
-    "robot",
-    "folder",
-    "webbrowser",
-    "window",
-    "terminal",
-    "shell",
-    "mobiledeviceportrait",
-    "mobiledevicelandscape",
-    "component",
-];
 
 /// The view lines a dynamic view takes besides its steps.
 const DYNAMIC_LINES: &[&str] = &[
@@ -4931,9 +5830,16 @@ fn declared_at(head: &Head<'_>) -> (Option<usize>, usize) {
     }
 }
 
-/// `#rrggbb`, hex digits of either case.
+/// `#rrggbb`, hex digits of either case, or a CSS colour name in any
+/// letter case (P2-401).
 fn parse_colour(text: &str) -> Option<Colour> {
-    let hex = text.strip_prefix('#')?;
+    let Some(hex) = text.strip_prefix('#') else {
+        let lower = text.to_ascii_lowercase();
+        return CSS_COLOURS
+            .binary_search_by(|(name, _)| (*name).cmp(lower.as_str()))
+            .ok()
+            .map(|i| CSS_COLOURS[i].1);
+    };
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
@@ -4944,6 +5850,236 @@ fn parse_colour(text: &str) -> Option<Colour> {
         b: channel(4)?,
     })
 }
+
+/// The deprecated enterprise boundary's tag: accepted, no effect, a
+/// P2-3 notice (P2-440).
+const ENTERPRISE_BOUNDARY_TAG: &str = "Boundary:Enterprise";
+
+/// What `apply_order` needs of one element or relationship style block.
+struct StyleKey<'m> {
+    tag: &'m str,
+    mode: Option<Mode>,
+    theme: Option<usize>,
+}
+
+/// The indices of `blocks` that apply in `mode` to something carrying
+/// `tags`, in apply order: by tag order (DSL-15); within one tag, theme
+/// blocks first by theme then list order, then the file's top-level
+/// blocks, then its `mode` blocks, each in list order (P2-13, P2-430).
+// DECISION: B styles-themes 10a/10b: for one tag a `light`/`dark` block
+// beats a top-level one wherever each is written; theme styles carry no
+// mode and apply in both.
+fn apply_order(tags: &[String], blocks: &[StyleKey<'_>], mode: Mode) -> Vec<usize> {
+    let mut out = Vec::new();
+    for tag in tags {
+        let mut matching: Vec<(u8, usize, usize)> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.tag == tag && b.mode.is_none_or(|m| m == mode))
+            .map(|(i, b)| match (b.theme, b.mode) {
+                (Some(t), _) => (0, t, i),
+                (None, None) => (1, 0, i),
+                (None, Some(_)) => (2, 0, i),
+            })
+            .collect();
+        matching.sort_unstable();
+        out.extend(matching.into_iter().map(|(_, _, i)| i));
+    }
+    out
+}
+
+/// `value` rounded up to the next multiple of 20, the box size step
+/// (DSL-7), so the resolved size is the drawn size (P2-402).
+// P2-402 (approver ruling 2026-11-17, replacing B styles-themes 4's
+// 10px): literal px, rounded up to the next multiple of 20; the written
+// value stays in the style.
+fn round_up_to_grid(value: i32) -> i32 {
+    value.saturating_add(19).div_euclid(20) * 20
+}
+
+/// `solid|dashed|dotted`, any case.
+fn parse_border(text: &str) -> Option<Border> {
+    match text.to_ascii_lowercase().as_str() {
+        "solid" => Some(Border::Solid),
+        "dashed" => Some(Border::Dashed),
+        "dotted" => Some(Border::Dotted),
+        _ => None,
+    }
+}
+
+/// `direct|orthogonal|curved`, any case (P2-421).
+fn parse_routing(text: &str) -> Option<Routing> {
+    match text.to_ascii_lowercase().as_str() {
+        "direct" => Some(Routing::Direct),
+        "orthogonal" => Some(Routing::Orthogonal),
+        "curved" => Some(Routing::Curved),
+        _ => None,
+    }
+}
+
+/// `true|false`, any case.
+fn parse_bool(text: &str) -> Option<bool> {
+    if text.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if text.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The 148 CSS Color Module Level 4 named colours, sorted by name for
+/// binary search (P2-401; determinism, CORE-25).
+const CSS_COLOURS: &[(&str, Colour)] = &[
+    ("aliceblue", Colour { r: 0xf0, g: 0xf8, b: 0xff }),
+    ("antiquewhite", Colour { r: 0xfa, g: 0xeb, b: 0xd7 }),
+    ("aqua", Colour { r: 0x00, g: 0xff, b: 0xff }),
+    ("aquamarine", Colour { r: 0x7f, g: 0xff, b: 0xd4 }),
+    ("azure", Colour { r: 0xf0, g: 0xff, b: 0xff }),
+    ("beige", Colour { r: 0xf5, g: 0xf5, b: 0xdc }),
+    ("bisque", Colour { r: 0xff, g: 0xe4, b: 0xc4 }),
+    ("black", Colour { r: 0x00, g: 0x00, b: 0x00 }),
+    ("blanchedalmond", Colour { r: 0xff, g: 0xeb, b: 0xcd }),
+    ("blue", Colour { r: 0x00, g: 0x00, b: 0xff }),
+    ("blueviolet", Colour { r: 0x8a, g: 0x2b, b: 0xe2 }),
+    ("brown", Colour { r: 0xa5, g: 0x2a, b: 0x2a }),
+    ("burlywood", Colour { r: 0xde, g: 0xb8, b: 0x87 }),
+    ("cadetblue", Colour { r: 0x5f, g: 0x9e, b: 0xa0 }),
+    ("chartreuse", Colour { r: 0x7f, g: 0xff, b: 0x00 }),
+    ("chocolate", Colour { r: 0xd2, g: 0x69, b: 0x1e }),
+    ("coral", Colour { r: 0xff, g: 0x7f, b: 0x50 }),
+    ("cornflowerblue", Colour { r: 0x64, g: 0x95, b: 0xed }),
+    ("cornsilk", Colour { r: 0xff, g: 0xf8, b: 0xdc }),
+    ("crimson", Colour { r: 0xdc, g: 0x14, b: 0x3c }),
+    ("cyan", Colour { r: 0x00, g: 0xff, b: 0xff }),
+    ("darkblue", Colour { r: 0x00, g: 0x00, b: 0x8b }),
+    ("darkcyan", Colour { r: 0x00, g: 0x8b, b: 0x8b }),
+    ("darkgoldenrod", Colour { r: 0xb8, g: 0x86, b: 0x0b }),
+    ("darkgray", Colour { r: 0xa9, g: 0xa9, b: 0xa9 }),
+    ("darkgreen", Colour { r: 0x00, g: 0x64, b: 0x00 }),
+    ("darkgrey", Colour { r: 0xa9, g: 0xa9, b: 0xa9 }),
+    ("darkkhaki", Colour { r: 0xbd, g: 0xb7, b: 0x6b }),
+    ("darkmagenta", Colour { r: 0x8b, g: 0x00, b: 0x8b }),
+    ("darkolivegreen", Colour { r: 0x55, g: 0x6b, b: 0x2f }),
+    ("darkorange", Colour { r: 0xff, g: 0x8c, b: 0x00 }),
+    ("darkorchid", Colour { r: 0x99, g: 0x32, b: 0xcc }),
+    ("darkred", Colour { r: 0x8b, g: 0x00, b: 0x00 }),
+    ("darksalmon", Colour { r: 0xe9, g: 0x96, b: 0x7a }),
+    ("darkseagreen", Colour { r: 0x8f, g: 0xbc, b: 0x8f }),
+    ("darkslateblue", Colour { r: 0x48, g: 0x3d, b: 0x8b }),
+    ("darkslategray", Colour { r: 0x2f, g: 0x4f, b: 0x4f }),
+    ("darkslategrey", Colour { r: 0x2f, g: 0x4f, b: 0x4f }),
+    ("darkturquoise", Colour { r: 0x00, g: 0xce, b: 0xd1 }),
+    ("darkviolet", Colour { r: 0x94, g: 0x00, b: 0xd3 }),
+    ("deeppink", Colour { r: 0xff, g: 0x14, b: 0x93 }),
+    ("deepskyblue", Colour { r: 0x00, g: 0xbf, b: 0xff }),
+    ("dimgray", Colour { r: 0x69, g: 0x69, b: 0x69 }),
+    ("dimgrey", Colour { r: 0x69, g: 0x69, b: 0x69 }),
+    ("dodgerblue", Colour { r: 0x1e, g: 0x90, b: 0xff }),
+    ("firebrick", Colour { r: 0xb2, g: 0x22, b: 0x22 }),
+    ("floralwhite", Colour { r: 0xff, g: 0xfa, b: 0xf0 }),
+    ("forestgreen", Colour { r: 0x22, g: 0x8b, b: 0x22 }),
+    ("fuchsia", Colour { r: 0xff, g: 0x00, b: 0xff }),
+    ("gainsboro", Colour { r: 0xdc, g: 0xdc, b: 0xdc }),
+    ("ghostwhite", Colour { r: 0xf8, g: 0xf8, b: 0xff }),
+    ("gold", Colour { r: 0xff, g: 0xd7, b: 0x00 }),
+    ("goldenrod", Colour { r: 0xda, g: 0xa5, b: 0x20 }),
+    ("gray", Colour { r: 0x80, g: 0x80, b: 0x80 }),
+    ("green", Colour { r: 0x00, g: 0x80, b: 0x00 }),
+    ("greenyellow", Colour { r: 0xad, g: 0xff, b: 0x2f }),
+    ("grey", Colour { r: 0x80, g: 0x80, b: 0x80 }),
+    ("honeydew", Colour { r: 0xf0, g: 0xff, b: 0xf0 }),
+    ("hotpink", Colour { r: 0xff, g: 0x69, b: 0xb4 }),
+    ("indianred", Colour { r: 0xcd, g: 0x5c, b: 0x5c }),
+    ("indigo", Colour { r: 0x4b, g: 0x00, b: 0x82 }),
+    ("ivory", Colour { r: 0xff, g: 0xff, b: 0xf0 }),
+    ("khaki", Colour { r: 0xf0, g: 0xe6, b: 0x8c }),
+    ("lavender", Colour { r: 0xe6, g: 0xe6, b: 0xfa }),
+    ("lavenderblush", Colour { r: 0xff, g: 0xf0, b: 0xf5 }),
+    ("lawngreen", Colour { r: 0x7c, g: 0xfc, b: 0x00 }),
+    ("lemonchiffon", Colour { r: 0xff, g: 0xfa, b: 0xcd }),
+    ("lightblue", Colour { r: 0xad, g: 0xd8, b: 0xe6 }),
+    ("lightcoral", Colour { r: 0xf0, g: 0x80, b: 0x80 }),
+    ("lightcyan", Colour { r: 0xe0, g: 0xff, b: 0xff }),
+    ("lightgoldenrodyellow", Colour { r: 0xfa, g: 0xfa, b: 0xd2 }),
+    ("lightgray", Colour { r: 0xd3, g: 0xd3, b: 0xd3 }),
+    ("lightgreen", Colour { r: 0x90, g: 0xee, b: 0x90 }),
+    ("lightgrey", Colour { r: 0xd3, g: 0xd3, b: 0xd3 }),
+    ("lightpink", Colour { r: 0xff, g: 0xb6, b: 0xc1 }),
+    ("lightsalmon", Colour { r: 0xff, g: 0xa0, b: 0x7a }),
+    ("lightseagreen", Colour { r: 0x20, g: 0xb2, b: 0xaa }),
+    ("lightskyblue", Colour { r: 0x87, g: 0xce, b: 0xfa }),
+    ("lightslategray", Colour { r: 0x77, g: 0x88, b: 0x99 }),
+    ("lightslategrey", Colour { r: 0x77, g: 0x88, b: 0x99 }),
+    ("lightsteelblue", Colour { r: 0xb0, g: 0xc4, b: 0xde }),
+    ("lightyellow", Colour { r: 0xff, g: 0xff, b: 0xe0 }),
+    ("lime", Colour { r: 0x00, g: 0xff, b: 0x00 }),
+    ("limegreen", Colour { r: 0x32, g: 0xcd, b: 0x32 }),
+    ("linen", Colour { r: 0xfa, g: 0xf0, b: 0xe6 }),
+    ("magenta", Colour { r: 0xff, g: 0x00, b: 0xff }),
+    ("maroon", Colour { r: 0x80, g: 0x00, b: 0x00 }),
+    ("mediumaquamarine", Colour { r: 0x66, g: 0xcd, b: 0xaa }),
+    ("mediumblue", Colour { r: 0x00, g: 0x00, b: 0xcd }),
+    ("mediumorchid", Colour { r: 0xba, g: 0x55, b: 0xd3 }),
+    ("mediumpurple", Colour { r: 0x93, g: 0x70, b: 0xdb }),
+    ("mediumseagreen", Colour { r: 0x3c, g: 0xb3, b: 0x71 }),
+    ("mediumslateblue", Colour { r: 0x7b, g: 0x68, b: 0xee }),
+    ("mediumspringgreen", Colour { r: 0x00, g: 0xfa, b: 0x9a }),
+    ("mediumturquoise", Colour { r: 0x48, g: 0xd1, b: 0xcc }),
+    ("mediumvioletred", Colour { r: 0xc7, g: 0x15, b: 0x85 }),
+    ("midnightblue", Colour { r: 0x19, g: 0x19, b: 0x70 }),
+    ("mintcream", Colour { r: 0xf5, g: 0xff, b: 0xfa }),
+    ("mistyrose", Colour { r: 0xff, g: 0xe4, b: 0xe1 }),
+    ("moccasin", Colour { r: 0xff, g: 0xe4, b: 0xb5 }),
+    ("navajowhite", Colour { r: 0xff, g: 0xde, b: 0xad }),
+    ("navy", Colour { r: 0x00, g: 0x00, b: 0x80 }),
+    ("oldlace", Colour { r: 0xfd, g: 0xf5, b: 0xe6 }),
+    ("olive", Colour { r: 0x80, g: 0x80, b: 0x00 }),
+    ("olivedrab", Colour { r: 0x6b, g: 0x8e, b: 0x23 }),
+    ("orange", Colour { r: 0xff, g: 0xa5, b: 0x00 }),
+    ("orangered", Colour { r: 0xff, g: 0x45, b: 0x00 }),
+    ("orchid", Colour { r: 0xda, g: 0x70, b: 0xd6 }),
+    ("palegoldenrod", Colour { r: 0xee, g: 0xe8, b: 0xaa }),
+    ("palegreen", Colour { r: 0x98, g: 0xfb, b: 0x98 }),
+    ("paleturquoise", Colour { r: 0xaf, g: 0xee, b: 0xee }),
+    ("palevioletred", Colour { r: 0xdb, g: 0x70, b: 0x93 }),
+    ("papayawhip", Colour { r: 0xff, g: 0xef, b: 0xd5 }),
+    ("peachpuff", Colour { r: 0xff, g: 0xda, b: 0xb9 }),
+    ("peru", Colour { r: 0xcd, g: 0x85, b: 0x3f }),
+    ("pink", Colour { r: 0xff, g: 0xc0, b: 0xcb }),
+    ("plum", Colour { r: 0xdd, g: 0xa0, b: 0xdd }),
+    ("powderblue", Colour { r: 0xb0, g: 0xe0, b: 0xe6 }),
+    ("purple", Colour { r: 0x80, g: 0x00, b: 0x80 }),
+    ("rebeccapurple", Colour { r: 0x66, g: 0x33, b: 0x99 }),
+    ("red", Colour { r: 0xff, g: 0x00, b: 0x00 }),
+    ("rosybrown", Colour { r: 0xbc, g: 0x8f, b: 0x8f }),
+    ("royalblue", Colour { r: 0x41, g: 0x69, b: 0xe1 }),
+    ("saddlebrown", Colour { r: 0x8b, g: 0x45, b: 0x13 }),
+    ("salmon", Colour { r: 0xfa, g: 0x80, b: 0x72 }),
+    ("sandybrown", Colour { r: 0xf4, g: 0xa4, b: 0x60 }),
+    ("seagreen", Colour { r: 0x2e, g: 0x8b, b: 0x57 }),
+    ("seashell", Colour { r: 0xff, g: 0xf5, b: 0xee }),
+    ("sienna", Colour { r: 0xa0, g: 0x52, b: 0x2d }),
+    ("silver", Colour { r: 0xc0, g: 0xc0, b: 0xc0 }),
+    ("skyblue", Colour { r: 0x87, g: 0xce, b: 0xeb }),
+    ("slateblue", Colour { r: 0x6a, g: 0x5a, b: 0xcd }),
+    ("slategray", Colour { r: 0x70, g: 0x80, b: 0x90 }),
+    ("slategrey", Colour { r: 0x70, g: 0x80, b: 0x90 }),
+    ("snow", Colour { r: 0xff, g: 0xfa, b: 0xfa }),
+    ("springgreen", Colour { r: 0x00, g: 0xff, b: 0x7f }),
+    ("steelblue", Colour { r: 0x46, g: 0x82, b: 0xb4 }),
+    ("tan", Colour { r: 0xd2, g: 0xb4, b: 0x8c }),
+    ("teal", Colour { r: 0x00, g: 0x80, b: 0x80 }),
+    ("thistle", Colour { r: 0xd8, g: 0xbf, b: 0xd8 }),
+    ("tomato", Colour { r: 0xff, g: 0x63, b: 0x47 }),
+    ("turquoise", Colour { r: 0x40, g: 0xe0, b: 0xd0 }),
+    ("violet", Colour { r: 0xee, g: 0x82, b: 0xee }),
+    ("wheat", Colour { r: 0xf5, g: 0xde, b: 0xb3 }),
+    ("white", Colour { r: 0xff, g: 0xff, b: 0xff }),
+    ("whitesmoke", Colour { r: 0xf5, g: 0xf5, b: 0xf5 }),
+    ("yellow", Colour { r: 0xff, g: 0xff, b: 0x00 }),
+    ("yellowgreen", Colour { r: 0x9a, g: 0xcd, b: 0x32 }),
+];
 
 /// `implicit` then every comma-separated declared tag, trimmed, empty
 /// ones and repeats dropped (DSL-15).
@@ -5401,7 +6537,7 @@ mod tests {
         for (line, value) in [
             ("background #12345", "#12345"),
             ("background #12345g", "#12345g"),
-            ("color red", "red"),
+            ("color reddish", "reddish"),
             ("shape Blob", "Blob"),
         ] {
             let src = in_workspace(
@@ -5479,7 +6615,8 @@ mod tests {
             ResolvedStyle {
                 background: C(0xdd, 0xdd, 0xdd),
                 color: C(0, 0, 0),
-                shape: Shape::Person
+                shape: Shape::Person,
+                ..ResolvedStyle::default_for(ElementKind::Person)
             }
         );
         assert_eq!(
@@ -5513,9 +6650,9 @@ mod tests {
     }
 
     #[test]
-    fn relationship_style_block_is_kept_without_effect() {
-        // Keyword table: `relationship "<tag>" { ... }` in `styles` is
-        // accepted, kept byte for byte, no effect until P2-12 (DSL-14).
+    fn relationship_style_block_is_parsed() {
+        // P2-12: `relationship "<tag>" { ... }` in `styles` is parsed
+        // into `relationship_styles` and kept byte for byte (DSL-11).
         let src = in_workspace(
             r#"        user = person "Operator""#,
             r#"        styles {
@@ -5527,6 +6664,9 @@ mod tests {
         );
         let parsed = parse(&src).expect("parses");
         assert!(parsed.model.element_styles.is_empty());
+        let style = &parsed.model.relationship_styles[0];
+        assert_eq!(style.routing.unwrap().value, Routing::Orthogonal);
+        assert_eq!(style.thickness.unwrap().value, 4);
         assert_eq!(parsed.trees[0].print(), src);
     }
 

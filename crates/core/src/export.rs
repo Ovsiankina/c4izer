@@ -46,8 +46,10 @@ use std::fmt::Write as _;
 
 use crate::geom::{Point, Rect};
 use crate::label::Weight;
-use crate::model::Colour;
-use crate::scene::{Align, FONT_FAMILY, Outline, Scene, Stroke, Swatch, TextBlock, Tip};
+use crate::model::{Colour, Mime};
+use crate::scene::{
+    Align, FONT_FAMILY, Outline, Scene, SceneIcon, Stroke, Swatch, TextBlock, Tip, WindowKind,
+};
 #[cfg(feature = "png")]
 use crate::scene::{FONT_BOLD, FONT_REGULAR};
 
@@ -72,8 +74,9 @@ use crate::scene::{FONT_BOLD, FONT_REGULAR};
 /// line by line exactly as `TextBlock::lines` holds them, never
 /// re-wrapped, with `font-family` naming `scene::FONT_FAMILY` first and a
 /// `sans-serif` fallback (CORE-30), bold for `Weight::Bold`. No external
-/// reference (EXP-1): no `<script>`, no event attribute, no `href` or
-/// `xlink:` attribute at all (so no `<use>` either), no `<image>`, no
+/// reference (EXP-1): no `<script>`, no event attribute, no `xlink:`
+/// attribute and no `href` except an icon's `<image href="data:...">`
+/// (P2-409, a `data:` URI fetches nothing; so no `<use>` either), no
 /// `<foreignObject>`, no `url(...)`, no `@import` or `@font-face`; the
 /// only URI in the document is the `xmlns` namespace
 /// `http://www.w3.org/2000/svg`, which nothing fetches. Text and
@@ -99,23 +102,32 @@ pub fn svg(scene: &Scene) -> String {
     w.rect(b, 0, Some(scene.background), None);
     w.raw("\n");
     for boundary in &scene.boundaries {
-        w.open("boundary");
-        w.rect(boundary.rect, 0, None, Some(&boundary.stroke));
+        w.open_with("boundary", boundary.opacity);
+        w.rect(boundary.rect, 0, boundary.fill, Some(&boundary.stroke));
         w.text(&boundary.tag);
         w.close();
     }
     for line in &scene.lines {
-        w.open("line");
-        w.polyline(&line.points, &line.stroke);
+        w.open_with("line", line.opacity);
+        w.route(&line.points, &line.jumps, &line.stroke);
+        // DECISION (scene): chevrons and the tip are solid on a dashed
+        // line (P2-420).
+        let solid = Stroke {
+            dash_px: None,
+            ..line.stroke
+        };
         for chevron in &line.chevrons {
-            w.polyline(&chevron.points, &line.stroke);
+            w.polyline(&chevron.points, &solid);
         }
         w.tip(&line.tip, line.stroke.colour);
         w.close();
     }
     for item in &scene.boxes {
-        w.open("box");
+        w.open_with("box", item.opacity);
         w.outline(&item.outline, item.fill, &item.stroke);
+        if let Some(icon) = &item.icon {
+            w.image(icon);
+        }
         w.text(&item.name);
         w.text(&item.type_line);
         if let Some(description) = &item.description {
@@ -124,7 +136,7 @@ pub fn svg(scene: &Scene) -> String {
         w.close();
     }
     for label in &scene.labels {
-        w.open("label");
+        w.open_with("label", label.opacity);
         if let Some(fill) = label.fill {
             w.rect(label.rect, 0, Some(fill), None);
         }
@@ -193,6 +205,26 @@ impl Writer {
         let _ = write!(self.out, "<g class=\"{class}\">");
     }
 
+    /// `open` with an `opacity` attribute when `opacity` is below 100
+    /// (P2-406, P2-426): `0.<two digits>` with trailing zeros dropped.
+    // DECISION: the opacity is written as a decimal made from the integer
+    // percentage by text (no float formatting), so equal scenes still
+    // give equal bytes (CORE-25).
+    fn open_with(&mut self, class: &str, opacity: u8) {
+        if opacity >= 100 {
+            self.open(class);
+            return;
+        }
+        let digits = format!("{opacity:02}");
+        let digits = digits.trim_end_matches('0');
+        let value = if digits.is_empty() {
+            "0".to_owned()
+        } else {
+            format!("0.{digits}")
+        };
+        let _ = write!(self.out, "<g class=\"{class}\" opacity=\"{value}\">");
+    }
+
     fn close(&mut self) {
         self.out.push_str("</g>\n");
     }
@@ -257,6 +289,32 @@ impl Writer {
         self.raw(" stroke-linejoin=\"round\"/>");
     }
 
+    /// A line's route: its polyline, with a 6px half-circle hop at each of
+    /// `jumps` (P2-422).
+    fn route(&mut self, points: &[Point], jumps: &[Point], stroke: &Stroke) {
+        if jumps.is_empty() {
+            self.polyline(points, stroke);
+            return;
+        }
+        self.raw("<path");
+        self.attr_str("d", &route_data(points, jumps));
+        self.raw(" fill=\"none\"");
+        self.stroke(Some(stroke));
+        self.raw(" stroke-linejoin=\"round\"/>");
+    }
+
+    fn ellipse(&mut self, rect: Rect, fill: Option<Colour>, stroke: Option<&Stroke>) {
+        let c = rect.centre();
+        self.raw("<ellipse");
+        self.attr_num("cx", c.x);
+        self.attr_num("cy", c.y);
+        self.attr_num("rx", rect.width() / 2);
+        self.attr_num("ry", rect.height() / 2);
+        self.fill(fill);
+        self.stroke(stroke);
+        self.raw("/>");
+    }
+
     fn tip(&mut self, tip: &Tip, colour: Colour) {
         match tip {
             Tip::Arrow(points) => self.path(&path_data(points, true), Some(colour), None),
@@ -296,7 +354,119 @@ impl Writer {
                 let cap = format!("M{x},{top} A{rx},{ry} 0 0 0 {},{top}", x + w);
                 self.path(&cap, None, Some(stroke));
             }
+            other => self.shape_outline(&other, fill, stroke),
         }
+    }
+
+    /// The phase-2 outlines (P2-11), as `outline`.
+    fn shape_outline(&mut self, outline: &Outline, fill: Colour, stroke: &Stroke) {
+        match *outline {
+            Outline::Ellipse { rect, .. } => self.ellipse(rect, Some(fill), Some(stroke)),
+            Outline::Hexagon { rect, inset_px } => {
+                let (l, r, t, b, cy) = (rect.min.x, rect.max.x, rect.min.y, rect.max.y, rect.centre().y);
+                let pts = [
+                    Point::new(l + inset_px, t),
+                    Point::new(r - inset_px, t),
+                    Point::new(r, cy),
+                    Point::new(r - inset_px, b),
+                    Point::new(l + inset_px, b),
+                    Point::new(l, cy),
+                ];
+                self.path(&path_data(&pts, true), Some(fill), Some(stroke));
+            }
+            Outline::Diamond { rect } => {
+                let c = rect.centre();
+                let pts = [
+                    Point::new(c.x, rect.min.y),
+                    Point::new(rect.max.x, c.y),
+                    Point::new(c.x, rect.max.y),
+                    Point::new(rect.min.x, c.y),
+                ];
+                self.path(&path_data(&pts, true), Some(fill), Some(stroke));
+            }
+            Outline::Bucket { rect, cap_ry_px } => {
+                // DECISION (scene): the bucket narrows by a tenth of its
+                // width per side towards the bottom.
+                let (left, right, bottom) = (rect.min.x, rect.max.x, rect.max.y);
+                let (rx, ry, narrow) = (rect.width() / 2, cap_ry_px, rect.width() / 10);
+                let top = rect.min.y + ry;
+                let body = format!(
+                    "M{left},{top} A{rx},{ry} 0 0 1 {right},{top} L{},{bottom} L{},{bottom} Z",
+                    right - narrow,
+                    left + narrow,
+                );
+                self.path(&body, Some(fill), Some(stroke));
+                let cap = format!("M{left},{top} A{rx},{ry} 0 0 0 {right},{top}");
+                self.path(&cap, None, Some(stroke));
+            }
+            Outline::Pipe { rect, cap_rx_px } => {
+                let (x, y, w, h) = (rect.min.x, rect.min.y, rect.width(), rect.height());
+                let (rx, ry) = (cap_rx_px, h / 2);
+                let (left, right) = (x + rx, x + w - rx);
+                let body = format!(
+                    "M{left},{y} L{right},{y} A{rx},{ry} 0 0 1 {right},{} L{left},{} A{rx},{ry} 0 0 1 {left},{y} Z",
+                    y + h,
+                    y + h
+                );
+                self.path(&body, Some(fill), Some(stroke));
+                let cap = format!("M{right},{y} A{rx},{ry} 0 0 0 {right},{}", y + h);
+                self.path(&cap, None, Some(stroke));
+            }
+            Outline::Robot {
+                head,
+                body,
+                radius_px,
+            } => {
+                self.rect(head, radius_px, Some(fill), Some(stroke));
+                self.rect(body, radius_px, Some(fill), Some(stroke));
+            }
+            Outline::Folder { rect, tab } => {
+                self.rect(tab, 0, Some(fill), Some(stroke));
+                self.rect(rect, 0, Some(fill), Some(stroke));
+            }
+            Outline::Window { rect, bar_px, kind } => {
+                self.rect(rect, 0, Some(fill), Some(stroke));
+                for d in window_marks(rect, bar_px, kind) {
+                    self.path(&d, None, Some(stroke));
+                }
+            }
+            Outline::MobileDevice {
+                rect,
+                portrait,
+                inset_px,
+            } => {
+                self.rect(rect, inset_px, Some(fill), Some(stroke));
+                self.rect(crate::scene::mobile_screen(rect, portrait, inset_px), 0, None, Some(stroke));
+            }
+            Outline::Component { rect, tabs } => {
+                self.rect(rect, 0, Some(fill), Some(stroke));
+                for tab in tabs {
+                    self.rect(tab, 0, Some(fill), Some(stroke));
+                }
+            }
+            Outline::Rect { .. } | Outline::Person { .. } | Outline::Cylinder { .. } => {}
+        }
+    }
+
+    /// An icon as `<image href="data:<mime>;base64,...">` (P2-409): the
+    /// only `href` the document carries, and no external reference
+    /// (EXP-1).
+    // DECISION: `preserveAspectRatio` is left at its default (centre,
+    // meet), so a non-square image keeps its shape inside the square.
+    fn image(&mut self, icon: &SceneIcon) {
+        let mime = match icon.asset.mime {
+            Mime::Png => "image/png",
+            Mime::Jpeg => "image/jpeg",
+            _ => "image/svg+xml",
+        };
+        self.raw("<image");
+        self.attr_num("x", icon.rect.min.x);
+        self.attr_num("y", icon.rect.min.y);
+        self.attr_num("width", icon.rect.width());
+        self.attr_num("height", icon.rect.height());
+        let _ = write!(self.out, " href=\"data:{mime};base64,");
+        base64_into(&mut self.out, &icon.asset.bytes);
+        self.raw("\"/>");
     }
 
     /// One `<text>` per line, baselines `line_px` apart, never re-wrapped
@@ -321,6 +491,111 @@ impl Writer {
             escape_into(&mut self.out, line);
             self.raw("</text>");
             y += block.line_px;
+        }
+    }
+}
+
+/// The decoration strokes of a window-like outline (P2-11), as path data:
+/// the title bar's lower edge, then per kind an address field
+/// (`WebBrowser`), three buttons (`Window`) or a prompt (`Terminal`,
+/// `Shell`; a shell has no title bar edge, a terminal adds a cursor after
+/// its prompt).
+// DECISION: decorations are strokes only, in the outline's colour, so
+// they read on any fill; the canvas draws the same paths.
+pub(crate) fn window_marks(rect: Rect, bar_px: i32, kind: WindowKind) -> Vec<String> {
+    let (left, right) = (rect.min.x, rect.max.x);
+    let bar = rect.min.y + bar_px;
+    let mut out = Vec::new();
+    if kind != WindowKind::Shell {
+        out.push(format!("M{left},{bar} L{right},{bar}"));
+    }
+    let mid = rect.min.y + bar_px / 2;
+    let unit = (bar_px / 5).max(1);
+    match kind {
+        WindowKind::WebBrowser => {
+            let (from, to) = (left + 4 * unit + bar_px, right - 2 * unit);
+            let (top, bottom) = (mid - unit, mid + unit);
+            out.push(format!("M{from},{top} L{to},{top} L{to},{bottom} L{from},{bottom} Z"));
+        }
+        WindowKind::Window => {
+            for i in 1..=3 {
+                let cx = left + i * 3 * unit;
+                out.push(format!(
+                    "M{},{mid} A{unit},{unit} 0 1 0 {},{mid} A{unit},{unit} 0 1 0 {},{mid}",
+                    cx - unit,
+                    cx + unit,
+                    cx - unit
+                ));
+            }
+        }
+        _ => {
+            let (px, py) = (left + bar_px / 2, bar + bar_px / 2);
+            out.push(format!("M{px},{py} L{},{} L{px},{}", px + unit * 2, py + unit * 2, py + unit * 4));
+            if kind == WindowKind::Terminal {
+                // DECISION: the terminal's cursor is an underscore right of
+                // the prompt, so Terminal and Shell differ beyond the bar.
+                let (from, y) = (px + unit * 3, py + unit * 4);
+                out.push(format!("M{from},{y} L{},{y}", from + unit * 3));
+            }
+        }
+    }
+    out
+}
+
+/// Path data of a route with a 6px half-circle hop centred on each of
+/// `jumps` (P2-422), each on one of its segments.
+// DECISION: the hop offsets are whole px, 6 along an axis and (4, 4) on
+// a diagonal (6/sqrt 2 rounded), arcs drawn with sweep 1.
+fn route_data(points: &[Point], jumps: &[Point]) -> String {
+    let mut d = String::new();
+    for (i, p) in points.iter().enumerate() {
+        if i == 0 {
+            let _ = write!(d, "M{},{}", p.x, p.y);
+            continue;
+        }
+        let a = points[i - 1];
+        let (sx, sy) = ((p.x - a.x).signum(), (p.y - a.y).signum());
+        let step = if sx != 0 && sy != 0 { HOP_DIAGONAL_PX } else { HOP_RADIUS_PX };
+        let mut on: Vec<Point> = jumps
+            .iter()
+            .copied()
+            .filter(|j| on_segment(a, *p, *j))
+            .collect();
+        on.sort_by_key(|j| (j.x - a.x).abs() + (j.y - a.y).abs());
+        for j in on {
+            let (bx, by) = (j.x - sx * step, j.y - sy * step);
+            let (ex, ey) = (j.x + sx * step, j.y + sy * step);
+            let _ = write!(d, " L{bx},{by} A{HOP_RADIUS_PX},{HOP_RADIUS_PX} 0 0 1 {ex},{ey}");
+        }
+        let _ = write!(d, " L{},{}", p.x, p.y);
+    }
+    d
+}
+
+const HOP_RADIUS_PX: i32 = 6;
+const HOP_DIAGONAL_PX: i32 = 4;
+
+/// True when `p` lies on the segment `a`..`b`, ends excluded.
+fn on_segment(a: Point, b: Point, p: Point) -> bool {
+    let cross = i64::from(b.x - a.x) * i64::from(p.y - a.y) - i64::from(b.y - a.y) * i64::from(p.x - a.x);
+    let within = |v: i32, l: i32, h: i32| v >= l.min(h) && v <= l.max(h);
+    cross == 0 && within(p.x, a.x, b.x) && within(p.y, a.y, b.y) && p != a && p != b
+}
+
+/// Appends `bytes` as standard base64 with `=` padding (RFC 4648).
+fn base64_into(out: &mut String, bytes: &[u8]) {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
         }
     }
 }
@@ -442,6 +717,56 @@ pub fn png(scene: &Scene, width_px: u32) -> Result<Vec<u8>, PngError> {
     pixmap
         .encode_png()
         .map_err(|e| PngError::Render(format!("PNG encoding failed ({e})")))
+}
+
+/// `asset` (an icon or image file, `model::Asset`) rasterized to
+/// `width_px` x `height_px` straight (not premultiplied) RGBA8 pixels,
+/// row-major from the top left, `width_px * height_px * 4` bytes: the
+/// image the SVG export embeds as `<image>` drawn into a box of that size,
+/// centred and scaled to fit with its aspect ratio kept (the SVG default),
+/// transparent around it. The editor paints icons and image primitives
+/// with it as a texture (P2-409, P2-436). Approved pub addition
+/// (2026-11-17). Serves P2-409, EDIT-12.
+///
+/// Returns `None` when either size is 0, the image cannot be allocated,
+/// or the bytes do not decode as the asset's type.
+#[cfg(feature = "png")]
+#[must_use]
+pub fn rasterize_asset(asset: &crate::model::Asset, width_px: u32, height_px: u32) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+
+    if width_px == 0 || height_px == 0 {
+        return None;
+    }
+    let mime = match asset.mime {
+        Mime::Png => "image/png",
+        Mime::Jpeg => "image/jpeg",
+        _ => "image/svg+xml",
+    };
+    // DECISION: the asset goes through the same `<image>` the SVG export
+    // writes, so the canvas, the SVG and the PNG decode and fit it alike.
+    let mut doc = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width_px}\" height=\"{height_px}\"><image width=\"{width_px}\" height=\"{height_px}\" href=\"data:{mime};base64,"
+    );
+    base64_into(&mut doc, &asset.bytes);
+    doc.push_str("\"/></svg>");
+    let tree = usvg::Tree::from_str(&doc, &usvg::Options::default()).ok()?;
+    // An image usvg cannot decode is left out of the tree.
+    if !tree.root().has_children() {
+        return None;
+    }
+    let mut pixmap = tiny_skia::Pixmap::new(width_px, height_px)?;
+    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+    Some(
+        pixmap
+            .pixels()
+            .iter()
+            .flat_map(|p| {
+                let c = p.demultiply();
+                [c.red(), c.green(), c.blue(), c.alpha()]
+            })
+            .collect(),
+    )
 }
 
 #[cfg(feature = "png")]
@@ -781,6 +1106,42 @@ mod tests {
         }
     }
 
+    /// EXP-1 with icons (P2-409): the only `href` is an `<image>`'s
+    /// base64 `data:` URI, and the base64 round-trips.
+    #[test]
+    fn exp_1_icon_only_data_uri() {
+        let src = SHOP.replace(
+            "        shape Cylinder\n",
+            "        shape Cylinder\n        icon data:image/png;base64,iVBORw0KGgpyZXN0\n",
+        );
+        let out = svg(&scene_of(&src, "c2"));
+        let root = root(&out);
+        let images: Vec<&El> = root.all().into_iter().filter(|e| e.name == "image").collect();
+        assert_eq!(images.len(), 1, "{out}");
+        assert_eq!(images[0].attr("href"), Some("data:image/png;base64,iVBORw0KGgpyZXN0"));
+        for el in root.all() {
+            for (name, value) in &el.attrs {
+                if name.to_ascii_lowercase().contains("href") {
+                    assert_eq!(el.name, "image");
+                    assert!(value.starts_with("data:image/png;base64,"));
+                }
+            }
+        }
+        for banned in ["<script", "<foreignObject", "<use", "url(", "xlink:", "@font-face"] {
+            assert!(!out.contains(banned), "{banned}");
+        }
+        assert_eq!(out.matches("://").count(), 1, "only the xmlns URI");
+        let mut b64 = String::new();
+        base64_into(&mut b64, b"ab");
+        assert_eq!(b64, "YWI=");
+        b64.clear();
+        base64_into(&mut b64, b"abc");
+        assert_eq!(b64, "YWJj");
+        b64.clear();
+        base64_into(&mut b64, b"a");
+        assert_eq!(b64, "YQ==");
+    }
+
     #[test]
     fn core_30_svg_names_bundled_font_first() {
         let family = format!("{FONT_FAMILY}, sans-serif");
@@ -904,7 +1265,26 @@ mod tests {
             let shapes = match b.outline {
                 Outline::Rect { .. } => vec!["rect"],
                 Outline::Person { .. } => vec!["rect", "circle"],
-                Outline::Cylinder { .. } => vec!["path", "path"],
+                Outline::Cylinder { .. } | Outline::Bucket { .. } | Outline::Pipe { .. } => {
+                    vec!["path", "path"]
+                }
+                Outline::Ellipse { .. } => vec!["ellipse"],
+                Outline::Hexagon { .. } | Outline::Diamond { .. } => vec!["path"],
+                Outline::Robot { .. } | Outline::Folder { .. } | Outline::MobileDevice { .. } => {
+                    vec!["rect", "rect"]
+                }
+                Outline::Window { kind, .. } => {
+                    let marks = match kind {
+                        crate::scene::WindowKind::Window => 4,
+                        crate::scene::WindowKind::Terminal => 3,
+                        crate::scene::WindowKind::Shell => 1,
+                        _ => 2,
+                    };
+                    let mut v = vec!["rect"];
+                    v.extend(std::iter::repeat_n("path", marks));
+                    v
+                }
+                Outline::Component { .. } => vec!["rect", "rect", "rect"],
             };
             let lines = b.name.lines.len()
                 + b.type_line.lines.len()

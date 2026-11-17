@@ -1636,7 +1636,7 @@ fn set_style(
                 // first "this box only" change gives the bytes back; while
                 // the block holds another property the tag stays, since
                 // removing it would drop a style `edit` did not write.
-                let unstyled = !current.model.element_styles.iter().any(|s| s.tag.value == tag);
+                let unstyled = file_blocks(&current.model, &tag).next().is_none();
                 if prop_parts(property).1.is_none() && unstyled {
                     let file = element_file(&current.model, element)?;
                     run_in(current, file, |cx| plan_remove_tag(cx, element, &tag))?;
@@ -1700,12 +1700,9 @@ fn prop_parts(property: StyleProperty) -> (&'static str, Option<String>) {
     }
 }
 
+/// P2-417: the reference spelling (`MobileDevicePortrait`).
 const fn shape_word(shape: Shape) -> &'static str {
-    match shape {
-        Shape::Box => "Box",
-        Shape::Person => "Person",
-        Shape::Cylinder => "Cylinder",
-    }
+    shape.keyword()
 }
 
 /// The same property with no value.
@@ -1735,14 +1732,28 @@ fn prop_in(style: &ElementStyle, property: StyleProperty) -> (Option<Span>, Styl
     }
 }
 
-/// `property`'s kind as the `element "<tag>"` blocks set it, later blocks
-/// winning (DSL-15).
-fn tag_value(model: &model::Model, tag: &str, property: StyleProperty) -> StyleProperty {
+/// The file's own top-level `element "<tag>"` blocks, in file order:
+/// the only blocks `edit` reads or writes (P2-439).
+// DECISION: a theme style is never edited (its span is the `theme`
+// statement), and neither is a block inside `light`/`dark`: an edit
+// writes the top-level block, which applies in both modes. A mode block
+// that sets the same property still wins in its mode (P2-430); the
+// editor's mode switch (styles-themes-17) decides whether to edit it.
+fn file_blocks<'m>(
+    model: &'m model::Model,
+    tag: &'m str,
+) -> impl DoubleEndedIterator<Item = &'m ElementStyle> {
     model
         .element_styles
         .iter()
+        .filter(move |s| s.theme.is_none() && s.mode.is_none() && s.tag.value == tag)
+}
+
+/// `property`'s kind as the file's `element "<tag>"` blocks set it, later
+/// blocks winning (DSL-15).
+fn tag_value(model: &model::Model, tag: &str, property: StyleProperty) -> StyleProperty {
+    file_blocks(model, tag)
         .rev()
-        .filter(|s| s.tag.value == tag)
         .find_map(|s| match prop_in(s, property) {
             (Some(_), value) => Some(value),
             (None, _) => None,
@@ -1756,8 +1767,7 @@ fn tag_value(model: &model::Model, tag: &str, property: StyleProperty) -> StyleP
 // new property line goes into the last block.
 fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan> {
     let (keyword, value) = prop_parts(property);
-    let styles = &cx.model.element_styles;
-    let blocks: Vec<&ElementStyle> = styles.iter().filter(|s| s.tag.value == tag).collect();
+    let blocks: Vec<&ElementStyle> = file_blocks(cx.model, tag).collect();
     let setting = blocks
         .iter()
         .rev()
@@ -1801,7 +1811,7 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
 /// any: the whole block (and `styles`, `views` when they hold nothing
 /// else) when it holds no comment, else only the property lines.
 fn plan_clear_block(cx: &Ctx<'_>, tag: &str) -> Plan {
-    for style in cx.model.element_styles.iter().rev().filter(|s| s.tag.value == tag) {
+    for style in file_blocks(cx.model, tag).rev() {
         let Some(owner) = cx.statement(style.span) else {
             continue;
         };

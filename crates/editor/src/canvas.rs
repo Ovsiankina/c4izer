@@ -19,8 +19,10 @@
 
 use c4rizer_core::geom::{Point, Rect};
 use c4rizer_core::label::Weight;
-use c4rizer_core::model::Colour;
-use c4rizer_core::scene::{Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Stroke, Swatch, TextBlock, Tip};
+use c4rizer_core::model::{Asset, Colour};
+use c4rizer_core::scene::{
+    Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Stroke, Swatch, TextBlock, Tip, WindowKind,
+};
 
 use crate::camera::{Camera, ScreenPoint};
 use crate::state::{Button, DrawList, HANDLE_PX, Input, Key, MarkKind, Modifiers};
@@ -76,6 +78,16 @@ pub enum Primitive {
         /// Fill.
         fill: [u8; 3],
     },
+    /// An icon (P2-409): its rectangle and the image file, painted as a
+    /// texture of `export::rasterize_asset` (`icon_image`).
+    Image {
+        /// Top-left, screen px.
+        min: ScreenPoint,
+        /// Bottom-right, screen px.
+        max: ScreenPoint,
+        /// The icon's file, as the SVG embeds it.
+        asset: Asset,
+    },
     /// One text line.
     Text {
         /// Anchor, screen px (start or middle per the block's `Align`).
@@ -100,6 +112,8 @@ pub struct PaintItem {
     pub source: Source,
     /// The primitive.
     pub primitive: Primitive,
+    /// 0..100: the item's opacity (P2-406, P2-426); 100 for marks.
+    pub opacity: u8,
 }
 
 /// Every primitive of `list`, in paint order: the scene items in the
@@ -115,25 +129,35 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     };
     let cam = &list.camera;
     let mut out = Vec::new();
-    let mut push = |source: Source, primitive: Primitive| out.push(PaintItem { source, primitive });
+    let opacity = std::cell::Cell::new(100_u8);
+    let mut push = |source: Source, primitive: Primitive| {
+        out.push(PaintItem {
+            source,
+            primitive,
+            opacity: opacity.get(),
+        });
+    };
 
     for (i, b) in scene.boundaries.iter().enumerate() {
         let source = Source::Scene(ItemKey::Boundary(u32::try_from(i).unwrap_or(u32::MAX)));
-        push(source, polygon(rect_points(cam, b.rect, 0), None, Some(&b.stroke), cam));
+        opacity.set(b.opacity);
+        push(source, polygon(rect_points(cam, b.rect, 0), b.fill.map(rgb), Some(&b.stroke), cam));
         for t in text_items(&b.tag, cam) {
             push(source, t);
         }
     }
     for l in &scene.lines {
         let source = Source::Scene(ItemKey::Line(l.edge));
+        opacity.set(l.opacity);
         let colour = rgb(l.stroke.colour);
         let width = px(l.stroke.width_px) * cam.zoom;
         push(source, Primitive::Path {
-            points: l.points.iter().map(|&p| cam.to_screen(p)).collect(),
+            points: route_points(&l.points, &l.jumps, cam),
             colour,
             width,
             dash: dash(&l.stroke, cam),
         });
+        // Chevrons and the tip stay solid on a dashed line (P2-420).
         for c in &l.chevrons {
             push(source, Primitive::Path {
                 points: c.points.iter().map(|&p| cam.to_screen(p)).collect(),
@@ -146,8 +170,16 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     }
     for b in &scene.boxes {
         let source = Source::Scene(ItemKey::Box(b.id));
+        opacity.set(b.opacity);
         for primitive in outline(&b.outline, Some(rgb(b.fill)), Some(&b.stroke), cam) {
             push(source, primitive);
+        }
+        if let Some(icon) = &b.icon {
+            push(source, Primitive::Image {
+                min: cam.to_screen(icon.rect.min),
+                max: cam.to_screen(icon.rect.max),
+                asset: icon.asset.clone(),
+            });
         }
         for t in text_items(&b.name, cam)
             .into_iter()
@@ -159,6 +191,7 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     }
     for l in &scene.labels {
         let source = Source::Scene(ItemKey::Label(l.edge));
+        opacity.set(l.opacity);
         if let Some(fill) = l.fill {
             push(source, polygon(rect_points(cam, l.rect, 0), Some(rgb(fill)), None, cam));
         }
@@ -166,6 +199,7 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
             push(source, t);
         }
     }
+    opacity.set(100);
     if let Some(title) = &scene.title {
         for t in text_items(title, cam) {
             push(Source::Scene(ItemKey::Title), t);
@@ -366,8 +400,168 @@ fn outline(o: &Outline, fill: Option<[u8; 3]>, stroke: Option<&Stroke>, cam: &Ca
             }
             out
         }
+        _ => shape_outline(o, fill, stroke, cam),
+    }
+}
+
+/// An open stroke in `stroke`'s colour, width and dash.
+fn stroke_path(points: Vec<ScreenPoint>, stroke: Option<&Stroke>, cam: &Camera) -> Option<Primitive> {
+    stroke.map(|s| Primitive::Path {
+        points,
+        colour: rgb(s.colour),
+        width: px(s.width_px) * cam.zoom,
+        dash: dash(s, cam),
+    })
+}
+
+/// The phase-2 outlines (P2-11), the same parts the SVG draws
+/// (`export.rs`).
+fn shape_outline(o: &Outline, fill: Option<[u8; 3]>, stroke: Option<&Stroke>, cam: &Camera) -> Vec<Primitive> {
+    let half = ELLIPSE_STEPS / 2;
+    match *o {
+        Outline::Ellipse { rect, .. } => {
+            let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+            let points = arc(cam, (f32::midpoint(x0, x1), f32::midpoint(y0, y1)), ((x1 - x0) / 2.0, (y1 - y0) / 2.0), 0.0, 360.0, ELLIPSE_STEPS);
+            vec![polygon(points, fill, stroke, cam)]
+        }
+        Outline::Hexagon { rect, inset_px } => {
+            let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+            let (i, cy) = (px(inset_px), f32::midpoint(y0, y1));
+            let points = vec![at(cam, x0 + i, y0), at(cam, x1 - i, y0), at(cam, x1, cy), at(cam, x1 - i, y1), at(cam, x0 + i, y1), at(cam, x0, cy)];
+            vec![polygon(points, fill, stroke, cam)]
+        }
+        Outline::Diamond { rect } => {
+            let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+            let (cx, cy) = (f32::midpoint(x0, x1), f32::midpoint(y0, y1));
+            vec![polygon(vec![at(cam, cx, y0), at(cam, x1, cy), at(cam, cx, y1), at(cam, x0, cy)], fill, stroke, cam)]
+        }
+        Outline::Bucket { rect, cap_ry_px } => {
+            let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+            let (cx, rx, ry, n) = (f32::midpoint(x0, x1), (x1 - x0) / 2.0, px(cap_ry_px), px(rect.width() / 10));
+            let mut body = arc(cam, (cx, y0 + ry), (rx, ry), 180.0, 360.0, half);
+            body.extend([at(cam, x1 - n, y1), at(cam, x0 + n, y1)]);
+            let rim = arc(cam, (cx, y0 + ry), (rx, ry), 0.0, 180.0, half);
+            let mut out = vec![polygon(body, fill, stroke, cam)];
+            out.extend(stroke_path(rim, stroke, cam));
+            out
+        }
+        Outline::Pipe { rect, cap_rx_px } => {
+            let (x0, y0, x1, y1) = (px(rect.min.x), px(rect.min.y), px(rect.max.x), px(rect.max.y));
+            let (rx, ry, cy) = (px(cap_rx_px), (y1 - y0) / 2.0, f32::midpoint(y0, y1));
+            let mut body = arc(cam, (x1 - rx, cy), (rx, ry), -90.0, 90.0, half);
+            body.extend(arc(cam, (x0 + rx, cy), (rx, ry), 90.0, 270.0, half));
+            let rim = arc(cam, (x1 - rx, cy), (rx, ry), 90.0, 270.0, half);
+            let mut out = vec![polygon(body, fill, stroke, cam)];
+            out.extend(stroke_path(rim, stroke, cam));
+            out
+        }
+        Outline::Robot { head, body, radius_px } => vec![
+            polygon(rect_points(cam, head, radius_px), fill, stroke, cam),
+            polygon(rect_points(cam, body, radius_px), fill, stroke, cam),
+        ],
+        Outline::Folder { rect, tab } => vec![
+            polygon(rect_points(cam, tab, 0), fill, stroke, cam),
+            polygon(rect_points(cam, rect, 0), fill, stroke, cam),
+        ],
+        Outline::Window { rect, bar_px, kind } => {
+            let mut out = vec![polygon(rect_points(cam, rect, 0), fill, stroke, cam)];
+            for marks in window_marks(rect, bar_px, kind, cam) {
+                out.extend(stroke_path(marks, stroke, cam));
+            }
+            out
+        }
+        Outline::MobileDevice {
+            rect,
+            portrait,
+            inset_px,
+        } => vec![
+            polygon(rect_points(cam, rect, inset_px), fill, stroke, cam),
+            polygon(rect_points(cam, mobile_screen(rect, portrait, inset_px), 0), None, stroke, cam),
+        ],
+        Outline::Component { rect, tabs } => {
+            let mut out = vec![polygon(rect_points(cam, rect, 0), fill, stroke, cam)];
+            out.extend(tabs.iter().map(|t| polygon(rect_points(cam, *t, 0), fill, stroke, cam)));
+            out
+        }
         _ => Vec::new(),
     }
+}
+
+/// The screen of a phone outline, as core's `scene::mobile_screen` gives
+/// it to the SVG: deep bezel on the short sides (top and bottom when
+/// portrait).
+fn mobile_screen(rect: Rect, portrait: bool, inset_px: i32) -> Rect {
+    let (dx, dy) = if portrait { (inset_px, 2 * inset_px) } else { (2 * inset_px, inset_px) };
+    Rect::from_corners(
+        Point::new(rect.min.x + dx, rect.min.y + dy),
+        Point::new(rect.max.x - dx, rect.max.y - dy),
+    )
+}
+
+/// The decoration strokes of a window-like outline, as the SVG's
+/// `export::window_marks` draws them: the bar edge (not for a shell), then
+/// an address field, three buttons or a prompt.
+fn window_marks(rect: Rect, bar_px: i32, kind: WindowKind, cam: &Camera) -> Vec<Vec<ScreenPoint>> {
+    let (left, right) = (px(rect.min.x), px(rect.max.x));
+    let bar = px(rect.min.y + bar_px);
+    let mid = px(rect.min.y) + px(bar_px) / 2.0;
+    let unit = px((bar_px / 5).max(1));
+    let mut out = Vec::new();
+    if kind != WindowKind::Shell {
+        out.push(vec![at(cam, left, bar), at(cam, right, bar)]);
+    }
+    match kind {
+        WindowKind::WebBrowser => {
+            let (from, to) = (left + 4.0 * unit + px(bar_px), right - 2.0 * unit);
+            out.push(vec![at(cam, from, mid - unit), at(cam, to, mid - unit), at(cam, to, mid + unit), at(cam, from, mid + unit), at(cam, from, mid - unit)]);
+        }
+        WindowKind::Window => {
+            for i in 1..=3_u8 {
+                let cx = left + f32::from(i) * 3.0 * unit;
+                out.push(arc(cam, (cx, mid), (unit, unit), 0.0, 360.0, 12));
+            }
+        }
+        _ => {
+            let (x, y) = (left + px(bar_px) / 2.0, bar + px(bar_px) / 2.0);
+            out.push(vec![at(cam, x, y), at(cam, x + 2.0 * unit, y + 2.0 * unit), at(cam, x, y + 4.0 * unit)]);
+            if kind == WindowKind::Terminal {
+                out.push(vec![at(cam, x + 3.0 * unit, y + 4.0 * unit), at(cam, x + 6.0 * unit, y + 4.0 * unit)]);
+            }
+        }
+    }
+    out
+}
+
+/// A route's points through the camera, with a 6px half-circle hop at
+/// each of `jumps` (P2-422), as the SVG draws it.
+fn route_points(points: &[Point], jumps: &[Point], cam: &Camera) -> Vec<ScreenPoint> {
+    let mut out = Vec::with_capacity(points.len() + jumps.len() * 10);
+    for (i, &p) in points.iter().enumerate() {
+        if i > 0 {
+            let a = points[i - 1];
+            let (dx, dy) = (px(p.x - a.x), px(p.y - a.y));
+            let mut on: Vec<Point> = jumps.iter().copied().filter(|j| on_segment(a, p, *j)).collect();
+            on.sort_by_key(|j| (j.x - a.x).abs() + (j.y - a.y).abs());
+            let heading = dy.atan2(dx).to_degrees();
+            for j in on {
+                // From behind the crossing, over it (sweep as the SVG's
+                // arc flag 1: through the left of the heading, y down).
+                out.extend(arc(cam, (px(j.x), px(j.y)), (HOP_PX, HOP_PX), heading + 180.0, heading + 360.0, 8));
+            }
+        }
+        out.push(cam.to_screen(p));
+    }
+    out
+}
+
+/// The hop radius, scene px (P2-422; the SVG's arc).
+const HOP_PX: f32 = 6.0;
+
+/// True when `p` is on the segment `a`..`b`, ends excluded.
+fn on_segment(a: Point, b: Point, p: Point) -> bool {
+    let cross = i64::from(b.x - a.x) * i64::from(p.y - a.y) - i64::from(b.y - a.y) * i64::from(p.x - a.x);
+    let within = |v: i32, l: i32, h: i32| v >= l.min(h) && v <= l.max(h);
+    cross == 0 && within(p.x, a.x, b.x) && within(p.y, a.y, b.y) && p != a && p != b
 }
 
 /// A line's arrowhead or join dot.
@@ -457,7 +651,7 @@ pub fn text_items(block: &TextBlock, camera: &Camera) -> Vec<Primitive> {
 /// screen 0,0 of the state's coordinates. Serves EDIT-12.
 pub fn paint(painter: &eframe::egui::Painter, items: &[PaintItem]) {
     for item in items {
-        paint_primitive(painter, &item.primitive);
+        paint_primitive(painter, &item.primitive, item.opacity);
     }
 }
 
@@ -483,16 +677,18 @@ pub(crate) fn page(list: &DrawList<'_>) -> Option<Primitive> {
 /// Paints the page of `list` (`page`), if any (EDIT-31).
 pub(crate) fn paint_page(painter: &eframe::egui::Painter, list: &DrawList<'_>) {
     if let Some(p) = page(list) {
-        paint_primitive(painter, &p);
+        paint_primitive(painter, &p, 100);
     }
 }
 
-/// Paints one primitive; screen 0,0 is the painter's clip rect top-left.
-fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive) {
+/// Paints one primitive at `opacity`/100; screen 0,0 is the painter's
+/// clip rect top-left.
+fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive, opacity: u8) {
     use eframe::egui::{Align2, Color32, FontFamily, FontId, Pos2, Shape, Stroke as EStroke};
     let origin = painter.clip_rect().min;
     let pos = |p: &ScreenPoint| Pos2::new(origin.x + p.x, origin.y + p.y);
-    let colour = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let alpha = u8::try_from(u16::from(opacity.min(100)) * 255 / 100).unwrap_or(u8::MAX);
+    let colour = |c: [u8; 3]| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], alpha);
     match primitive {
         Primitive::Polygon { points, fill, stroke, dash } => {
             let pts: Vec<Pos2> = points.iter().map(pos).collect();
@@ -530,6 +726,14 @@ fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive) {
         Primitive::Circle { centre, radius, fill } => {
             painter.circle_filled(pos(centre), *radius, colour(*fill));
         }
+        Primitive::Image { min, max, asset } => {
+            let rect = eframe::egui::Rect::from_min_max(pos(min), pos(max));
+            let ppp = painter.ctx().pixels_per_point();
+            if let Some(texture) = icon_texture(painter.ctx(), asset, rect.width() * ppp, rect.height() * ppp) {
+                let uv = eframe::egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                painter.image(texture.id(), rect, uv, Color32::from_white_alpha(alpha));
+            }
+        }
         Primitive::Text {
             at: anchor,
             text,
@@ -551,6 +755,56 @@ fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive) {
             painter.text(top, align, text, FontId::new(*size, family), colour(*c));
         }
     }
+}
+
+/// `asset` as an egui image of `width` x `height` px (rounded, at least
+/// 1), from `export::rasterize_asset`; `None` when the asset does not
+/// decode (the icon is then not drawn, as in the SVG and PNG).
+pub(crate) fn icon_image(asset: &Asset, width: f32, height: f32) -> Option<eframe::egui::ColorImage> {
+    let size = |v: f32| {
+        // Screen sizes are small positive floats; the cast saturates.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let px = v.round().max(1.0) as u32;
+        px
+    };
+    let (w, h) = (size(width), size(height));
+    let rgba = c4rizer_core::export::rasterize_asset(asset, w, h)?;
+    Some(eframe::egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        &rgba,
+    ))
+}
+
+/// The texture of `asset` at `width` x `height` physical px, kept in the
+/// egui context so each icon is rasterized once per size, not per frame.
+// DECISION: textures live in egui's temp data under one id, keyed by the
+// asset and the pixel size, in a `BTreeMap` cleared when it passes 256
+// entries (zooming through many sizes), so memory stays bounded.
+fn icon_texture(
+    ctx: &eframe::egui::Context,
+    asset: &Asset,
+    width: f32,
+    height: f32,
+) -> Option<eframe::egui::TextureHandle> {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    type Cache = Arc<Mutex<BTreeMap<(Asset, u32, u32), Option<eframe::egui::TextureHandle>>>>;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let key = (asset.clone(), width.round().max(1.0) as u32, height.round().max(1.0) as u32);
+    let cache: Cache = ctx.data_mut(|d| d.get_temp_mut_or_default::<Cache>(eframe::egui::Id::unique("c4rizer-icons")).clone());
+    let mut cache = cache.lock().ok()?;
+    if let Some(hit) = cache.get(&key) {
+        return hit.clone();
+    }
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let texture = icon_image(asset, key.1 as f32, key.2 as f32).map(|image| {
+        ctx.load_texture(format!("icon-{}x{}-{}", key.1, key.2, asset.path.len()), image, eframe::egui::TextureOptions::LINEAR)
+    });
+    cache.insert(key, texture.clone());
+    texture
 }
 
 /// The egui family name of the bundled bold face.
@@ -859,6 +1113,7 @@ mod tests {
             Primitive::Path { points, width, .. } => points.iter().flat_map(|q| [q.x, q.y]).chain([*width]).collect(),
             Primitive::Circle { centre, radius, .. } => vec![centre.x, centre.y, *radius],
             Primitive::Text { at, size, .. } => vec![at.x, at.y, *size],
+            Primitive::Image { min, max, .. } => vec![min.x, min.y, max.x, max.y],
         }
     }
 

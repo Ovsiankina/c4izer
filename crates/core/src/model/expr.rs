@@ -50,11 +50,11 @@ impl Model {
     /// or (implied) between their descendants when neither holds the
     /// other.
     fn linked(&self, from: ElementId, to: ElementId) -> bool {
-        let implied = self.implied_relationships != ImpliedRelationships::False
-            && !self.within(from, to)
-            && !self.within(to, from);
+        let nested = self.within(from, to) || self.within(to, from);
         self.resolved_relationships().any(|r| {
             let (s, d) = (r.source.value, r.destination.value);
+            // P2-7: per relationship, the strategy it was declared under.
+            let implied = !nested && r.implied_relationships != ImpliedRelationships::False;
             (s == from && d == to) || (implied && self.within(s, from) && self.within(d, to))
         })
     }

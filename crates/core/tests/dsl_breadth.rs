@@ -575,8 +575,13 @@ fn p2_178_other_row_keywords_accepted_and_kept() {
     // Accepted with no model effect: the view still includes what `*` gives.
     assert_eq!(m.views.len(), 1);
     assert_eq!(m.included(&m.views[0]).len(), 2);
-    assert_eq!(m.element_styles.len(), 2);
-    assert_eq!(m.element_styles[0].shape, None);
+    // The styles-themes keywords now take effect (P2-13, P2-21, P2-11):
+    // `theme default` adds the bundled theme's styles before the file's
+    // own, and the `light`/`dark` blocks and the shape are read.
+    let own: Vec<_> = m.element_styles.iter().filter(|s| s.theme.is_none()).collect();
+    assert_eq!(own.len(), 4);
+    let group = own.iter().find(|s| s.tag.value == "Group").unwrap();
+    assert_eq!(group.shape.map(|s| s.value), Some(model::Shape::RoundedBox));
 }
 
 /// A trailing `\` continues the statement; the model equals the one-line form.
@@ -2420,6 +2425,42 @@ fn p2_7_implied_false_star_counts_direct_only() {
     let d = builds(&model_of(&implied("")));
     assert_eq!(d[0].0, ["user", "shop", "mail"]);
     assert_eq!(d[2].0, ["user", "web", "mail"]);
+}
+
+/// `!impliedRelationships` between relationships applies only to the
+/// relationships declared after it (Structurizr; B dsl-breadth 17):
+/// `Relationship::implied_relationships` records the strategy in force.
+#[test]
+fn p2_7_implied_strategy_applies_to_later_relationships() {
+    let between = |first: &str, second: &str| {
+        in_workspace(
+            &format!(
+                "        user = person \"User\"\n        shop = softwareSystem \"Shop\" {{\n            web = container \"Web\"\n        }}\n        mail = softwareSystem \"Mail\" {{\n            smtp = container \"Smtp\"\n        }}\n{first}        user -> web \"Browses\"\n{second}        web -> smtp \"Sends\""
+            ),
+            "        systemContext shop \"c1\" {\n            include *\n        }\n        systemContext shop \"c1-all\" {\n            include user shop mail\n        }",
+        )
+    };
+    let lines = |m: &Model| -> Vec<Vec<model::RelationshipId>> {
+        c4rizer_core::view::plan(m, &m.views[1])
+            .edges
+            .into_iter()
+            .map(|e| e.relationships)
+            .collect()
+    };
+    // `false` after the first relationship: it still lifts, the second
+    // does not.
+    let m = model_of(&between("", "        !impliedRelationships false\n"));
+    assert_eq!(m.relationships[0].implied_relationships, model::ImpliedRelationships::Default);
+    assert_eq!(m.relationships[1].implied_relationships, model::ImpliedRelationships::False);
+    assert_eq!(m.implied_relationships, model::ImpliedRelationships::False);
+    assert_eq!(lines(&m), [vec![model::RelationshipId(0)]]);
+    let keys: Vec<_> = m.included(&m.views[0]).iter().map(|&e| m.element(e).name.value.clone()).collect();
+    assert_eq!(keys, ["User", "Shop"]);
+    // The other way round: only the second lifts.
+    let m = model_of(&between("        !impliedRelationships false\n", "        !impliedRelationships true\n"));
+    assert_eq!(lines(&m), [vec![model::RelationshipId(1)]]);
+    let keys: Vec<_> = m.included(&m.views[0]).iter().map(|&e| m.element(e).name.value.clone()).collect();
+    assert_eq!(keys, ["Shop", "Mail"]);
 }
 
 /// `!impliedRelationships true` gives the same builds as no directive (CORE-5).

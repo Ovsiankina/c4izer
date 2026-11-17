@@ -1,0 +1,20 @@
+{
+  "name" : "Fixture theme",
+  "description" : "A local theme for the styles-themes fixture.",
+  "elements" : [ {
+    "tag" : "Container",
+    "background" : "#438dd5",
+    "color" : "#ffffff",
+    "stroke" : "#2e6295"
+  }, {
+    "tag" : "External",
+    "background" : "#8a8a8a",
+    "border" : "dashed",
+    "icon" : "icons/partner.png"
+  } ],
+  "relationships" : [ {
+    "tag" : "Relationship",
+    "thickness" : 2,
+    "routing" : "Orthogonal"
+  } ]
+}

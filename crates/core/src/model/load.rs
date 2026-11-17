@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{Builder, Loader, ModelError, ModelErrorKind, Parsed, Span};
+use super::{Builder, Loader, ModelError, ModelErrorKind, Parsed, Span, theme};
 use crate::text::{self, FileId, Statement, SyntaxTree, TokenKind};
 
 /// What a parse read from outside its trees, kept in `Parsed` for
@@ -30,6 +30,11 @@ pub(super) struct Replay {
     pub(super) includes: Vec<Vec<Vec<FileId>>>,
     /// The `workspace extends` base of each file that has one (P2-16).
     pub(super) bases: BTreeMap<FileId, FileId>,
+    /// Every theme and icon file read after the DSL files, by the path
+    /// asked for, with its bytes (P2-13, P2-409).
+    pub(super) files: BTreeMap<PathBuf, Vec<u8>>,
+    /// Every path the theme and icon reads canonicalized, and the result.
+    pub(super) canonical: BTreeMap<PathBuf, PathBuf>,
 }
 
 /// The `!include` statements of `tree` in document order, nested blocks
@@ -408,6 +413,7 @@ pub(super) fn parse_with(
         env,
         includes,
         bases,
+        ..Replay::default()
     };
     build(trees, paths, replay, loader)
 }
@@ -433,6 +439,25 @@ fn build(
         builder.file()?;
         (builder.model, builder.env_used.into_inner())
     };
+    let mut model = model;
+    // Themes and icons are read after every DSL file, so a loader that
+    // numbers its reads sees the DSL files first, in `FileId` order
+    // (P2-136); what they read is taped for `reparse`.
+    let mut tape = Tape {
+        loader,
+        files: BTreeMap::new(),
+        canonical: BTreeMap::new(),
+    };
+    let files = theme::Files {
+        path: paths.first().map(PathBuf::as_path),
+        loader: &mut tape,
+    };
+    theme::apply(&mut model, &trees, Some(files))?;
+    let Tape {
+        files, canonical, ..
+    } = tape;
+    replay.files.extend(files);
+    replay.canonical.extend(canonical);
     replay.env.extend(env);
     Ok(Parsed {
         trees,
@@ -442,15 +467,54 @@ fn build(
     })
 }
 
-/// The `Loader` `reparse` builds with: the recorded environment, and no
-/// file access (every file is already a tree).
+/// The loader themes and icons read through: `loader`, with every read
+/// and canonical path kept for `reparse`.
+struct Tape<'l> {
+    loader: &'l mut dyn Loader,
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    canonical: BTreeMap<PathBuf, PathBuf>,
+}
+
+impl Loader for Tape<'_> {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        let bytes = self.loader.read(path)?;
+        self.files.insert(path.to_path_buf(), bytes.clone());
+        Ok(bytes)
+    }
+
+    fn read_dir(&mut self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        self.loader.read_dir(path)
+    }
+
+    fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
+        let resolved = self.loader.canonicalize(path)?;
+        self.canonical.insert(path.to_path_buf(), resolved.clone());
+        Ok(resolved)
+    }
+
+    fn env(&self, name: &str) -> Option<String> {
+        self.loader.env(name)
+    }
+}
+
+/// The `Loader` `reparse` builds with: the recorded environment, the
+/// theme and icon files the first parse read, and no other file access
+/// (every DSL file is already a tree).
+// DECISION: a theme or icon the edited text names for the first time is
+// a `FileRead` error here; edits never add one (EDIT-21), and the editor
+// re-parses from disk after its write anyway.
 struct Recorded<'r> {
     env: &'r BTreeMap<String, Option<String>>,
+    files: &'r BTreeMap<PathBuf, Vec<u8>>,
+    canonical: &'r BTreeMap<PathBuf, PathBuf>,
 }
 
 impl Loader for Recorded<'_> {
-    fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
-        Err(io::Error::new(io::ErrorKind::PermissionDenied, "reparse reads no file"))
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        self.files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "reparse reads no file"))
     }
 
     fn read_dir(&mut self, _path: &Path) -> io::Result<Vec<PathBuf>> {
@@ -459,7 +523,7 @@ impl Loader for Recorded<'_> {
 
     fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
         // Paths were checked by the parse being replayed.
-        Ok(path.to_path_buf())
+        Ok(self.canonical.get(path).cloned().unwrap_or_else(|| path.to_path_buf()))
     }
 
     fn env(&self, name: &str) -> Option<String> {
@@ -480,6 +544,8 @@ pub(super) fn reparse(parsed: &Parsed, file: FileId, source: &str) -> Result<Par
     }
     let mut loader = Recorded {
         env: &parsed.replay.env,
+        files: &parsed.replay.files,
+        canonical: &parsed.replay.canonical,
     };
     build(trees, parsed.paths.clone(), parsed.replay.clone(), &mut loader)
 }

@@ -85,7 +85,7 @@ use crate::geom::Point;
 use crate::label::Labels;
 use crate::lint::{Finding, Report};
 use crate::model::{
-    ElementId, ElementKind, Model, Selector, Spanned, ViewKind, ViewScope, ViewSpec,
+    ElementId, ElementKind, Mode, Model, Selector, Spanned, ViewKind, ViewScope, ViewSpec,
 };
 use crate::place::Keep;
 use crate::route::{RouteConfig, Routes, Stopped};
@@ -401,6 +401,98 @@ pub fn build_all(model: &Model, stop: &AtomicBool) -> Result<AllViews, Stopped> 
         views,
         coverage,
         unsupported,
+    })
+}
+
+/// `build_view` in `mode`: the plan from `view::plan_in`, so styles
+/// resolve over the top-level and `mode` blocks and the scene carries
+/// `mode` (P2-430, P2-431). `build_view(..)` equals
+/// `build_view_in(.., Mode::Light, ..)`. The CLI's `--mode` (P2-432) and
+/// the editor's light/dark switch (P2-433) call it. Serves P2-430,
+/// P2-432, P2-433.
+///
+/// # Errors
+///
+/// As `build_view`: `UnknownView`, `Unsupported` for a non-drawable
+/// key, `Stopped`.
+pub fn build_view_in(
+    model: &Model,
+    key: &str,
+    keep: &Keep,
+    mode: Mode,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, BuildError> {
+    let Some(view) = model.view(key) else {
+        return Err(BuildError::UnknownView(UnknownView {
+            key: key.to_owned(),
+            valid: model.views.iter().map(|v| v.key.clone()).collect(),
+        }));
+    };
+    build_spec_in(model, view, keep, mode, stop)
+}
+
+/// `build_spec` in `mode`, for any spec, drawable or not (O7). Serves
+/// P2-430, P2-433, EDIT-15.
+///
+/// # Errors
+///
+/// `BuildError::Unsupported` when `!view.kind.drawable()`;
+/// `BuildError::Stopped` when `stop` was set while routing.
+///
+/// # Panics
+///
+/// When `view` does not belong to `model`.
+pub fn build_spec_in(
+    model: &Model,
+    view: &ViewSpec,
+    keep: &Keep,
+    mode: Mode,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, BuildError> {
+    if !view.kind.drawable() {
+        return Err(BuildError::Unsupported(UnsupportedView::of(view)));
+    }
+    Ok(build_in(model, view, keep, mode, stop)?)
+}
+
+/// Plan in `mode`, place, route, then `finish`.
+fn build_in(
+    model: &Model,
+    view: &ViewSpec,
+    keep: &Keep,
+    mode: Mode,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, Stopped> {
+    let plan = view::plan_in(model, view, mode);
+    let centres = place::place(&plan, keep);
+    let routes = route::route(&plan, &centres, &RouteConfig::DEFAULT, stop)?;
+    Ok(finish(model, plan, routes))
+}
+
+/// `build_all` in `mode`: every drawable view built with
+/// `build_spec_in(.., mode, ..)`, then L22 once. `build_all(..)` equals
+/// `build_all_in(.., Mode::Light, ..)`. Serves P2-430, P2-432.
+///
+/// # Errors
+///
+/// `Stopped` as `build_all`.
+pub fn build_all_in(model: &Model, mode: Mode, stop: &AtomicBool) -> Result<AllViews, Stopped> {
+    let keep = Keep::default();
+    let mut views = Vec::new();
+    let mut skipped = Vec::new();
+    for v in &model.views {
+        if v.kind.drawable() {
+            views.push(build_in(model, v, &keep, mode, stop)?);
+        } else {
+            skipped.push(UnsupportedView::of(v));
+        }
+    }
+    let scenes: Vec<&Scene> = views.iter().map(|v| &v.scene).collect();
+    let coverage = lint::coverage(model, &scenes);
+    Ok(AllViews {
+        views,
+        coverage,
+        unsupported: skipped,
     })
 }
 

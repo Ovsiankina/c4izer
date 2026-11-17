@@ -42,9 +42,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
-use c4rizer_core::model::{Model, Parsed, ViewKind};
+use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
 use c4rizer_core::pipeline::{
-    BuildError, PREVIEW_ROUTE, ViewBuild, build_spec, build_view, default_view, rebuild_after_move,
+    BuildError, PREVIEW_ROUTE, ViewBuild, build_spec_in, build_view_in, default_view, rebuild_after_move,
 };
 use c4rizer_core::place::Keep;
 use c4rizer_core::view::BoxId;
@@ -150,6 +150,9 @@ pub enum Job {
         keep: Keep,
         /// True for the view on screen, false for a background build.
         shown: bool,
+        /// Light or dark: the styles and defaults it is built with
+        /// (P2-433).
+        mode: Mode,
     },
     /// A drag preview (`pipeline::rebuild_after_move` with
     /// `pipeline::PREVIEW_ROUTE`): only lines touching the moved boxes
@@ -175,6 +178,8 @@ pub enum Job {
         /// PNG width per target, `None` for twice the scene's width
         /// (EDIT-7 default).
         png_width: Option<u32>,
+        /// The mode shown on the canvas, so the files equal it (P2-433).
+        mode: Mode,
     },
 }
 
@@ -426,7 +431,8 @@ pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
             view,
             keep,
             shown,
-        } => match build(&parsed.model, &view, &keep, stop) {
+            mode,
+        } => match build(&parsed.model, &view, &keep, mode, stop) {
             Built::Done(build) => Some(Reply::Built {
                 generation,
                 view,
@@ -451,9 +457,10 @@ pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
             targets,
             format,
             png_width,
+            mode,
         } => Some(Reply::Exported {
             generation,
-            result: export(&parsed.model, &targets, format, png_width),
+            result: export(&parsed.model, &targets, format, png_width, mode),
         }),
     }
 }
@@ -470,9 +477,9 @@ enum Built {
 
 /// Builds `view` of `model` with `keep`: a declared view by key, a default
 /// view through `pipeline::default_view` (EDIT-15).
-fn build(model: &Model, view: &ViewRef, keep: &Keep, stop: &AtomicBool) -> Built {
+fn build(model: &Model, view: &ViewRef, keep: &Keep, mode: Mode, stop: &AtomicBool) -> Built {
     let result = match view {
-        ViewRef::Declared(key) => match build_view(model, key, keep, stop) {
+        ViewRef::Declared(key) => match build_view_in(model, key, keep, mode, stop) {
             Ok(b) => Ok(b),
             Err(BuildError::Stopped(_)) => return Built::Stopped,
             Err(_) => return Built::NoView,
@@ -481,7 +488,7 @@ fn build(model: &Model, view: &ViewRef, keep: &Keep, stop: &AtomicBool) -> Built
             let Some(spec) = model.find(scope).and_then(|id| default_view(model, id, *kind)) else {
                 return Built::NoView;
             };
-            build_spec(model, &spec, keep, stop)
+            build_spec_in(model, &spec, keep, mode, stop)
         }
     };
     match result {
@@ -497,12 +504,13 @@ fn export(
     targets: &[ExportTarget],
     format: ExportFormat,
     png_width: Option<u32>,
+    mode: Mode,
 ) -> Result<Vec<PathBuf>, String> {
     // An export is never stopped: its flag is never set.
     let never = AtomicBool::new(false);
     let mut written = Vec::with_capacity(targets.len());
     for target in targets {
-        let Built::Done(build) = build(model, &target.view, &target.keep, &never) else {
+        let Built::Done(build) = build(model, &target.view, &target.keep, mode, &never) else {
             return Err(format!(
                 "cannot export view \"{}\": it is no longer in the file",
                 target.view.key()
@@ -627,6 +635,7 @@ mod tests {
             view: declared(key),
             keep: Keep::default(),
             shown,
+            mode: c4rizer_core::model::Mode::Light,
         }
     }
 
@@ -646,6 +655,7 @@ mod tests {
             targets: Vec::new(),
             format: ExportFormat::Svg,
             png_width: None,
+            mode: c4rizer_core::model::Mode::Light,
         }
     }
 
@@ -788,6 +798,7 @@ mod tests {
             view: declared("heavy"),
             keep: Keep::default(),
             shown: false,
+            mode: c4rizer_core::model::Mode::Light,
         }));
         // Wait until the thread runs it.
         let start = Instant::now();
@@ -839,6 +850,7 @@ mod tests {
             }],
             format: ExportFormat::Svg,
             png_width: None,
+            mode: c4rizer_core::model::Mode::Light,
         };
         let reply = serve(req(9, job), &AtomicBool::new(true));
         let Some(Reply::Exported { generation, result }) = reply else {
@@ -866,6 +878,7 @@ mod tests {
             view: view.clone(),
             keep: Keep::default(),
             shown: true,
+            mode: c4rizer_core::model::Mode::Light,
         };
         let reply = serve(req(3, job(&view)), &AtomicBool::new(false));
         let Some(Reply::Built { build, view: v, .. }) = reply else {

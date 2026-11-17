@@ -1,4 +1,4 @@
-//! c4rizer CLI: `c4rizer render FILE -o DIR [--png [--width N]]` and
+//! c4rizer CLI: `c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark]` and
 //! `c4rizer lint FILE`, exit code 0 clean, 1 lint errors, 2 parse or I/O
 //! error (CLI-1..5).
 //!
@@ -92,14 +92,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
-use c4rizer_core::model::{self, ModelError};
+use c4rizer_core::model::{self, Mode, ModelError};
 use c4rizer_core::text::FileId;
 use c4rizer_core::{export, pipeline};
 
 /// The usage text printed to stderr on every usage error (exit 2). Names
 /// both phase-1 subcommands and their flags (CLI-1, CLI-3, CLI-4).
 pub(crate) const USAGE: &str = "\
-usage: c4rizer render FILE -o DIR [--png [--width N]]
+usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark]
        c4rizer lint FILE
 FILE `-` reads the diagram from stdin.
 exit code: 0 clean, 1 lint errors, 2 parse, I/O or usage error";
@@ -149,6 +149,8 @@ pub(crate) enum Command {
         out_dir: PathBuf,
         /// `--png [--width N]`, `None` without `--png`.
         png: Option<Png>,
+        /// `--mode light|dark`; light when not given (P2-432).
+        mode: Mode,
     },
     /// `c4rizer lint FILE`: the same checks and report, no file written
     /// (CLI-3).
@@ -186,6 +188,9 @@ pub(crate) enum UsageError {
     InvalidWidth(String),
     /// `--width` without `--png`.
     WidthWithoutPng,
+    /// `--mode` with a value other than `light` or `dark`, as given
+    /// (P2-432).
+    InvalidMode(String),
 }
 
 impl fmt::Display for UsageError {
@@ -214,6 +219,9 @@ impl fmt::Display for UsageError {
                 u32::MAX
             ),
             UsageError::WidthWithoutPng => f.write_str("`--width` needs `--png`"),
+            UsageError::InvalidMode(m) => {
+                write!(f, "invalid --mode \"{m}\" — give `light` or `dark`")
+            }
         }
     }
 }
@@ -359,6 +367,7 @@ where
     let mut out_dir: Option<PathBuf> = None;
     let mut png = false;
     let mut width: Option<NonZeroU32> = None;
+    let mut mode: Option<Mode> = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("-o") if render => {
@@ -385,6 +394,19 @@ where
                     .ok_or_else(|| UsageError::InvalidWidth(lossy(&value)))?;
                 width = Some(parsed);
             }
+            // DECISION: `--mode` takes exactly `light` or `dark` in lower
+            // case, as Structurizr's `-mode` values are written (P2-432).
+            Some("--mode") if render => {
+                if mode.is_some() {
+                    return Err(UsageError::Repeated("--mode"));
+                }
+                let value = args.next().ok_or(UsageError::MissingValue("--mode"))?;
+                mode = Some(match value.to_str() {
+                    Some("light") => Mode::Light,
+                    Some("dark") => Mode::Dark,
+                    _ => return Err(UsageError::InvalidMode(lossy(&value))),
+                });
+            }
             _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
             _ if file.is_some() => return Err(UsageError::ExtraArgument(lossy(&arg))),
             _ => file = Some(arg),
@@ -409,6 +431,7 @@ where
         input,
         out_dir,
         png: png.then_some(Png { width }),
+        mode: mode.unwrap_or_default(),
     })
 }
 
@@ -594,8 +617,13 @@ pub(crate) fn run(
             input,
             out_dir,
             png,
+            mode: _,
         } => (input, Some((out_dir, *png))),
         Command::Lint { input } => (input, None),
+    };
+    let mode = match command {
+        Command::Render { mode, .. } => *mode,
+        Command::Lint { .. } => Mode::Light,
     };
     if !cfg!(feature = "png") && matches!(render, Some((_, Some(_)))) {
         return Err(CliError::PngUnavailable);
@@ -604,7 +632,7 @@ pub(crate) fn run(
     let mut loader = Recording::default();
     let parsed = parse(input, &text, &mut loader)?;
     // A flag that is never set: `build_all` cannot return `Stopped`.
-    let Ok(all) = pipeline::build_all(&parsed.model, &AtomicBool::new(false)) else {
+    let Ok(all) = pipeline::build_all_in(&parsed.model, mode, &AtomicBool::new(false)) else {
         unreachable!("the stop flag is never set");
     };
     if let Some((out_dir, _)) = render {
@@ -795,6 +823,7 @@ mod tests {
             input: Input::Path(path.to_path_buf()),
             out_dir: out.to_path_buf(),
             png: None,
+            mode: c4rizer_core::model::Mode::Light,
         }
     }
 
@@ -871,6 +900,7 @@ mod tests {
             png: Some(Png {
                 width: NonZeroU32::new(800),
             }),
+            mode: c4rizer_core::model::Mode::Light,
         };
         for order in [
             &["render", "a.dsl", "-o", "out", "--png", "--width", "800"][..],
@@ -885,6 +915,7 @@ mod tests {
                 input: Input::Path("a.dsl".into()),
                 out_dir: "out".into(),
                 png: Some(Png { width: None }),
+                mode: c4rizer_core::model::Mode::Light,
             }
         );
         assert_eq!(
@@ -1020,6 +1051,7 @@ mod tests {
             input: Input::Path(dir.path().join("absent.dsl")),
             out_dir: out.clone(),
             png: Some(Png { width: None }),
+            mode: c4rizer_core::model::Mode::Light,
         };
         let (result, report) = go(&command);
         let error = result.unwrap_err();

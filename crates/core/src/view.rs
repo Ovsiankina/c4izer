@@ -70,8 +70,9 @@ use std::collections::BTreeMap;
 
 use crate::geom::{Point, Rect, snap_px_to_grid};
 use crate::model::{
-    ElementId, ElementKind, GroupId, ImpliedRelationships, Model, RelationshipId, ResolvedStyle, ViewKind, ViewOptions, ViewScope,
-    ViewSpec,
+    ElementId, ElementKind, GroupId, ImpliedRelationships, Mode, Model, RelationshipId,
+    ResolvedBoundaryStyle, ResolvedRelationshipStyle, ResolvedStyle, ViewKind, ViewOptions,
+    ViewScope, ViewSpec,
 };
 
 /// Index of a box in `ViewPlan::boxes`, valid for one plan only. It is
@@ -176,6 +177,21 @@ pub struct PlanEdge {
     /// The winner's technology, unquoted, as written; read it through
     /// `shown_technology` (CORE-4).
     pub technology: Option<String>,
+    /// The winner's resolved relationship style in the plan's mode, with
+    /// the view's per-view `line` layout (position, routing, jump) folded
+    /// in over it (O9); `ResolvedRelationshipStyle::DEFAULT` for an
+    /// unstyled line. `route`, `label` and `scene` read it. Serves P2-12,
+    /// P2-418..P2-426.
+    pub style: ResolvedRelationshipStyle,
+    /// The key entry the line belongs to (P2-27): the last tag of the
+    /// winner, in DSL-15 order, that has a relationship style block in
+    /// the plan's mode and is not `Relationship`; `None` for the shared
+    /// `Relationship` entry.
+    // DECISION: crate-private, not pub: `scene` builds the key from the
+    // plan alone (HLD: scene does not call model), and the frozen pub
+    // surface has no field for it. Listed in docs/deferred.md in case the
+    // owner wants it pub.
+    pub(crate) style_tag: Option<String>,
 }
 
 impl PlanEdge {
@@ -232,6 +248,9 @@ pub struct Boundary {
     /// The boxes inside, in `ViewPlan::boxes` order; never empty (a
     /// scope with no drawn child has no boundary).
     pub members: Vec<BoxId>,
+    /// Its look from the `Boundary*` or `Group*` element styles in the
+    /// plan's mode (`Model::boundary_style_in`). Serves P2-411, P2-412.
+    pub style: ResolvedBoundaryStyle,
 }
 
 /// Everything one view draws, before placement and routing: boxes,
@@ -265,6 +284,9 @@ pub struct ViewPlan {
     /// (phase 1 holds at most that one, CORE-1), then one per group with a
     /// drawn member (P2-130).
     pub boundaries: Vec<Boundary>,
+    /// The mode styles were resolved in; `scene` draws its defaults
+    /// (P2-431). Serves P2-430.
+    pub mode: Mode,
 }
 
 impl ViewPlan {
@@ -379,19 +401,36 @@ fn union(a: Rect, b: Rect) -> Rect {
 /// When `view` does not belong to `model`: its element ids index out of
 /// range.
 pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
+    plan_in(model, view, Mode::Light)
+}
+
+/// `plan` in `mode`: box styles from `Model::style_of_in` (a resolved
+/// `width`/`height` replaces that dimension of the CORE-2 kind default,
+/// and a `size` line still wins), each edge's `style` from
+/// `Model::relationship_style_of_in` of its winner, each boundary's
+/// `style` from `Model::boundary_style_in`, and `ViewPlan::mode` set.
+/// `plan(model, view)` equals `plan_in(model, view, Mode::Light)`.
+/// Serves P2-430, P2-12, P2-402, P2-411, P2-412.
+///
+/// # Panics
+///
+/// As `plan`.
+pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
     let boxes: Vec<PlanBox> = model
         .included(view)
         .into_iter()
         .enumerate()
-        .map(|(i, element)| plan_box(model, view, index_u32(i), element))
+        .map(|(i, element)| plan_box(model, view, index_u32(i), element, mode))
         .collect();
     let mut edges = plan_edges(model, &boxes);
     filter_focus_and_hide(model, view, &boxes, &mut edges);
     for (i, e) in edges.iter_mut().enumerate() {
         e.id = EdgeId(index_u32(i));
+        e.style = model.relationship_style_of_in(e.winner(), mode);
+        e.style_tag = style_tag(model, e.winner(), mode);
     }
-    let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes).into_iter().collect();
-    boundaries.extend(group_boundaries(model, view, &boxes));
+    let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes, mode).into_iter().collect();
+    boundaries.extend(group_boundaries(model, view, &boxes, mode));
     ViewPlan {
         key: view.key.clone(),
         kind: view.kind,
@@ -402,6 +441,7 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
         boxes,
         edges,
         boundaries,
+        mode,
     }
 }
 
@@ -447,7 +487,7 @@ fn filter_focus_and_hide(
 // last segment of a nested name), as the Structurizr UI draws it; the
 // look is the phase-1 boundary's (B dsl-breadth 14c). Both close the
 // P2-130 TODO(srs) readings in `BoundaryOf::Group`.
-fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Vec<Boundary> {
+fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode) -> Vec<Boundary> {
     let setting = |props: &[crate::model::Property]| {
         props
             .iter()
@@ -491,6 +531,9 @@ fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Vec<Bo
                 of: BoundaryOf::Group(g.id),
                 name: g.name.value.clone(),
                 members,
+                // P2-412: `Group`, then `Group:<full name>` (B dsl-breadth
+                // 14c), styled as any boundary.
+                style: model.boundary_style_in(&["Group", &format!("Group:{}", g.full_name)], mode),
             })
         })
         .collect()
@@ -499,7 +542,7 @@ fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Vec<Bo
 /// The phase-1 boundary: on container and component views, the scope's
 /// drawn children; `None` on a context view or with no drawn child
 /// (CORE-1).
-fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Option<Boundary> {
+fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode) -> Option<Boundary> {
     let scope = view.scope.element()?;
     match view.kind {
         ViewKind::Container | ViewKind::Component => {}
@@ -515,11 +558,42 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox]) -> Option<B
     if members.is_empty() {
         return None;
     }
+    // P2-411: `Boundary`, then the scope kind's tag.
+    let kind_tag = match model.element(scope).kind {
+        ElementKind::Container => "Boundary:Container",
+        _ => "Boundary:SoftwareSystem",
+    };
     Some(Boundary {
         of: BoundaryOf::Element(scope),
         name: model.element(scope).name.value.clone(),
         members,
+        style: model.boundary_style_in(&["Boundary", kind_tag], mode),
     })
+}
+
+/// The dark-mode defaults of a box (P2-431): a fill and a text colour no
+/// style block sets become #333333 and #ffffff. The model's resolved
+/// style stays mode-independent (P2-430); only the drawing changes.
+// TODO(srs): P2-431. Reading taken (B styles-themes 10c): background
+// #111111, box text #ffffff, default box fill #333333, line and boundary
+// #aaaaaa (the last three in `scene`).
+fn dark_defaults(model: &Model, element: ElementId, style: &mut ResolvedStyle) {
+    let blocks = model.styles_for_in(element, Mode::Dark);
+    let sets = |f: fn(&crate::model::ElementStyle) -> bool| blocks.iter().any(|&i| f(&model.element_styles[i]));
+    if !sets(|s| s.background.is_some()) {
+        style.background = crate::model::Colour {
+            r: 0x33,
+            g: 0x33,
+            b: 0x33,
+        };
+    }
+    if !sets(|s| s.color.is_some()) {
+        style.color = crate::model::Colour {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        };
+    }
 }
 
 /// Half of a `size` length in px, in whole grid units rounded up.
@@ -546,15 +620,34 @@ const fn default_half_size(kind: ElementKind) -> (i32, i32) {
     }
 }
 
-/// The box drawing `element`, at index `index`.
-fn plan_box(model: &Model, view: &ViewSpec, index: u32, element: ElementId) -> PlanBox {
+/// The box drawing `element`, at index `index`, styled in `mode`.
+fn plan_box(
+    model: &Model,
+    view: &ViewSpec,
+    index: u32,
+    element: ElementId,
+    mode: Mode,
+) -> PlanBox {
     let e = model.element(element);
-    let (half_width, half_height) = match view.size_of(element) {
-        Some(size) => (
+    let mut style = model.style_of_in(element, mode);
+    if mode == Mode::Dark {
+        dark_defaults(model, element, &mut style);
+    }
+    // P2-402: a `size` line wins; else a resolved `width`/`height`
+    // replaces that dimension of the kind default, each on its own.
+    // DECISION: the half size rounds up to whole grid units as for a
+    // `size` line, so a styled width of 310px draws 320px wide.
+    let (half_width, half_height) = if let Some(size) = view.size_of(element) {
+        (
             half_size_units(size.width.value),
             half_size_units(size.height.value),
-        ),
-        None => default_half_size(e.kind),
+        )
+    } else {
+        let (w, h) = default_half_size(e.kind);
+        (
+            style.width.map_or(w, half_size_units),
+            style.height.map_or(h, half_size_units),
+        )
     };
     let centre = view
         .position_of(element)
@@ -565,7 +658,7 @@ fn plan_box(model: &Model, view: &ViewSpec, index: u32, element: ElementId) -> P
         kind: e.kind,
         external: e.is_external(),
         tags: e.tags.clone(),
-        style: model.style_of(element),
+        style,
         name: e.name.value.clone(),
         description: e.description.as_ref().map(|d| d.value.clone()),
         // DECISION: a custom element shows its metadata where other boxes
@@ -606,6 +699,23 @@ fn is_ancestor(model: &Model, ancestor: ElementId, element: ElementId) -> bool {
     false
 }
 
+/// The P2-27 key tag of `relationship` in `mode` (`PlanEdge::style_tag`).
+fn style_tag(model: &Model, relationship: RelationshipId, mode: Mode) -> Option<String> {
+    model
+        .relationship(relationship)
+        .tags
+        .iter()
+        .rev()
+        .filter(|t| t.as_str() != "Relationship")
+        .find(|t| {
+            model
+                .relationship_styles
+                .iter()
+                .any(|s| s.tag.value == **t && s.mode.is_none_or(|m| m == mode))
+        })
+        .cloned()
+}
+
 /// Every line after lifting and de-duplication (CORE-5), sorted by the
 /// winning relationship's id.
 ///
@@ -622,6 +732,8 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         relationships: vec![r.id],
         description: r.description.as_ref().map(|d| d.value.clone()),
         technology: r.technology.as_ref().map(|t| t.value.clone()),
+        style: ResolvedRelationshipStyle::DEFAULT,
+        style_tag: None,
     };
     let mut edges: Vec<PlanEdge> = Vec::new();
     // Lifted relationships per ordered box pair, in relationship order.
@@ -643,8 +755,9 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         let direct = source_element == s && destination_element == d;
         if direct {
             edges.push(new_edge(r, source, destination));
-        } else if model.implied_relationships == ImpliedRelationships::False {
-            // P2-7: `!impliedRelationships false` lifts nothing.
+        } else if r.implied_relationships == ImpliedRelationships::False {
+            // P2-7: a relationship declared under `!impliedRelationships
+            // false` lifts to nothing.
         } else if is_ancestor(model, source_element, destination_element)
             || is_ancestor(model, destination_element, source_element)
         {

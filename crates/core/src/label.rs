@@ -228,15 +228,40 @@ pub const ARROW_GAP_PX: i32 = 50;
 /// words split on whitespace, a word longer than the width alone on its
 /// line, never broken), then `[technology]` on its own line when
 /// `edge.shown_technology(options)` is `Some` (CORE-4: none under
-/// `technology off`). Empty when the edge has neither. Serves CORE-14,
-/// CORE-4.
+/// `technology off`). Empty when the edge has neither. With a style
+/// `width W` the description wraps to W px at the label's size instead
+/// (P2-424). Serves CORE-14, CORE-4, P2-424.
 #[must_use]
 pub fn label_lines(edge: &PlanEdge, options: &ViewOptions) -> Vec<String> {
-    let width = usize::try_from(options.label_width).unwrap_or(usize::MAX);
+    let description = edge.description.as_deref().unwrap_or("");
+    let mut lines = match edge.style.width {
+        // P2-424: wrap to W px of text at the label's own size (CORE-30
+        // table), in place of `labelWidth` characters.
+        Some(w) => wrap_px(
+            description,
+            label_font_px(edge),
+            i32::try_from(w).unwrap_or(i32::MAX),
+        ),
+        None => wrap_chars(description, options.label_width),
+    };
+    // DECISION: a blank technology counts as none, as in the prototype
+    // (`if e['tech']`), so no empty `[]` line is drawn.
+    if let Some(tech) = edge.shown_technology(options)
+        && !tech.trim().is_empty()
+    {
+        lines.push(format!("[{tech}]"));
+    }
+    lines
+}
+
+/// `text` wrapped at `width` characters (Unicode scalar values), words
+/// split on whitespace, a longer word alone on its line.
+fn wrap_chars(text: &str, width: u32) -> Vec<String> {
+    let width = usize::try_from(width).unwrap_or(usize::MAX);
     let mut lines = Vec::new();
     let mut cur = String::new();
     let mut cur_len = 0usize;
-    for word in edge.description.as_deref().unwrap_or("").split_whitespace() {
+    for word in text.split_whitespace() {
         let n = word.chars().count();
         if cur_len > 0 && cur_len + 1 + n > width {
             lines.push(std::mem::take(&mut cur));
@@ -252,14 +277,51 @@ pub fn label_lines(edge: &PlanEdge, options: &ViewOptions) -> Vec<String> {
     if cur_len > 0 {
         lines.push(cur);
     }
-    // DECISION: a blank technology counts as none, as in the prototype
-    // (`if e['tech']`), so no empty `[]` line is drawn.
-    if let Some(tech) = edge.shown_technology(options)
-        && !tech.trim().is_empty()
-    {
-        lines.push(format!("[{tech}]"));
+    lines
+}
+
+/// `text` wrapped greedily to `max_px` of Inter Regular at `size_px`
+/// (CORE-30 table), a wider word alone on its line (P2-424).
+fn wrap_px(text: &str, size_px: i32, max_px: i32) -> Vec<String> {
+    let width = |t: &str| (text_advance(t, Weight::Regular) * size_px + EM - 1) / EM;
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+            continue;
+        }
+        let candidate = format!("{cur} {word}");
+        if width(&candidate) > max_px {
+            lines.push(std::mem::replace(&mut cur, word.to_owned()));
+        } else {
+            cur = candidate;
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
     }
     lines
+}
+
+/// The label text size of `edge`: its style's `fontSize`, else
+/// `LABEL_FONT_PX` (P2-423).
+fn label_font_px(edge: &PlanEdge) -> i32 {
+    edge.style
+        .font_size
+        .map_or(LABEL_FONT_PX, |n| i32::try_from(n).unwrap_or(LABEL_FONT_PX).clamp(1, 1000))
+}
+
+/// The label line pitch of `edge`: `fontSize + 2`, else `LABEL_LINE_PX`
+/// (P2-423).
+// TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal): N + 2,
+// as 11 on 13 in phase 1.
+fn label_line_px(edge: &PlanEdge) -> i32 {
+    if edge.style.font_size.is_some() {
+        label_font_px(edge) + 2
+    } else {
+        LABEL_LINE_PX
+    }
 }
 
 /// How a placed label sits. `#[non_exhaustive]` so later phases (a label
@@ -301,6 +363,13 @@ pub struct Label {
     pub height_px: i32,
     /// Whether it sits clear, over lines, or with no room (CORE-15).
     pub fit: Fit,
+    /// Text size in px: the edge style's `font_size`, else
+    /// `LABEL_FONT_PX` (P2-423).
+    pub font_px: i32,
+    /// Line pitch in px: `font_px + 2`, else `LABEL_LINE_PX` (P2-423).
+    // TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal):
+    // N + 2, as 11/13 in phase 1.
+    pub line_px: i32,
 }
 
 impl Label {
@@ -403,13 +472,39 @@ pub(crate) fn boundary_tag_with(
     words: &Words<'_>,
 ) -> Option<Rect> {
     let outer = plan.boundary_rect(index, centres)?;
-    let text = tag_text(plan, index, words);
-    let text_px = (text_advance(&text, Weight::Bold) * TAG_FONT_PX + EM - 1) / EM;
+    let boundary = &plan.boundaries[index];
+    let font_px = boundary_tag_font_px(boundary);
+    let text = boundary_tag_text(plan, index, words);
+    let text_px = (text_advance(&text, Weight::Bold) * font_px + EM - 1) / EM;
     let right_px = grid_to_px(outer.min.x) + TAG_TEXT_INSET_PX + text_px + TAG_PAD_RIGHT_PX;
+    // DECISION: a larger tag font (P2-411 `fontSize`) grows the tag by the
+    // same px, so the 30px band at 12px keeps 18px of room around the text.
+    let height = TAG_HEIGHT_UNITS.max(ceil_grid(font_px + 18));
     Some(Rect::from_corners(
-        Point::new(outer.min.x, outer.max.y - TAG_HEIGHT_UNITS),
+        Point::new(outer.min.x, outer.max.y - height),
         Point::new(ceil_grid(right_px), outer.max.y),
     ))
+}
+
+/// The name-tag size in px of `boundary`: its style's `fontSize`, else
+/// 12 (P2-411). `scene` draws the tag at it.
+pub(crate) fn boundary_tag_font_px(boundary: &crate::view::Boundary) -> i32 {
+    boundary
+        .style
+        .font_size
+        .map_or(TAG_FONT_PX, |n| i32::try_from(n).unwrap_or(TAG_FONT_PX).clamp(1, 1000))
+}
+
+/// The name-tag text of `boundary`: the name, then the scope's type in
+/// brackets unless its style says `metadata false` (P2-411). `scene`
+/// draws exactly this text.
+pub(crate) fn boundary_tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>) -> String {
+    let boundary = &plan.boundaries[index];
+    if boundary.style.metadata {
+        tag_text(plan, index, words)
+    } else {
+        boundary.name.clone()
+    }
 }
 
 // DECISION: the boundary name tag (CORE-1 gives its text, not its size):
@@ -529,7 +624,8 @@ impl<'a> Words<'a> {
 /// points (on any segment, so a label may straddle a bend) at least
 /// `START_GAP_PX` along the line from its start and `ARROW_GAP_PX` back
 /// from its arrowhead, ordered by distance along the line from half its
-/// length, ties to the one nearer the start. The first candidate clear
+/// length (or from `position` percent of it, P2-425), ties to the one
+/// nearer the start. The first candidate clear
 /// of every box, every label already placed, every other line and every
 /// boundary tag wins (`Fit::Clear`); else, among the candidates still
 /// clear of every box, placed label and boundary tag, the one covering
@@ -583,7 +679,8 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
                 continue;
             }
         }
-        let (width_px, height_px) = label_size(&lines);
+        let (font_px, line_px) = (label_font_px(edge), label_line_px(edge));
+        let (width_px, height_px) = label_size(&lines, font_px, line_px);
         let mut label = Label {
             edge: edge.id,
             lines,
@@ -591,11 +688,13 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
             width_px,
             height_px,
             fit: Fit::NoRoom,
+            font_px,
+            line_px,
         };
         let spots = walk(&line.points);
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
         let mut best: Option<(Point, Vec<EdgeId>)> = None;
-        for c in candidates(&spots, line.joins().is_some()) {
+        for c in candidates(&spots, line.joins().is_some(), edge.style.position) {
             label.centre = c;
             let rect = label.px_rect();
             if scene.blocked(&rect) || placed.iter().any(|p| p.overlaps(&rect)) {
@@ -708,17 +807,17 @@ const fn ceil_grid(px: i32) -> i32 {
 
 /// Rectangle size in px of a label of `lines` (CORE-14 font, pitch and
 /// paddings).
-fn label_size(lines: &[String]) -> (i32, i32) {
+fn label_size(lines: &[String], font_px: i32, line_px: i32) -> (i32, i32) {
     let widest = lines
         .iter()
         .map(|s| text_advance(s, Weight::Regular))
         .max()
         .unwrap_or(0);
-    let text_px = (widest * LABEL_FONT_PX + EM - 1) / EM;
-    let count = i32::try_from(lines.len()).unwrap_or(i32::MAX / LABEL_LINE_PX);
+    let text_px = (widest * font_px + EM - 1) / EM;
+    let count = i32::try_from(lines.len()).unwrap_or(i32::MAX / line_px.max(1));
     (
         text_px + 2 * LABEL_PAD_X_PX,
-        count * LABEL_LINE_PX + 2 * LABEL_PAD_Y_PX,
+        count * line_px + 2 * LABEL_PAD_Y_PX,
     )
 }
 
@@ -763,11 +862,19 @@ fn by_middle(total: i64) -> impl Fn(&(Point, i64)) -> (i64, i64) {
     move |&(_, d)| ((2 * d - total).abs(), d)
 }
 
+/// Sort key of a spot for a label at `percent` of the line's length
+/// (P2-425): distance from that point (times 100, to stay whole), then
+/// distance from the start. At 50 it orders as `by_middle`.
+fn by_position(total: i64, percent: u8) -> impl Fn(&(Point, i64)) -> (i64, i64) {
+    let p = i64::from(percent.min(100));
+    move |&(_, d)| ((100 * d - p * total).abs(), d)
+}
+
 /// The candidate centres of a line walked by `walk`, best first: at
 /// least `START_GAP_PX` from the start and, unless the line ends in a
 /// join dot, `ARROW_GAP_PX` back from its end; ordered by distance from
 /// the middle, ties to the one nearer the start.
-fn candidates(spots: &[(Point, i64)], joined: bool) -> Vec<Point> {
+fn candidates(spots: &[(Point, i64)], joined: bool, position: Option<u8>) -> Vec<Point> {
     let total = spots.last().map_or(0, |&(_, d)| d);
     let start = i64::from(START_GAP_PX) * MILLI;
     let end = if joined {
@@ -780,7 +887,11 @@ fn candidates(spots: &[(Point, i64)], joined: bool) -> Vec<Point> {
         .copied()
         .filter(|&(_, d)| d >= start && total - d >= end)
         .collect();
-    keep.sort_by_key(by_middle(total));
+    match position {
+        // No `position`: exactly phase 1 (P2-425).
+        None => keep.sort_by_key(by_middle(total)),
+        Some(p) => keep.sort_by_key(by_position(total, p)),
+    }
     keep.into_iter().map(|(p, _)| p).collect()
 }
 
@@ -1145,6 +1256,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let mut centres = far(2);
         centres[0] = pt(0, 0);
@@ -1294,6 +1406,8 @@ mod tests {
             width_px: 43,
             height_px: 19,
             fit: Fit::Clear,
+            font_px: LABEL_FONT_PX,
+            line_px: LABEL_LINE_PX,
         };
         // px rectangle: x 9..52, y 11..30.
         assert_eq!(l.bounds(), Rect::from_corners(pt(0, 1), pt(6, 3)));
@@ -1319,6 +1433,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0), BoxId(1)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let centres = vec![pt(0, 0), pt(30, 20)];
         let outer = p.boundary_rect(0, &centres).expect("boundary");
@@ -1468,6 +1583,7 @@ mod tests {
             of: BoundaryOf::Element(p.boxes[0].element),
             name: "Shop".into(),
             members: vec![BoxId(0)],
+            style: crate::model::ResolvedBoundaryStyle::DEFAULT,
         }];
         let r = routes(
             vec![pt(0, 0), pt(40, 0), pt(40, 30)],
