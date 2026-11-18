@@ -591,3 +591,24 @@ fn decision_link(line: &str) -> Option<DecisionLink> {
         target: number_of(stem).unwrap_or_else(|| stem.to_owned()),
     })
 }
+
+/// An image file a documentation section draws (P3-514): the file's
+/// bytes as a `model::Asset` (for `export::rasterize_asset`) with its
+/// declared width and height in px; `None` when the bytes are not a PNG,
+/// JPEG or SVG image or declare no size.
+// APPROVER: new pub item (core's `Asset` cannot be built outside core,
+// and the editor needs the image's size to draw it at its own size).
+#[must_use]
+pub fn image_asset(path: &str, bytes: &[u8]) -> Option<(crate::model::Asset, i32, i32)> {
+    let mime = crate::model::sniff_image(bytes)?;
+    let (width, height) = crate::scene::intrinsic_size(mime, bytes)?;
+    Some((
+        crate::model::Asset {
+            path: path.to_owned(),
+            mime,
+            bytes: bytes.into(),
+        },
+        width,
+        height,
+    ))
+}

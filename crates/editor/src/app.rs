@@ -80,6 +80,8 @@ pub struct App {
     include_tx: Sender<(PathBuf, FileEvent)>,
     /// Included-file events from the include watcher.
     include_rx: Receiver<(PathBuf, FileEvent)>,
+    /// The explore pages (P3-9), shown instead of the canvas while open.
+    explore: crate::explore::Explore,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -153,6 +155,7 @@ impl App {
             includes: None,
             include_tx,
             include_rx,
+            explore: crate::explore::Explore::default(),
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -1059,9 +1062,13 @@ impl eframe::App for App {
         let mut left = self.state.aids.view_list;
         let mut fit = fit_key_pressed(&ctx);
         let mut dark = self.state.mode() == Mode::Dark;
+        let mut explore = self.explore.open;
         egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut left, "Views");
+                // P3-9: the explore pages replace the canvas while on.
+                ui.toggle_value(&mut explore, "Explore")
+                    .on_hover_text("Model, relationships, graph, tree, documentation and decisions");
                 if ui.button("Fit view").on_hover_text("F").clicked() {
                     fit = true;
                 }
@@ -1094,6 +1101,7 @@ impl eframe::App for App {
             });
         });
         self.panels = Some((left, right));
+        self.explore.open = explore;
         // DECISION: the toolbar toggle writes the view-only flag directly,
         // as the shell writes `io_error`; it changes no file (P2-730).
         self.state.aids.view_list = left;
@@ -1118,6 +1126,12 @@ impl eframe::App for App {
                 .size_range(min..=max)
                 .show(ui, |ui| events.extend(self.right_panel(ui)));
         }
+        if self.explore.open
+            && let Some(parsed) = self.state.doc.as_ref().and_then(|d| d.parsed.clone())
+        {
+            self.explore_frame(ui, &ctx, &parsed, events);
+            return;
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             let size = ui.available_size();
             // P2-711: the canvas size anchors the zoom keys and the fits.
@@ -1138,6 +1152,42 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The explore pages in the central panel (P3-9), and the actions
+    /// their clicks make: open a view with a box selected, or copy text.
+    /// Nothing here writes the file (P3-507).
+    fn explore_frame(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        parsed: &Arc<c4rizer_core::model::Parsed>,
+        mut events: Vec<Event>,
+    ) {
+        let actions = egui::CentralPanel::default()
+            .show(ui, |ui| {
+                self.explore.mode = self.state.mode();
+                self.explore.sync(parsed);
+                self.explore.show(ui, &parsed.model)
+            })
+            .inner;
+        for action in actions {
+            match action {
+                crate::explore::Action::Open { view, element } => {
+                    self.explore.open = false;
+                    let effects = self.state.reveal(view, element);
+                    self.run(ctx, effects);
+                }
+                crate::explore::Action::Copy(text) => {
+                    ctx.copy_text(text.clone());
+                    self.state.notice = Some(format!("Copied {text}"));
+                }
+            }
+        }
+        events.extend(self.overlays(ctx));
+        for event in events {
+            self.dispatch(ctx, event);
+        }
+    }
+
     /// The list open over the canvas (P2-715 quick navigation, P2-725
     /// tag filter, P2-726 perspectives, P2-729 navigator), as a window;
     /// returns the events its widgets make.

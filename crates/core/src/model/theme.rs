@@ -493,7 +493,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The type of an image file, from its first bytes.
-fn sniff(bytes: &[u8]) -> Option<Mime> {
+pub(crate) fn sniff(bytes: &[u8]) -> Option<Mime> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some(Mime::Png);
     }
