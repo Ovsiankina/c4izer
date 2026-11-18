@@ -68,7 +68,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::geom::{Point, Rect, snap_px_to_grid};
+use crate::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use crate::model::{
     Expression, ImageSource, Selector, is_relationship_expression,
 };
@@ -452,6 +452,50 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
 ///
 /// As `plan`.
 pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
+    let mut plan = plan_raw(model, view, mode);
+    // P3-4: each `via` line's points, in grid units, on the line it names.
+    for via in &view.vias {
+        if let Some(edge) = via_edge(&plan, via) {
+            plan.edges[edge.0 as usize].vertices = via
+                .points
+                .iter()
+                .map(|p| Point::new(p.value.0.div_euclid(GRID_PX), p.value.1.div_euclid(GRID_PX)))
+                .collect();
+        }
+    }
+    plan
+}
+
+/// The drawn line a `via` line names (P3-300, P3-301): the first edge
+/// from a box of `via.source` to a box of `via.destination`; in a dynamic
+/// view the one whose step number is `via.order`, else the one with the
+/// lowest step number. `None` when the plan draws no such line.
+// DECISION: "lowest number" compares integer step numbers numerically;
+// a non-integer number (`2a`, P3-209) sorts after every integer, then
+// by text; equal numbers keep edge order.
+pub(crate) fn via_edge(plan: &ViewPlan, via: &crate::model::Via) -> Option<EdgeId> {
+    let element = |b: BoxId| plan.boxes[b.0 as usize].element;
+    let mut candidates = plan
+        .edges
+        .iter()
+        .filter(|e| element(e.source) == via.source.value && element(e.destination) == via.destination.value);
+    if plan.kind != ViewKind::Dynamic {
+        return candidates.next().map(|e| e.id);
+    }
+    if let Some(order) = &via.order {
+        return candidates.find(|e| e.order.as_deref() == Some(order.value.as_str())).map(|e| e.id);
+    }
+    candidates
+        .min_by_key(|e| {
+            let text = e.order.clone().unwrap_or_default();
+            let number = text.parse::<i64>().ok();
+            (number.is_none(), number.unwrap_or(0), text, e.id)
+        })
+        .map(|e| e.id)
+}
+
+/// `plan_in` before the `via` lines are applied.
+fn plan_raw(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
     if view.kind == ViewKind::Dynamic {
         return dynamic_plan(model, view, mode);
     }
@@ -1035,7 +1079,7 @@ fn dark_defaults(model: &Model, element: ElementId, style: &mut ResolvedStyle) {
 
 /// Half of a `size` length in px, in whole grid units rounded up.
 fn half_size_units(px: i32) -> i32 {
-    let double_unit = 2 * crate::geom::GRID_PX;
+    let double_unit = 2 * GRID_PX;
     px.saturating_add(double_unit - 1).div_euclid(double_unit)
 }
 

@@ -5843,6 +5843,7 @@ impl Builder<'_> {
         view.description = description;
         self.view_body(statement, head, &mut view)?;
         self.check_positions(&view)?;
+        self.check_vias(&view)?;
         self.model.views.push(view);
         Ok(())
     }
@@ -5947,6 +5948,7 @@ impl Builder<'_> {
         }
         if kind.drawable() {
             self.check_positions(&view)?;
+            self.check_vias(&view)?;
         }
         self.model.views.push(view);
         Ok(())
@@ -6727,6 +6729,10 @@ impl Builder<'_> {
                 });
             }
             "papersize" | "line" => self.layout_line(head, view)?,
+            "via" => {
+                let via = self.via_line(head, view.kind == ViewKind::Dynamic)?;
+                view.vias.push(via);
+            }
             "size" => {
                 let (element, width, height) = self.box_line(head, true)?;
                 view.sizes.push(Size {
@@ -6986,6 +6992,103 @@ impl Builder<'_> {
             i += 2;
         }
         Ok(line)
+    }
+
+    /// `via [<n>:] <src> -> <dst> <x1> <y1> [<x2> <y2> ...]` (P3-300,
+    /// P3-301): the ends as written, an even number of px coordinates,
+    /// each a multiple of 10. `<n>:` only in a dynamic view.
+    // DECISION: the ends resolve like `hide`'s (any declared element);
+    // whether the view draws that line is checked once the view is
+    // parsed (`check_vias`), since it needs the whole view.
+    // DECISION: an odd count names the lone last value (P3-302: "an
+    // error naming the value").
+    fn via_line(&self, head: &Head<'_>, dynamic: bool) -> Result<Via, ModelError> {
+        let ordered = head.len() > 1 && head.kind(1) == Some(TokenKind::Word) && head.text(1).ends_with(':');
+        if ordered && !dynamic {
+            return Err(self.invalid(head, "via", 1));
+        }
+        let o = 1 + usize::from(ordered);
+        if head.len() < o + 3 {
+            return Err(self.missing(head, "`<source> -> <destination>`"));
+        }
+        if head.kind(o + 1) != Some(TokenKind::Arrow) {
+            return Err(self.invalid(head, "via", o + 1));
+        }
+        let source = self.view_element(head, o)?;
+        let destination = self.view_element(head, o + 2)?;
+        let first = o + 3;
+        if head.len() <= first {
+            return Err(self.missing(head, "vertex"));
+        }
+        let mut values = Vec::new();
+        for i in first..head.len() {
+            let value = match head.kind(i) {
+                Some(TokenKind::Word) => head.text(i).parse::<i32>().ok(),
+                _ => None,
+            };
+            match value {
+                Some(v) if v % 10 == 0 => values.push(v),
+                _ => return Err(self.invalid(head, "via", i)),
+            }
+        }
+        if values.len() % 2 == 1 {
+            return Err(self.invalid(head, "via", head.len() - 1));
+        }
+        let points = values
+            .chunks(2)
+            .enumerate()
+            .map(|(k, xy)| Spanned {
+                value: (xy[0], xy[1]),
+                span: head.span_of(first + 2 * k, first + 2 * k + 1),
+            })
+            .collect();
+        Ok(Via {
+            source,
+            destination,
+            order: ordered.then(|| Spanned {
+                value: head.text(1).trim_end_matches(':').to_owned(),
+                span: head.span(1),
+            }),
+            points,
+            span: head.span_of(0, head.len() - 1),
+        })
+    }
+
+    /// Every `via` line names a line the view draws, at most one per
+    /// line (P3-302); the first problem in file order is reported.
+    // DECISION: "draws" is read from `view::plan` of the view as parsed so
+    // far (styles do not change which lines are drawn), so the check and
+    // the plan never disagree; `model` reaching into `view` is the price.
+    fn check_vias(&self, view: &ViewSpec) -> Result<(), ModelError> {
+        if view.vias.is_empty() {
+            return Ok(());
+        }
+        let plan = crate::view::plan(&self.model, view);
+        let mut seen: BTreeMap<crate::view::EdgeId, Span> = BTreeMap::new();
+        for via in &view.vias {
+            let line = self.written(Span::new(via.source.span.file, via.source.span.start, via.destination.span.end)).to_owned();
+            let Some(edge) = crate::view::via_edge(&plan, via) else {
+                return Err(self.error(
+                    ModelErrorKind::NotInView {
+                        id: line,
+                        view: view.key.clone(),
+                    },
+                    via.span,
+                ));
+            };
+            if let Some(&first) = seen.get(&edge) {
+                return Err(self.error(
+                    ModelErrorKind::DuplicateVia {
+                        line,
+                        first,
+                        first_position: self.position(first),
+                    },
+                    via.span,
+                ));
+            }
+            seen.insert(edge, via.span);
+        }
+        Ok(())
     }
 
     /// `at <id> <x> <y>` or, with `size`, `size <id> <w> <h>` (both `> 0`).
@@ -7677,6 +7780,7 @@ impl SequenceCounter {
 /// (DSL-9, P2-701, P2-708).
 const DYNAMIC_LINES: &[&str] = &[
     "at",
+    "via",
     "size",
     "papersize",
     "line",
