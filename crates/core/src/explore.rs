@@ -263,9 +263,86 @@ pub fn usages(model: &Model, element: ElementId) -> Vec<Usage> {
 /// The centre of each box of `plan` (indexed by `BoxId`) in the graph
 /// page's force layout, px: the same on every run (CORE-25). Serves
 /// P3-508.
+// DECISION: Fruchterman-Reingold in f64, a stand-in for graph.jsp's d3
+// force simulation (link distance and a many-body charge): nodes start on
+// a circle in name order (graph.jsp sorts nodes by name), 300 iterations
+// with a linearly cooling step, repulsion k^2/d between every pair,
+// attraction d^2/k along each drawn line (both ends distinct), and a weak
+// pull to the centre so unlinked parts stay near. No randomness:
+// coincident nodes are pushed apart along a direction fixed by their
+// indices. Positions are rounded to px and centred on 0,0.
 pub fn graph_layout(plan: &ViewPlan) -> Vec<Point> {
-    let _ = plan;
-    todo!()
+    const K: f64 = 180.0;
+    const ROUNDS: u32 = 300;
+    let n = plan.boxes.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| plan.boxes[a].name.cmp(&plan.boxes[b].name).then(a.cmp(&b)));
+    #[expect(clippy::cast_precision_loss, reason = "node counts are small")]
+    let nf = n as f64;
+    let radius = K * nf / std::f64::consts::TAU + K;
+    let mut pos = vec![(0.0_f64, 0.0_f64); n];
+    for (rank, &i) in order.iter().enumerate() {
+        #[expect(clippy::cast_precision_loss, reason = "node counts are small")]
+        let angle = std::f64::consts::TAU * rank as f64 / nf;
+        pos[i] = (radius * angle.cos(), radius * angle.sin());
+    }
+    let links: BTreeSet<(usize, usize)> = plan
+        .edges
+        .iter()
+        .map(|e| (e.source.0 as usize, e.destination.0 as usize))
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .collect();
+    let start = radius.max(K);
+    for round in 0..ROUNDS {
+        let mut push = vec![(0.0_f64, 0.0_f64); n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let (mut dx, mut dy) = (pos[i].0 - pos[j].0, pos[i].1 - pos[j].1);
+                let mut d = dx.hypot(dy);
+                if d < 1e-6 {
+                    #[expect(clippy::cast_precision_loss, reason = "node counts are small")]
+                    let a = (i * 7 + j * 13) as f64;
+                    (dx, dy, d) = (a.cos(), a.sin(), 1.0);
+                }
+                let f = K * K / d;
+                let (fx, fy) = (dx / d * f, dy / d * f);
+                push[i].0 += fx;
+                push[i].1 += fy;
+                push[j].0 -= fx;
+                push[j].1 -= fy;
+            }
+        }
+        for &(a, b) in &links {
+            let (dx, dy) = (pos[a].0 - pos[b].0, pos[a].1 - pos[b].1);
+            let d = dx.hypot(dy).max(1e-6);
+            let f = d * d / K;
+            let (fx, fy) = (dx / d * f, dy / d * f);
+            push[a].0 -= fx;
+            push[a].1 -= fy;
+            push[b].0 += fx;
+            push[b].1 += fy;
+        }
+        let heat = start * (1.0 - f64::from(round) / f64::from(ROUNDS)) + 1.0;
+        for (p, f) in pos.iter_mut().zip(&push) {
+            let (fx, fy) = (f.0 - p.0 * 0.05, f.1 - p.1 * 0.05);
+            let len = fx.hypot(fy);
+            if len > 1e-9 {
+                let step = len.min(heat);
+                p.0 += fx / len * step;
+                p.1 += fy / len * step;
+            }
+        }
+    }
+    let (sx, sy) = pos.iter().fold((0.0, 0.0), |acc, p| (acc.0 + p.0, acc.1 + p.1));
+    let (cx, cy) = (sx / nf, sy / nf);
+    #[expect(clippy::cast_possible_truncation, reason = "layout coordinates are a few thousand px")]
+    pos.iter()
+        .map(|p| Point::new((p.0 - cx).round() as i32, (p.1 - cy).round() as i32))
+        .collect()
 }
 
 /// One node of a view's tree (P3-510).
@@ -286,25 +363,97 @@ pub struct TreeNode {
 /// containers, components); for a deployment view environment > node >
 /// infrastructure node or instance. Siblings sorted by name (tree.jsp).
 /// Serves P3-510.
+// DECISION: the elements are what the view draws (`view::plan`), plus
+// their ancestors, as tree.jsp filters by the view's elements and their
+// parents. A filtered view shows its base view's tree (tree.jsp). Static
+// trees put people and custom elements beside the systems at the top
+// (SRS P3-510; tree.jsp shows systems only); every level sorted by name.
+// Deployment trees: the environment at the root, its top nodes by name,
+// then each node's child nodes, infrastructure nodes, system instances
+// and container instances in model order (tree.jsp sorts only the top).
 pub fn tree(model: &Model, view: &ViewSpec) -> TreeNode {
-    let _ = (model, view);
-    todo!()
+    let view = if view.kind == ViewKind::Filtered { model.base_view(view).unwrap_or(view) } else { view };
+    let plan = crate::view::plan(model, view);
+    let mut keep = BTreeSet::new();
+    for b in &plan.boxes {
+        keep.extend(lineage(model, b.element));
+    }
+    let deployment = view.kind == ViewKind::Deployment;
+    let mut top: Vec<TreeNode> = model
+        .elements
+        .iter()
+        .filter(|e| e.parent.is_none() && keep.contains(&e.id))
+        .map(|e| if deployment { deployment_node(model, &keep, e.id) } else { static_node(model, &keep, e.id) })
+        .collect();
+    by_name(&mut top);
+    let label = if deployment {
+        let env = plan.boxes.iter().find_map(|b| model.element(b.element).environment);
+        match (env, &view.scope) {
+            (Some(env), _) => model.environments[env.0 as usize].name.value.clone(),
+            (None, crate::model::ViewScope::Deployment { environment, .. }) => environment.value.clone(),
+            (None, _) => view.key.clone(),
+        }
+    } else {
+        view.key.clone()
+    };
+    TreeNode { element: None, label, children: top }
+}
+
+/// Sorts tree siblings by name, then by element.
+fn by_name(nodes: &mut [TreeNode]) {
+    nodes.sort_by(|a, b| a.label.cmp(&b.label).then(a.element.cmp(&b.element)));
+}
+
+/// The static tree under `element`: its kept children by name.
+fn static_node(model: &Model, keep: &BTreeSet<ElementId>, element: ElementId) -> TreeNode {
+    let mut children: Vec<TreeNode> = model
+        .children(element)
+        .into_iter()
+        .filter(|c| keep.contains(c))
+        .map(|c| static_node(model, keep, c))
+        .collect();
+    by_name(&mut children);
+    TreeNode {
+        element: Some(element),
+        label: model.element(element).name.value.clone(),
+        children,
+    }
+}
+
+/// The deployment tree under `element`: child nodes, infrastructure
+/// nodes, system instances, container instances, each in model order.
+fn deployment_node(model: &Model, keep: &BTreeSet<ElementId>, element: ElementId) -> TreeNode {
+    use crate::model::ElementKind as K;
+    let mut children = Vec::new();
+    for kind in [K::DeploymentNode, K::InfrastructureNode, K::SoftwareSystemInstance, K::ContainerInstance] {
+        for c in model.children(element) {
+            if keep.contains(&c) && model.element(c).kind == kind {
+                children.push(deployment_node(model, keep, c));
+            }
+        }
+    }
+    TreeNode {
+        element: Some(element),
+        label: model.element(element).name.value.clone(),
+        children,
+    }
 }
 
 /// True for the kinds Structurizr offers a graph for: custom, landscape,
 /// context, container and component views. Serves P3-511.
 // APPROVER: new pub item (P3-511).
 pub const fn graph_offered(kind: ViewKind) -> bool {
-    let _ = kind;
-    todo!()
+    matches!(
+        kind,
+        ViewKind::Custom | ViewKind::SystemLandscape | ViewKind::SystemContext | ViewKind::Container | ViewKind::Component
+    )
 }
 
 /// True for the kinds Structurizr offers a tree for: the graph kinds
 /// plus deployment views. Serves P3-511.
 // APPROVER: new pub item (P3-511).
 pub const fn tree_offered(kind: ViewKind) -> bool {
-    let _ = kind;
-    todo!()
+    graph_offered(kind) || matches!(kind, ViewKind::Deployment)
 }
 
 /// A link from one decision to another (P3-516), e.g. "Supersedes 2".

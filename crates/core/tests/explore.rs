@@ -213,19 +213,95 @@ fn p3_505_in_no_view_matches_inspection() {
 /// P3-508: the force layout gives the same positions on every run.
 #[test]
 fn p3_508_graph_layout_is_deterministic() {
-    todo!()
+    let m = parse(FIXTURE);
+    for key in ["landscape", "context", "containers", "components", "devices"] {
+        let view = m.view(key).expect("view");
+        let plan = c4rizer_core::view::plan(&m, view);
+        let first = explore::graph_layout(&plan);
+        assert_eq!(first.len(), plan.boxes.len(), "{key}");
+        // Same positions on every run and on a fresh parse (CORE-25).
+        assert_eq!(explore::graph_layout(&plan), first, "{key}");
+        let again = parse(FIXTURE);
+        let plan2 = c4rizer_core::view::plan(&again, again.view(key).expect("view"));
+        assert_eq!(explore::graph_layout(&plan2), first, "{key}");
+        // No two nodes on top of each other.
+        for (i, a) in first.iter().enumerate() {
+            for b in &first[i + 1..] {
+                let d = f64::from(a.x - b.x).hypot(f64::from(a.y - b.y));
+                assert!(d >= 60.0, "{key}: {a:?} {b:?}");
+            }
+        }
+    }
+    // A linked pair sits closer than an unlinked one on the landscape.
+    let plan = c4rizer_core::view::plan(&m, m.view("landscape").expect("view"));
+    let at = explore::graph_layout(&plan);
+    let spot = |k: &str| at[plan.boxes_of(id(&m, k))[0].0 as usize];
+    let d = |a: c4rizer_core::geom::Point, b: c4rizer_core::geom::Point| f64::from(a.x - b.x).hypot(f64::from(a.y - b.y));
+    assert!(d(spot("shop"), spot("bank")) < d(spot("bank"), spot("clerk")));
 }
 
 /// P3-510: static and deployment trees.
 #[test]
 fn p3_510_tree_static_and_deployment() {
-    todo!()
+    use c4rizer_core::explore::TreeNode;
+    fn lines(m: &Model, n: &TreeNode, depth: usize, out: &mut Vec<String>) {
+        let key = n.element.and_then(|e| m.full_key(e)).unwrap_or_else(|| "-".to_owned());
+        out.push(format!("{}{} ({key})", "  ".repeat(depth), n.label));
+        for c in &n.children {
+            lines(m, c, depth + 1, out);
+        }
+    }
+    let m = parse(FIXTURE);
+    let tree = |key: &str| {
+        let mut out = Vec::new();
+        lines(&m, &explore::tree(&m, m.view(key).expect("view")), 0, &mut out);
+        out
+    };
+    // Static: people and systems as roots by name, then containers and
+    // components by name, only what the view draws (and its ancestors).
+    assert_eq!(
+        tree("components"),
+        [
+            "components (-)",
+            "  Bank (bank)",
+            "  Shop (shop)",
+            "    Web (web)",
+            "      Cart (cart)",
+            "      Payments (pay)",
+        ]
+    );
+    assert_eq!(
+        tree("context"),
+        ["context (-)", "  Bank (bank)", "  Clerk (clerk)", "  Customer (customer)", "  Sensor (sensor)", "  Shop (shop)"]
+    );
+    // Deployment: environment > node > infrastructure node / instance.
+    assert_eq!(
+        tree("live"),
+        [
+            "Live (-)",
+            "  Cloud (cloud)",
+            "    Host (host)",
+            "      Web (webLive)",
+            "    Store (store)",
+            "      Database (dbLive)",
+            "    Gateway (gate)",
+        ]
+    );
 }
 
 /// P3-511: graph and tree are offered for Structurizr's kinds only.
 #[test]
 fn p3_511_graph_and_tree_offered_kinds() {
-    todo!()
+    use c4rizer_core::model::ViewKind;
+    let graph = [ViewKind::Custom, ViewKind::SystemLandscape, ViewKind::SystemContext, ViewKind::Container, ViewKind::Component];
+    for kind in graph {
+        assert!(explore::graph_offered(kind) && explore::tree_offered(kind), "{kind:?}");
+    }
+    assert!(!explore::graph_offered(ViewKind::Deployment));
+    assert!(explore::tree_offered(ViewKind::Deployment));
+    for kind in [ViewKind::Dynamic, ViewKind::Filtered, ViewKind::Image] {
+        assert!(!explore::graph_offered(kind) && !explore::tree_offered(kind), "{kind:?}");
+    }
 }
 
 /// P3-516: decisions parse from adr-tools and MADR files.
