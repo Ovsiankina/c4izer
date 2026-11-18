@@ -211,7 +211,9 @@ pub enum Drawn {
 pub struct Usage {
     /// The view's effective key.
     pub view: String,
-    /// The view's title, if written.
+    /// The view's title, else its description, if either is written.
+    // DECISION: the description stands in for a missing `title`, as the
+    // view list shows it (EDIT-8, P2-737).
     pub title: Option<String>,
     /// Directly or through lifting.
     pub drawn: Drawn,
@@ -219,9 +221,43 @@ pub struct Usage {
 
 /// Every declared view that draws `element`, in declaration order.
 /// Serves P3-504.
+// DECISION: only declared views count (as for "in no view"), each
+// planned with `view::plan`, so a usage is exactly what the view draws;
+// a dynamic view is not drawn on this branch (row dynamic-view) and shows
+// no usage. "Through lifting": the element has no box, and a drawn line
+// carries a relationship whose end is the element or one of its
+// descendants; `onto` is the element's nearest drawn ancestor.
 pub fn usages(model: &Model, element: ElementId) -> Vec<Usage> {
-    let _ = (model, element);
-    todo!()
+    let mut out = Vec::new();
+    for view in &model.views {
+        if !view.kind.drawable() {
+            continue;
+        }
+        let plan = crate::view::plan(model, view);
+        let drawn = if plan.boxes_of(element).is_empty() {
+            let onto = lineage(model, element)
+                .into_iter()
+                .skip(1)
+                .find(|&a| !plan.boxes_of(a).is_empty());
+            let carried = plan.edges.iter().flat_map(|e| &e.relationships).any(|&r| {
+                let r = model.relationship(r);
+                lineage(model, r.source.value).contains(&element)
+                    || lineage(model, r.destination.value).contains(&element)
+            });
+            match onto {
+                Some(onto) if carried => Drawn::Lifted { onto },
+                _ => continue,
+            }
+        } else {
+            Drawn::Directly
+        };
+        out.push(Usage {
+            view: view.key.clone(),
+            title: view.title.as_ref().or(view.description.as_ref()).map(|t| t.value.clone()),
+            drawn,
+        });
+    }
+    out
 }
 
 /// The centre of each box of `plan` (indexed by `BoxId`) in the graph

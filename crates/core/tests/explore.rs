@@ -155,7 +155,40 @@ fn perf_p3_503() {
 /// P3-504: usages name each view drawing the element, directly or lifted.
 #[test]
 fn p3_504_usages_direct_and_lifted() {
-    todo!()
+    use c4rizer_core::explore::Drawn;
+    let m = parse(FIXTURE);
+    let show = |key: &str| -> Vec<String> {
+        explore::usages(&m, id(&m, key))
+            .iter()
+            .map(|u| {
+                let how = match u.drawn {
+                    Drawn::Directly => "directly".to_owned(),
+                    Drawn::Lifted { onto } => format!("lifted onto {}", m.full_key(onto).unwrap_or_default()),
+                    _ => "other".to_owned(),
+                };
+                format!("{} ({}): {how}", u.view, u.title.as_deref().unwrap_or("-"))
+            })
+            .collect()
+    };
+    assert_eq!(
+        show("pay"),
+        [
+            "landscape (Everything): lifted onto shop",
+            "context (The shop and its users): lifted onto shop",
+            "containers (Inside the shop): lifted onto web",
+            "components (Inside the web app): directly",
+        ]
+    );
+    assert_eq!(
+        show("db"),
+        [
+            // `web -> db` stays inside `shop`: no line on the context view.
+            "containers (Inside the shop): directly",
+            "databases (The databases): directly",
+        ]
+    );
+    assert_eq!(show("archive"), Vec::<String>::new());
+    assert_eq!(show("webLive"), ["live (The shop in production): directly"]);
 }
 
 /// P3-505: "in no view" is what `model.element.noview` reports.
