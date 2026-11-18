@@ -69,9 +69,10 @@
 //
 // EDIT-28: Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z and Ctrl+Y redo
 // (EDIT-19); menu commands do the same.
-// EDIT-16: the workspace crumb, and Alt+Left or Backspace on a system
-// context view, open the first declared system context view, else the
-// first declared view (nothing when the file declares no view).
+// EDIT-16: the workspace crumb, and Backspace on a system context view
+// (Alt+Left is Back since P4-114), open the first declared system
+// context view, else the first declared view (nothing when the file
+// declares no view).
 // EDIT-15: a title or subtitle edit is also a write that adds the default
 // view, like a move, resize or style; a default view has no title line
 // and its drawn title is the scope's name.
@@ -147,7 +148,7 @@ pub enum Key {
     Escape,
     /// Parent crumb unless a text field has focus (EDIT-16).
     Backspace,
-    /// With Alt: parent crumb (EDIT-16); alone: next view (P2-713).
+    /// With Alt: back (P4-114); alone: next view (P2-713).
     ArrowLeft,
     /// Held: drag pans (EDIT-28).
     Space,
@@ -157,7 +158,7 @@ pub enum Key {
     Y,
     /// Previous view (P2-713); with a hovered line, nothing.
     ArrowUp,
-    /// Previous view (P2-713).
+    /// Previous view (P2-713); with Alt: forward (P4-115).
     ArrowRight,
     /// Next view (P2-713); with a hovered line, nothing.
     ArrowDown,
@@ -211,7 +212,7 @@ pub struct Modifiers {
     pub shift: bool,
     /// Ctrl (Cmd on macOS): select without entering; undo/redo chords.
     pub ctrl: bool,
-    /// Alt: Alt+Left goes to the parent crumb.
+    /// Alt: Alt+Left goes back, Alt+Right forward (P4-114, P4-115).
     pub alt: bool,
 }
 
@@ -1208,6 +1209,8 @@ pub struct State {
     /// The views shown this session, oldest first, the open one last
     /// (P2-714).
     visited: Vec<ViewRef>,
+    /// The views Back left, the next Forward target last (P4-115).
+    ahead: Vec<ViewRef>,
     /// The selection in the order it was made (P2-707: align to the first
     /// selected box).
     selection_order: Vec<Selected>,
@@ -1263,6 +1266,7 @@ impl State {
             overlay: None,
             menu_at: ScreenPoint::default(),
             visited: Vec::new(),
+            ahead: Vec::new(),
             selection_order: Vec::new(),
             sticky: None,
             space_tap: false,
@@ -1500,6 +1504,52 @@ impl State {
         effects
     }
 
+    /// True when Back has a view to return to (P4-114).
+    pub(crate) fn can_go_back(&self) -> bool {
+        self.visited.len() >= 2
+    }
+
+    /// True when Forward has a view to return to (P4-115).
+    pub(crate) fn can_go_forward(&self) -> bool {
+        !self.ahead.is_empty()
+    }
+
+    /// Forward: the view the last Back left (Alt+Right, the toolbar)
+    /// (P4-115); nothing when Back was not used since the last view
+    /// change.
+    // DECISION: a crate-private method like `set_mode`, not a `Command`
+    // variant, so the pub `Command` enum is unchanged; the toolbar calls
+    // it and Alt+Right reaches it through `Key::ArrowRight`.
+    pub(crate) fn forward(&mut self) -> Vec<Effect> {
+        let Some(view) = self.ahead.pop() else { return Vec::new() };
+        self.overlay = None;
+        self.visited.push(view.clone());
+        self.show(view)
+    }
+
+    /// Keeps the view history to views the new parse still has (P4-116):
+    /// a default view written since is its declared view now, a view gone
+    /// is dropped, and repeats left side by side are merged.
+    fn prune_history(&mut self) {
+        let Some(model) = self.model() else { return };
+        let keep = |list: &[ViewRef]| -> Vec<ViewRef> {
+            let mut out: Vec<ViewRef> = Vec::new();
+            for v in list.iter().filter(|v| view_exists(model, v)) {
+                let v = match v {
+                    ViewRef::Default { .. } if model.view(&v.key()).is_some() => ViewRef::Declared(v.key()),
+                    _ => v.clone(),
+                };
+                if out.last() != Some(&v) {
+                    out.push(v);
+                }
+            }
+            out
+        };
+        let (visited, ahead) = (keep(&self.visited), keep(&self.ahead));
+        self.visited = visited;
+        self.ahead = ahead;
+    }
+
     /// The light/dark mode the canvas shows and exports in (P2-433).
     pub(crate) fn mode(&self) -> Mode {
         self.mode
@@ -1543,10 +1593,14 @@ impl State {
         // DECISION: kept by `ViewRef` (keys, so it survives a re-parse),
         // consecutive repeats are one entry, bounded to `VISITED_MAX`
         // entries, the oldest dropped first.
+        // P4-113: every view change but Back and Forward (which move
+        // between the two stacks themselves) pushes and drops Forward's
+        // views, as a browser does.
         if let Some(view) = &self.view
             && self.visited.last() != Some(view)
         {
             self.visited.push(view.clone());
+            self.ahead.clear();
             if self.visited.len() > VISITED_MAX {
                 self.visited.remove(0);
             }
@@ -1745,29 +1799,7 @@ impl State {
         let Some(model) = self.model() else {
             return Vec::new();
         };
-        // P2-314: a filtered view's base is left out of the list, unless
-        // it is on screen (opened by EDIT-15 or EDIT-16).
-        // TODO(srs): P2-314, EDIT-15/16 opening a base view. DECISION:
-        // reading taken (B landscape-filtered 5): they may open it, and it
-        // shows in the list until another view is opened.
-        let hidden = model.filtered_bases();
-        let mut out: Vec<ViewEntry> = model
-            .views
-            .iter()
-            .filter(|v| {
-                !hidden.contains(&v.key.as_str()) || self.view.as_ref().is_some_and(|s| s.key() == v.key)
-            })
-            .map(|v| {
-                let view = ViewRef::Declared(v.key.clone());
-                ViewEntry {
-                    current: self.view.as_ref() == Some(&view),
-                    label: v.drawn_title().map_or_else(|| v.key.clone(), |t| t.value.clone()),
-                    kind: v.kind,
-                    view,
-                }
-            })
-            .collect();
-        sort_views(model, &mut out);
+        let mut out = listed_views(model, self.view.as_ref());
         if let Some(view @ ViewRef::Default { scope, kind }) = &self.view
             && model.view(&view.key()).is_none()
         {
@@ -2634,6 +2666,30 @@ pub fn enterable(model: &Model, element: ElementId) -> bool {
             .any(|v| Some(v.kind) == counting && v.scope.element() == Some(element))
 }
 
+/// The views a box of `element` drawn in a view of kind `from` opens:
+/// the context menu's "Enter <view>" entries (editor-ux-02) and the view
+/// map's links (P4-105). The first is the one EDIT-15 opened by double
+/// click (`view_into`), then every other declared view scoped to it (a
+/// landscape's system also its context views). Empty when `element` is
+/// not enterable.
+pub(crate) fn views_entered(model: &Model, from: Option<ViewKind>, element: ElementId) -> Vec<ViewRef> {
+    let mut out: Vec<ViewRef> = Vec::new();
+    if !enterable(model, element) {
+        return out;
+    }
+    out.extend(view_into(model, element));
+    let e = model.element(element);
+    let landscape = from == Some(ViewKind::SystemLandscape);
+    let kinds = [counting_kind(e.kind), (landscape && e.kind == ElementKind::SoftwareSystem).then_some(ViewKind::SystemContext)];
+    for v in model.views.iter().filter(|v| v.kind.drawable() && v.scope.element() == Some(element)) {
+        let r = ViewRef::Declared(v.key.clone());
+        if kinds.contains(&Some(v.kind)) && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
 /// The view a click on enterable `element` opens (EDIT-15): the first
 /// declared view scoped to it of the counting kind only (a container
 /// view for a system, a component view for a container; a system
@@ -2661,6 +2717,34 @@ pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
         scope: e.key.as_ref()?.value.clone(),
         kind,
     })
+}
+
+/// The declared views of the view list (EDIT-8) in its order (P2-716),
+/// `current` marking the view on screen; the view map's nodes with
+/// `current` `None` (P4-101).
+pub(crate) fn listed_views(model: &Model, current: Option<&ViewRef>) -> Vec<ViewEntry> {
+    // P2-314: a filtered view's base is left out of the list, unless
+    // it is on screen (opened by EDIT-15 or EDIT-16).
+    // TODO(srs): P2-314, EDIT-15/16 opening a base view. DECISION:
+    // reading taken (B landscape-filtered 5): they may open it, and it
+    // shows in the list until another view is opened.
+    let hidden = model.filtered_bases();
+    let mut out: Vec<ViewEntry> = model
+        .views
+        .iter()
+        .filter(|v| !hidden.contains(&v.key.as_str()) || current.is_some_and(|s| s.key() == v.key))
+        .map(|v| {
+            let view = ViewRef::Declared(v.key.clone());
+            ViewEntry {
+                current: current == Some(&view),
+                label: v.drawn_title().map_or_else(|| v.key.clone(), |t| t.value.clone()),
+                kind: v.kind,
+                view,
+            }
+        })
+        .collect();
+    sort_views(model, &mut out);
+    out
 }
 
 /// Orders the declared views of the view list by the view set's
@@ -3138,6 +3222,7 @@ impl State {
             self.shown = None;
             self.remember();
         }
+        self.prune_history();
     }
 
     // ---------------------------------------------------------- writes
@@ -3810,7 +3895,10 @@ impl State {
                 return Vec::new();
             }
             Key::Backspace if !text_focus => return self.go_up(),
-            Key::ArrowLeft if mods.alt => return self.go_up(),
+            // P4-114 (amends EDIT-16): Alt+Left is Back, Alt+Right
+            // Forward; Backspace alone still opens the parent crumb.
+            Key::ArrowLeft if mods.alt => return self.command(Command::Back),
+            Key::ArrowRight if mods.alt => return self.forward(),
             Key::Space => {
                 self.space = true;
                 self.space_tap = !text_focus;
@@ -4130,26 +4218,10 @@ impl State {
         Vec::new()
     }
 
-    /// The views a box of `element` opens, the first being the one
-    /// EDIT-15 opened by double click (`view_into`), then every other
-    /// declared view scoped to it (a landscape's system also its
-    /// context views).
+    /// The views a box of `element` opens from the open view
+    /// (`views_entered`).
     fn views_into(&self, model: &Model, element: ElementId) -> Vec<ViewRef> {
-        let mut out: Vec<ViewRef> = Vec::new();
-        if !enterable(model, element) {
-            return out;
-        }
-        out.extend(view_into(model, element));
-        let e = model.element(element);
-        let landscape = self.view.as_ref().and_then(|v| view_kind(model, v)) == Some(ViewKind::SystemLandscape);
-        let kinds = [counting_kind(e.kind), (landscape && e.kind == ElementKind::SoftwareSystem).then_some(ViewKind::SystemContext)];
-        for v in model.views.iter().filter(|v| v.kind.drawable() && v.scope.element() == Some(element)) {
-            let r = ViewRef::Declared(v.key.clone());
-            if kinds.contains(&Some(v.kind)) && !out.contains(&r) {
-                out.push(r);
-            }
-        }
-        out
+        views_entered(model, self.view.as_ref().and_then(|v| view_kind(model, v)), element)
     }
 
     /// Opens the context menu at `at` over `hit` (editor-ux-02): "Enter
@@ -4240,7 +4312,7 @@ impl State {
         self.write(Action::SetText { fields })
     }
 
-    /// Alt+Left or Backspace: the parent crumb (EDIT-16).
+    /// Backspace: the parent crumb (EDIT-16 as amended by P4-114).
     fn go_up(&mut self) -> Vec<Effect> {
         let context = match (self.model(), &self.view) {
             (Some(model), Some(v)) => view_kind(model, v) == Some(ViewKind::SystemContext),
@@ -4467,11 +4539,12 @@ impl State {
             }
             Command::Back => {
                 // P2-714: the view shown before the current one, Structurizr's
-                // `viewsVisited.pop()` then `peek()`.
+                // `viewsVisited.pop()` then `peek()`; P4-114: the view left
+                // is Forward's next target.
                 if self.visited.len() < 2 {
                     return Vec::new();
                 }
-                self.visited.pop();
+                self.ahead.extend(self.visited.pop());
                 match self.visited.last().cloned() {
                     Some(view) => self.show(view),
                     None => Vec::new(),
@@ -4861,6 +4934,11 @@ impl State {
 
     /// A file was opened (EDIT-13, EDIT-11).
     fn loaded(&mut self, path: PathBuf, text: &str, hash: ContentHash) -> Vec<Effect> {
+        // P4-116: another file starts a new view history.
+        if self.doc.as_ref().is_none_or(|d| d.path != path) {
+            self.visited.clear();
+            self.ahead.clear();
+        }
         self.included.clear();
         self.in_flight = None;
         self.queued.clear();
@@ -4889,6 +4967,7 @@ impl State {
         self.notice = None;
         self.camera = memory.as_ref().map_or_else(Camera::default, |m| m.camera);
         self.view = self.model().and_then(|m| initial_view(m, memory.as_ref().map(|m| &m.view)));
+        self.prune_history();
         self.ui.opened(&path);
         self.remember();
         let mut effects = vec![Effect::Watch(path), Effect::SaveUiState(self.ui.clone())];
@@ -6542,8 +6621,8 @@ mod tests {
     }
 
     /// EDIT-16 (plan editor-03): the breadcrumb follows the scope in the
-    /// model; Alt+Left and Backspace open the parent crumb; Backspace is
-    /// ignored while a text field has focus.
+    /// model; Backspace opens the parent crumb (Alt+Left too until P4-114
+    /// made it Back); Backspace is ignored while a text field has focus.
     #[test]
     fn edit_16_back_goes_up() {
         let mut h = H::with_file(SHOP);
@@ -6563,9 +6642,9 @@ mod tests {
         assert_eq!(h.scene().key, "web-component", "Backspace in a text field is ignored");
         h.key(Key::Backspace, NONE);
         assert_eq!(h.s.view, Some(declared("containers")));
-        h.key(Key::ArrowLeft, ALT);
+        h.key(Key::Backspace, NONE);
         assert_eq!(h.s.view, Some(declared("context")));
-        h.key(Key::ArrowLeft, ALT);
+        h.key(Key::Backspace, NONE);
         assert_eq!(h.s.view, Some(declared("context")), "the top stays");
         // P2-713 (editor-breadth fix round): plain Right is "previous",
         // which stops at the first view.

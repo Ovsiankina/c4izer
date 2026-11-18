@@ -36,6 +36,9 @@ mod styles_themes_tests;
 mod testutil;
 #[cfg(test)]
 mod vertices_tests;
+mod view_map;
+#[cfg(test)]
+mod view_map_tests;
 mod worker;
 
 use std::path::PathBuf;

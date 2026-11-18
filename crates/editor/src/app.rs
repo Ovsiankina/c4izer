@@ -82,6 +82,8 @@ pub struct App {
     include_rx: Receiver<(PathBuf, FileEvent)>,
     /// The explore pages (P3-9), shown instead of the canvas while open.
     explore: crate::explore::Explore,
+    /// The view map section of the left panel (P4-100).
+    view_map: crate::view_map::ViewMapPanel,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -156,6 +158,7 @@ impl App {
             include_tx,
             include_rx,
             explore: crate::explore::Explore::default(),
+            view_map: crate::view_map::ViewMapPanel::default(),
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -304,8 +307,55 @@ impl App {
         });
         ui.separator();
         ui.strong("Views");
-        view_list(ui, &self.state, &mut out);
+        // P4-100: the view map takes the panel's bottom strip, so the
+        // list scrolls in what is left.
+        egui::ScrollArea::vertical()
+            .id_salt("c4rizer-view-list")
+            .auto_shrink([false, true])
+            .show(ui, |ui| view_list(ui, &self.state, &mut out));
         out
+    }
+
+    /// The left panel with the view map in its bottom strip (P4-100),
+    /// drawn first so it claims that strip; a click on a node is the view
+    /// list's `ShowView` (P4-109).
+    fn left_side(&mut self, ui: &mut egui::Ui) -> Vec<Event> {
+        let mut out = Vec::new();
+        if let Some(parsed) = self.state.doc.as_ref().and_then(|d| d.parsed.clone()) {
+            let current = self.state.view.clone();
+            if let Some(view) = self.view_map.show_in_panel(ui, &parsed, current.as_ref()) {
+                out.push(Event::Command(Command::ShowView(view)));
+            }
+        }
+        out.extend(self.left_panel(ui));
+        out
+    }
+
+    /// The toolbar's Back and Forward buttons (P4-114, P4-115), each
+    /// disabled with nothing to return to; Back pushes its command, and
+    /// the return value says Forward was clicked.
+    fn history_buttons(&self, ui: &mut egui::Ui, events: &mut Vec<Event>) -> bool {
+        if ui
+            .add_enabled(self.state.can_go_back(), egui::Button::new("‹ Back"))
+            .on_hover_text("Back to the previous view (Alt+Left, B)")
+            .clicked()
+        {
+            events.push(Event::Command(Command::Back));
+        }
+        let forward = ui
+            .add_enabled(self.state.can_go_forward(), egui::Button::new("Forward ›"))
+            .on_hover_text("Forward to the view Back left (Alt+Right)")
+            .clicked();
+        ui.separator();
+        forward
+    }
+
+    /// Forward from the toolbar (P4-115): a view pick, so it leaves
+    /// Explore as Back does.
+    fn go_forward(&mut self, ctx: &egui::Context) {
+        self.explore.open = false;
+        let effects = self.state.forward();
+        self.run(ctx, effects);
     }
 
     /// The right panel: details, style panel (with target choice), align
@@ -1140,6 +1190,7 @@ impl eframe::App for App {
     /// with `--startup-report`, prints the ms since `Startup::began` after
     /// the first frame that shows the first view (or the empty start
     /// screen) and closes the window (EDIT-14).
+    #[expect(clippy::too_many_lines, reason = "the frame's panels top to bottom")]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         match report_step(self.startup.report, self.first_view_ready(), self.presented) {
@@ -1167,8 +1218,10 @@ impl eframe::App for App {
         let mut fit = fit_key_pressed(&ctx);
         let mut dark = self.state.mode() == Mode::Dark;
         let mut explore = self.explore.open;
+        let mut forward = false;
         egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
+                forward = self.history_buttons(ui, &mut events);
                 ui.toggle_value(&mut left, "Views");
                 // P3-9: the explore pages replace the canvas while on.
                 ui.toggle_value(&mut explore, "Explore")
@@ -1214,6 +1267,9 @@ impl eframe::App for App {
             let effects = self.state.set_mode(mode);
             self.run(&ctx, effects);
         }
+        if forward {
+            self.go_forward(&ctx);
+        }
         egui::Panel::bottom("c4rizer-status").show(ui, |ui| self.status_bar(ui));
         let (min, max) = side_panel_range(width);
         if left {
@@ -1221,7 +1277,7 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(220.0_f32.clamp(min, max))
                 .size_range(min..=max)
-                .show(ui, |ui| events.extend(self.left_panel(ui)));
+                .show(ui, |ui| events.extend(self.left_side(ui)));
         }
         if right {
             egui::Panel::right("c4rizer-right")
@@ -1268,7 +1324,7 @@ pub(crate) fn explore_gate(events: Vec<Event>) -> (Vec<Event>, bool) {
     let kept = events
         .into_iter()
         .filter(|event| match event {
-            Event::Command(Command::ShowView(_) | Command::Crumb(_)) => {
+            Event::Command(Command::ShowView(_) | Command::Crumb(_) | Command::Back) => {
                 leave = true;
                 true
             }

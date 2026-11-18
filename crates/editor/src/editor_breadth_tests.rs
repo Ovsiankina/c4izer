@@ -496,8 +496,8 @@ fn p2_712_keys_ignored_with_text_focus_or_text_edit() {
     assert_eq!(sh.s.view, Some(declared("context")));
 }
 
-/// Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Alt+Left, Backspace, Enter, F2 and
-/// Escape keep their EDIT-16/19/28 meaning.
+/// Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Backspace, Enter, F2 and Escape keep
+/// their EDIT-16/19/28 meaning; Alt+Left is Back (P4-114).
 #[test]
 fn p2_712_chords_keep_meaning() {
     let mut sh = Shell::with(SHOP);
@@ -520,10 +520,11 @@ fn p2_712_chords_keep_meaning() {
     assert!(sh.s.text_edit.is_some(), "F2 edits");
     sh.key(Key::Escape, NONE);
     sh.show("containers");
-    // The workspace crumb opens the first landscape view (P2-305).
+    // P4-114: Alt+Left is Back now, to the view shown before.
     sh.key(Key::ArrowLeft, ALT);
-    assert_eq!(sh.s.view, Some(declared("estate")), "Alt+Left goes up");
+    assert_eq!(sh.s.view, Some(declared("context")), "Alt+Left goes back");
     sh.show("containers");
+    // The workspace crumb opens the first landscape view (P2-305).
     sh.key(Key::Backspace, NONE);
     assert_eq!(sh.s.view, Some(declared("estate")), "Backspace goes up");
 }

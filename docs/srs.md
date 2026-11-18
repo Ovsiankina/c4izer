@@ -44,6 +44,8 @@ in phase 1 may be designed so that a later phase cannot be added.
   line vertices as an override on top of the router (the router stays
   the default); the further export formats the parity table gives
   phase 3.
+- **Phase 4 (section 4.8):** navigation beyond Structurizr: the view
+  map and a view history with Back and Forward.
 - **Never:** collaboration, cloud, accounts, a server. Creating and
   deleting elements or relationships from the canvas: the owner said
   "it's not draw.io"; the model is written as text.
@@ -860,6 +862,8 @@ C4 levels
   is ignored while a text field has focus. The workspace crumb, and
   Alt+Left or Backspace on a system context view, open the first
   declared system context view, else the first declared view.
+  *(Amended by P4-114: Alt+Left is Back; Backspace keeps this
+  meaning.)*
 
 Editing
 
@@ -3379,6 +3383,75 @@ themes, URL icons and URL images give a notice or placeholder.
   the CLI), so the user can see every connection made.
 - **P3-621** Bundled `theme default` (styles-themes) is used without a
   fetch whether network is on or off.
+
+### 4.8 Phase 4
+
+Navigation the owner asked for beyond Structurizr (2026-11-18): "a small
+node graph outside the C4 diagrams, in a little side panel that can be
+collapsed, showing which diagram links to which diagram and at which C4
+level it is, read from top to bottom. Click any node to go to that
+diagram. Also a go-back button." One testable sentence each; ids are
+allocated per row: view-map P4-100..
+
+view-map
+
+**View map**
+
+- **P4-100** The left panel holds a "View map" section below the view
+  list; a click on its header folds or opens it, and that state is kept
+  for the session, across view changes and reloads.
+- **P4-101** The map has one node per view of the view list (EDIT-8,
+  P2-314), never drawn on the diagram canvas; an EDIT-15 default view
+  that is not written has no node.
+- **P4-102** Nodes sit in rows from top to bottom by C4 level:
+  landscape, C1 system context, C2 container, C3 component, then one row
+  for views with no level (custom, image); a row with no node is left
+  out.
+- **P4-103** A filtered view sits on its base view's row; a dynamic view
+  on the row of what it shows (no scope C1, a software system C2, a
+  container C3); a deployment view on the C2 row.
+- **P4-104** A node shows the view's key and a level tag: `Landscape`,
+  `C1`, `C2` or `C3`, followed by ` · filtered`, ` · dynamic` or
+  ` · deployment` for those kinds, and the kind keyword alone for a view
+  with no level; a key equal to its tag is shown once.
+- **P4-105** Node A links to node B when an element drawn in view A
+  offers "Enter B" in its context menu (editor-ux-02, the same rule) and
+  B sits on a lower row than A; links are plain lines, without arrows or
+  labels.
+- **P4-106** A link from A to B is not drawn when B is also reached from
+  A through other links, so each node hangs under its nearest parents.
+- **P4-107** Within a row, the children of one node sit side by side and
+  centred under it, groups in the order of their parents, nodes with no
+  parent last, each in view-list order; a parent is centred over its
+  children.
+- **P4-108** The node of the view on screen is highlighted.
+- **P4-109** A click on a node opens its view as picking it in the view
+  list does (`Command::ShowView`).
+- **P4-110** Hovering a node shows the view's full title.
+- **P4-111** When a row is wider than the section, node widths shrink
+  evenly to fit it, down to the widest tag (keys are cut with "…", tags
+  stay whole, the full name is the hover text); a map still larger than
+  its section scrolls in both directions with visible scroll bars, and
+  its text keeps the view list's font size.
+- **P4-112** The map is built once per parse of the file and reused by
+  every frame until the next parse.
+
+**View history**
+
+- **P4-113** Every view change other than Back and Forward (view list,
+  view map, context menu "Enter", quick navigation, navigator,
+  breadcrumb, Previous/Next view, Backspace) adds the view to this
+  session's view history and clears the views Forward would open.
+- **P4-114** Back (the toolbar's "‹ Back", Alt+Left, and `b` of P2-714)
+  opens the view shown before the current one in the history; the
+  toolbar button is disabled when there is none. Alt+Left no longer
+  opens the parent crumb (amends EDIT-16).
+- **P4-115** Forward (the toolbar's "Forward ›", Alt+Right) opens the
+  view the last Back left; the toolbar button is disabled when Back was
+  not used since the last other view change.
+- **P4-116** A reload of the file keeps the view history, less the views
+  the new parse no longer has (a default view written since counts as
+  its declared view); opening another file starts an empty history.
 
 ## 5. Cross-cutting
 
