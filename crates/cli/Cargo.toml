@@ -11,6 +11,9 @@ path = "src/main.rs"
 [features]
 # CLI-4: `--png` needs core's PNG export; without it `--png` exits 2.
 png = ["c4rizer-core/png"]
+# P2-662: `--svg-text outline` needs core's outlined SVG export; without it
+# the option exits 2.
+outline = ["c4rizer-core/outline"]
 
 [dependencies]
 c4rizer-core = { path = "../core" }

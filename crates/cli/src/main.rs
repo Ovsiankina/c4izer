@@ -1,6 +1,8 @@
-//! c4rizer CLI: `c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark]` and
-//! `c4rizer lint FILE`, exit code 0 clean, 1 lint errors, 2 parse or I/O
-//! error (CLI-1..5).
+//! c4rizer CLI: `c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark]
+//! [--svg-text name|embed|outline]` and `c4rizer lint FILE`, exit code 0
+//! clean, 1 lint errors, 2 parse or I/O error (CLI-1..5); `validate`,
+//! `inspect`, `list`, `version` and `help` as Structurizr's commands of
+//! the same name (P2-22, P2-600..P2-650).
 //!
 //! Depends on: `report`, `c4rizer-core`.
 
@@ -45,8 +47,9 @@
 // `render` without `-o`, a second FILE, an unknown flag or subcommand,
 // and no subcommand are usage errors: usage text on stderr, exit 2 (plan
 // Review Focus).
-// DECISION: `-h`/`--help` and `help`/`version` are not phase 1 (P2-22,
-// cli-breadth): until then they are an unknown flag or subcommand.
+// DECISION: `help`, `-h` and `--help` are only recognised in place of the
+// subcommand (B cli-breadth 9); after a subcommand `--help` stays an
+// unknown flag, so `lint --help` is a usage error as in phase 1.
 // DECISION: parse and I/O errors go to stderr as one line
 // `c4rizer: <path>:<line>:<column>: <what> — <what to change>` (SRS 5.1;
 // `ModelError`'s `Display` gives `line:column: ...` and asks the caller to
@@ -94,15 +97,44 @@ use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::model::{self, Mode, ModelError};
 use c4rizer_core::text::FileId;
-use c4rizer_core::{export, pipeline};
+use c4rizer_core::{export, inspect, pipeline};
 
-/// The usage text printed to stderr on every usage error (exit 2). Names
-/// both phase-1 subcommands and their flags (CLI-1, CLI-3, CLI-4).
+/// The usage text printed to stderr on every usage error (exit 2) and to
+/// stdout by `help`. Names all seven subcommands and every argument
+/// (CLI-1, CLI-3, CLI-4, P2-648).
 pub(crate) const USAGE: &str = "\
-usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark]
+usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]
        c4rizer lint FILE
-FILE `-` reads the diagram from stdin.
-exit code: 0 clean, 1 lint errors, 2 parse, I/O or usage error";
+       c4rizer validate -workspace FILE
+       c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]
+       c4rizer list -workspace FILE
+       c4rizer version
+       c4rizer help [COMMAND]
+FILE `-` reads the diagram from stdin; `-workspace` may be left out.
+exit code: 0 clean, 1 lint errors, 2 parse, I/O or usage error;
+inspect: the number of error violations shown (at most 254), 255 on an error";
+
+/// Each subcommand with its usage line, in `USAGE` order (P2-647,
+/// P2-648): `help <command>` prints that line alone.
+const COMMAND_LINES: [(&str, &str); 7] = [
+    (
+        "render",
+        "c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]",
+    ),
+    ("lint", "c4rizer lint FILE"),
+    ("validate", "c4rizer validate -workspace FILE"),
+    (
+        "inspect",
+        "c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]",
+    ),
+    ("list", "c4rizer list -workspace FILE"),
+    ("version", "c4rizer version"),
+    ("help", "c4rizer help [COMMAND]"),
+];
+
+/// The seven subcommands as the no-subcommand and unknown-subcommand
+/// messages name them (P2-650).
+const SUBCOMMANDS: &str = "`render`, `lint`, `validate`, `inspect`, `list`, `version`, `help`";
 
 /// The outcome of a run that got as far as the report (CLI-2). `main`
 /// turns it into the process exit code; a `UsageError` or `CliError` is
@@ -114,6 +146,22 @@ pub(crate) enum Exit {
     /// Some view has a lint error, or coverage failed
     /// (`pipeline::AllViews::has_errors`): exit 1.
     LintErrors,
+    /// `inspect` showed this many error-severity violations, at most 254
+    /// (P2-642, B cli-breadth 5): exit with that number.
+    Violations(u8),
+}
+
+/// How `render` writes text into its SVG files (P2-651).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum SvgText {
+    /// `name` (the default): `export::svg`, the font named (EXP-1).
+    #[default]
+    Name,
+    /// `embed`: `export::svg_embedded`, the bundled faces embedded.
+    Embed,
+    /// `outline`: `export::svg_outlined`, text as paths (feature
+    /// `outline`).
+    Outline,
 }
 
 /// Where the diagram text comes from. Serves CLI-1, CLI-3.
@@ -135,9 +183,7 @@ pub(crate) struct Png {
     pub(crate) width: Option<NonZeroU32>,
 }
 
-/// A parsed command line. Serves CLI-1, CLI-3, CLI-4.
-// Phase 2 (P2-22, cli-breadth) adds `validate`, `inspect`, `list`,
-// `version`, `help` as new variants.
+/// A parsed command line. Serves CLI-1, CLI-3, CLI-4, P2-22.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Command {
     /// `c4rizer render FILE -o DIR [--png [--width N]]`: report and
@@ -151,12 +197,41 @@ pub(crate) enum Command {
         png: Option<Png>,
         /// `--mode light|dark`; light when not given (P2-432).
         mode: Mode,
+        /// `--svg-text name|embed|outline`; `name` when not given (P2-651).
+        svg_text: SvgText,
     },
     /// `c4rizer lint FILE`: the same checks and report, no file written
     /// (CLI-3).
     Lint {
         /// FILE.
         input: Input,
+    },
+    /// `c4rizer validate -workspace FILE`: parse only (P2-604..P2-607).
+    Validate {
+        /// FILE.
+        input: Input,
+    },
+    /// `c4rizer inspect -workspace FILE [-severity LIST]` (P2-611..P2-644).
+    Inspect {
+        /// FILE.
+        input: Input,
+        /// The severities shown and counted, sorted, no repeats; all four
+        /// when `-severity` is not given (P2-640).
+        severities: Vec<inspect::Severity>,
+        /// `-inspector <class>`, refused by `run` (P2-643).
+        inspector: Option<String>,
+    },
+    /// `c4rizer list -workspace FILE`: every element (P2-608..P2-610).
+    List {
+        /// FILE.
+        input: Input,
+    },
+    /// `c4rizer version` (P2-645).
+    Version,
+    /// `c4rizer help [COMMAND]`, `-h`, `--help` (P2-647).
+    Help {
+        /// The subcommand asked about, `None` for all of them.
+        command: Option<&'static str>,
     },
 }
 
@@ -167,8 +242,8 @@ pub(crate) enum Command {
 pub(crate) enum UsageError {
     /// No subcommand at all.
     NoCommand,
-    /// A first argument that is not `render` or `lint`, as given (lossy
-    /// UTF-8).
+    /// A first argument that is not one of the seven subcommands (or
+    /// `-h`, `--help`), as given (lossy UTF-8).
     UnknownCommand(String),
     /// An argument starting with `-` (other than FILE `-`) that the
     /// subcommand does not take, as given.
@@ -191,15 +266,25 @@ pub(crate) enum UsageError {
     /// `--mode` with a value other than `light` or `dark`, as given
     /// (P2-432).
     InvalidMode(String),
+    /// `validate`, `inspect` or `list` without a workspace (P2-602).
+    MissingWorkspace,
+    /// `-workspace` naming a URL, as given (P2-603, B cli-breadth 3).
+    WorkspaceUrl(String),
+    /// `-severity` with a value outside `error`, `warning`, `info`,
+    /// `ignore`, as given (P2-641).
+    InvalidSeverity(String),
+    /// `--svg-text` with a value other than `name`, `embed` or `outline`,
+    /// as given (P2-653).
+    UnknownSvgText(String),
 }
 
 impl fmt::Display for UsageError {
     /// One line, e.g. `unknown flag "--pdf"`. Serves CLI-2, SRS 5.1.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UsageError::NoCommand => f.write_str("no subcommand — give `render` or `lint`"),
+            UsageError::NoCommand => write!(f, "no subcommand — give one of {SUBCOMMANDS}"),
             UsageError::UnknownCommand(c) => {
-                write!(f, "unknown subcommand \"{c}\" — use `render` or `lint`")
+                write!(f, "unknown subcommand \"{c}\" — use one of {SUBCOMMANDS}")
             }
             UsageError::UnknownFlag(flag) => write!(f, "unknown flag \"{flag}\""),
             UsageError::MissingFile => {
@@ -222,6 +307,21 @@ impl fmt::Display for UsageError {
             UsageError::InvalidMode(m) => {
                 write!(f, "invalid --mode \"{m}\" — give `light` or `dark`")
             }
+            UsageError::MissingWorkspace => {
+                f.write_str("no workspace given — add `-workspace FILE`, or `-` for stdin")
+            }
+            UsageError::WorkspaceUrl(url) => write!(
+                f,
+                "workspace URL \"{url}\" is not supported (no network) — download it and give the local path"
+            ),
+            UsageError::InvalidSeverity(v) => write!(
+                f,
+                "invalid -severity \"{v}\" — give a comma-separated list of error, warning, info and ignore"
+            ),
+            UsageError::UnknownSvgText(v) => write!(
+                f,
+                "invalid --svg-text \"{v}\" — give `name`, `embed` or `outline`"
+            ),
         }
     }
 }
@@ -298,6 +398,25 @@ pub(crate) enum CliError {
         /// `PngError`'s `Display` text.
         message: String,
     },
+    /// `inspect -inspector <class>`: custom Java inspectors need the JVM
+    /// (parity table: never, P2-643).
+    InspectorUnsupported(String),
+    /// `--svg-text outline` on a build without the `outline` feature:
+    /// says to rebuild with `--features outline` (P2-662).
+    OutlineUnavailable,
+    /// `export::svg_outlined` refused a view (P2-658).
+    // DECISION: kept as text, so this type compiles with or without
+    // core's `outline` feature, like `Png`.
+    #[cfg_attr(
+        not(feature = "outline"),
+        expect(dead_code, reason = "built only with the outline feature")
+    )]
+    Outline {
+        /// The view key.
+        view: String,
+        /// `OutlineError`'s `Display` text.
+        message: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -337,6 +456,17 @@ impl fmt::Display for CliError {
                 f,
                 "view \"{view}\": PNG export failed ({message}) — try a smaller --width"
             ),
+            CliError::InspectorUnsupported(class) => write!(
+                f,
+                "-inspector \"{class}\": custom inspectors are Java classes and need the JVM, which c4rizer does not run — leave out -inspector to run the built-in inspections"
+            ),
+            CliError::OutlineUnavailable => f.write_str(
+                "--svg-text outline needs outline support, which this build lacks — rebuild with `cargo build -p c4rizer-cli --features outline`",
+            ),
+            CliError::Outline { view, message } => write!(
+                f,
+                "view \"{view}\": outlining the SVG failed ({message}) — use --svg-text name or embed"
+            ),
         }
     }
 }
@@ -361,6 +491,16 @@ where
     let render = match first.to_str() {
         Some("render") => true,
         Some("lint") => false,
+        Some("version") => {
+            return match args.next() {
+                None => Ok(Command::Version),
+                Some(extra) => Err(UsageError::ExtraArgument(lossy(&extra))),
+            };
+        }
+        Some(flag @ ("help" | "-h" | "--help")) => return parse_help(flag, args),
+        Some(name @ ("validate" | "inspect" | "list")) => {
+            return parse_workspace_command(name, args);
+        }
         _ => return Err(UsageError::UnknownCommand(lossy(&first))),
     };
     let mut file: Option<OsString> = None;
@@ -368,6 +508,7 @@ where
     let mut png = false;
     let mut width: Option<NonZeroU32> = None;
     let mut mode: Option<Mode> = None;
+    let mut svg_text: Option<SvgText> = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("-o") if render => {
@@ -407,6 +548,20 @@ where
                     _ => return Err(UsageError::InvalidMode(lossy(&value))),
                 });
             }
+            // DECISION: `--svg-text` takes exactly `name`, `embed` or
+            // `outline` in lower case, like `--mode` (B cli-breadth 10).
+            Some("--svg-text") if render => {
+                if svg_text.is_some() {
+                    return Err(UsageError::Repeated("--svg-text"));
+                }
+                let value = args.next().ok_or(UsageError::MissingValue("--svg-text"))?;
+                svg_text = Some(match value.to_str() {
+                    Some("name") => SvgText::Name,
+                    Some("embed") => SvgText::Embed,
+                    Some("outline") => SvgText::Outline,
+                    _ => return Err(UsageError::UnknownSvgText(lossy(&value))),
+                });
+            }
             _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
             _ if file.is_some() => return Err(UsageError::ExtraArgument(lossy(&arg))),
             _ => file = Some(arg),
@@ -432,7 +587,136 @@ where
         out_dir,
         png: png.then_some(Png { width }),
         mode: mode.unwrap_or_default(),
+        svg_text: svg_text.unwrap_or_default(),
     })
+}
+
+/// `validate`, `inspect` or `list` and their arguments (P2-600..P2-603).
+// DECISION: the workspace is `-workspace FILE`, Structurizr's short `-w`
+// and long `--workspace` spellings of the same option, or a bare FILE
+// (B cli-breadth 2). A second FILE in any form is a usage error:
+// `Repeated("-workspace")` when given with a workspace flag,
+// `ExtraArgument` when bare.
+// DECISION: a value starting with `http://` or `https://` (any case) is
+// a URL, refused as a usage error before any read (B cli-breadth 3;
+// Structurizr's own test of the value).
+fn parse_workspace_command(
+    name: &str,
+    mut args: impl Iterator<Item = OsString>,
+) -> Result<Command, UsageError> {
+    let inspect = name == "inspect";
+    let mut file: Option<OsString> = None;
+    let mut severities: Option<Vec<inspect::Severity>> = None;
+    let mut inspector: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("-workspace" | "-w" | "--workspace") => {
+                let value = args.next().ok_or(UsageError::MissingValue("-workspace"))?;
+                if file.is_some() {
+                    return Err(UsageError::Repeated("-workspace"));
+                }
+                file = Some(value);
+            }
+            // Structurizr's `-s`/`-severity`/`--severity` and
+            // `-i`/`-inspector`/`--inspector`, `inspect` only (P2-641).
+            Some("-severity" | "-s" | "--severity") if inspect => {
+                if severities.is_some() {
+                    return Err(UsageError::Repeated("-severity"));
+                }
+                let value = args.next().ok_or(UsageError::MissingValue("-severity"))?;
+                severities = Some(parse_severities(&value)?);
+            }
+            Some("-inspector" | "-i" | "--inspector") if inspect => {
+                if inspector.is_some() {
+                    return Err(UsageError::Repeated("-inspector"));
+                }
+                let value = args.next().ok_or(UsageError::MissingValue("-inspector"))?;
+                inspector = Some(lossy(&value));
+            }
+            _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
+            _ if file.is_some() => return Err(UsageError::ExtraArgument(lossy(&arg))),
+            _ => file = Some(arg),
+        }
+    }
+    let file = file.ok_or(UsageError::MissingWorkspace)?;
+    if is_url(&file) {
+        return Err(UsageError::WorkspaceUrl(lossy(&file)));
+    }
+    let input = if file == "-" {
+        Input::Stdin
+    } else {
+        Input::Path(PathBuf::from(file))
+    };
+    Ok(match name {
+        "validate" => Command::Validate { input },
+        "inspect" => Command::Inspect {
+            input,
+            severities: severities.unwrap_or_else(|| ALL_SEVERITIES.to_vec()),
+            inspector,
+        },
+        _ => Command::List { input },
+    })
+}
+
+/// Every inspection severity, lowest first: what `inspect` shows without
+/// `-severity` (P2-640).
+const ALL_SEVERITIES: [inspect::Severity; 4] = [
+    inspect::Severity::Ignore,
+    inspect::Severity::Info,
+    inspect::Severity::Warning,
+    inspect::Severity::Error,
+];
+
+/// `-severity LIST`: comma-separated severity keywords, any case, spaces
+/// around each trimmed (Structurizr trims and upper-cases each), sorted
+/// and without repeats (P2-640, P2-641). An empty item is invalid.
+fn parse_severities(value: &OsString) -> Result<Vec<inspect::Severity>, UsageError> {
+    let invalid = || UsageError::InvalidSeverity(lossy(value));
+    let text = value.to_str().ok_or_else(invalid)?;
+    let mut out = Vec::new();
+    for item in text.split(',') {
+        let item = item.trim();
+        let severity = ALL_SEVERITIES
+            .into_iter()
+            .find(|s| s.keyword().eq_ignore_ascii_case(item))
+            .ok_or_else(invalid)?;
+        out.push(severity);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// A workspace value naming an `http://` or `https://` URL.
+fn is_url(value: &OsString) -> bool {
+    let bytes = value.as_encoded_bytes();
+    ["http://", "https://"].iter().any(|scheme| {
+        bytes.len() >= scheme.len() && bytes[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+    })
+}
+
+/// `help [COMMAND]`, `-h` or `--help` (B cli-breadth 9): `help` takes one
+/// optional subcommand name, `-h` and `--help` take nothing.
+fn parse_help(
+    flag: &str,
+    mut args: impl Iterator<Item = OsString>,
+) -> Result<Command, UsageError> {
+    let topic = match args.next() {
+        None => None,
+        Some(arg) if flag == "help" => {
+            let name = COMMAND_LINES
+                .iter()
+                .map(|(name, _)| *name)
+                .find(|name| arg.to_str() == Some(name))
+                .ok_or_else(|| UsageError::UnknownCommand(lossy(&arg)))?;
+            Some(name)
+        }
+        Some(arg) => return Err(UsageError::ExtraArgument(lossy(&arg))),
+    };
+    match args.next() {
+        None => Ok(Command::Help { command: topic }),
+        Some(extra) => Err(UsageError::ExtraArgument(lossy(&extra))),
+    }
 }
 
 /// An argument that starts with `-` and is not FILE `-` itself.
@@ -567,6 +851,32 @@ fn write_file(path: &Path, bytes: &[u8], stdout: &mut impl Write) -> Result<(), 
     report::wrote(stdout, path).map_err(CliError::Report)
 }
 
+/// The SVG of one view as `--svg-text` asks (P2-651): named, embedded or
+/// outlined. The PNG never depends on it (P2-661).
+fn svg_of(view: &pipeline::ViewBuild, svg_text: SvgText) -> Result<String, CliError> {
+    match svg_text {
+        SvgText::Name => Ok(export::svg(&view.scene)),
+        SvgText::Embed => Ok(export::svg_embedded(&view.scene)),
+        SvgText::Outline => outlined(view),
+    }
+}
+
+/// The outlined SVG of one view (feature `outline`).
+#[cfg(feature = "outline")]
+fn outlined(view: &pipeline::ViewBuild) -> Result<String, CliError> {
+    export::svg_outlined(&view.scene).map_err(|e| CliError::Outline {
+        view: view.plan.key.clone(),
+        message: e.to_string(),
+    })
+}
+
+/// Without the `outline` feature `run` refuses `--svg-text outline` before
+/// this is reached.
+#[cfg(not(feature = "outline"))]
+fn outlined(_view: &pipeline::ViewBuild) -> Result<String, CliError> {
+    Err(CliError::OutlineUnavailable)
+}
+
 /// The PNG of one view at the requested width, or twice the SVG width.
 #[cfg(feature = "png")]
 fn png_bytes(view: &pipeline::ViewBuild, png: Png) -> Result<Vec<u8>, CliError> {
@@ -618,15 +928,50 @@ pub(crate) fn run(
             out_dir,
             png,
             mode: _,
+            svg_text: _,
         } => (input, Some((out_dir, *png))),
         Command::Lint { input } => (input, None),
+        Command::Version => {
+            // DECISION: the line B cli-breadth 4 approves, `c4rizer
+            // <version>`; Structurizr's version command prints its own
+            // and its libraries' versions through its logger.
+            writeln!(stdout, "c4rizer {}", env!("CARGO_PKG_VERSION")).map_err(CliError::Report)?;
+            stdout.flush().map_err(CliError::Report)?;
+            return Ok(Exit::Clean);
+        }
+        Command::Help { command } => {
+            // DECISION: help goes to stdout and exits 0 (B cli-breadth 4
+            // and 9); a usage error prints the same text to stderr.
+            let text = match command {
+                None => USAGE.to_owned(),
+                Some(name) => COMMAND_LINES
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, line)| format!("usage: {line}"))
+                    .unwrap_or_default(),
+            };
+            writeln!(stdout, "{text}").map_err(CliError::Report)?;
+            stdout.flush().map_err(CliError::Report)?;
+            return Ok(Exit::Clean);
+        }
+        Command::Validate { input } | Command::Inspect { input, .. } | Command::List { input } => {
+            return run_model_command(command, input, stdin, stdout);
+        }
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
-        Command::Lint { .. } => Mode::Light,
+        _ => Mode::Light,
     };
     if !cfg!(feature = "png") && matches!(render, Some((_, Some(_)))) {
         return Err(CliError::PngUnavailable);
+    }
+    let svg_text = match command {
+        Command::Render { svg_text, .. } => *svg_text,
+        _ => SvgText::Name,
+    };
+    // P2-662: refused before any file is read, like `--png`.
+    if !cfg!(feature = "outline") && svg_text == SvgText::Outline {
+        return Err(CliError::OutlineUnavailable);
     }
     let text = read_input(input, stdin)?;
     let mut loader = Recording::default();
@@ -667,7 +1012,7 @@ pub(crate) fn run(
         report::view(stdout, &view.report, view.plan.title.as_deref()).map_err(CliError::Report)?;
         if let Some((out_dir, png)) = render {
             let key = &view.plan.key;
-            let svg = export::svg(&view.scene);
+            let svg = svg_of(view, svg_text)?;
             write_file(&out_dir.join(format!("{key}.svg")), svg.as_bytes(), stdout)?;
             if let Some(png) = png {
                 let bytes = png_bytes(view, png)?;
@@ -684,6 +1029,55 @@ pub(crate) fn run(
     })
 }
 
+/// `validate`, `inspect` or `list`: read and parse the workspace, never
+/// place, route or lint (P2-605, P2-609, P2-613), never write a file.
+fn run_model_command(
+    command: &Command,
+    input: &Input,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+) -> Result<Exit, CliError> {
+    if let Command::Inspect {
+        inspector: Some(class),
+        ..
+    } = command
+    {
+        return Err(CliError::InspectorUnsupported(class.clone()));
+    }
+    let text = read_input(input, stdin)?;
+    let mut loader = Recording::default();
+    let parsed = parse(input, &text, &mut loader)?;
+    match command {
+        // DECISION: `validate` prints nothing on success (B cli-breadth 4;
+        // Structurizr's validate prints nothing either). Notices are not
+        // printed: they are no error and change nothing.
+        Command::Validate { .. } => {}
+        Command::List { .. } => {
+            report::elements(stdout, &parsed.model).map_err(CliError::Report)?;
+        }
+        Command::Inspect { severities, .. } => {
+            let shown: Vec<inspect::Violation> = inspect::inspect(&parsed.model)
+                .into_iter()
+                .filter(|v| severities.contains(&v.severity))
+                .collect();
+            report::violations(stdout, &parsed.model, &shown).map_err(CliError::Report)?;
+            stdout.flush().map_err(CliError::Report)?;
+            let errors = shown
+                .iter()
+                .filter(|v| v.severity == inspect::Severity::Error)
+                .count();
+            // DECISION: B cli-breadth 5: the exit code counts the
+            // error-severity violations shown, capped at 254.
+            return Ok(Exit::Violations(
+                u8::try_from(errors.min(254)).unwrap_or(254),
+            ));
+        }
+        _ => unreachable!("only validate, inspect and list come here"),
+    }
+    stdout.flush().map_err(CliError::Report)?;
+    Ok(Exit::Clean)
+}
+
 /// Parses `std::env::args_os()`; on a `UsageError` prints
 /// `c4rizer: <error>` and `USAGE` to stderr and returns exit 2. Otherwise
 /// runs the command on the real stdin and stdout and returns 0 for
@@ -694,23 +1088,38 @@ fn main() -> ExitCode {
         Ok(command) => command,
         Err(error) => {
             eprintln!("c4rizer: {error}\n{USAGE}");
-            return ExitCode::from(2);
+            let inspect = std::env::args_os().nth(1).is_some_and(|a| a == "inspect");
+            return ExitCode::from(if inspect { INSPECT_ERROR } else { 2 });
         }
     };
     match run(&command, &mut io::stdin().lock(), &mut io::stdout().lock()) {
         Ok(exit) => exit_code(exit),
         Err(error) => {
             eprintln!("c4rizer: {error}");
-            ExitCode::from(2)
+            // DECISION: P2-643 pins exit 2 for a refused `-inspector`; B
+            // cli-breadth 5's 255 covers inspect's parse, I/O and usage
+            // errors, and a refused inspector is none of those.
+            let inspect = matches!(command, Command::Inspect { .. })
+                && !matches!(error, CliError::InspectorUnsupported(_));
+            ExitCode::from(if inspect { INSPECT_ERROR } else { 2 })
         }
     }
 }
+
+/// `inspect`'s exit code on a parse, I/O or usage error (B cli-breadth 5):
+/// above every violation count, which stops at 254.
+// DECISION: B cli-breadth 5 rules the P2-642 TODOs: counts cap at 254 and
+// every `inspect` error exits 255, so no count is ever mistaken for an
+// error. Structurizr's own `inspect` exits 1 for any shown violation or
+// error and 0 otherwise (deferred.md, differences).
+const INSPECT_ERROR: u8 = 255;
 
 /// The process exit code of a finished run (CLI-2).
 fn exit_code(exit: Exit) -> ExitCode {
     match exit {
         Exit::Clean => ExitCode::SUCCESS,
         Exit::LintErrors => ExitCode::from(1),
+        Exit::Violations(n) => ExitCode::from(n),
     }
 }
 
@@ -824,6 +1233,7 @@ mod tests {
             out_dir: out.to_path_buf(),
             png: None,
             mode: c4rizer_core::model::Mode::Light,
+            svg_text: super::SvgText::Name,
         }
     }
 
@@ -901,6 +1311,7 @@ mod tests {
                 width: NonZeroU32::new(800),
             }),
             mode: c4rizer_core::model::Mode::Light,
+            svg_text: super::SvgText::Name,
         };
         for order in [
             &["render", "a.dsl", "-o", "out", "--png", "--width", "800"][..],
@@ -916,6 +1327,7 @@ mod tests {
                 out_dir: "out".into(),
                 png: Some(Png { width: None }),
                 mode: c4rizer_core::model::Mode::Light,
+            svg_text: super::SvgText::Name,
             }
         );
         assert_eq!(
@@ -1052,6 +1464,7 @@ mod tests {
             out_dir: out.clone(),
             png: Some(Png { width: None }),
             mode: c4rizer_core::model::Mode::Light,
+            svg_text: super::SvgText::Name,
         };
         let (result, report) = go(&command);
         let error = result.unwrap_err();

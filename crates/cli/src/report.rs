@@ -1,5 +1,6 @@
 //! Prints the per-view report: boxes, lines, crossings against budget,
-//! warnings and errors (CLI-1).
+//! warnings and errors (CLI-1); the element list of `list` (P2-608) and
+//! the violations of `inspect` (P2-611).
 //!
 //! Depends on: `c4rizer-core` (lint, model notices, pipeline's
 //! unsupported views).
@@ -43,8 +44,9 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use c4rizer_core::inspect::{Subject, Violation};
 use c4rizer_core::lint::{Finding, Report};
-use c4rizer_core::model::Notice;
+use c4rizer_core::model::{Model, Notice};
 use c4rizer_core::pipeline::UnsupportedView;
 
 /// Writes one view's block (CLI-1): `== <key>: <title>` with `key` =
@@ -146,6 +148,92 @@ pub(crate) fn unsupported(out: &mut impl Write, view: &UnsupportedView) -> io::R
 /// The first error of `out`.
 pub(crate) fn no_views(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "no views")
+}
+
+/// Writes one line per element of `model` in declaration order
+/// (`Model::elements`, parents before children): `<keyword> <id>
+/// "<name>"`, indented two spaces per nesting level. Serves P2-608.
+// TODO(srs): P2-608, the line format. Reading taken (B cli-breadth 4):
+// `<keyword> <id> "<name>"`, indented two spaces per level. Structurizr
+// prints ` - <Type>://<canonical name>` sorted by name (deferred.md).
+// DECISION: `<id>` is `Model::full_key` (the dotted id under
+// `!identifiers hierarchical`); an element declared without an id prints
+// `<keyword> "<name>"`. `"` and `\` in the name are escaped with `\` as
+// the DSL writes them, so the line reads back as one quoted string.
+///
+/// # Errors
+///
+/// The first error of `out`.
+pub(crate) fn elements(out: &mut impl Write, model: &Model) -> io::Result<()> {
+    for element in &model.elements {
+        let mut depth = 0;
+        let mut parent = element.parent;
+        while let Some(p) = parent {
+            depth += 1;
+            parent = model.element(p).parent;
+        }
+        write!(out, "{:width$}{}", "", element.kind.keyword(), width = depth * 2)?;
+        if let Some(id) = model.full_key(element.id) {
+            write!(out, " {id}")?;
+        }
+        writeln!(out, " {}", Quoted(&element.name.value))?;
+    }
+    Ok(())
+}
+
+/// `Display` of a name in double quotes, `"` and `\` escaped with `\`.
+struct Quoted<'a>(&'a str);
+
+impl std::fmt::Display for Quoted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\"")?;
+        for c in self.0.chars() {
+            if matches!(c, '"' | '\\') {
+                f.write_str("\\")?;
+            }
+            write!(f, "{c}")?;
+        }
+        f.write_str("\"")
+    }
+}
+
+/// Writes one line per violation, `<severity> <key> <subject>`, then
+/// `<n> violations shown` (P2-611, P2-612). The subject is an element's
+/// id, a relationship's `<source id> -> <destination id>`, a view's key,
+/// an element style's tag in double quotes, or nothing (no trailing
+/// space) for a workspace-level violation.
+// TODO(srs): P2-611, the line format and summary. Reading taken (B
+// cli-breadth 4): `<severity> <key> <subject>` per violation, then `<n>
+// violations shown`. Structurizr prints `<SEVERITY> | <key> | <message>`
+// in padded columns and no summary (deferred.md, differences).
+// DECISION: an element without an id is named by its name in double
+// quotes, as `elements` would print it; a style's tag is quoted because a
+// tag may hold spaces.
+///
+/// # Errors
+///
+/// The first error of `out`.
+pub(crate) fn violations(out: &mut impl Write, model: &Model, shown: &[Violation]) -> io::Result<()> {
+    let element = |id| {
+        model
+            .full_key(id)
+            .unwrap_or_else(|| Quoted(&model.element(id).name.value).to_string())
+    };
+    for v in shown {
+        write!(out, "{} {}", v.severity.keyword(), v.inspection.key())?;
+        match &v.subject {
+            Subject::Element(id) => write!(out, " {}", element(*id))?,
+            Subject::Relationship(id) => {
+                let r = model.relationship(*id);
+                write!(out, " {} -> {}", element(r.source.value), element(r.destination.value))?;
+            }
+            Subject::View(key) => write!(out, " {key}")?,
+            Subject::ElementStyle(tag) => write!(out, " {}", Quoted(tag))?,
+            _ => {}
+        }
+        writeln!(out)?;
+    }
+    writeln!(out, "{} violations shown", shown.len())
 }
 
 #[cfg(test)]
@@ -330,3 +418,4 @@ mod tests {
         assert_eq!(text(out), "no views\n");
     }
 }
+

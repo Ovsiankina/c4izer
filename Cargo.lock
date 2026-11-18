@@ -527,6 +527,7 @@ name = "c4rizer-core"
 version = "0.1.0"
 dependencies = [
  "resvg",
+ "usvg",
 ]
 
 [[package]]

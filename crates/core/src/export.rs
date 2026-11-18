@@ -196,6 +196,167 @@ pub fn svg(scene: &Scene) -> String {
     w.out
 }
 
+/// The scene as `svg` writes it, plus one `<style>` holding one
+/// `@font-face` per bundled face the scene's text uses (`--svg-text
+/// embed`): `font-family` `scene::FONT_FAMILY`, `font-weight` `normal`
+/// for `scene::FONT_REGULAR` and `bold` for `scene::FONT_BOLD`, `src:
+/// url(data:font/ttf;base64,...)` holding the whole face. Apart from those
+/// `data:` URIs the document passes the EXP-1 scan. Serves P2-651,
+/// P2-654..P2-657.
+// TODO(srs): P2-656, font subsetting. Reading taken (B cli-breadth 10):
+// the whole bundled face, no subsetting (a subsetter is a new
+// dependency).
+// DECISION: the `<style>` is the root's first child, on its own line
+// right after the root tag, one rule per line; the rest of the document
+// is `svg`'s, byte for byte. The base64 is the icon encoder's (std only,
+// RFC 4648 with padding).
+#[must_use]
+pub fn svg_embedded(scene: &Scene) -> String {
+    let named = svg(scene);
+    let (regular, bold) = faces_used(scene);
+    let mut style = String::from("<style>");
+    for (used, weight, bytes) in [
+        (regular, "normal", crate::scene::FONT_REGULAR),
+        (bold, "bold", crate::scene::FONT_BOLD),
+    ] {
+        if !used {
+            continue;
+        }
+        if !style.ends_with('>') {
+            style.push('\n');
+        }
+        let _ = write!(
+            style,
+            "@font-face{{font-family:\"{FONT_FAMILY}\";font-weight:{weight};src:url(data:font/ttf;base64,"
+        );
+        base64_into(&mut style, bytes);
+        style.push_str(")}");
+    }
+    style.push_str("</style>\n");
+    // The root tag is `svg`'s first line.
+    let split = named.find('\n').map_or(named.len(), |i| i + 1);
+    let mut out = String::with_capacity(named.len() + style.len());
+    out.push_str(&named[..split]);
+    out.push_str(&style);
+    out.push_str(&named[split..]);
+    out
+}
+
+/// Whether the scene draws any regular and any bold text line (P2-655).
+fn faces_used(scene: &Scene) -> (bool, bool) {
+    let mut blocks: Vec<&TextBlock> = scene.boundaries.iter().map(|b| &b.tag).collect();
+    for b in &scene.boxes {
+        blocks.extend([&b.name, &b.type_line]);
+        blocks.extend(b.description.iter());
+    }
+    blocks.extend(scene.labels.iter().map(|l| &l.text));
+    blocks.extend(scene.title.iter().chain(scene.subtitle.iter()));
+    blocks.extend(scene.legend.entries.iter().map(|e| &e.text));
+    let drawn = blocks.iter().filter(|t| !t.lines.is_empty());
+    let (mut regular, mut bold) = (false, false);
+    for t in drawn {
+        if t.weight == Weight::Bold {
+            bold = true;
+        } else {
+            regular = true;
+        }
+    }
+    (regular, bold)
+}
+
+/// The scene as `svg` writes it with every text line drawn as filled
+/// paths from the bundled faces' glyph outlines (`--svg-text outline`): no
+/// `<text>`, no `font-family`, no `@font-face`, and no external
+/// reference (EXP-1). Serves P2-651, P2-654, P2-658..P2-660.
+///
+/// # Errors
+///
+/// `OutlineError::Parse` when usvg cannot read the named SVG (never
+/// expected: `svg` always writes a valid document).
+// DECISION: usvg reads the named SVG with a font database holding only
+// the two bundled faces (the regular one also as `sans-serif`, like
+// `png`), and its writer turns every text into the glyph paths it shaped
+// (`preserve_text: false`). The writer's own layout (indent, number
+// precision 8) is kept: the output is no longer one item per line.
+#[cfg(feature = "outline")]
+pub fn svg_outlined(scene: &Scene) -> Result<String, OutlineError> {
+    let mut db = usvg::fontdb::Database::new();
+    db.load_font_data(crate::scene::FONT_REGULAR.to_vec());
+    db.load_font_data(crate::scene::FONT_BOLD.to_vec());
+    db.set_sans_serif_family(FONT_FAMILY);
+    let opt = usvg::Options {
+        font_family: FONT_FAMILY.to_owned(),
+        fontdb: std::sync::Arc::new(db),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_str(&svg(scene), &opt)
+        .map_err(|e| OutlineError::Parse(e.to_string()))?;
+    Ok(plain_image_href(&tree.to_string(&usvg::WriteOptions {
+        preserve_text: false,
+        ..usvg::WriteOptions::default()
+    })))
+}
+
+/// usvg's writer output with each icon (P2-409) spelled as `svg` spells
+/// it, `<image href="data:image/<type>;base64,...">`, and without the
+/// `xmlns:xlink` declaration once no `xlink:` attribute is left, so an
+/// outlined view with an icon passes EXP-1 like its `name` SVG (P2-659).
+// DECISION: a narrow text post-pass over usvg 0.50's writer (it has no
+// option for SVG 2 `href`). Only ` xlink:href="data:` is rewritten: that
+// byte run can only be an attribute start, since the writer escapes `"`
+// inside values and outlined text leaves no character data. Any other
+// `xlink:` use (`#id` refs of textPath, feImage; the scene has none) is
+// left as written, keeps its namespace and fails the EXP-1 tests.
+#[cfg(feature = "outline")]
+fn plain_image_href(svg: &str) -> String {
+    const XLINK_DATA: &str = " xlink:href=\"data:image/";
+    const XMLNS_XLINK: &str = " xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    while let Some(at) = rest.find(XLINK_DATA) {
+        out.push_str(&rest[..at]);
+        out.push_str(" href=\"data:image/");
+        rest = &rest[at + XLINK_DATA.len()..];
+        // usvg writes `;base64, <data>`; a data URI has no space there.
+        let value_end = rest.find('"').unwrap_or(rest.len());
+        if let Some(b64) = rest[..value_end].find(";base64, ") {
+            out.push_str(&rest[..b64]);
+            out.push_str(";base64,");
+            rest = &rest[b64 + ";base64, ".len()..];
+        }
+    }
+    out.push_str(rest);
+    if !out.contains("xlink:") {
+        out = out.replacen(XMLNS_XLINK, "", 1);
+    }
+    out
+}
+
+/// Why `svg_outlined` produced no SVG. Serves P2-658, CLI exit 2.
+#[cfg(feature = "outline")]
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum OutlineError {
+    /// usvg refused the named SVG; the text says why.
+    Parse(String),
+}
+
+#[cfg(feature = "outline")]
+impl std::fmt::Display for OutlineError {
+    /// One sentence saying what failed and what to do (SRS 5.1).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(why) => write!(
+                f,
+                "The SVG could not be outlined ({why}); export it with --svg-text name or embed instead."
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "outline")]
+impl std::error::Error for OutlineError {}
+
 /// The SVG text under construction. Writing to a `String` cannot fail,
 /// so `write!` results are dropped.
 #[derive(Default)]

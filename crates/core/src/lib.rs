@@ -13,5 +13,6 @@ pub mod route;
 pub mod label;
 pub mod scene;
 pub mod lint;
+pub mod inspect;
 pub mod export;
 pub mod pipeline;

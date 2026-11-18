@@ -9,9 +9,13 @@ license.workspace = true
 # memmap-fonts. raster-images draws PNG/JPEG icons (P2-409) and image
 # views (P2-320); owner sign-off O10, phase2-decisions Part C.
 png = ["dep:resvg"]
+# P2-25 `--svg-text outline`: text to paths through usvg's writer, bundled
+# faces only (no system-fonts). Owner sign-off A.2 Cargo, Part C.
+outline = ["dep:usvg"]
 
 [dependencies]
 resvg = { version = "0.50", optional = true, default-features = false, features = ["text", "raster-images"] }
+usvg = { version = "0.50", optional = true, default-features = false, features = ["text", "writer"] }
 
 [lints]
 workspace = true

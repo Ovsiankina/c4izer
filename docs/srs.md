@@ -2078,12 +2078,11 @@ contradicts P2-25 by design).
   error on stderr in each of these cases: no `-workspace`, `-workspace`
   with no value, `-workspace` given twice, or an argument the subcommand
   does not take.
-- **P2-603** TODO(srs): Structurizr also accepts a URL and a JSON
-  workspace in `-workspace`. URL fetching has the same open question as
-  P2-5, and the parity table puts JSON workspace input in phase 3. Until
-  this is ruled, the value is always read as a local path. A URL
-  therefore fails as an I/O error (exit 2) and a JSON file as a parse
-  error (exit 2).
+- **P2-603** A `-workspace` value that starts with `http://` or
+  `https://` (any case) is a usage error: nothing is fetched (network is
+  the phase-3 row). A JSON workspace file fails as a parse error (JSON
+  input is phase 3). The workspace may also be given as `-w`,
+  `--workspace` or one bare FILE.
 
 **validate** (Structurizr: "Validates a workspace.")
 
@@ -2124,8 +2123,8 @@ contradicts P2-25 by design).
 - **P2-613** `inspect` writes no file and runs no placement, routing or
   lint, so lint findings never change its exit code.
 - **P2-614** On a parse or I/O error, `inspect` prints the error on
-  stderr per SRS 5.1 and exits 2. TODO(srs): see P2-642, since this
-  cannot be told apart from two violations.
+  stderr per SRS 5.1 and exits 255, so it can be told apart from a
+  violation count (P2-642).
 - **P2-615** `model.empty`: a model with no elements gives exactly one
   violation.
 - **P2-616** `model.person.description`: each person with no description
@@ -2213,11 +2212,10 @@ contradicts P2-25 by design).
 - **P2-641** `-severity` with an unknown value, with no value, given
   twice, or on a subcommand other than `inspect` prints a usage error on
   stderr and exits 2.
-- **P2-642** `inspect` exits with the number of violations shown, so 0
-  means none was shown. (Reference: "The return code indicates the
-  number of violations that were shown.") TODO(srs): process exit codes
-  stop at 255, so what happens above 255? TODO(srs): exit 2 for a parse,
-  I/O or usage error cannot be told apart from two violations.
+- **P2-642** `inspect` exits with the number of error-severity
+  violations shown, capped at 254, so 0 means no error was shown. A
+  parse, I/O or usage error of `inspect` exits 255; every other command
+  keeps exit 2 for errors.
 - **P2-643** `-inspector <class>` is refused: c4rizer prints one line on
   stderr saying that custom Java inspectors need the JVM and are not
   supported (parity table: never), and exits 2.
@@ -2267,14 +2265,16 @@ contradicts P2-25 by design).
   and 420 KB, about 550 KB each in base64.
 - **P2-657** With `embed`, the SVG passes the EXP-1
   no-external-reference scan except for the `data:` URIs inside
-  `@font-face`: no script, no `href`, no `<image>` and no other
-  `url(...)`.
+  `@font-face` and the icon images P2-409 allows
+  (`<image href="data:image/...">`): no script, no other `href` and no
+  other `url(...)`.
 - **P2-658** With `outline`, the SVG has no `<text>` element, no
   `font-family` and no `@font-face`. Every text line is drawn instead as
   filled paths taken from the bundled faces' glyph outlines, with the
   same fill as the `name` export.
 - **P2-659** With `outline`, the SVG passes the EXP-1
-  no-external-reference scan with no exception.
+  no-external-reference scan with no exception beyond the icon images
+  P2-409 allows (`<image href="data:image/...">`, never `xlink:href`).
 - **P2-660** An `outline` SVG rasterized with no font loaded matches the
   same view's `name` SVG rasterized with the bundled fonts (EXP-2) at
   the same width, within a pixel tolerance. TODO(srs): the allowed

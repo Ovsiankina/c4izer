@@ -26,6 +26,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
                 cLabel = component "label" "Places each line label clear of boxes, labels and lines." "Rust module" "Layout"
                 cScene = component "scene" "Builds the plain-data picture of a view, every item tagged with its model id." "Rust module" "Output"
                 cLint = component "lint" "Checks a scene against the C4 rules and the crossing budget." "Rust module" "Output"
+                cInspect = component "inspect" "Runs Structurizr's workspace inspections on the model." "Rust module" "Output"
                 cExport = component "export" "Writes a scene as SVG text or PNG bytes." "Rust module" "Output"
                 cPipeline = component "pipeline" "Entry points: one view's scene and lint report, or every view." "Rust module" "Entry"
             }
@@ -56,6 +57,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cli -> cExport "Turns scenes into files with" "Rust API"
         cli -> cModel "Parses the diagram file with" "Rust API"
         cli -> cLint "Reads lint findings from" "Rust API"
+        cli -> cInspect "Runs workspace inspections with" "Rust API"
         editor -> cPipeline "Builds and re-routes scenes with" "Rust API"
         editor -> cEdit "Writes canvas edits back with" "Rust API"
         editor -> cExport "Exports the open view with" "Rust API"
@@ -90,6 +92,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cScene -> cLabel "Draws labels of"
         cLint -> cScene "Measures geometry of"
         cLint -> cModel "Checks C4 rules against"
+        cInspect -> cModel "Inspects elements, relationships and views of"
         cLint -> cText "Reads source spans from"
         cExport -> cScene "Serialises"
 
@@ -127,7 +130,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         // C3 is split in three so that none is a tangle; together they show
         // every component and every relationship.
         component core "C3-stages" "Component diagram for c4rizer core: pipeline stages" {
-            include cText cModel cEdit cView cPlace cRoute cLabel cScene cLint cExport
+            include cText cModel cEdit cView cPlace cRoute cLabel cScene cLint cInspect cExport
             autoLayout
         }
         component core "C3-entry" "Component diagram for c4rizer core: entry points" {
