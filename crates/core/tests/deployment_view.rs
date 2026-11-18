@@ -326,7 +326,12 @@ fn p3_104_instances_numbered_per_element_per_environment() {
     assert_eq!(m.element(id(&m, "y")).kind, ElementKind::ContainerInstance);
     assert!(matches!(error(&inst("containerInstance shop")).kind, ModelErrorKind::InvalidValue { .. }));
     assert!(matches!(error(&inst("softwareSystemInstance a")).kind, ModelErrorKind::InvalidValue { .. }));
-    assert!(matches!(error(&inst("containerInstance a \"nogroup\"")).kind, ModelErrorKind::UndeclaredId { .. }));
+    // An unknown deployment group is ignored with a no-effect notice, as
+    // Structurizr does (corpus big-bank-plc.dsl: `containerInstance
+    // database "Failover"`).
+    let m = parse(&inst("x = containerInstance a \"nogroup\""));
+    assert!(m.element(id(&m, "x")).deployment_groups.is_empty());
+    assert!(m.notices.iter().any(|n| n.subject.contains("nogroup")), "{:?}", m.notices);
 }
 
 /// An instance carries its kind tag and own tags, after the tags of the element it instantiates.
@@ -459,6 +464,41 @@ fn p3_108_removal_drops_one_copied_relationship() {
     }
     // Both ends must be instances of that environment.
     assert!(matches!(error(&env("            lb -/> ai")).kind, ModelErrorKind::UndeclaredId { .. }));
+}
+
+/// `a -/> b` naming a container stands for all its instances in the environment, and a `{ }` block after it holds `->` lines that take the removed relationship's description and technology unless written (Structurizr 6.2.4, corpus no-relationship.dsl).
+#[test]
+fn p3_108_removal_block_and_container_ends() {
+    let src = ws(
+        &format!(
+            "{SHOP}\n        live = deploymentEnvironment \"Live\" {{\n            n = deploymentNode \"N\" {{\n                ai = containerInstance a\n                bi = containerInstance b\n                lb = infrastructureNode \"LB\"\n            }}\n            a -/> b {{\n                a -> lb\n                lb -> b \"Forwards\" \"\"\n            }}\n        }}"
+        ),
+        "",
+    );
+    let m = parse(&src);
+    assert!(copied(&m).iter().all(|c| c != "ai->bi"), "{:?}", copied(&m));
+    let written: Vec<(String, Option<&str>, Option<&str>)> = m
+        .relationships
+        .iter()
+        .filter(|r| r.copied_from.is_none() && m.element(r.source.value).environment.is_some())
+        .map(|r| {
+            (
+                format!("{}->{}", key(&m, r.source.value), key(&m, r.destination.value)),
+                r.description.as_ref().map(|d| d.value.as_str()),
+                r.technology.as_ref().map(|t| t.value.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        written,
+        [
+            ("ai->lb".to_owned(), Some("Reads"), Some("SQL")),
+            ("lb->bi".to_owned(), Some("Forwards"), Some("")),
+        ]
+    );
+    // Only `->` lines go in the block.
+    let bad = src.replace("                a -> lb\n", "                tags \"X\"\n");
+    assert!(matches!(error(&bad).kind, ModelErrorKind::UnknownConstruct { .. }), "{:?}", error(&bad));
 }
 
 /// Under `!identifiers hierarchical` a deployment id is its full dotted path from the environment; a bare id resolves inside its block.

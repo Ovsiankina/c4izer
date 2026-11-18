@@ -1606,6 +1606,28 @@ pub enum NoticeKind {
     /// view-set properties, `!impliedRelationships <fqcn>`, a
     /// `!docs`/`!adrs` importer FQCN.
     NoEffect,
+    /// import-layout: a JSON view whose key names no view in the file;
+    /// it is skipped (P2-505). `subject` is the key.
+    ViewNotInFile,
+    /// import-layout: a JSON dynamic, deployment or image view, or a
+    /// file view c4rizer does not draw; it is skipped (P2-510).
+    ViewNotDrawable,
+    /// import-layout: a view matched on a key c4rizer generated, which
+    /// the reference says is not stable (P2-505).
+    GeneratedKey,
+    /// import-layout: a drawn box with no JSON element to take a
+    /// position from (P2-507). `subject` is the element's name.
+    UnmatchedBox,
+    /// import-layout: a JSON element view whose `id` is not in the JSON
+    /// model (P2-506). `subject` is the id.
+    UnknownJsonElement,
+    /// import-layout: a matched box whose element has no identifier, so
+    /// no `at` line can name it (P2-511). `subject` is its name.
+    NoIdentifier,
+    /// import-layout: layout data c4rizer cannot hold (relationship
+    /// `vertices`, `routing`, `position`; view `paperSize`,
+    /// `dimensions`; `themes`), named once per view (P2-510).
+    NotImported,
 }
 
 /// Something the file says that c4rizer accepts with no effect: one per
@@ -1635,11 +1657,46 @@ impl fmt::Display for Notice {
     // TODO(srs): P2-125, the exact line format. Reading taken (B
     // dsl-breadth 24): `notice: <path>:<line>:<column>: <construct> is
     // accepted and has no effect`.
+    ///
+    /// An import notice (P2-505..P2-511) has no position and reads
+    /// `view <key>: <what> — <what it means or what to change>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(Position { line, column }) = self.position {
             write!(f, "{line}:{column}: ")?;
         }
-        write!(f, "{} is accepted and has no effect", self.subject)
+        let subject = &self.subject;
+        let view = self.view.as_deref().unwrap_or_default();
+        match self.kind {
+            NoticeKind::NoEffect => write!(f, "{subject} is accepted and has no effect"),
+            NoticeKind::ViewNotInFile => {
+                write!(f, "view {subject}: no view with this key in the file — skipped")
+            }
+            NoticeKind::ViewNotDrawable => {
+                write!(f, "view {subject}: c4rizer does not draw or position this view yet — skipped")
+            }
+            NoticeKind::GeneratedKey => write!(
+                f,
+                "view {subject}: matched on a generated key, which changes when views are added — give the view an explicit key"
+            ),
+            NoticeKind::UnmatchedBox => write!(
+                f,
+                "view {view}: no position for `{subject}` in the JSON — its `at` line is kept"
+            ),
+            NoticeKind::UnknownJsonElement => write!(
+                f,
+                "view {view}: JSON element id {subject} is not in the JSON model — skipped"
+            ),
+            NoticeKind::NoIdentifier => write!(
+                f,
+                "view {view}: `{subject}` has no identifier, so no `at` line can name it — give it one (`id = ...`)"
+            ),
+            NoticeKind::NotImported if self.view.is_none() => {
+                write!(f, "{subject}: not fetched and not imported")
+            }
+            NoticeKind::NotImported => {
+                write!(f, "view {view}: `{subject}` not imported — c4rizer cannot hold it")
+            }
+        }
     }
 }
 
@@ -3473,6 +3530,8 @@ struct Pending {
     span: Span,
     /// The element whose block holds the relationship (P2-142).
     context: Option<ElementId>,
+    /// The deployment environment the relationship is written in (P3-109).
+    environment: Option<EnvironmentId>,
 }
 
 /// State of one `Model::from_tree` call.
@@ -3671,10 +3730,20 @@ impl<'t> Builder<'t> {
         if head.len() > 3 {
             return Err(self.invalid(head, head.text(0), 3));
         }
-        let name = self.written(head.span(1));
-        if head.kind(1) != Some(TokenKind::Word) || !name.chars().all(is_var_name_char) {
+        // TODO(srs): P2-150 shows a bare name only. Reading taken
+        // (Structurizr 6.2.4 opens corpus
+        // constants-and-variables-from-workspace-extension-parent.dsl): a
+        // quoted name is the same name, checked unquoted.
+        let written = self.written(head.span(1));
+        let name = match head.kind(1) {
+            Some(TokenKind::Word) => written.to_owned(),
+            Some(TokenKind::String) => text::unquote(written),
+            _ => return Err(self.invalid(head, head.text(0), 1)),
+        };
+        if name.is_empty() || !name.chars().all(is_var_name_char) {
             return Err(self.invalid(head, head.text(0), 1));
         }
+        let name = name.as_str();
         if !head.is_string(2) {
             return Err(self.invalid(head, head.text(0), 2));
         }
@@ -3713,13 +3782,19 @@ impl<'t> Builder<'t> {
     }
 
     /// `written`, a path relative to the file it is written in, checked:
-    /// it exists and lies inside that file's folder after `..` and
-    /// symlinks are resolved (P2-134, P2-159). `None` when the file was
-    /// parsed without a path.
+    /// it exists and lies inside the diagram's (the root file's) folder
+    /// after `..` and symlinks are resolved (P2-159). `None` when the file
+    /// was parsed without a path.
+    // DECISION: the containment folder is the root file's, as the P2-159
+    // reading says ("outside the diagram's folder") and Structurizr 6.2.4
+    // does (corpus include-directory.dsl: `!docs ../../docs` in an
+    // included file two folders down); `!include` keeps P2-134's
+    // including-file rule.
     fn checked_path(&mut self, written: &Literal) -> Result<Option<PathBuf>, ModelError> {
         let Some(folder) = self.folder(written.span.file) else {
             return Ok(None);
         };
+        let diagram = self.folder(FileId::ROOT).unwrap_or_else(|| folder.clone());
         let joined = folder.join(&written.value);
         let resolved = self.loader.canonicalize(&joined).map_err(|e| {
             self.error(
@@ -3730,7 +3805,7 @@ impl<'t> Builder<'t> {
                 written.span,
             )
         })?;
-        let root = self.loader.canonicalize(&folder).unwrap_or(folder);
+        let root = self.loader.canonicalize(&diagram).unwrap_or(diagram);
         if !resolved.starts_with(&root) {
             return Err(self.error(
                 ModelErrorKind::PathOutsideRoot {
@@ -3756,7 +3831,7 @@ impl<'t> Builder<'t> {
         statement: &Statement,
         head: &Head<'_>,
     ) -> Result<Attachment, ModelError> {
-        self.no_block(statement, head)?;
+        self.attachment_block(statement)?;
         let mut strings = self.strings(head, head.text(0), 1, 2)?.into_iter();
         let Some(path) = strings.next() else {
             return Err(self.missing(head, "path"));
@@ -3785,6 +3860,33 @@ impl<'t> Builder<'t> {
             importer,
             span: head.span_of(0, head.len() - 1),
         })
+    }
+
+    /// The optional `{ exclude <pattern>... }` block of `!docs`, `!adrs`
+    /// or `!decisions`: checked, kept nowhere.
+    // TODO(srs): P2-159, P2-160 name no block. Reading taken (Structurizr
+    // 6.2.4 opens corpus docs/workspace.dsl and decisions/workspace.dsl):
+    // only `exclude` lines of one or more strings; phase 2 reads no
+    // documentation file, so the patterns change nothing.
+    fn attachment_block(&mut self, statement: &Statement) -> Result<(), ModelError> {
+        let Some(block) = &statement.block else {
+            return Ok(());
+        };
+        for inner in &block.statements {
+            let line = self.head(inner)?;
+            if self.common(inner, &line)? {
+                continue;
+            }
+            if !line.is_keyword(0, "exclude") {
+                return Err(self.reject(&line, 0));
+            }
+            self.no_block(inner, &line)?;
+            if line.len() < 2 {
+                return Err(self.missing(&line, "pattern"));
+            }
+            self.strings(&line, "exclude", 1, usize::MAX)?;
+        }
+        Ok(())
     }
 
     /// Records a construct accepted with no effect (P2-3), in file order.
@@ -4265,6 +4367,18 @@ impl<'t> Builder<'t> {
         Ok(())
     }
 
+    /// P2-400: a property line `head` that sets again what an earlier line
+    /// at `earlier` set; the later line wins, as in Structurizr, and the
+    /// earlier one gets a no-effect notice naming it.
+    fn overridden(&mut self, earlier: Option<Span>, head: &Head<'_>) {
+        let Some(span) = earlier else {
+            return;
+        };
+        let later = self.position(head.span(0)).line;
+        let subject = format!("an earlier `{}` line (overridden by line {later})", head.text(0));
+        self.notice(&subject, None, span);
+    }
+
     fn duplicate_line(&self, construct: &'static str, head: &Head<'_>) -> ModelError {
         self.error(
             ModelErrorKind::DuplicateLine {
@@ -4345,6 +4459,18 @@ impl<'t> Builder<'t> {
     /// (`None` outside any element block). Ids match ignoring ASCII case
     /// (Structurizr; owner ruling, phase2-decisions Part C).
     fn resolve(&self, path: &str, context: Option<ElementId>) -> Option<ElementId> {
+        self.resolve_in(path, context, self.deploy.environment())
+    }
+
+    /// `resolve`, read inside deployment environment `environment` (or
+    /// none): under hierarchical ids a path not found otherwise is also
+    /// looked up under the environment's id (P3-109).
+    fn resolve_in(
+        &self,
+        path: &str,
+        context: Option<ElementId>,
+        environment: Option<EnvironmentId>,
+    ) -> Option<ElementId> {
         if self.model.identifiers == Identifiers::Hierarchical {
             // DECISION: B dsl-breadth 11, checked against Structurizr for
             // Java: inside an element's block an id is looked up under
@@ -4360,7 +4486,15 @@ impl<'t> Builder<'t> {
                 }
                 scope = self.model.element(c).parent;
             }
-            return self.keys.get(&path.to_ascii_lowercase()).copied();
+            // DECISION: a path written at environment level (no element
+            // block around it) is also tried under the environment's id,
+            // as Structurizr's deployment context does
+            // (no-relationship.dsl: `computer.webbrowser.ui -/> ...`).
+            let environment = context.and_then(|c| self.model.element(c).environment).or(environment);
+            return self.keys.get(&path.to_ascii_lowercase()).copied().or_else(|| {
+                let key = self.model.environments.get(environment?.0 as usize)?.key.as_ref()?;
+                self.keys.get(&format!("{}.{path}", key.value).to_ascii_lowercase()).copied()
+            });
         }
         find_path(&self.model.elements, path, |k| {
             self.keys.get(&k.to_ascii_lowercase()).copied()
@@ -4369,7 +4503,7 @@ impl<'t> Builder<'t> {
 
     fn resolve_pending(&mut self) -> Result<(), ModelError> {
         for p in std::mem::take(&mut self.pending) {
-            let Some(id) = self.resolve(&p.key, p.context) else {
+            let Some(id) = self.resolve_in(&p.key, p.context, p.environment) else {
                 return Err(self.error(ModelErrorKind::UndeclaredId { id: p.key }, p.span));
             };
             let r = &mut self.model.relationships[p.relationship];
@@ -4693,6 +4827,9 @@ impl<'t> Builder<'t> {
             self.resolve(&written, parent)
         };
         let Some(id) = found else {
+            if kw == 0 && parent.is_none() && self.deployment_element(statement, &written)? {
+                return Ok(());
+            }
             return Err(self.error(
                 ModelErrorKind::UndeclaredId { id: written },
                 head.span(kw + 1),
@@ -4701,7 +4838,17 @@ impl<'t> Builder<'t> {
         if kw == 2 {
             self.bind(head, id)?;
         }
-        self.element_block(statement, id)?;
+        if matches!(
+            self.model.element(id).kind,
+            ElementKind::DeploymentNode
+                | ElementKind::InfrastructureNode
+                | ElementKind::SoftwareSystemInstance
+                | ElementKind::ContainerInstance
+        ) {
+            self.reopen_deployment(statement, id)?;
+        } else {
+            self.element_block(statement, id)?;
+        }
         self.retag_element(id);
         Ok(())
     }
@@ -4736,6 +4883,14 @@ impl<'t> Builder<'t> {
         while let Some(p) = current {
             names.push(&self.model.element(p).name.value);
             current = self.model.element(p).parent;
+        }
+        // DECISION: a deployment element's canonical name is Structurizr's:
+        // the environment, then the names from the top node down, joined
+        // by `/` (`DeploymentNode://Live/AWS/US-East-1`).
+        if let Some(environment) = element.environment {
+            names.push(&self.model.environments[environment.0 as usize].name.value);
+            names.reverse();
+            return format!("{kind}://{}", names.join("/"));
         }
         names.reverse();
         format!("{kind}://{}", names.join("."))
@@ -5117,13 +5272,7 @@ impl<'t> Builder<'t> {
             }
         } else {
             let (end, key) = self.end(head, from, parent)?;
-            pending.extend(key.map(|key| Pending {
-                relationship: index,
-                source: true,
-                key,
-                span: end.span,
-                context: parent,
-            }));
+            pending.extend(key.map(|key| self.pending_end((index, true), key, end.span, parent)));
             end
         };
         if head.len() <= arrow + 1 {
@@ -5136,13 +5285,7 @@ impl<'t> Builder<'t> {
             ));
         }
         let (destination, dkey) = self.end(head, arrow + 1, parent)?;
-        pending.extend(dkey.map(|key| Pending {
-            relationship: index,
-            source: false,
-            key,
-            span: destination.span,
-            context: parent,
-        }));
+        pending.extend(dkey.map(|key| self.pending_end((index, false), key, destination.span, parent)));
         let archetype = self.relationship_archetype(head, arrow)?;
         let mut strings = self.strings(head, "->", arrow + 2, 3)?.into_iter();
         let description = strings.next();
@@ -5187,6 +5330,19 @@ impl<'t> Builder<'t> {
         }
         self.retag_relationship(index);
         Ok(())
+    }
+
+    /// The `Pending` end `key` (source when `source`) of relationship
+    /// `index`, read in `parent`'s block and the current environment.
+    fn pending_end(&self, (index, source): (usize, bool), key: String, span: Span, parent: Option<ElementId>) -> Pending {
+        Pending {
+            relationship: index,
+            source,
+            key,
+            span,
+            context: parent,
+            environment: self.deploy.environment(),
+        }
     }
 
     /// A `tag`, `tags`, `url`, `properties` or `perspectives` line in a
@@ -5550,9 +5706,11 @@ impl Builder<'_> {
         let declared_key = strings.next();
         let key = self.view_key(kind, declared_key.as_ref())?;
         let mut view = new_view(kind, scope, key, declared_key, statement.span);
-        if kind == ViewKind::Custom {
-            view.title = strings.next();
-        }
+        // DECISION: a custom view's positional title is set after the
+        // body, so a body `title` line is no duplicate and wins as the
+        // later one, as a body `description` does (Structurizr 6.2.4
+        // probed; corpus test.dsl).
+        let positional_title = if kind == ViewKind::Custom { strings.next() } else { None };
         view.description = strings.next();
         if kind == ViewKind::Filtered {
             view.filter = Some(self.filter(head)?);
@@ -5561,6 +5719,9 @@ impl Builder<'_> {
             }
         } else if statement.block.is_some() {
             self.view_body(statement, head, &mut view)?;
+        }
+        if view.title.is_none() {
+            view.title = positional_title;
         }
         if kind == ViewKind::Custom {
             self.check_custom(&view)?;
@@ -5766,6 +5927,8 @@ impl Builder<'_> {
         view: &mut ViewSpec,
     ) -> Result<(), ModelError> {
         let mut seen_description = false;
+        // `light` then `dark` image sources (P2-320).
+        let mut mode_images: [Option<ViewImage>; 2] = [None, None];
         self.each(self.block(statement, head)?, &mut |this, inner| {
             if view.kind == ViewKind::Dynamic && inner.head.is_empty() {
                 this.dynamic_parallel(inner)?;
@@ -5792,10 +5955,15 @@ impl Builder<'_> {
                 return Ok(());
             }
             let kind = view.kind;
+            if kind == ViewKind::Image && (head.is_keyword(0, "light") || head.is_keyword(0, "dark")) {
+                let slot = usize::from(head.is_keyword(0, "dark"));
+                let image = this.mode_image(inner, &head, view, mode_images[slot].is_some())?;
+                mode_images[slot] = image;
+                return Ok(());
+            }
             match kind {
                 ViewKind::Dynamic if this.dynamic_step(&head)? => {
-                    this.no_block(inner, &head)?;
-                    return Ok(());
+                    return this.dynamic_step_block(inner);
                 }
                 ViewKind::Image if this.image_source(&head, view)? => {
                     this.no_block(inner, &head)?;
@@ -5816,7 +5984,55 @@ impl Builder<'_> {
             this.no_block(inner, &head)?;
             Ok(())
         })?;
+        if view.image.is_none() {
+            let [light, dark] = mode_images;
+            view.image = light.or(dark);
+        }
         Ok(())
+    }
+
+    /// `light { <source> }` or `dark { <source> }` in an image view: the
+    /// one source line inside, checked as a plain source is, and a P2-3
+    /// notice. `seen` when the view had this block before.
+    // TODO(srs): P2-320 names no `light`/`dark` block. Reading taken
+    // (Structurizr 6.2.4 opens corpus test.dsl, which has both): one
+    // source line per block; the view draws its plain source, else the
+    // `light` one, else the `dark` one (c4rizer draws no dark variant).
+    fn mode_image(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        view: &ViewSpec,
+        seen: bool,
+    ) -> Result<Option<ViewImage>, ModelError> {
+        self.no_arguments(head)?;
+        if seen {
+            let construct = if head.is_keyword(0, "dark") { "dark" } else { "light" };
+            return Err(self.duplicate_line(construct, head));
+        }
+        let mut scratch = new_view(
+            ViewKind::Image,
+            ViewScope::Unscoped,
+            view.key.clone(),
+            None,
+            statement.span,
+        );
+        let notices = self.model.notices.len();
+        for inner in self.block(statement, head)? {
+            let line = self.head(inner)?;
+            if self.common(inner, &line)? {
+                continue;
+            }
+            if !self.image_source(&line, &mut scratch)? {
+                return Err(self.reject(&line, 0));
+            }
+            self.no_block(inner, &line)?;
+        }
+        // The block's own notice stands for any its source line gave.
+        self.model.notices.truncate(notices);
+        let subject = head.text(0).to_ascii_lowercase();
+        self.notice(&subject, Some(&view.key), head.span_of(0, head.len() - 1));
+        Ok(scratch.image)
     }
 
     /// A `{ }` block of parallel steps in a dynamic view (P2-121).
@@ -5836,7 +6052,33 @@ impl Builder<'_> {
             if !self.dynamic_step(&head)? {
                 return Err(self.reject(&head, 0));
             }
-            self.no_block(inner, &head)?;
+            self.dynamic_step_block(inner)?;
+        }
+        Ok(())
+    }
+
+    /// The optional block of a dynamic step: `url` and `properties` lines
+    /// only, read and kept nowhere (dynamic views draw in phase 3).
+    // DECISION: Structurizr 6.2.4 probed (corpus test.dsl): a step block
+    // takes `url "<url>"` and `properties { }`; any other line is
+    // refused ("expected: url").
+    fn dynamic_step_block(&mut self, statement: &Statement) -> Result<(), ModelError> {
+        let Some(block) = &statement.block else {
+            return Ok(());
+        };
+        for inner in &block.statements {
+            let head = self.head(inner)?;
+            if self.common(inner, &head)? {
+                continue;
+            }
+            if head.is_keyword(0, "properties") {
+                self.properties(inner, &head)?;
+            } else if head.is_keyword(0, "url") {
+                self.one_string(&head)?;
+                self.no_block(inner, &head)?;
+            } else {
+                return Err(self.reject(&head, 0));
+            }
         }
         Ok(())
     }
@@ -6013,7 +6255,7 @@ impl Builder<'_> {
 
     /// One line of a view body.
     fn view_line(
-        &self,
+        &mut self,
         head: &Head<'_>,
         view: &mut ViewSpec,
         seen_description: &mut bool,
@@ -6026,49 +6268,38 @@ impl Builder<'_> {
             "include" => view.include.extend(self.selectors(head)?),
             "exclude" => view.exclude.extend(self.selectors(head)?),
             "autolayout" => {
-                if view.auto_layout.is_some() {
-                    return Err(self.duplicate_line("autoLayout", head));
-                }
+                self.overridden(view.auto_layout, head);
                 self.auto_layout(head)?;
                 view.auto_layout = Some(head.span_of(0, head.len() - 1));
             }
             "title" => {
-                once(view.title.is_some(), || self.duplicate_line("title", head))?;
+                self.overridden(view.title.as_ref().map(|t| t.span), head);
                 view.title = Some(self.one_string(head)?);
             }
             "description" => {
-                once(*seen_description, || {
-                    self.duplicate_line("description", head)
-                })?;
+                let earlier = view.description.as_ref().filter(|_| *seen_description).map(|d| d.span);
+                self.overridden(earlier, head);
                 *seen_description = true;
                 view.description = Some(self.one_string(head)?);
             }
             "subtitle" => {
-                once(view.subtitle.is_some(), || {
-                    self.duplicate_line("subtitle", head)
-                })?;
+                self.overridden(view.subtitle.as_ref().map(|t| t.span), head);
                 view.subtitle = Some(self.one_string(head)?);
             }
             "technology" => {
-                once(view.technology.is_some(), || {
-                    self.duplicate_line("technology", head)
-                })?;
+                self.overridden(view.technology.map(|t| t.span), head);
                 view.technology = Some(self.on_off(head)?);
             }
             "bus" => {
-                once(view.bus.is_some(), || self.duplicate_line("bus", head))?;
+                self.overridden(view.bus.map(|t| t.span), head);
                 view.bus = Some(self.on_off(head)?);
             }
             "labelwidth" => {
-                once(view.label_width.is_some(), || {
-                    self.duplicate_line("labelWidth", head)
-                })?;
+                self.overridden(view.label_width.map(|t| t.span), head);
                 view.label_width = Some(self.count(head, 1)?);
             }
             "maxcrossings" => {
-                once(view.max_crossings.is_some(), || {
-                    self.duplicate_line("maxCrossings", head)
-                })?;
+                self.overridden(view.max_crossings.map(|t| t.span), head);
                 view.max_crossings = Some(self.count(head, 0)?);
             }
             "focus" => {
@@ -6238,9 +6469,9 @@ impl Builder<'_> {
 
     /// A `paperSize` (P2-701) or `line` (P2-708..P2-710) extension line,
     /// at most one `paperSize` per view and one `line` per relationship.
-    fn layout_line(&self, head: &Head<'_>, view: &mut ViewSpec) -> Result<(), ModelError> {
+    fn layout_line(&mut self, head: &Head<'_>, view: &mut ViewSpec) -> Result<(), ModelError> {
         if head.is_keyword(0, "paperSize") {
-            once(view.paper_size.is_some(), || self.duplicate_line("paperSize", head))?;
+            self.overridden(view.paper_size.map(|p| p.span), head);
             let word = self.one_word(head)?;
             let value = PaperSize::from_keyword(word).ok_or_else(|| self.invalid(head, "paperSize", 1))?;
             view.paper_size = Some(Spanned {
@@ -6451,6 +6682,12 @@ impl Builder<'_> {
             } else {
                 None
             };
+            // TODO(srs): P2-13 places `theme`/`themes` in `views`. Reading
+            // taken (Structurizr 6.2.4 opens corpus test.dsl): in `styles`
+            // the line reads as in `views`.
+            if head.is_keyword(0, "theme") || head.is_keyword(0, "themes") {
+                return this.theme_line(inner, &head);
+            }
             if let Some(mode) = mode {
                 // DECISION: any number of `light`/`dark` blocks, each
                 // read in file order (the language page sets no limit).
@@ -6583,7 +6820,7 @@ impl Builder<'_> {
 
     /// One property line of a `relationship` style block (P2-12).
     fn relationship_style_line(
-        &self,
+        &mut self,
         statement: &Statement,
         head: &Head<'_>,
         style: &mut RelationshipStyle,
@@ -6600,38 +6837,61 @@ impl Builder<'_> {
             "width",
             "position",
             "opacity",
+            "metadata",
+            "description",
         ];
         let word = head.text(0).to_ascii_lowercase();
         if head.kind(0) != Some(TokenKind::Word) || !KNOWN.contains(&word.as_str()) {
             return Err(self.reject(head, 0));
         }
         self.no_block(statement, head)?;
+        // TODO(srs): P2-12 lists no `metadata`/`description`. Reading taken
+        // (Structurizr 6.2.4 opens corpus test.dsl): a `true|false` value
+        // is checked and changes no scene (nothing stores it).
+        if word == "metadata" || word == "description" {
+            let construct = if word == "metadata" { "metadata" } else { "description" };
+            self.boolean(head, construct)?;
+            return Ok(());
+        }
+        // P2-400: a property set again keeps the last line.
+        let earlier = match word.as_str() {
+            "thickness" => style.thickness.map(|v| v.span),
+            "color" | "colour" => style.color.map(|v| v.span),
+            "style" | "dashed" => style.style.map(|v| v.span),
+            "routing" => style.routing.map(|v| v.span),
+            "jump" => style.jump.map(|v| v.span),
+            "fontsize" => style.font_size.map(|v| v.span),
+            "width" => style.width.map(|v| v.span),
+            "position" => style.position.map(|v| v.span),
+            _ => style.opacity.map(|v| v.span),
+        };
+        self.overridden(earlier, head);
         let unsigned = |v: Spanned<i32>| Spanned {
             value: v.value.unsigned_abs(),
             span: v.span,
         };
         match word.as_str() {
             "thickness" => {
-                let v = self.positive(head, style.thickness.is_some(), "thickness")?;
+                let v = self.positive(head, "thickness")?;
                 style.thickness = Some(unsigned(v));
             }
             "color" | "colour" => {
                 let construct = if word == "color" { "color" } else { "colour" };
-                style.color = Some(self.colour(head, style.color.is_some(), construct)?);
+                style.color = Some(self.colour(head, construct)?);
             }
-            "style" => style.style = Some(self.border(head, style.style.is_some(), "style")?),
+            "style" => style.style = Some(self.border(head, "style")?),
             "dashed" => {
                 // DECISION: `dashed` (cookbook form) and `style` are one
                 // property, like `color`/`colour`: setting both is the
                 // duplicate-line error (P2-420).
-                let v = self.boolean(head, style.style.is_some(), "dashed")?;
+                let v = self.boolean(head, "dashed")?;
                 style.style = Some(Spanned {
                     value: if v.value { Border::Dashed } else { Border::Solid },
                     span: v.span,
                 });
             }
             "routing" => {
-                let value = self.style_value(head, style.routing.is_some(), "routing")?;
+                let value = self.style_value(head, "routing")?;
                 let Some(routing) = parse_routing(&value) else {
                     return Err(self.invalid(head, "routing", 1));
                 };
@@ -6640,21 +6900,21 @@ impl Builder<'_> {
                     span: head.span(1),
                 });
             }
-            "jump" => style.jump = Some(self.boolean(head, style.jump.is_some(), "jump")?),
+            "jump" => style.jump = Some(self.boolean(head, "jump")?),
             "fontsize" => {
-                let v = self.positive(head, style.font_size.is_some(), "fontSize")?;
+                let v = self.positive(head, "fontSize")?;
                 style.font_size = Some(unsigned(v));
             }
             "width" => {
-                let v = self.positive(head, style.width.is_some(), "width")?;
+                let v = self.positive(head, "width")?;
                 style.width = Some(unsigned(v));
             }
             "position" => {
-                let v = self.clamped(head, style.position.is_some(), "position", 0..=100)?;
+                let v = self.clamped(head, "position", 0..=100)?;
                 style.position = Some(v);
             }
             _ => {
-                let v = self.clamped(head, style.opacity.is_some(), "opacity", 0..=100)?;
+                let v = self.clamped(head, "opacity", 0..=100)?;
                 style.opacity = Some(v);
             }
         }
@@ -6663,7 +6923,7 @@ impl Builder<'_> {
 
     /// One property line of an `element` style block (P2-10).
     fn element_style_line(
-        &self,
+        &mut self,
         statement: &Statement,
         head: &Head<'_>,
         style: &mut ElementStyle,
@@ -6683,59 +6943,89 @@ impl Builder<'_> {
             "opacity",
             "metadata",
             "description",
+            "iconposition",
         ];
         let word = head.text(0).to_ascii_lowercase();
         if head.kind(0) != Some(TokenKind::Word) || !KNOWN.contains(&word.as_str()) {
             return Err(self.reject(head, 0));
         }
         self.no_block(statement, head)?;
+        // P2-400: a property set again keeps the last line.
+        let earlier = match word.as_str() {
+            "background" => style.background.map(|v| v.span),
+            "color" | "colour" => style.color.map(|v| v.span),
+            "stroke" => style.stroke.map(|v| v.span),
+            "shape" => style.shape.map(|v| v.span),
+            "icon" => style.icon.as_ref().map(|v| v.span),
+            "width" => style.width.map(|v| v.span),
+            "height" => style.height.map(|v| v.span),
+            "fontsize" => style.font_size.map(|v| v.span),
+            "strokewidth" => style.stroke_width.map(|v| v.span),
+            "opacity" => style.opacity.map(|v| v.span),
+            "border" => style.border.map(|v| v.span),
+            "metadata" => style.metadata.map(|v| v.span),
+            "description" => style.description.map(|v| v.span),
+            _ => None,
+        };
+        self.overridden(earlier, head);
         match word.as_str() {
+            "iconposition" => {
+                // TODO(srs): P2-10 and P2-409 name no `iconPosition`
+                // (P2-409: "no DSL property chooses"). Reading taken
+                // (Structurizr 6.2.4 probed, corpus test.dsl):
+                // `top|bottom|left` in any case is accepted and changes no
+                // scene; any other value is refused, as there.
+                let value = self.style_value(head, "iconPosition")?;
+                if !["top", "bottom", "left"].iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                    return Err(self.invalid(head, "iconPosition", 1));
+                }
+            }
             "background" => {
-                style.background = Some(self.colour(head, style.background.is_some(), "background")?);
+                style.background = Some(self.colour(head, "background")?);
             }
             "color" | "colour" => {
                 // P2-400: one property under two names.
                 let construct = if word == "color" { "color" } else { "colour" };
-                style.color = Some(self.colour(head, style.color.is_some(), construct)?);
+                style.color = Some(self.colour(head, construct)?);
             }
-            "stroke" => style.stroke = Some(self.colour(head, style.stroke.is_some(), "stroke")?),
-            "shape" => style.shape = Some(self.shape(head, style.shape.is_some())?),
+            "stroke" => style.stroke = Some(self.colour(head, "stroke")?),
+            "shape" => style.shape = Some(self.shape(head)?),
             "icon" => {
-                let value = self.style_value(head, style.icon.is_some(), "icon")?;
+                let value = self.style_value(head, "icon")?;
                 style.icon = Some(Spanned {
                     value,
                     span: head.span(1),
                 });
             }
             "width" => {
-                let v = self.positive(head, style.width.is_some(), "width")?;
+                let v = self.positive(head, "width")?;
                 style.width = Some(v);
             }
             "height" => {
-                let v = self.positive(head, style.height.is_some(), "height")?;
+                let v = self.positive(head, "height")?;
                 style.height = Some(v);
             }
             "fontsize" => {
-                let v = self.positive(head, style.font_size.is_some(), "fontSize")?;
+                let v = self.positive(head, "fontSize")?;
                 style.font_size = Some(Spanned {
                     value: v.value.unsigned_abs(),
                     span: v.span,
                 });
             }
             "strokewidth" => {
-                let v = self.clamped(head, style.stroke_width.is_some(), "strokeWidth", 1..=10)?;
+                let v = self.clamped(head, "strokeWidth", 1..=10)?;
                 style.stroke_width = Some(v);
             }
             "opacity" => {
-                let v = self.clamped(head, style.opacity.is_some(), "opacity", 0..=100)?;
+                let v = self.clamped(head, "opacity", 0..=100)?;
                 style.opacity = Some(v);
             }
-            "border" => style.border = Some(self.border(head, style.border.is_some(), "border")?),
+            "border" => style.border = Some(self.border(head, "border")?),
             "metadata" => {
-                style.metadata = Some(self.boolean(head, style.metadata.is_some(), "metadata")?);
+                style.metadata = Some(self.boolean(head, "metadata")?);
             }
             _ => {
-                let v = self.boolean(head, style.description.is_some(), "description")?;
+                let v = self.boolean(head, "description")?;
                 style.description = Some(v);
             }
         }
@@ -6784,10 +7074,9 @@ impl Builder<'_> {
     fn positive(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
     ) -> Result<Spanned<i32>, ModelError> {
-        let value = self.style_value(head, seen, construct)?;
+        let value = self.style_value(head, construct)?;
         match value.parse::<i32>() {
             Ok(v) if v > 0 => Ok(Spanned {
                 value: v,
@@ -6805,12 +7094,11 @@ impl Builder<'_> {
     fn clamped(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
         range: std::ops::RangeInclusive<u8>,
     ) -> Result<Spanned<u8>, ModelError> {
         let (min, max) = (*range.start(), *range.end());
-        let value = self.style_value(head, seen, construct)?;
+        let value = self.style_value(head, construct)?;
         let Ok(v) = value.parse::<i64>() else {
             return Err(self.invalid(head, construct, 1));
         };
@@ -6825,10 +7113,9 @@ impl Builder<'_> {
     fn border(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
     ) -> Result<Spanned<Border>, ModelError> {
-        let value = self.style_value(head, seen, construct)?;
+        let value = self.style_value(head, construct)?;
         let Some(border) = parse_border(&value) else {
             return Err(self.invalid(head, construct, 1));
         };
@@ -6842,10 +7129,9 @@ impl Builder<'_> {
     fn boolean(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
     ) -> Result<Spanned<bool>, ModelError> {
-        let value = self.style_value(head, seen, construct)?;
+        let value = self.style_value(head, construct)?;
         let Some(b) = parse_bool(&value) else {
             return Err(self.invalid(head, construct, 1));
         };
@@ -6861,12 +7147,8 @@ impl Builder<'_> {
     fn style_value(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
     ) -> Result<String, ModelError> {
-        if seen {
-            return Err(self.duplicate_line(construct, head));
-        }
         if head.len() < 2 {
             return Err(self.missing(head, "value"));
         }
@@ -6884,10 +7166,9 @@ impl Builder<'_> {
     fn colour(
         &self,
         head: &Head<'_>,
-        seen: bool,
         construct: &'static str,
     ) -> Result<Spanned<Colour>, ModelError> {
-        let value = self.style_value(head, seen, construct)?;
+        let value = self.style_value(head, construct)?;
         let Some(colour) = parse_colour(&value) else {
             return Err(self.invalid(head, construct, 1));
         };
@@ -6897,8 +7178,8 @@ impl Builder<'_> {
         })
     }
 
-    fn shape(&self, head: &Head<'_>, seen: bool) -> Result<Spanned<Shape>, ModelError> {
-        let value = self.style_value(head, seen, "shape")?;
+    fn shape(&self, head: &Head<'_>) -> Result<Spanned<Shape>, ModelError> {
+        let value = self.style_value(head, "shape")?;
         let Some(shape) = Shape::ALL
             .into_iter()
             .find(|s| s.keyword().eq_ignore_ascii_case(&value))
@@ -6915,10 +7196,6 @@ impl Builder<'_> {
 /// An `at` or `size` line: the element and its two numbers.
 type BoxLine = (Spanned<ElementId>, Spanned<i32>, Spanned<i32>);
 
-/// `Err(error())` when a single-valued line was already `seen`.
-fn once(seen: bool, error: impl FnOnce() -> ModelError) -> Result<(), ModelError> {
-    if seen { Err(error()) } else { Ok(()) }
-}
 
 /// The view lines a dynamic view takes besides its steps.
 const DYNAMIC_LINES: &[&str] = &[
@@ -7961,17 +8238,14 @@ mod tests {
                 "{bad}: {e:?}"
             );
         }
-        let e = error(&in_workspace(
+        // P2-400: a repeated view property line wins over the earlier
+        // one, which gets a no-effect notice.
+        let m = model(&in_workspace(
             SHOP,
             "        container shop {\n            bus on\n            bus off\n        }",
         ));
-        assert_eq!(
-            e.kind,
-            ModelErrorKind::DuplicateLine {
-                construct: "bus",
-                id: String::new()
-            }
-        );
+        assert_eq!(m.views[0].bus.map(|b| b.value), Some(false));
+        assert!(m.notices.iter().any(|n| n.kind == NoticeKind::NoEffect && n.subject.contains("`bus`")), "{:?}", m.notices);
     }
 
     #[test]

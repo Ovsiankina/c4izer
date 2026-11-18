@@ -82,6 +82,13 @@ struct Reader<'l> {
     /// The environment values looked up for include paths.
     env: BTreeMap<String, Option<String>>,
     bases: BTreeMap<FileId, FileId>,
+    /// `!const`/`!var` values defined so far, in document order across
+    /// files (P2-150, P2-5).
+    // DECISION: one set for the whole parse, an included file read where
+    // its `!include` stands, as the builder sees them; so a `!const`
+    // before `workspace` fills an include path in an included file
+    // (corpus big-bank-plc/internet-banking-system.dsl).
+    vars: BTreeMap<String, String>,
 }
 
 impl Reader<'_> {
@@ -111,9 +118,11 @@ impl Reader<'_> {
                 self.bases.insert(file, base);
             }
         }
-        let mut vars: BTreeMap<String, String> = BTreeMap::new();
+        let mut vars = std::mem::take(&mut self.vars);
         let mut found = Vec::new();
-        self.scan(&tree, tree.statements(), &mut vars, &mut found)?;
+        let result = self.scan(&tree, tree.statements(), &mut vars, &mut found);
+        self.vars = vars;
+        result?;
         self.includes[file.0 as usize] = found;
         Ok(())
     }
@@ -133,7 +142,13 @@ impl Reader<'_> {
             match word.as_deref() {
                 Some("!const" | "!var") if tokens.len() == 3 => {
                     let value = self.value(tree, tokens[2], vars);
-                    vars.insert(tree.token_text(tokens[1]).to_owned(), value);
+                    let raw = tree.token_text(tokens[1]);
+                    // A quoted name is the same name (P2-150).
+                    let name = match tree.tokens()[tokens[1]].kind {
+                        TokenKind::String => text::unquote(raw),
+                        _ => raw.to_owned(),
+                    };
+                    vars.insert(name, value);
                 }
                 Some("!include") => {
                     let Some(&arg) = tokens.get(1) else {
@@ -146,8 +161,11 @@ impl Reader<'_> {
                         ));
                     };
                     let written = self.value(tree, arg, vars);
-                    let files = self.include(&written, tree.span(arg))?;
-                    found.push(files);
+                    // The included files see, and add to, the same set.
+                    self.vars = std::mem::take(vars);
+                    let files = self.include(&written, tree.span(arg));
+                    *vars = std::mem::take(&mut self.vars);
+                    found.push(files?);
                 }
                 _ => {}
             }
@@ -173,7 +191,8 @@ impl Reader<'_> {
             ));
         };
         let span = tree.span(arg);
-        let written = self.value(tree, arg, &BTreeMap::new());
+        let vars = self.vars.clone();
+        let written = self.value(tree, arg, &vars);
         let lower = written.to_ascii_lowercase();
         if lower.starts_with("http://") {
             return Err(self.error(ModelErrorKind::InsecureUrl { url: written }, span));
@@ -394,6 +413,7 @@ pub(super) fn parse_with(
         chain: resolved.into_iter().collect(),
         env: BTreeMap::new(),
         bases: BTreeMap::new(),
+        vars: BTreeMap::new(),
     };
     if reader.resolved.is_empty() {
         // Keep `resolved` indexed by `FileId` without a root path.

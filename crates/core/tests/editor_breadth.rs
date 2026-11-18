@@ -126,10 +126,9 @@ fn p2_701_canvas_size_line_parsed() {
         let m = model_of(&shop_with(&format!("            paperSize {keyword}\n")));
         assert_eq!(m.view("containers").and_then(|v| v.paper_size).map(|p| p.value), Some(size));
     }
-    assert!(matches!(
-        kind_of(&shop_with("            paperSize A4_Landscape\n            paperSize A3_Landscape\n")),
-        ModelErrorKind::DuplicateLine { .. }
-    ));
+    // P2-400: the last `paperSize` line wins.
+    let m = model_of(&shop_with("            paperSize A4_Landscape\n            paperSize A3_Landscape\n"));
+    assert_eq!(m.view("containers").and_then(|v| v.paper_size).map(|p| p.value), Some(PaperSize::A3Landscape));
     assert!(matches!(
         kind_of(&shop_with("            paperSize B5\n")),
         ModelErrorKind::InvalidValue { .. }

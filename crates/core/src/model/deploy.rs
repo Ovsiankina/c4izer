@@ -100,8 +100,21 @@ pub(super) struct DeployState {
     groups: Vec<(String, Option<EnvironmentId>, String)>,
     /// Indices of the relationships written in deployment blocks.
     written: Vec<usize>,
+    /// The environment each of `written` was read in.
+    written_in: Vec<Option<EnvironmentId>>,
     /// `-/>` lines.
     removals: Vec<Removal>,
+    /// The relationships written inside a `-/>` block, each with the
+    /// index of its removal in `removals` (description and technology
+    /// default to the removed relationship's).
+    removal_blocks: Vec<(usize, usize)>,
+}
+
+impl DeployState {
+    /// The environment being read, if any.
+    pub(super) fn environment(&self) -> Option<EnvironmentId> {
+        self.environment
+    }
 }
 
 impl Builder<'_> {
@@ -146,6 +159,45 @@ impl Builder<'_> {
         result
     }
 
+    /// `!element <id>` naming a deployment environment: its block read as
+    /// that environment's. False when `written` names none.
+    // TODO(srs): P2-17 and P2-120 do not say `!element` reaches deployment
+    // elements. Reading taken (Structurizr 6.2.4 opens corpus
+    // deployment-environment-empty.dsl and find-element.dsl): it does, by
+    // id or by canonical name (`DeploymentNode://Env/Node/...`,
+    // `InfrastructureNode://...`), with the statements the owner's own
+    // block allows.
+    pub(super) fn deployment_element(&mut self, statement: &Statement, written: &str) -> Result<bool, ModelError> {
+        let Some(environment) = self
+            .model
+            .environments
+            .iter()
+            .find(|e| e.key.as_ref().is_some_and(|k| k.value.eq_ignore_ascii_case(written)))
+            .map(|e| e.id)
+        else {
+            return Ok(false);
+        };
+        let outer = self.deploy.environment.replace(environment);
+        let result = self.deployment_block(statement, Place::Environment, None);
+        self.deploy.environment = outer;
+        result.map(|()| true)
+    }
+
+    /// `!element` naming the deployment element `id`: its block read as
+    /// that element's own, in its environment.
+    pub(super) fn reopen_deployment(&mut self, statement: &Statement, id: ElementId) -> Result<(), ModelError> {
+        let element = self.model.element(id);
+        let place = match element.kind {
+            ElementKind::DeploymentNode => Place::Node,
+            ElementKind::InfrastructureNode => Place::Infrastructure,
+            _ => Place::Instance,
+        };
+        let outer = std::mem::replace(&mut self.deploy.environment, element.environment);
+        let result = self.deployment_block(statement, place, Some(id));
+        self.deploy.environment = outer;
+        result
+    }
+
     /// The statements of a deployment block whose owner is `owner` (the
     /// node, infrastructure node or instance; `None` for an environment).
     fn deployment_block(
@@ -178,6 +230,35 @@ impl Builder<'_> {
         Ok(lower)
     }
 
+    /// Registers the deployment group id at token `k`; its lowercased
+    /// text. Under hierarchical ids the register key is scoped by the
+    /// environment, so two environments may each declare it.
+    // DECISION: as Structurizr's DeploymentElementParser looks a group up
+    // under `<environment id>.<group id>` (corpus
+    // deployment-groups-hierarchical.dsl, environments without ids); an
+    // environment without an id scopes with a private token (`#` is no
+    // identifier character, so no written id matches it).
+    fn declare_group(&mut self, head: &Head<'_>, k: usize) -> Result<String, ModelError> {
+        if self.model.identifiers != Identifiers::Hierarchical {
+            return self.declare_other(head, k);
+        }
+        if head.kind(k) != Some(TokenKind::Word) || !super::is_identifier(head.text(k)) {
+            return Err(self.invalid(head, "=", k));
+        }
+        let lower = head.text(k).to_ascii_lowercase();
+        let scope = match self.deploy.environment {
+            Some(e) => match &self.model.environments[e.0 as usize].key {
+                Some(key) => key.value.to_ascii_lowercase(),
+                None => format!("#environment{}", e.0),
+            },
+            None => "#".to_owned(),
+        };
+        let full = format!("{scope}.{lower}");
+        self.check_free(&full, head.span(k))?;
+        self.other_ids.insert(full, head.span(k));
+        Ok(lower)
+    }
+
     fn deployment_statement(
         &mut self,
         statement: &Statement,
@@ -194,6 +275,7 @@ impl Builder<'_> {
             let index = self.model.relationships.len();
             self.relationship(statement, head, owner, key)?;
             self.deploy.written.push(index);
+            self.deploy.written_in.push(self.deploy.environment);
             return Ok(());
         }
         if head.len() <= kw {
@@ -228,7 +310,7 @@ impl Builder<'_> {
                 let name = self.deployment_strings(head, kw, 1)?.remove(0);
                 self.no_block(statement, head)?;
                 if let Some(k) = key {
-                    let lower = self.declare_other(head, k)?;
+                    let lower = self.declare_group(head, k)?;
                     let environment = self.deploy.environment;
                     self.deploy.groups.push((lower, environment, name.value));
                 }
@@ -445,7 +527,7 @@ impl Builder<'_> {
         let name = of.name.clone();
         let mut strings = self.strings(head, head.text(kw), kw + 2, 2)?.into_iter();
         let groups = match strings.next() {
-            Some(g) => self.group_names(&g)?,
+            Some(g) => self.group_names(&g),
             None => Vec::new(),
         };
         let declared_tags: Vec<Literal> = strings.collect();
@@ -469,9 +551,11 @@ impl Builder<'_> {
     /// The deployment group names a `"g1,g2"` argument names, each a
     /// declared deployment group id of the current environment.
     // DECISION: a deployment group id is looked up ignoring case, as every
-    // id; an unknown one is `UndeclaredId` (Structurizr: "The deployment
-    // group ... does not exist").
-    fn group_names(&self, literal: &Literal) -> Result<Vec<String>, ModelError> {
+    // id; an unknown one is ignored with a no-effect notice, as
+    // Structurizr's DeploymentElementParser does ("backwards
+    // compatibility"; corpus big-bank-plc.dsl writes
+    // `containerInstance database "Failover"` with no such group).
+    fn group_names(&mut self, literal: &Literal) -> Vec<String> {
         let mut out = Vec::new();
         for part in literal.value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
             let lower = part.to_ascii_lowercase();
@@ -479,19 +563,20 @@ impl Builder<'_> {
                 .deploy
                 .groups
                 .iter()
-                .find(|(id, env, _)| *id == lower && *env == self.deploy.environment);
+                .find(|(id, env, _)| *id == lower && *env == self.deploy.environment)
+                .map(|(_, _, name)| name.clone());
             match found {
-                Some((_, _, name)) => {
-                    if !out.contains(name) {
-                        out.push(name.clone());
+                Some(name) => {
+                    if !out.contains(&name) {
+                        out.push(name);
                     }
                 }
                 None => {
-                    return Err(self.error(ModelErrorKind::UndeclaredId { id: part.to_owned() }, literal.span));
+                    self.notice(&format!("deployment group `{part}`"), None, literal.span);
                 }
             }
         }
-        Ok(out)
+        out
     }
 
     /// A body line of a node, infrastructure node or instance block,
@@ -564,8 +649,14 @@ impl Builder<'_> {
 
     /// `src -/> dst` in a deployment block (P3-108, D1): resolved after
     /// the model block.
+    // TODO(srs): P3-108 names no block after `a -/> b`, and no software
+    // system or container as an end. Reading taken (Structurizr 6.2.4,
+    // NoRelationshipParser and corpus no-relationship.dsl): an end naming
+    // a system or container stands for all its instances in the
+    // environment, and a `{ }` block after the line holds `->` lines read
+    // as written in the environment, each taking the removed
+    // relationship's description and technology unless it writes its own.
     fn removal(&mut self, statement: &Statement, head: &Head<'_>, owner: Option<ElementId>) -> Result<(), ModelError> {
-        self.no_block(statement, head)?;
         let arrow = (0..head.len()).find(|&i| head.text(i) == "-/>").unwrap_or_default();
         if arrow != 1 || head.len() < 3 {
             return Err(self.missing(head, "source and destination"));
@@ -588,7 +679,26 @@ impl Builder<'_> {
             span: head.span_of(0, 2),
             environment: self.deploy.environment,
         });
-        Ok(())
+        let removal = self.deploy.removals.len() - 1;
+        let Some(block) = &statement.block else {
+            return Ok(());
+        };
+        self.each(&block.statements, &mut |this, inner| {
+            let head = this.head(inner)?;
+            if this.common(inner, &head)? {
+                return Ok(());
+            }
+            if head.arrow().is_none() || (0..head.len()).any(|i| head.text(i) == "-/>") {
+                return Err(this.reject(&head, 0));
+            }
+            let (key, _) = declared_at(&head);
+            let index = this.model.relationships.len();
+            this.relationship(inner, &head, owner, key)?;
+            this.deploy.written.push(index);
+            this.deploy.written_in.push(this.deploy.environment);
+            this.deploy.removal_blocks.push((index, removal));
+            Ok(())
+        })
     }
 
     /// After the model block: instance tags (P3-105), the written
@@ -596,6 +706,8 @@ impl Builder<'_> {
     /// added (P3-106) less the `-/>` removals (P3-108).
     pub(super) fn finish_deployment(&mut self) -> Result<(), ModelError> {
         self.retag_instances();
+        self.removal_block_defaults()?;
+        self.expand_written();
         for &index in &self.deploy.written {
             let r = &self.model.relationships[index];
             let instance = |e: ElementId| {
@@ -625,7 +737,7 @@ impl Builder<'_> {
                 let named = removal.description.as_ref().is_none_or(|text| {
                     model.relationship(*r).description.as_ref().is_some_and(|x| x.value == *text)
                 });
-                !(*s == source && *d == destination && named)
+                !(source.contains(s) && destination.contains(d) && named)
             });
             if copies.len() == before {
                 return Err(self.error(
@@ -659,14 +771,113 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// One end of a removal: an instance of the removal's environment.
-    fn removal_end(&self, removal: &Removal, written: &str) -> Result<ElementId, ModelError> {
-        let found = self.resolve(written, removal.context).filter(|&e| {
-            let e = self.model.element(e);
-            e.environment == removal.environment
-                && matches!(e.kind, ElementKind::SoftwareSystemInstance | ElementKind::ContainerInstance)
+    /// One end of a removal: an instance of the removal's environment, or
+    /// a software system or container standing for all its instances
+    /// there.
+    fn removal_end(&self, removal: &Removal, written: &str) -> Result<Vec<ElementId>, ModelError> {
+        let found = self.resolve_in(written, removal.context, removal.environment).and_then(|e| {
+            let element = self.model.element(e);
+            match element.kind {
+                ElementKind::SoftwareSystemInstance | ElementKind::ContainerInstance
+                    if element.environment == removal.environment =>
+                {
+                    Some(vec![e])
+                }
+                ElementKind::SoftwareSystem | ElementKind::Container => {
+                    Some(self.instances_in(e, removal.environment))
+                }
+                _ => None,
+            }
         });
         found.ok_or_else(|| self.error(ModelErrorKind::UndeclaredId { id: written.to_owned() }, removal.span))
+    }
+
+    /// The instances of `element` in `environment`, in declaration order.
+    fn instances_in(&self, element: ElementId, environment: Option<EnvironmentId>) -> Vec<ElementId> {
+        self.model
+            .elements
+            .iter()
+            .filter(|x| x.instance_of == Some(element) && x.environment == environment)
+            .map(|x| x.id)
+            .collect()
+    }
+
+    /// The relationships written in a `-/>` block take the removed
+    /// relationship's description and technology where they write none.
+    fn removal_block_defaults(&mut self) -> Result<(), ModelError> {
+        for (index, r) in std::mem::take(&mut self.deploy.removal_blocks) {
+            let removal = self.deploy.removals[r].clone();
+            let statics = |this: &Self, ends: Vec<ElementId>| -> Vec<ElementId> {
+                ends.into_iter().map(|e| this.model.element(e).instance_of.unwrap_or(e)).collect()
+            };
+            let sources = statics(self, self.removal_end(&removal, &removal.source)?);
+            let destinations = statics(self, self.removal_end(&removal, &removal.destination)?);
+            let removed = self.model.relationships.iter().find(|m| {
+                m.copied_from.is_none()
+                    && !self.deploy.written.contains(&(m.id.0 as usize))
+                    && sources.contains(&m.source.value)
+                    && destinations.contains(&m.destination.value)
+                    && removal
+                        .description
+                        .as_ref()
+                        .is_none_or(|d| m.description.as_ref().is_some_and(|x| x.value == *d))
+            });
+            let (description, technology) = match removed {
+                Some(m) => (m.description.clone(), m.technology.clone()),
+                None => continue,
+            };
+            let r = &mut self.model.relationships[index];
+            if r.description.is_none() {
+                r.description = description;
+            }
+            if r.technology.is_none() {
+                r.technology = technology;
+            }
+        }
+        Ok(())
+    }
+
+    /// A relationship written in a deployment block with a software system
+    /// or container end stands for one relationship per instance of it in
+    /// that environment (Structurizr `ExplicitRelationshipParser`).
+    // DECISION: when an end has no instance in the environment the
+    // relationship is kept as written (Structurizr creates none); removing
+    // it would renumber the relationships after it.
+    fn expand_written(&mut self) {
+        let written: Vec<(usize, Option<EnvironmentId>)> =
+            self.deploy.written.iter().copied().zip(self.deploy.written_in.iter().copied()).collect();
+        for (index, environment) in written {
+            if environment.is_none() {
+                continue;
+            }
+            let r = self.model.relationships[index].clone();
+            let ends = |this: &Self, e: ElementId| match this.model.element(e).kind {
+                ElementKind::SoftwareSystem | ElementKind::Container => this.instances_in(e, environment),
+                _ => vec![e],
+            };
+            let sources = ends(self, r.source.value);
+            let destinations = ends(self, r.destination.value);
+            if sources.is_empty() || destinations.is_empty() {
+                continue;
+            }
+            let mut pairs = sources.iter().flat_map(|&s| destinations.iter().map(move |&d| (s, d)));
+            let Some((s, d)) = pairs.next() else { continue };
+            let rest: Vec<(ElementId, ElementId)> = pairs.collect();
+            self.model.relationships[index].source.value = s;
+            self.model.relationships[index].destination.value = d;
+            for (s, d) in rest {
+                let id = super::RelationshipId(index_u32(self.model.relationships.len()));
+                self.deploy.written.push(id.0 as usize);
+                self.deploy.written_in.push(environment);
+                self.model.relationships.push(Relationship {
+                    id,
+                    key: None,
+                    source: Spanned { value: s, span: r.source.span },
+                    destination: Spanned { value: d, span: r.destination.span },
+                    ..r.clone()
+                });
+            }
+        }
     }
 
     /// Every (model relationship, source instance, destination instance)

@@ -95,9 +95,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
+use c4rizer_core::import::{self, ImportError};
 use c4rizer_core::model::{self, Mode, ModelError};
 use c4rizer_core::text::FileId;
-use c4rizer_core::{export, inspect, pipeline};
+use c4rizer_core::{edit, export, inspect, pipeline};
 
 /// The usage text printed to stderr on every usage error (exit 2) and to
 /// stdout by `help`. Names all seven subcommands and every argument
@@ -108,6 +109,7 @@ usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg
        c4rizer validate -workspace FILE
        c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]
        c4rizer list -workspace FILE
+       c4rizer import-layout JSON FILE
        c4rizer version
        c4rizer help [COMMAND]
 FILE `-` reads the diagram from stdin; `-workspace` may be left out.
@@ -116,7 +118,7 @@ inspect: the number of error violations shown (at most 254), 255 on an error";
 
 /// Each subcommand with its usage line, in `USAGE` order (P2-647,
 /// P2-648): `help <command>` prints that line alone.
-const COMMAND_LINES: [(&str, &str); 7] = [
+const COMMAND_LINES: [(&str, &str); 8] = [
     (
         "render",
         "c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]",
@@ -128,13 +130,15 @@ const COMMAND_LINES: [(&str, &str); 7] = [
         "c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]",
     ),
     ("list", "c4rizer list -workspace FILE"),
+    ("import-layout", "c4rizer import-layout JSON FILE"),
     ("version", "c4rizer version"),
     ("help", "c4rizer help [COMMAND]"),
 ];
 
 /// The seven subcommands as the no-subcommand and unknown-subcommand
 /// messages name them (P2-650).
-const SUBCOMMANDS: &str = "`render`, `lint`, `validate`, `inspect`, `list`, `version`, `help`";
+const SUBCOMMANDS: &str =
+    "`render`, `lint`, `validate`, `inspect`, `list`, `import-layout`, `version`, `help`";
 
 /// The outcome of a run that got as far as the report (CLI-2). `main`
 /// turns it into the process exit code; a `UsageError` or `CliError` is
@@ -226,6 +230,14 @@ pub(crate) enum Command {
         /// FILE.
         input: Input,
     },
+    /// `c4rizer import-layout JSON FILE`: `at` lines from a Structurizr
+    /// workspace JSON into FILE, in place (P2-15, P2-504).
+    ImportLayout {
+        /// JSON, the Structurizr workspace.
+        json: PathBuf,
+        /// FILE, rewritten in place.
+        file: PathBuf,
+    },
     /// `c4rizer version` (P2-645).
     Version,
     /// `c4rizer help [COMMAND]`, `-h`, `--help` (P2-647).
@@ -276,6 +288,8 @@ pub(crate) enum UsageError {
     /// `--svg-text` with a value other than `name`, `embed` or `outline`,
     /// as given (P2-653).
     UnknownSvgText(String),
+    /// `import-layout` without both JSON and FILE (P2-504).
+    MissingImportFiles,
 }
 
 impl fmt::Display for UsageError {
@@ -321,6 +335,9 @@ impl fmt::Display for UsageError {
             UsageError::UnknownSvgText(v) => write!(
                 f,
                 "invalid --svg-text \"{v}\" — give `name`, `embed` or `outline`"
+            ),
+            UsageError::MissingImportFiles => f.write_str(
+                "`import-layout` needs the workspace JSON and the diagram file — give `import-layout JSON FILE`",
             ),
         }
     }
@@ -417,6 +434,30 @@ pub(crate) enum CliError {
         /// `OutlineError`'s `Display` text.
         message: String,
     },
+    /// `import-layout`: the JSON is not RFC 8259 JSON or not a
+    /// Structurizr workspace (P2-504).
+    Json {
+        /// The JSON file as given.
+        path: PathBuf,
+        /// What `import::import_layout` refused.
+        error: ImportError,
+    },
+    /// `import-layout`: `edit::apply` refused the batch (P2-504); FILE is
+    /// untouched.
+    Edit {
+        /// FILE as given.
+        path: PathBuf,
+        /// `EditError`'s `Display` text.
+        message: String,
+    },
+    /// `import-layout`: FILE could not be rewritten; it is untouched
+    /// (EDIT-22 atomic write).
+    Rewrite {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -467,6 +508,21 @@ impl fmt::Display for CliError {
                 f,
                 "view \"{view}\": outlining the SVG failed ({message}) — use --svg-text name or embed"
             ),
+            // P2-504, SRS 5.1: `path:line:column: <what> — <what to change>`.
+            CliError::Json { path, error } => match error.position {
+                Some(_) => write!(f, "{}:{error}", path.display()),
+                None => write!(f, "{}: {error}", path.display()),
+            },
+            CliError::Edit { path, message } => write!(
+                f,
+                "{}: positions not written ({message}) — the file is unchanged; check that it parses and try again",
+                path.display()
+            ),
+            CliError::Rewrite { path, source } => write!(
+                f,
+                "{}: cannot rewrite ({source}) — the file is unchanged; check that its folder is writable",
+                path.display()
+            ),
         }
     }
 }
@@ -501,6 +557,7 @@ where
         Some(name @ ("validate" | "inspect" | "list")) => {
             return parse_workspace_command(name, args);
         }
+        Some("import-layout") => return parse_import_layout(args),
         _ => return Err(UsageError::UnknownCommand(lossy(&first))),
     };
     let mut file: Option<OsString> = None;
@@ -685,6 +742,25 @@ fn parse_severities(value: &OsString) -> Result<Vec<inspect::Severity>, UsageErr
     out.sort();
     out.dedup();
     Ok(out)
+}
+
+/// `import-layout JSON FILE`: exactly two paths, no flags (P2-504).
+fn parse_import_layout(args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut paths = Vec::new();
+    for arg in args {
+        if is_flag(&arg) {
+            return Err(UsageError::UnknownFlag(lossy(&arg)));
+        }
+        if paths.len() == 2 {
+            return Err(UsageError::ExtraArgument(lossy(&arg)));
+        }
+        paths.push(PathBuf::from(arg));
+    }
+    let mut paths = paths.into_iter();
+    match (paths.next(), paths.next()) {
+        (Some(json), Some(file)) => Ok(Command::ImportLayout { json, file }),
+        _ => Err(UsageError::MissingImportFiles),
+    }
 }
 
 /// A workspace value naming an `http://` or `https://` URL.
@@ -957,6 +1033,7 @@ pub(crate) fn run(
         Command::Validate { input } | Command::Inspect { input, .. } | Command::List { input } => {
             return run_model_command(command, input, stdin, stdout);
         }
+        Command::ImportLayout { json, file } => return run_import_layout(json, file, stdout),
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
@@ -1027,6 +1104,86 @@ pub(crate) fn run(
     } else {
         Exit::Clean
     })
+}
+
+/// `import-layout JSON FILE` (P2-15, P2-504): reads both files, parses
+/// FILE, matches the JSON's positions (`import::import_layout`), applies
+/// them with one `edit::apply` and rewrites FILE atomically, then reports.
+/// Nothing is written on any error, nor when there is no edit.
+// DECISION: every file whose bytes the batch changed is rewritten: the
+// root file, and an included file only if it holds a matched view's block
+// (P2-140; P2-509 says the root file, which is where views live in every
+// corpus file). Each write is atomic on its own.
+// DECISION (report format, plan task 08): per matched view `== <key>` and
+// `   wrote <n> positions`, then `   warning: <notice>` per notice of
+// that view; `skipped <key>: <why>` per skipped view; then `warning:
+// <notice>` for the notices of no matched view (themes, unknown views).
+fn run_import_layout(json: &Path, file: &Path, stdout: &mut impl Write) -> Result<Exit, CliError> {
+    let json_input = Input::Path(json.to_path_buf());
+    let json_text = read_input(&json_input, &mut io::empty())?;
+    let input = Input::Path(file.to_path_buf());
+    let text = read_input(&input, &mut io::empty())?;
+    let mut loader = Recording::default();
+    let parsed = parse(&input, &text, &mut loader)?;
+    let imported = import::import_layout(&parsed, &json_text).map_err(|error| CliError::Json {
+        path: json.to_path_buf(),
+        error,
+    })?;
+    if !imported.edits.is_empty() {
+        let applied = edit::apply(&parsed, &imported.edits).map_err(|e| CliError::Edit {
+            path: file.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let mut writes: Vec<(PathBuf, &str)> = Vec::new();
+        if applied.text != text {
+            writes.push((file.to_path_buf(), applied.text.as_str()));
+        }
+        for (id, patched) in &applied.files {
+            if let Some(path) = loader.path(*id) {
+                writes.push((path.to_path_buf(), patched.as_str()));
+            }
+        }
+        for (path, patched) in &writes {
+            write_atomic(path, patched).map_err(|source| CliError::Rewrite {
+                path: path.clone(),
+                source,
+            })?;
+        }
+    }
+    report::imported(stdout, &imported).map_err(CliError::Report)?;
+    stdout.flush().map_err(CliError::Report)?;
+    Ok(Exit::Clean)
+}
+
+/// Writes `text` to `path` atomically (EDIT-22): a temporary file beside
+/// the target, then renamed over it. A symlink is resolved first, so the
+/// link's target is written and the link stays; the target's permissions
+/// are copied. On any error the temporary file is removed and `path` is
+/// untouched.
+// DECISION: the editor's `files::write_atomic` does the same; the CLI
+// cannot depend on the editor crate, so the few lines are repeated here.
+fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let dir = target.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let name = target
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path names no file"))?;
+    let mut tmp_name = OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".c4rizer-{}.tmp", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let result = (|| {
+        let permissions = std::fs::metadata(&target)?.permissions();
+        let mut out = std::fs::File::create(&tmp)?;
+        out.write_all(text.as_bytes())?;
+        out.sync_all()?;
+        std::fs::set_permissions(&tmp, permissions)?;
+        std::fs::rename(&tmp, &target)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// `validate`, `inspect` or `list`: read and parse the workspace, never

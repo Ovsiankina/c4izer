@@ -16,3 +16,4 @@ pub mod lint;
 pub mod inspect;
 pub mod export;
 pub mod pipeline;
+pub mod import;

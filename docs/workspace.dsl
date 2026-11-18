@@ -28,6 +28,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
                 cLint = component "lint" "Checks a scene against the C4 rules and the crossing budget." "Rust module" "Output"
                 cInspect = component "inspect" "Runs Structurizr's workspace inspections on the model." "Rust module" "Output"
                 cExport = component "export" "Writes a scene as SVG text or PNG bytes." "Rust module" "Output"
+                cImport = component "import" "Turns box positions from a Structurizr workspace JSON into at-line edits." "Rust module" "Entry"
                 cPipeline = component "pipeline" "Entry points: one view's scene and lint report, or every view." "Rust module" "Entry"
             }
             cli = container "c4rizer CLI" "Exports views to SVG and PNG and lints them with an exit code, for scripts and agents." "Rust binary" "App"
@@ -58,6 +59,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cli -> cModel "Parses the diagram file with" "Rust API"
         cli -> cLint "Reads lint findings from" "Rust API"
         cli -> cInspect "Runs workspace inspections with" "Rust API"
+        cli -> cImport "Imports Structurizr layout with" "Rust API"
         editor -> cPipeline "Builds and re-routes scenes with" "Rust API"
         editor -> cEdit "Writes canvas edits back with" "Rust API"
         editor -> cExport "Exports the open view with" "Rust API"
@@ -93,6 +95,10 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cLint -> cScene "Measures geometry of"
         cLint -> cModel "Checks C4 rules against"
         cInspect -> cModel "Inspects elements, relationships and views of"
+        cImport -> cModel "Matches JSON elements to elements of"
+        cImport -> cView "Takes the drawn boxes from plans of"
+        cImport -> cEdit "Writes positions as move edits of"
+        cImport -> cText "Reports JSON positions as line and column with"
         cLint -> cText "Reads source spans from"
         cExport -> cScene "Serialises"
 
@@ -134,7 +140,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
             autoLayout
         }
         component core "C3-entry" "Component diagram for c4rizer core: entry points" {
-            include cli editor cPipeline cEdit cExport cModel cView cPlace cRoute cLabel cScene cLint
+            include cli editor cPipeline cImport cText cEdit cExport cModel cView cPlace cRoute cLabel cScene cLint
             autoLayout
         }
         component core "C3-geom" "Component diagram for c4rizer core: geometry" {

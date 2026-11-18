@@ -44,9 +44,10 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use c4rizer_core::import::Import;
 use c4rizer_core::inspect::{Subject, Violation};
 use c4rizer_core::lint::{Finding, Report};
-use c4rizer_core::model::{Model, Notice};
+use c4rizer_core::model::{Model, Notice, NoticeKind};
 use c4rizer_core::pipeline::UnsupportedView;
 
 /// Writes one view's block (CLI-1): `== <key>: <title>` with `key` =
@@ -234,6 +235,45 @@ pub(crate) fn violations(out: &mut impl Write, model: &Model, shown: &[Violation
         writeln!(out)?;
     }
     writeln!(out, "{} violations shown", shown.len())
+}
+
+/// The `import-layout` report (P2-15, P2-504; plan task 08 DECISION):
+/// per matched view `== <key>`, `   wrote <n> position(s)` and its
+/// notices as `   warning: <notice>`; one `skipped <key>: <why>` per
+/// skipped view; then `warning: <notice>` for every other notice.
+///
+/// # Errors
+///
+/// Any write error of `out`.
+pub(crate) fn imported(out: &mut impl Write, import: &Import) -> io::Result<()> {
+    for view in &import.views {
+        writeln!(out, "== {}", view.key)?;
+        let plural = if view.positions == 1 { "" } else { "s" };
+        writeln!(out, "   wrote {} position{plural}", view.positions)?;
+        for notice in import.notices.iter().filter(|n| n.view.as_deref() == Some(view.key.as_str())) {
+            if !is_skip(notice) {
+                writeln!(out, "   warning: {notice}")?;
+            }
+        }
+    }
+    for notice in import.notices.iter().filter(|n| is_skip(n)) {
+        let why = if notice.kind == NoticeKind::ViewNotInFile {
+            "no view with this key in FILE"
+        } else {
+            "c4rizer does not draw or position this view yet"
+        };
+        writeln!(out, "skipped {}: {why}", notice.subject)?;
+    }
+    let matched = |n: &Notice| import.views.iter().any(|v| n.view.as_deref() == Some(v.key.as_str()));
+    for notice in import.notices.iter().filter(|n| !is_skip(n) && !matched(n)) {
+        writeln!(out, "warning: {notice}")?;
+    }
+    Ok(())
+}
+
+/// A notice that says a whole view was skipped.
+fn is_skip(notice: &Notice) -> bool {
+    matches!(notice.kind, NoticeKind::ViewNotInFile | NoticeKind::ViewNotDrawable)
 }
 
 #[cfg(test)]

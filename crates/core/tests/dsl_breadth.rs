@@ -660,6 +660,24 @@ fn p2_150_const_substitutes_in_tokens() {
     assert_eq!(el(&m, "early").name.value, "${LATER}");
 }
 
+/// A quoted name in `!const "NAME" "v"` / `!var "NAME" "v"` is the same
+/// name (corpus constants-and-variables-from-workspace-extension-parent.dsl;
+/// Structurizr 6.2.4 opens it).
+// TODO(srs): P2-150 shows only a bare name. Reading taken (Structurizr
+// 6.2.4): a quoted name is accepted, its unquoted text checked as a bare
+// one, in the builder and in `!include` paths alike.
+#[test]
+fn p2_150_quoted_const_and_var_names() {
+    let m = model_of(&in_model(
+        "        !const \"NAME\" \"Shop\"\n        !var \"DESC\" \"Sells.\"\n        s = softwareSystem \"${NAME}\" \"${DESC}\"",
+    ));
+    let s = el(&m, "s");
+    assert_eq!(s.name.value, "Shop");
+    assert_eq!(s.description.as_ref().unwrap().value, "Sells.");
+    let e = error_of(&in_model("        !const \"BAD NAME\" \"v\""));
+    assert!(matches!(e.kind, ModelErrorKind::InvalidValue { .. }), "{e:?}");
+}
+
 /// A later `!var NAME other` redefines; each `${NAME}` takes the value in force at its line.
 #[test]
 fn p2_151_var_redefinition_applies_to_later_lines() {
@@ -1134,6 +1152,40 @@ fn p2_120_undeclared_or_duplicate_id_in_deployment_is_error() {
     }
 }
 
+/// Under `!identifiers hierarchical`, a deployment id is scoped by the
+/// deployment environment and nodes around it, as static ids are by their
+/// parents (P2-142): the same id under two parents, or in two
+/// environments, is no duplicate, and a relationship end resolves inside
+/// its block first, then outwards, then as a full id (corpus
+/// hierarchical-identifiers-and-deployment-nodes-1/2/3,
+/// deployment-groups-hierarchical, no-relationship; Structurizr 6.2.4
+/// opens them).
+// TODO(srs): P2-142 covers static ids only. Reading taken (Structurizr
+// 6.2.4): deployment ids follow the same rule; an environment or node
+// with no id still scopes its children.
+#[test]
+fn p2_142_hierarchical_ids_scope_deployment_children() {
+    let m = model_of(&in_model(
+        "        !identifiers hierarchical\n        ss = softwareSystem \"SS\" {\n            c = container \"C\"\n        }\n        deploymentEnvironment \"A\" {\n            g = deploymentGroup \"G\"\n            dn = deploymentNode \"DN\" {\n                dn1 = deploymentNode \"DN1\" {\n                    softwareSystemInstance ss\n                }\n                dn2 = deploymentNode \"DN2\"\n                dn1 -> dn2\n            }\n            dn1 = deploymentNode \"DN1\"\n            dn1 -> dn.dn2\n        }\n        deploymentEnvironment \"B\" {\n            g = deploymentGroup \"G\"\n        }\n        live = deploymentEnvironment \"Live\" {\n            ss = deploymentNode \"Node\" {\n                c = deploymentNode \"Inner\" {\n                    i = containerInstance ss.c\n                }\n                lb = infrastructureNode \"LB\"\n                c.i -> lb\n            }\n            ss.lb -> ss.c.i\n        }",
+    ));
+    assert!(m.find("ss").is_some());
+    // Flat mode keeps one global register.
+    let e = error_of(&in_model(
+        "        deploymentEnvironment \"A\" {\n            g = deploymentGroup \"G\"\n        }\n        deploymentEnvironment \"B\" {\n            g = deploymentGroup \"G\"\n        }",
+    ));
+    assert!(matches!(e.kind, ModelErrorKind::DuplicateId { .. }), "{e:?}");
+    // Hierarchical: a same-level duplicate is still one.
+    let e = error_of(&in_model(
+        "        !identifiers hierarchical\n        live = deploymentEnvironment \"Live\" {\n            dn = deploymentNode \"A\"\n            dn = deploymentNode \"B\"\n        }",
+    ));
+    assert!(matches!(e.kind, ModelErrorKind::DuplicateId { .. }), "{e:?}");
+    // An id from another scope does not resolve by its short form.
+    let e = error_of(&in_model(
+        "        !identifiers hierarchical\n        live = deploymentEnvironment \"Live\" {\n            dn = deploymentNode \"A\" {\n                inner = deploymentNode \"I\"\n            }\n            other = deploymentNode \"B\"\n            other -> inner\n        }",
+    ));
+    assert_eq!(e.kind, ModelErrorKind::UndeclaredId { id: "inner".into() });
+}
+
 /// `dynamic <*|system|container>` with ordered steps, relationship-id steps and parallel `{ }` blocks parses.
 #[test]
 fn p2_121_dynamic_view_body_parses() {
@@ -1176,6 +1228,24 @@ fn p2_121_dynamic_view_body_parses() {
     assert_eq!(v.properties.len(), 1);
     assert_eq!(m.views[1].scope.element(), m.find("shop"));
     assert_eq!(m.views[2].scope.element(), m.find("web"));
+}
+
+/// A dynamic step may carry a `{ url ...; properties { } }` block, as in
+/// corpus test.dsl; any other line there is refused (Structurizr 6.2.4
+/// probed: "expected: url").
+#[test]
+fn p2_121_dynamic_step_block_takes_url_and_properties() {
+    let src = in_workspace(
+        SHOP,
+        "        dynamic * {\n            user -> web \"Opens\" {\n                url \"https://example.org\"\n                properties {\n                    \"Name\" \"Value\"\n                }\n            }\n            1: user -> web {\n            }\n        }",
+    );
+    let m = model_of(&src);
+    assert_eq!(m.views[0].kind, model::ViewKind::Dynamic);
+    let e = error_of(&in_workspace(
+        SHOP,
+        "        dynamic * {\n            user -> web {\n                tag \"x\"\n            }\n        }",
+    ));
+    assert_eq!(e.kind, ModelErrorKind::UnknownConstruct { construct: "tag".into() }, "{e:?}");
 }
 
 /// An undeclared id in a dynamic view's scope or steps is `UndeclaredId`.
@@ -2117,6 +2187,36 @@ fn p2_157_relationship_archetype_arrow() {
     assert_eq!(el(&m, "a").description.as_ref().unwrap().value, "Works here.");
 }
 
+/// `softwareSystem { ... }` and `-> { ... }` with no name in `archetypes`
+/// set the defaults of every later element of that kind and every later
+/// relationship; an archetype based on the keyword after it starts from
+/// that default (corpus archetypes-for-defaults.dsl and
+/// archetypes-for-extension.dsl; Structurizr 6.2.4 probed).
+// TODO(srs): P2-155..158 name no unnamed default archetype. Reading
+// taken: as Structurizr 6.2.4, including that an archetype declared
+// before the default does not take it.
+#[test]
+fn p2_155_unnamed_default_archetypes() {
+    let m = model_of(&in_model(
+        "        archetypes {\n            early = softwareSystem {\n                tag \"Early\"\n            }\n            softwaresystem {\n                description \"D\"\n                tag \"Default\"\n                properties {\n                    \"k\" \"v\"\n                }\n            }\n            late = softwareSystem {\n                tag \"Late\"\n            }\n            -> {\n                technology \"T\"\n                tag \"Default\"\n            }\n            sync = -> {\n                tag \"Sync\"\n            }\n        }\n        a = softwareSystem \"A\"\n        b = early \"B\"\n        c = late \"C\" \"Own.\"\n        p = person \"P\"\n        a -> b\n        a -> c \"x\" \"own\"\n        p --sync-> a",
+    ));
+    let a = el(&m, "a");
+    assert_eq!(a.description.as_ref().unwrap().value, "D");
+    assert_eq!(a.tags, ["Element", "Software System", "Default"]);
+    assert_eq!(a.properties.len(), 1);
+    assert_eq!(el(&m, "b").tags, ["Element", "Software System", "Early"]);
+    assert!(el(&m, "b").description.is_none());
+    let c = el(&m, "c");
+    assert_eq!(c.tags, ["Element", "Software System", "Default", "Late"]);
+    assert_eq!(c.description.as_ref().unwrap().value, "Own.");
+    assert_eq!(el(&m, "p").tags, ["Element", "Person"]);
+    let r = &m.relationships;
+    assert_eq!(r[0].technology.as_ref().unwrap().value, "T");
+    assert_eq!(r[0].tags, ["Relationship", "Default"]);
+    assert_eq!(r[1].technology.as_ref().unwrap().value, "own");
+    assert_eq!(r[2].tags, ["Relationship", "Default", "Sync"]);
+}
+
 /// A base outside the P2-158 list is `InvalidArchetype` naming it.
 #[test]
 fn p2_158_archetype_base_types() {
@@ -2216,6 +2316,32 @@ fn p2_17_element_directive_adds_tags_children_relationships() {
     assert_eq!(ends, [(web.id, mail), (shop.id, mail)]);
     let e = error_of(&in_model("        !element ghost {\n        }"));
     assert_eq!(e.kind, ModelErrorKind::UndeclaredId { id: "ghost".into() });
+}
+
+/// `!element` names a deployment environment, node or infrastructure node
+/// by id or by canonical name (`DeploymentNode://Env/Node/...`,
+/// `InfrastructureNode://...`), and its block is read as that owner's
+/// deployment block (corpus deployment-environment-empty.dsl and
+/// find-element.dsl; Structurizr 6.2.4 opens both).
+// TODO(srs): P2-17 and P2-120 do not say `!element` reaches deployment
+// elements. Reading taken (Structurizr 6.2.4): it does, with the same
+// statements the owner's own block allows.
+#[test]
+fn p2_17_element_directive_on_deployment_elements() {
+    let m = model_of(&in_model(
+        "        db = softwareSystem \"DB\"\n        de = deploymentEnvironment \"Live\"\n        !element de {\n            aws = deploymentNode \"AWS\" {\n                region = deploymentNode \"US-East-1\" {\n                    dns = infrastructureNode \"Route 53\"\n                }\n            }\n        }\n        !element \"DeploymentNode://Live/AWS/US-East-1\" {\n            deploymentNode \"Extra\" {\n                infrastructureNode \"Extra infra\" {\n                    -> dns\n                }\n            }\n        }\n        !element region {\n            softwareSystemInstance db\n        }\n        !element \"InfrastructureNode://Live/AWS/US-East-1/Route 53\" {\n            technology \"DNS\"\n        }",
+    ));
+    assert!(m.find("db").is_some());
+    // A node's block refuses what a node refuses; an environment's block
+    // refuses an infrastructure node.
+    let e = error_of(&in_model(
+        "        de = deploymentEnvironment \"Live\"\n        !element de {\n            infrastructureNode \"X\"\n        }",
+    ));
+    assert_eq!(e.kind, ModelErrorKind::UnknownConstruct { construct: "infrastructureNode".into() });
+    let e = error_of(&in_model(
+        "        de = deploymentEnvironment \"Live\"\n        !element \"DeploymentNode://Live/Nowhere\" {\n        }",
+    ));
+    assert!(matches!(e.kind, ModelErrorKind::UndeclaredId { .. }), "{e:?}");
 }
 
 /// `!relationship <id> { ... }` adds tag, tags, url, properties, perspectives.
@@ -2625,6 +2751,47 @@ fn p2_159_docs_path_recorded_on_owner() {
     assert_eq!(e.kind, ModelErrorKind::PathOutsideRoot { path: "../elsewhere".into() });
 }
 
+/// A `!docs`/`!adrs` path in an included file resolves against that
+/// file's folder and must lie inside the diagram's (the root file's)
+/// folder, not the included file's (corpus include-directory.dsl, whose
+/// include/model/software-system/model.dsl has `!docs ../../docs`;
+/// Structurizr 6.2.4 opens it).
+#[test]
+fn p2_159_attachment_path_inside_the_diagram_folder() {
+    let root = "workspace {\n    model {\n        !include sub/deeper/model.dsl\n    }\n}\n";
+    let mut loader = Mem::default()
+        .file("/w/docs/a.md", "x")
+        .file("/w/sub/deeper/model.dsl", "s = softwareSystem \"S\" {\n    !docs ../../docs\n}\n");
+    let p = parsed_with(root, "/w/workspace.dsl", &mut loader);
+    assert_eq!(el(&p.model, "s").docs[0].path.value, "../../docs");
+    let mut outside = Mem::default()
+        .file("/elsewhere/a.md", "x")
+        .file("/w/sub/model.dsl", "s = softwareSystem \"S\" {\n    !adrs ../../elsewhere\n}\n");
+    let root = "workspace {\n    model {\n        !include sub/model.dsl\n    }\n}\n";
+    let e = model::parse_with(root, Some(std::path::Path::new("/w/workspace.dsl")), &mut outside)
+        .unwrap_err();
+    assert_eq!(e.kind, ModelErrorKind::PathOutsideRoot { path: "../../elsewhere".into() });
+}
+
+/// `!docs <path> { exclude ... }` and `!adrs|!decisions <path> [importer]
+/// { exclude ... }` (corpus docs/workspace.dsl, decisions/workspace.dsl;
+/// Structurizr 6.2.4 opens both): the attachment is recorded as without
+/// the block, and only `exclude <pattern>` lines are allowed in it.
+// TODO(srs): P2-159, P2-160 name no block. Reading taken (Structurizr
+// 6.2.4): `exclude` lines of one or more strings, kept nowhere, since
+// phase 2 reads no documentation file.
+#[test]
+fn p2_159_attachment_block_with_exclude() {
+    let m = model_of(
+        "workspace {\n    !adrs adrs com.example.Importer {\n        exclude \"README.md\"\n    }\n    model {\n        s = softwareSystem \"S\" {\n            !docs docs {\n                exclude \"README.*\" \"*.txt\"\n            }\n            !decisions madr madr {\n                exclude \"README.md\"\n            }\n        }\n    }\n}\n",
+    );
+    assert_eq!(m.docs.len(), 1);
+    assert_eq!(el(&m, "s").docs.len(), 2);
+    assert_eq!(el(&m, "s").docs[0].path.value, "docs");
+    let e = error_of("workspace {\n    !docs docs {\n        include \"x\"\n    }\n}\n");
+    assert_eq!(e.kind, ModelErrorKind::UnknownConstruct { construct: "include".into() }, "{e:?}");
+}
+
 /// `!adrs <path> [type|fqcn]` and `!decisions` record path and importer, `AttachmentKind::Adrs`.
 #[test]
 fn p2_160_adrs_and_decisions_recorded() {
@@ -2679,6 +2846,24 @@ fn p2_5_include_file_inlines_statements() {
     let e = error_of(root);
     assert_eq!(e.kind, ModelErrorKind::NeedsFile { construct: "!include".into() });
     assert_eq!(e.position.line, 3);
+}
+
+/// A `!const` before `workspace`, and one in an including file, fill a
+/// `${NAME}` in an `!include` path inside an included file (corpus
+/// big-bank-plc/internet-banking-system.dsl and system-landscape.dsl;
+/// Structurizr 6.2.4 opens both).
+// DECISION: constants and variables are one set for the whole parse, in
+// document order with included files read where their `!include`
+// stands, as the builder sees them (P2-150, P2-5).
+#[test]
+fn p2_5_include_path_takes_constants_of_including_files() {
+    let root = "!const PART \"detail.dsl\"\n\nworkspace {\n    model {\n        !include model/people.dsl\n    }\n}\n";
+    let mut loader = Mem::default()
+        .file("/w/model/people.dsl", "s = softwareSystem \"S\" {\n    !include \"parts/${PART}\"\n}\n")
+        .file("/w/model/parts/detail.dsl", "web = container \"Web\"\n")
+        .file("/w/model/parts/summary.dsl", "");
+    let p = parsed_with(root, "/w/workspace.dsl", &mut loader);
+    assert_eq!(el(&p.model, "web").name.value, "Web");
 }
 
 /// `!include <dir>` inlines every DSL file of the directory.

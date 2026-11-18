@@ -1686,9 +1686,12 @@ are split into P2-400..P2-439 and P2-440, one testable sentence each.
   `border`, `opacity`, `metadata`, `description` and `properties { name
   value }` is parsed into the style with its value span, and any other
   word is still a DSL-4 error naming it.
-- **P2-400** `colour` and `color` are one property (box text colour), so
-  a block that sets both is the same duplicate-property error as a block
-  that sets `color` twice.
+- **P2-400** `colour` and `color` are one property (box text colour).
+  When one block sets the same property more than once (`color` twice,
+  `color` and `colour`, `style` and `dashed`, or any other style or view
+  property line such as two `title` lines), the last line wins, as in
+  Structurizr, with no error; each overridden line gets a no-effect
+  notice naming it.
 - **P2-401** Wherever a `#rrggbb` colour is accepted (element
   `background`, `color`/`colour` and `stroke`; relationship
   `color`/`colour`), a CSS/HTML colour name in any letter case resolves
@@ -1942,6 +1945,8 @@ Anything taken from memory is marked as such.
   - `needs-env`: the file needs an environment variable. Rust 2024 makes
     `std::env::set_var` `unsafe`, so a test cannot set one. This reason
     is tied to the `${NAME}` environment lookup (dsl-breadth).
+  - `needs-encoding`: the file is not UTF-8. c4rizer reads UTF-8 only,
+    and Structurizr's default parser fails on such a file too.
 
   The test `p2_501_manifest_covers_every_dsl` fails on any `.dsl` with
   no line, any line naming a missing file, any duplicate line, and any

@@ -311,21 +311,27 @@ fn p2_400_colour_alias() {
     assert_eq!(a.style_of(sys(&a)), b.style_of(sys(&b)));
 }
 
-/// A block setting both `color` and `colour` is the same duplicate-property
-/// error as `color` twice.
+/// A block setting `color` twice, or `color` and `colour`, keeps the last
+/// line (as Structurizr), with a no-effect notice at the overridden line.
 #[test]
-fn p2_400_color_and_colour_duplicate() {
-    let twice = error(&element_block(
-        "Tagged",
+fn p2_400_color_and_colour_last_wins() {
+    for lines in [
         "                color #112233\n                color #445566",
-    ));
-    let both = error(&element_block(
-        "Tagged",
         "                color #112233\n                colour #445566",
-    ));
-    assert!(matches!(twice.kind, ModelErrorKind::DuplicateLine { .. }), "{twice:?}");
-    assert!(matches!(both.kind, ModelErrorKind::DuplicateLine { .. }), "{both:?}");
-    assert_eq!(twice.position.line, both.position.line);
+        "                colour #112233\n                color #445566",
+    ] {
+        let m = parse(&element_block("Tagged", lines));
+        assert_eq!(m.element_styles[0].color.unwrap().value, rgb(0x44, 0x55, 0x66), "{lines}");
+        let notices: Vec<_> = m.notices.iter().filter(|n| n.kind == NoticeKind::NoEffect).collect();
+        assert_eq!(notices.len(), 1, "{lines}: {:?}", m.notices);
+        assert!(notices[0].subject.contains("overridden"), "{:?}", notices[0]);
+        // The notice names the earlier line, the one with no effect.
+        let first = m.element_styles[0].color.unwrap().span.start;
+        assert!(notices[0].span.unwrap().start < first, "{:?}", notices[0]);
+    }
+    // Any other style property repeated: the last wins too.
+    let m = parse(&element_block("Tagged", "                width 300\n                width 500"));
+    assert_eq!(m.element_styles[0].width.unwrap().value, 500);
 }
 
 /// A CSS/HTML colour name resolves to its CSS hex value for element
@@ -1040,9 +1046,10 @@ fn p2_420_dashed_alias() {
         let m = parse(&rel_block("Tagged", &format!("                {line}")));
         assert_eq!(m.relationship_style_of(TAGGED).style, border, "{line}");
     }
-    // One property under two names: setting both is a duplicate.
-    let e = error(&rel_block("Tagged", "                style dotted\n                dashed true"));
-    assert!(matches!(e.kind, ModelErrorKind::DuplicateLine { .. }), "{e:?}");
+    // One property under two names: the last line wins (P2-400).
+    let m = parse(&rel_block("Tagged", "                style dotted\n                dashed true"));
+    assert_eq!(m.relationship_style_of(TAGGED).style, Border::Dashed);
+    assert!(m.notices.iter().any(|n| n.subject.contains("overridden")), "{:?}", m.notices);
     let e = error(&rel_block("Tagged", "                dashed maybe"));
     assert!(matches!(e.kind, ModelErrorKind::InvalidValue { .. }), "{e:?}");
 }
@@ -3325,4 +3332,26 @@ fn p2_431_dark_label_text_contrast() {
     // The line itself keeps its colour either way.
     let s = build_in(&navy, "ctx", Mode::Dark).scene;
     assert!(s.lines.iter().all(|l| l.stroke.colour == rgb(0, 0, 0x80)));
+}
+
+/// Lines corpus test.dsl uses that Structurizr 6.2.4 accepts and the
+/// SRS does not list: element `iconPosition top|bottom|left`,
+/// relationship `metadata`/`description` booleans, and `theme`/`themes`
+/// inside `styles`.
+// TODO(srs): P2-10, P2-12, P2-13 name none of these. Reading taken
+// (Structurizr 6.2.4 probed): each is accepted and checked; the first
+// two change no scene, a theme line in `styles` is read as one in
+// `views`.
+#[test]
+fn p2_14_structurizr_style_lines_outside_the_srs() {
+    let m = parse(&element_block("Tagged", "                iconPosition Left\n                background #112233"));
+    assert_eq!(m.element_styles[0].background.unwrap().value, rgb(0x11, 0x22, 0x33));
+    let e = error(&element_block("Tagged", "                iconPosition right"));
+    assert!(matches!(e.kind, ModelErrorKind::InvalidValue { .. }), "{e:?}");
+    let r = parse(&rel_block("Tagged", "                metadata false\n                description true\n                thickness 3"));
+    assert_eq!(r.relationship_styles.len(), 1);
+    let e = error(&rel_block("Tagged", "                metadata maybe"));
+    assert!(matches!(e.kind, ModelErrorKind::InvalidValue { .. }), "{e:?}");
+    let t = parse(&rel_ws("            theme default\n            themes default default"));
+    assert_eq!(t.themes.len(), 3);
 }

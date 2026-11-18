@@ -795,6 +795,23 @@ fn p2_316_custom_title_is_second_argument() {
     assert_roundtrip(&src);
 }
 
+/// A `title` line in the body of a custom view with a positional title
+/// is no second title: the body line wins, as the later one (corpus
+/// test.dsl; Structurizr 6.2.4 probed: `custom "K" "Positional" { title
+/// "Body" }` has title `Body`).
+#[test]
+fn p2_316_custom_title_line_overrides_positional_title() {
+    let body = "        custom \"board\" \"Positional\" {\n            title \"Body\"\n            include *\n        }";
+    let m = parse(&ws(BOARD, body));
+    assert_eq!(m.view("board").unwrap().title.as_ref().unwrap().value, "Body");
+    // Two title lines in the body: the last wins (P2-400), the first gets
+    // a no-effect notice.
+    let twice = "        custom \"board\" {\n            title \"A\"\n            title \"B\"\n            include *\n        }";
+    let m = parse(&ws(BOARD, twice));
+    assert_eq!(m.view("board").unwrap().title.as_ref().unwrap().value, "B");
+    assert!(m.notices.iter().any(|n| n.subject.contains("`title`")), "{:?}", m.notices);
+}
+
 /// `include <id>` of a non-custom element in a custom view is
 /// `NotCustomElement` naming the id.
 #[test]
@@ -905,6 +922,30 @@ fn p2_320_image_view_local_file_in_scene() {
         assert!(svg_png.starts_with(b"\x89PNG"));
     }
     assert_roundtrip(&src);
+}
+
+/// `light { <source> }` and `dark { <source> }` in an image view.
+#[test]
+fn p2_320_image_view_light_and_dark_blocks() {
+    // TODO(srs): P2-320 names no `light`/`dark` block. Reading taken
+    // (Structurizr 6.2.4 opens corpus test.dsl, whose image view has
+    // `light { image logo.png }` and `dark { ... }`): each block holds
+    // one source line, checked as the plain source is, with a P2-3
+    // notice; the plain source is drawn, else the `light` one, else the
+    // `dark` one.
+    let both = "light {\n                image pics/pic.png\n            }\n            dark {\n                image pics/pic.png\n            }\n            image pic.svg";
+    let parsed = parse_files(&image_ws("pic", both), &mut image_files()).expect("parses");
+    let v = parsed.model.view("pic").unwrap();
+    assert!(matches!(&v.image.as_ref().unwrap().source, ImageSource::File(f) if f.value == "pic.svg"));
+    let subjects: Vec<&str> = parsed.model.notices.iter().map(|n| n.subject.as_str()).collect();
+    assert_eq!(subjects, ["light", "dark"]);
+    let only_dark = "dark {\n                image pics/pic.png\n            }";
+    let parsed = parse_files(&image_ws("pic", only_dark), &mut image_files()).expect("parses");
+    let v = parsed.model.view("pic").unwrap();
+    assert!(matches!(&v.image.as_ref().unwrap().source, ImageSource::File(f) if f.value == "pics/pic.png"));
+    // Anything but a source line in the block is refused.
+    let e = error(&image_ws("pic", "light {\n                title \"T\"\n            }"));
+    assert!(matches!(e.kind, ModelErrorKind::UnknownConstruct { .. }), "{e:?}");
 }
 
 /// `plantuml` and `mermaid` sources draw a placeholder naming the source

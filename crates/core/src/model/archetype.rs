@@ -54,6 +54,17 @@ impl Archetype {
     }
 }
 
+/// The base a keyword declares (P2-158), ignoring case.
+fn keyword_base(word: &str) -> Option<Base> {
+    match word.to_ascii_lowercase().as_str() {
+        "group" => Some(Base::Group),
+        "element" => Some(Base::Element(ElementKind::Custom)),
+        "deploymentnode" => Some(Base::Deployment("deploymentnode")),
+        "infrastructurenode" => Some(Base::Deployment("infrastructurenode")),
+        _ => element_kind(word).map(Base::Element),
+    }
+}
+
 /// The archetype name of an arrow word `--<name>->`, if it is one.
 pub(super) fn arrow_archetype(word: &str) -> Option<&str> {
     word.strip_prefix("--")?
@@ -79,9 +90,33 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// `<name> = <base> { ... }`.
+    /// `<name> = <base> { ... }`, or `<keyword> { ... }` / `-> { ... }`:
+    /// the default archetype of that keyword.
+    // TODO(srs): P2-155..P2-158 name no unnamed archetype. Reading taken
+    // (Structurizr 6.2.4 probed, corpus archetypes-for-defaults.dsl and
+    // archetypes-for-extension.dsl): `softwareSystem { ... }` (any base
+    // keyword) or `-> { ... }` replaces what that keyword declares from
+    // then on, so later elements, relationships and archetypes based on
+    // the keyword take its defaults; one declared before it does not.
+    // DECISION: the default is kept under the lowercased keyword (`->`
+    // for relationships), so the keyword lookup that finds a named
+    // archetype finds it.
     fn archetype(&mut self, statement: &Statement, head: &Head<'_>) -> Result<(), ModelError> {
         let (Some(_), kw) = declared_at(head) else {
+            if head.len() == 1 {
+                let mut archetype = self.archetype_base(head, 0)?;
+                let key = if head.kind(0) == Some(TokenKind::Arrow) {
+                    "->".to_owned()
+                } else if keyword_base(head.text(0)).is_some() {
+                    head.text(0).to_ascii_lowercase()
+                } else {
+                    // A named archetype is no keyword to default.
+                    return Err(self.reject(head, 0));
+                };
+                self.archetype_body(statement, &mut archetype)?;
+                self.archetypes.insert(key, archetype);
+                return Ok(());
+            }
             return Err(self.reject(head, 0));
         };
         if head.kind(0) != Some(TokenKind::Word) || !super::is_identifier(head.text(0)) {
@@ -94,17 +129,27 @@ impl Builder<'_> {
             return Err(self.invalid(head, "archetypes", kw + 1));
         }
         let mut archetype = self.archetype_base(head, kw)?;
+        self.archetype_body(statement, &mut archetype)?;
+        self.archetypes
+            .insert(head.text(0).to_ascii_lowercase(), archetype);
+        Ok(())
+    }
+
+    /// The lines of an archetype's block, if it has one.
+    fn archetype_body(
+        &mut self,
+        statement: &Statement,
+        archetype: &mut Archetype,
+    ) -> Result<(), ModelError> {
         if let Some(block) = &statement.block {
             for inner in &block.statements {
                 let line = self.head(inner)?;
                 if self.common(inner, &line)? {
                     continue;
                 }
-                self.archetype_line(inner, &line, &mut archetype)?;
+                self.archetype_line(inner, &line, archetype)?;
             }
         }
-        self.archetypes
-            .insert(head.text(0).to_ascii_lowercase(), archetype);
         Ok(())
     }
 
@@ -113,7 +158,11 @@ impl Builder<'_> {
     fn archetype_base(&self, head: &Head<'_>, kw: usize) -> Result<Archetype, ModelError> {
         let word = head.text(kw);
         if head.kind(kw) == Some(TokenKind::Arrow) {
-            return Ok(Archetype::new(Base::Relationship));
+            return Ok(self
+                .archetypes
+                .get("->")
+                .cloned()
+                .unwrap_or_else(|| Archetype::new(Base::Relationship)));
         }
         if let Some(name) = arrow_archetype(word) {
             return match self.archetypes.get(&name.to_ascii_lowercase()) {
@@ -125,15 +174,14 @@ impl Builder<'_> {
             };
         }
         let lower = word.to_ascii_lowercase();
-        let base = match lower.as_str() {
-            "group" => Some(Base::Group),
-            "element" => Some(Base::Element(ElementKind::Custom)),
-            "deploymentnode" => Some(Base::Deployment("deploymentnode")),
-            "infrastructurenode" => Some(Base::Deployment("infrastructurenode")),
-            _ => element_kind(word).map(Base::Element),
-        };
-        if let Some(base) = base {
-            return Ok(Archetype::new(base));
+        if let Some(base) = keyword_base(word) {
+            // The keyword's default archetype, when one is declared.
+            return Ok(self
+                .archetypes
+                .get(&lower)
+                .filter(|a| a.base == base)
+                .cloned()
+                .unwrap_or_else(|| Archetype::new(base)));
         }
         match self.archetypes.get(&lower) {
             Some(a) if a.base != Base::Relationship => Ok(a.clone()),
@@ -217,7 +265,8 @@ impl Builder<'_> {
         arrow: usize,
     ) -> Result<Option<Archetype>, ModelError> {
         let Some(name) = arrow_archetype(head.text(arrow)) else {
-            return Ok(None);
+            // A plain `->` takes the default relationship archetype.
+            return Ok(self.archetypes.get("->").cloned());
         };
         match self.archetypes.get(&name.to_ascii_lowercase()) {
             Some(a) if a.base == Base::Relationship => Ok(Some(a.clone())),

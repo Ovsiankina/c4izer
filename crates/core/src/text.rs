@@ -309,6 +309,12 @@ impl Lexer<'_> {
                     self.line_start = true;
                     self.script_pending = false;
                 }
+            } else if c == '\u{feff}' && self.pos == 0 {
+                // DECISION: a UTF-8 byte-order mark opening the file is
+                // white space (Structurizr 6.2.4 opens corpus
+                // workspace-with-bom.dsl); kept as a token, so printing
+                // gives it back (DSL-11). Elsewhere it is part of a word.
+                self.push(TokenKind::Whitespace, self.pos + c.len_utf8());
             } else if is_space(c) {
                 let len = rest.find(|c: char| !is_space(c));
                 let mut end = len.map_or(self.src.len(), |n| self.pos + n);
@@ -414,13 +420,15 @@ impl Lexer<'_> {
                 '"' => return Ok(self.pos + i + 1),
                 '\n' => return Err(unterminated()),
                 '\\' => match chars.next() {
-                    Some((_, '"' | '\\')) => {}
-                    // DECISION: a backslash ending the line or file is an
+                    // P2-147: a `\` ending a line inside a string continues
+                    // the string on the next line (Structurizr 6.2.4).
+                    Some((_, '"' | '\\' | '\n')) => {}
+                    // DECISION: a backslash ending the file is an
                     // unterminated string, not an escape error: the closing
                     // quote is what is missing.
-                    None | Some((_, '\n')) => return Err(unterminated()),
+                    None => return Err(unterminated()),
                     Some((_, '\r')) if self.rest()[i + 1..].starts_with("\r\n") => {
-                        return Err(unterminated());
+                        chars.next();
                     }
                     Some((j, other)) => {
                         let at = self.pos + i;
@@ -490,6 +498,12 @@ pub fn unquote(raw: &str) -> String {
             // kept as written rather than panicking.
             match chars.next() {
                 Some(e @ ('"' | '\\')) => out.push(e),
+                Some(e @ ('\n' | '\r')) => {
+                    if e == '\r' && chars.clone().next() == Some('\n') {
+                        chars.next();
+                    }
+                    continue_line(&mut chars);
+                }
                 Some(e) => {
                     out.push('\\');
                     out.push(e);
@@ -501,6 +515,20 @@ pub fn unquote(raw: &str) -> String {
         }
     }
     out
+}
+
+/// After a `\` and newline inside a string (P2-147): skips the leading
+/// white space of the next line unless that line is itself continued.
+// DECISION: Structurizr 6.2.4 probed: `"A\⏎      B  \⏎  C"` is
+// `A      B  C`, so only the line that ends the string loses its indent.
+fn continue_line(chars: &mut std::str::Chars<'_>) {
+    let rest = chars.as_str();
+    let line = rest.find('\n').map_or(rest, |n| &rest[..n]);
+    if line.trim_end_matches('\r').ends_with('\\') {
+        return;
+    }
+    let indent = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    *chars = rest[indent..].chars();
 }
 
 /// A string literal whose `unquote` is `value`: quotes added, `"` and
@@ -849,6 +877,13 @@ mod tests {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
+                // DECISION: the pinned Structurizr corpus holds files that
+                // Structurizr itself rejects; it has its own tests
+                // (crates/core/tests/compat.rs, P2-14), so it is no
+                // fixture here.
+                if path.is_dir() && path.ends_with("tests/data/structurizr") {
+                    continue;
+                }
                 if path.is_dir() {
                     walk(&path, out);
                 } else if path.extension().is_some_and(|e| e == "dsl") {
@@ -1513,5 +1548,35 @@ mod tests {
         let src = "!script kotlin {\r\n}\r\n";
         assert!(!all_tokens(src).iter().any(|t| t.0 == RawText));
         assert_eq!(parse(FileId::ROOT, src).unwrap().print(), src);
+    }
+
+    #[test]
+    fn byte_order_mark_is_trivia() {
+        // P2-14 (corpus workspace-with-bom.dsl): a leading U+FEFF is
+        // whitespace, and printing keeps it (DSL-11).
+        use TokenKind::*;
+        let src = "\u{feff}workspace {\n}\n";
+        assert_eq!(all_tokens(src)[0], (Whitespace, "\u{feff}"));
+        assert_eq!(significant(src)[0], (Word, "workspace"));
+        assert_eq!(parse(FileId::ROOT, src).unwrap().print(), src);
+    }
+
+    #[test]
+    fn line_continuation_inside_a_string() {
+        // P2-147 (corpus multi-line.dsl), Structurizr 6.2.4 probed: `\`
+        // ending a line inside a string joins the next line; the leading
+        // white space of the line that ends the string is dropped, that of
+        // a line itself continued is kept.
+        use TokenKind::*;
+        let src = "a \"Software \\\n      System\" b";
+        assert_eq!(
+            significant(src),
+            vec![(Word, "a"), (String, "\"Software \\\n      System\""), (Word, "b")]
+        );
+        assert_eq!(unquote("\"Software \\\n      System\""), "Software System");
+        assert_eq!(unquote("\"A\\\n      B  \\\r\n  C\""), "A      B  C");
+        assert_eq!(unquote("\"X  \\\n\t  Y\""), "X  Y");
+        // A backslash ending the file is still an unterminated string.
+        assert_eq!(parse_err("a \"x\\").kind, ParseErrorKind::UnterminatedString);
     }
 }

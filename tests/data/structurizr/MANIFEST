@@ -1,0 +1,142 @@
+# Corpus manifest (SRS P2-501): one line per .dsl file, sorted by path.
+# <path> root | fragment | excluded <reason>
+# Reasons: rejected-by-structurizr (DslTests at the pinned commit expect
+# a parse failure), needs-network, needs-jvm, needs-env, needs-encoding.
+# needs-encoding (P2-501): a file that is not UTF-8; Structurizr's
+# default (UTF-8) parser fails on it too.
+# A root that c4rizer cannot open yet is still a root: its gap is a
+# docs/deferred.md row against the owning row, never an exclusion.
+# DECISION: needs-network only when a URL supplies model or view content
+# (!include, workspace extends); a URL theme or image source changes
+# looks only, so such a file stays a root.
+amazon-web-services-local.dsl root
+amazon-web-services.dsl root
+archetypes-for-custom-elements.dsl root
+archetypes-for-defaults.dsl root
+archetypes-for-extension.dsl root
+archetypes-for-implicit-relationships.dsl root
+archetypes-from-workspace-extension-child.dsl root
+archetypes-from-workspace-extension-parent.dsl root
+archetypes.dsl root
+big-bank-plc.dsl root
+big-bank-plc/internet-banking-system.dsl root
+# included by big-bank-plc/model/people-and-software-systems.dsl
+big-bank-plc/model/internet-banking-system/details.dsl fragment
+# included by big-bank-plc/model/people-and-software-systems.dsl
+big-bank-plc/model/internet-banking-system/summary.dsl fragment
+# included by big-bank-plc/internet-banking-system.dsl and system-landscape.dsl
+big-bank-plc/model/people-and-software-systems.dsl fragment
+big-bank-plc/system-landscape.dsl root
+# included by big-bank-plc/internet-banking-system.dsl and system-landscape.dsl
+big-bank-plc/views/styles-people.dsl fragment
+bulk-operations.dsl root
+color-schemes.dsl root
+# !constant removed (DslTests test_Constant)
+constant.dsl excluded rejected-by-structurizr
+constants-and-variables-from-workspace-extension-child.dsl root
+constants-and-variables-from-workspace-extension-parent.dsl root
+custom-view-animation.dsl root
+decisions/workspace.dsl root
+deployment-environment-empty.dsl root
+deployment-groups-flat.dsl root
+deployment-groups-hierarchical.dsl root
+deployment-view-animation.dsl root
+docs/workspace.dsl root
+dynamic-view-with-custom-elements.dsl root
+dynamic-view-with-explicit-ordering.dsl root
+dynamic-view-with-explicit-relationships.dsl root
+dynamic.dsl root
+# enterprise removed (test_Enterprise)
+enterprise.dsl excluded rejected-by-structurizr
+exclude-implied-relationship.dsl root
+exclude-relationships.dsl root
+extend/1.dsl root
+extend/2.dsl root
+extend/3.dsl root
+extend/4.dsl root
+extend/extend-workspace-from-dsl-file.dsl root
+# workspace extends https://...
+extend/extend-workspace-from-dsl-url.dsl excluded needs-network
+extend/extend-workspace-from-json-file.dsl root
+# workspace extends https://...
+extend/extend-workspace-from-json-url.dsl excluded needs-network
+extend/workspace.dsl root
+filteredviews.dsl root
+financial-risk-system.dsl root
+find-element-hierarchical.dsl root
+find-element.dsl root
+find-elements-in-flat-group.dsl root
+find-elements-in-nested-group.dsl root
+getting-started-short.dsl root
+getting-started.dsl root
+# url in a group (test_urlNotPermittedInGroup)
+group-url.dsl excluded rejected-by-structurizr
+# group without brace (test_GroupWithoutBrace)
+group-without-brace.dsl excluded rejected-by-structurizr
+groups-nested.dsl root
+groups.dsl root
+hierarchical-identifiers-and-deployment-nodes-1.dsl root
+hierarchical-identifiers-and-deployment-nodes-2.dsl root
+hierarchical-identifiers-and-deployment-nodes-3.dsl root
+hierarchical-identifiers-when-unassigned.dsl root
+hierarchical-identifiers.dsl root
+identifiers.dsl root
+# test_ImageView_WhenParserIsInRestrictedMode; image.png does not exist next to it
+image-view.dsl excluded rejected-by-structurizr
+image-views/workspace-via-file.dsl root
+image-views/workspace-via-source.dsl root
+image-views/workspace-via-url.dsl root
+include-directory.dsl root
+include-file.dsl root
+include-implied-relationship.dsl root
+# !include https://...
+include-url.dsl excluded needs-network
+# included by include-file.dsl
+include/model.dsl fragment
+# included by include-directory.dsl
+include/model/software-system/model.dsl fragment
+# ISO-8859-1 bytes; DslTests parse it with setCharacterEncoding(ISO_8859_1)
+iso-8859.dsl excluded needs-encoding
+# test_MultiLineWithError
+multi-line-with-error.dsl excluded rejected-by-structurizr
+multi-line.dsl root
+# test_multipleModelTokens_ThrowsAnException
+multiple-model-tokens.dsl excluded rejected-by-structurizr
+# test_multipleViewTokens_ThrowsAnException
+multiple-view-tokens.dsl excluded rejected-by-structurizr
+# test_multipleWorkspaceTokens_ThrowsAnException
+multiple-workspace-tokens.dsl excluded rejected-by-structurizr
+no-relationship.dsl root
+parallel1.dsl root
+parallel2.dsl root
+parallel3.dsl root
+plugin-with-parameters.dsl root
+plugin-without-parameters.dsl root
+# test_RelationshipAlreadyExists
+relationship-already-exists.dsl excluded rejected-by-structurizr
+relationship-without-identifier.dsl root
+script-external-with-parameters.dsl root
+script-external.dsl root
+script-in-dynamic-view.dsl root
+script-inline.dsl root
+shapes.dsl root
+source-child.dsl root
+source-not-retained.dsl root
+source-parent.dsl root
+spring-petclinic/workspace.dsl root
+static-view-animation.dsl root
+test.dsl root
+text-block.dsl root
+this.dsl root
+# test_unexpectedTokensAfterWorkspace
+unexpected-tokens-after-workspace.dsl excluded rejected-by-structurizr
+# test_unexpectedTokensBeforeWorkspace
+unexpected-tokens-before-workspace.dsl excluded rejected-by-structurizr
+# test_unexpectedTokensInWorkspace
+unexpected-tokens-in-workspace.dsl excluded rejected-by-structurizr
+utf8.dsl root
+views-without-keys.dsl root
+workspace-properties.dsl root
+# included by workspace-with-bom.dsl
+workspace-with-bom-model.dsl fragment
+workspace-with-bom.dsl root
