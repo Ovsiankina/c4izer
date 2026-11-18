@@ -1,0 +1,13 @@
+title Dynamic View: System\nA request with parallel lookups
+
+actor <<Person>>\nUser as User
+participant <<Container>>\nApp as App
+participant <<Container>>\nStore as Store
+participant <<Software System>>\nThird Party as Third Party
+
+User->App: Sends a request
+App->Store: Reads the record
+App->Third Party: Looks up the rate
+App->Store: Stores the rate
+Store->App: Notifies of the change
+App->Third Party: Confirms

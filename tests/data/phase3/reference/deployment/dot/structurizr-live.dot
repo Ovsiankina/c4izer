@@ -1,0 +1,76 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Shop in production</font>>
+
+  subgraph cluster_13 {
+    margin=25
+    label=<<font point-size="24">Cloud</font><br /><font point-size="19">[Deployment Node: AWS]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    14 [id=14,shape=rect, label=<<font point-size="34">DNS</font><br /><font point-size="19">[Infrastructure Node: Route 53]</font><br /><br /><font point-size="24">Routes requests.</font>>, style=filled, color="#a2a89c", fillcolor="#e8f0e0", fontcolor="#444444"]
+    15 [id=15,shape=rect, label=<<font point-size="34">Load balancer</font><br /><font point-size="19">[Infrastructure Node: ELB]</font><br /><br /><font point-size="24">Spreads requests.</font>>, style=filled, color="#a2a89c", fillcolor="#e8f0e0", fontcolor="#444444"]
+    subgraph cluster_16 {
+      margin=25
+      label=<<font point-size="24">Web host</font><br /><font point-size="19">[Deployment Node: EC2]</font>>
+      labelloc=b
+      color="#444444"
+      fontcolor="#444444"
+      fillcolor="#ffffff"
+
+      17 [id=17,shape=rect, label=<<font point-size="34">Web</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Serves the pages.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+      18 [id=18,shape=rect, label=<<font point-size="34">Web</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Serves the pages.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    }
+
+    subgraph cluster_19 {
+      margin=25
+      label=<<font point-size="24">Api host</font><br /><font point-size="19">[Deployment Node: EC2]</font>>
+      labelloc=b
+      color="#444444"
+      fontcolor="#444444"
+      fillcolor="#ffffff"
+
+      20 [id=20,shape=rect, label=<<font point-size="34">Api</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Takes orders.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+      22 [id=22,shape=rect, label=<<font point-size="34">Api</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Takes orders.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    }
+
+    subgraph cluster_24 {
+      margin=25
+      label=<<font point-size="24">Database</font><br /><font point-size="19">[Deployment Node: RDS]</font>>
+      labelloc=b
+      color="#444444"
+      fontcolor="#444444"
+      fillcolor="#ffffff"
+
+      25 [id=25,shape=cylinder, label=<<font point-size="34">Db</font><br /><font point-size="19">[Container: PostgreSQL]</font><br /><br /><font point-size="24">Stores orders.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    }
+
+  }
+
+  subgraph cluster_29 {
+    margin=25
+    label=<<font point-size="24">Mail provider</font><br /><font point-size="19">[Deployment Node: SaaS]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    30 [id=30,shape=rect, label=<<font point-size="34">Mail</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Sends mail.</font>>, style=filled, color="#6b6b6b", fillcolor="#999999", fontcolor="#ffffff"]
+  }
+
+  17 -> 20 [id=21, label=<<font point-size="24">Sends orders to</font><br /><font point-size="19">[JSON/HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  18 -> 22 [id=23, label=<<font point-size="24">Sends orders to</font><br /><font point-size="19">[JSON/HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  20 -> 25 [id=26, label=<<font point-size="24">Reads and writes</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  22 -> 25 [id=27, label=<<font point-size="24">Reads and writes</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  20 -> 30 [id=31, label=<<font point-size="24">Sends mail through</font><br /><font point-size="19">[SMTP]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  22 -> 30 [id=32, label=<<font point-size="24">Sends mail through</font><br /><font point-size="19">[SMTP]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  14 -> 15 [id=33, label=<<font point-size="24">Forwards requests to</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  15 -> 17 [id=34, label=<<font point-size="24">Forwards requests to</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  15 -> 18 [id=35, label=<<font point-size="24">Forwards requests to</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

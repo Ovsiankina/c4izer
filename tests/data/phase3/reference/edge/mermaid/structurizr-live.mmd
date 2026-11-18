@@ -1,0 +1,33 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Deployment View: Live"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph 35 ["Server"]
+      style 35 fill:#ffffff,stroke:#444444,color:#444444
+
+      36("<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div>")
+      style 36 fill:#ffffff,stroke:#444444,color:#444444
+      37["<div style='font-weight: bold'>Api "v2"</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves <things> & more.</div>"]
+      style 37 fill:#ffffff,stroke:#444444,color:#444444
+    end
+
+    subgraph 39 ["Store"]
+      style 39 fill:#ffffff,stroke:#444444,color:#444444
+
+      40["<div style='font-weight: bold'>Db</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQL]</div><div style='font-size: 80%; margin-top:10px'>Stores things.</div>"]
+      style 40 fill:#ffffff,stroke:#444444,color:#444444
+    end
+
+    subgraph 42 ["Edge"]
+      style 42 fill:#ffffff,stroke:#444444,color:#444444
+
+      43["<div style='font-weight: bold'>Proxy</div><div style='font-size: 70%; margin-top: 0px'>[Infrastructure Node: nginx]</div><div style='font-size: 80%; margin-top:10px'>Forwards.</div>"]
+      style 43 fill:#ffffff,stroke:#444444,color:#444444
+    end
+
+    36-. "<div>Calls</div><div style='font-size: 70%'></div>" .->37
+    37-. "<div>Reads</div><div style='font-size: 70%'></div>" .->40
+
+  end

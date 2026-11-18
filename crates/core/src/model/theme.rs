@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use super::{
-    Asset, Border, ElementStyle, Loader, Mime, Model, ModelError, ModelErrorKind, Notice,
+    Asset, Border, ElementStyle, Loader, Mime, Mode, Model, ModelError, ModelErrorKind, Notice,
     NoticeKind, RelationshipStyle, Routing, Shape, Spanned, Theme, ThemeSource, parse_colour,
 };
 use crate::text::{self, Span, SyntaxTree};
@@ -764,9 +764,23 @@ impl StyleReader<'_> {
             description: self.boolean("description")?,
             icon: self.string("icon")?.map(|i| self.spanned(i.to_owned())),
             properties: Vec::new(),
-            mode: None,
+            mode: self.scheme()?,
             theme: Some(theme),
         })
+    }
+
+    /// `colorScheme` (`Light` or `Dark`): the mode the style applies in;
+    /// none applies in both (P2-430).
+    // DECISION: read so that a theme written by `export -f theme` (P3-421)
+    // gives back its light and dark styles (P3-422), as Structurizr's
+    // `ElementStyle.colorScheme` does.
+    fn scheme(&self) -> Result<Option<Mode>, String> {
+        match self.string("colorScheme")? {
+            None => Ok(None),
+            Some(t) if t.eq_ignore_ascii_case("light") => Ok(Some(Mode::Light)),
+            Some(t) if t.eq_ignore_ascii_case("dark") => Ok(Some(Mode::Dark)),
+            Some(_) => Err(self.bad("colorScheme", "`Light` or `Dark`")),
+        }
     }
 
     fn relationship(&mut self, theme: usize) -> Result<RelationshipStyle, String> {
@@ -801,7 +815,7 @@ impl StyleReader<'_> {
             position: self.clamped("position", 0, 100)?,
             opacity: self.clamped("opacity", 0, 100)?,
             properties: Vec::new(),
-            mode: None,
+            mode: self.scheme()?,
             theme: Some(theme),
             span: self.span,
         })

@@ -94,6 +94,16 @@ pub(crate) fn wrote(out: &mut impl Write, path: &Path) -> io::Result<()> {
     writeln!(out, "   wrote {}", path.display())
 }
 
+/// `== <key>: skipped (<format> does not support <kind> views)`: a view
+/// `export` cannot write in that format (P3-405).
+///
+/// # Errors
+///
+/// The first error of `out`.
+pub(crate) fn skipped(out: &mut impl Write, key: &str, format: &str, kind: &str) -> io::Result<()> {
+    writeln!(out, "== {key}: skipped ({format} does not support {kind} views)")
+}
+
 /// Writes one unindented `ERROR: <text>` per L22 finding, in the order
 /// given (`pipeline::AllViews::coverage`, by relationship id), after all
 /// views (CLI-1). Writes nothing for an empty slice. Serves CLI-1, CORE-21.

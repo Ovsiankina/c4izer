@@ -1,0 +1,47 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Deployment View: Live</font>>
+
+  subgraph cluster_35 {
+    margin=25
+    label=<<font point-size="24">Server</font><br /><font point-size="19">[Deployment Node: Linux]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    36 [id=36,shape=rect, label=<<font point-size="34">Web</font><br /><font point-size="19">[Container: Rust]</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    37 [id=37,shape=hexagon, label=<<font point-size="42">Api \"v2\"</font><br /><font point-size="27">[Container: Rust]</font><br /><br /><font point-size="32">Serves <things> &<br />more.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+  subgraph cluster_39 {
+    margin=25
+    label=<<font point-size="24">Store</font><br /><font point-size="19">[Deployment Node: Disk]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    40 [id=40,shape=circle, label=<<font point-size="34">Db</font><br /><font point-size="19">[Container: SQL]</font><br /><br /><font point-size="24">Stores things.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+  subgraph cluster_42 {
+    margin=25
+    label=<<font point-size="24">Edge</font><br /><font point-size="19">[Deployment Node]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    43 [id=43,shape=rect, label=<<font point-size="34">Proxy</font><br /><font point-size="19">[Infrastructure Node: nginx]</font><br /><br /><font point-size="24">Forwards.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+  36 -> 37 [id=38, label=<<font point-size="24">Calls</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  37 -> 40 [id=41, label=<<font point-size="24">Reads</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  43 -> 36 [id=44, label=<<font point-size="24">Forwards to</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444",lhead=cluster_35]
+  36 -> 40 [id=45, label=<<font point-size="24">Backs up to</font>>, style="dashed", color="#444444", fontcolor="#444444",ltail=cluster_35,lhead=cluster_39]
+
+}

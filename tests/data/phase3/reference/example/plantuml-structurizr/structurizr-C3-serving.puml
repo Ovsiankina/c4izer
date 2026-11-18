@@ -1,0 +1,166 @@
+@startuml
+title <size:24>Component View: Atomanja - Atomanja server</size>\n<size:24>Component diagram for the Atomanja server: serving and polling</size>
+
+set separator none
+top to bottom direction
+hide stereotype
+
+<style>
+  root {
+    BackgroundColor: #ffffff;
+    FontColor: #444444;
+  }
+  // Element,Adapter
+  .Element-RWxlbWVudCxBZGFwdGVy {
+    BackgroundColor: #1e88e5;
+    LineColor: #155fa0;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Container,Database
+  .Element-RWxlbWVudCxDb250YWluZXIsRGF0YWJhc2U= {
+    BackgroundColor: #00796b;
+    LineColor: #00544a;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Core
+  .Element-RWxlbWVudCxDb3Jl {
+    BackgroundColor: #2e7d32;
+    LineColor: #205723;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Entry
+  .Element-RWxlbWVudCxFbnRyeQ== {
+    BackgroundColor: #c2410c;
+    LineColor: #872d08;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Person
+  .Element-RWxlbWVudCxQZXJzb24= {
+    BackgroundColor: #0b3c6f;
+    LineColor: #072a4d;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Software System,External
+  .Element-RWxlbWVudCxTb2Z0d2FyZSBTeXN0ZW0sRXh0ZXJuYWw= {
+    BackgroundColor: #5d5a6b;
+    LineColor: #413e4a;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Relationship
+  .Relationship-UmVsYXRpb25zaGlw {
+    LineThickness: 2;
+    LineStyle: 10-10;
+    LineColor: #444444;
+    FontColor: #444444;
+    FontSize: 24;
+    MaximumWidth: 200;
+  }
+  // Atomanja
+  .Boundary-QXRvbWFuamE= {
+    BackgroundColor: #ffffff;
+    LineColor: #0e4686;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+  }
+  // Atomanja server
+  .Boundary-QXRvbWFuamEgc2VydmVy {
+    BackgroundColor: #ffffff;
+    LineColor: #155fa0;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #ffffff;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+  }
+</style>
+
+person "==Worker\n<size:16>[Person]</size>\n\nThe one person whose tasks are tracked. Sees own tasks and debts, marks debts as sent." <<Element-RWxlbWVudCxQZXJzb24=>> as Worker
+person "==Witness\n<size:16>[Person]</size>\n\nAccountability partner. Sees late tasks, claims debts, marks them received." <<Element-RWxlbWVudCxQZXJzb24=>> as Witness
+person "==Admin witness\n<size:16>[Person]</size>\n\nMaintainer. Troubleshoots the witness view on fake data." <<Element-RWxlbWVudCxQZXJzb24=>> as Adminwitness
+
+rectangle "==Vikunja\n<size:16>[Software System]</size>\n\nExisting task manager. Source of tasks and deadlines. Never modified." <<Element-RWxlbWVudCxTb2Z0d2FyZSBTeXN0ZW0sRXh0ZXJuYWw=>> as Vikunja
+rectangle "==Push services\n<size:16>[Software System]</size>\n\nBrowser vendors' endpoints that deliver notifications to installed apps." <<Element-RWxlbWVudCxTb2Z0d2FyZSBTeXN0ZW0sRXh0ZXJuYWw=>> as Pushservices
+rectangle "==Mail server\n<size:16>[Software System]</size>\n\nDelivers invite and password-reset emails." <<Element-RWxlbWVudCxTb2Z0d2FyZSBTeXN0ZW0sRXh0ZXJuYWw=>> as Mailserver
+
+rectangle "Atomanja\n<size:16>[Software System]</size>" <<Boundary-QXRvbWFuamE=>> {
+  rectangle "Atomanja server\n<size:16>[Container: Rust, axum, HTML + htmx]</size>" <<Boundary-QXRvbWFuamEgc2VydmVy>> {
+    rectangle "==web\n<size:16>[Component: Rust, axum, htmx]</size>\n\nHTTP layer: both views, login flows, debt actions, push subscription." <<Element-RWxlbWVudCxFbnRyeQ==>> as Atomanja.Atomanjaserver.web
+    rectangle "==sync\n<size:16>[Component: Rust, tokio]</size>\n\nPoll loop: fetch, apply to ledger, persist, notify." <<Element-RWxlbWVudCxFbnRyeQ==>> as Atomanja.Atomanjaserver.sync
+    rectangle "==ledger\n<size:16>[Component: Rust module]</size>\n\nPure domain rules: deadlines, met or late, debts, claims, marks, amount." <<Element-RWxlbWVudCxDb3Jl>> as Atomanja.Atomanjaserver.ledger
+    rectangle "==auth\n<size:16>[Component: Rust module]</size>\n\nPure account rules: roles, password hashing, tokens, permission checks." <<Element-RWxlbWVudCxDb3Jl>> as Atomanja.Atomanjaserver.auth
+    rectangle "==vikunja\n<size:16>[Component: Rust, HTTP client]</size>\n\nRead-only Vikunja client. Maps tasks to snapshot records." <<Element-RWxlbWVudCxBZGFwdGVy>> as Atomanja.Atomanjaserver.vikunja
+    rectangle "==notify\n<size:16>[Component: Rust, Web Push]</size>\n\nTurns ledger changes into push notifications. Owns the push keys." <<Element-RWxlbWVudCxBZGFwdGVy>> as Atomanja.Atomanjaserver.notify
+    rectangle "==mail\n<size:16>[Component: Rust, SMTP client]</size>\n\nSends invite and password-reset emails." <<Element-RWxlbWVudCxBZGFwdGVy>> as Atomanja.Atomanjaserver.mail
+    rectangle "==store\n<size:16>[Component: Rust, SQLite]</size>\n\nPersistence for ledger and dev databases. Ledger is insert-only." <<Element-RWxlbWVudCxBZGFwdGVy>> as Atomanja.Atomanjaserver.store
+  }
+
+  database "==Ledger database\n<size:16>[Container: SQLite file]</size>\n\nAppend-only record of deadlines, debts, claims, marks and accounts." <<Element-RWxlbWVudCxDb250YWluZXIsRGF0YWJhc2U=>> as Atomanja.Ledgerdatabase
+  database "==Dev database\n<size:16>[Container: SQLite file]</size>\n\nFake tasks and debts for the admin witness. Isolated from the real ledger." <<Element-RWxlbWVudCxDb250YWluZXIsRGF0YWJhc2U=>> as Atomanja.Devdatabase
+}
+
+Pushservices --> Worker <<Relationship-UmVsYXRpb25zaGlw>> : "Delivers notifications to"
+Pushservices --> Witness <<Relationship-UmVsYXRpb25zaGlw>> : "Delivers notifications to"
+Worker --> Atomanja.Atomanjaserver.web <<Relationship-UmVsYXRpb25zaGlw>> : "Views tasks, marks debts sent\n<size:16>[HTTPS]</size>"
+Witness --> Atomanja.Atomanjaserver.web <<Relationship-UmVsYXRpb25zaGlw>> : "Claims debts, marks them received\n<size:16>[HTTPS]</size>"
+Adminwitness --> Atomanja.Atomanjaserver.web <<Relationship-UmVsYXRpb25zaGlw>> : "Troubleshoots on fake data\n<size:16>[HTTPS]</size>"
+Atomanja.Atomanjaserver.web --> Atomanja.Atomanjaserver.ledger <<Relationship-UmVsYXRpb25zaGlw>> : "Runs debt actions on"
+Atomanja.Atomanjaserver.web --> Atomanja.Atomanjaserver.auth <<Relationship-UmVsYXRpb25zaGlw>> : "Checks sessions and permissions with"
+Atomanja.Atomanjaserver.web --> Atomanja.Atomanjaserver.store <<Relationship-UmVsYXRpb25zaGlw>> : "Loads and saves through"
+Atomanja.Atomanjaserver.web --> Atomanja.Atomanjaserver.notify <<Relationship-UmVsYXRpb25zaGlw>> : "Stores subscriptions, notifies through"
+Atomanja.Atomanjaserver.web --> Atomanja.Atomanjaserver.mail <<Relationship-UmVsYXRpb25zaGlw>> : "Sends invites and resets through"
+Atomanja.Atomanjaserver.sync --> Atomanja.Atomanjaserver.vikunja <<Relationship-UmVsYXRpb25zaGlw>> : "Fetches snapshot through"
+Atomanja.Atomanjaserver.sync --> Atomanja.Atomanjaserver.ledger <<Relationship-UmVsYXRpb25zaGlw>> : "Applies snapshot to"
+Atomanja.Atomanjaserver.sync --> Atomanja.Atomanjaserver.store <<Relationship-UmVsYXRpb25zaGlw>> : "Appends changes through"
+Atomanja.Atomanjaserver.sync --> Atomanja.Atomanjaserver.notify <<Relationship-UmVsYXRpb25zaGlw>> : "Hands changes to"
+Atomanja.Atomanjaserver.vikunja --> Vikunja <<Relationship-UmVsYXRpb25zaGlw>> : "Fetches tasks from\n<size:16>[HTTPS/JSON]</size>"
+Atomanja.Atomanjaserver.notify --> Atomanja.Atomanjaserver.ledger <<Relationship-UmVsYXRpb25zaGlw>> : "Reads change types from"
+Atomanja.Atomanjaserver.notify --> Atomanja.Atomanjaserver.auth <<Relationship-UmVsYXRpb25zaGlw>> : "Picks recipients by role with"
+Atomanja.Atomanjaserver.notify --> Pushservices <<Relationship-UmVsYXRpb25zaGlw>> : "Sends notifications through\n<size:16>[Web Push]</size>"
+Atomanja.Atomanjaserver.mail --> Mailserver <<Relationship-UmVsYXRpb25zaGlw>> : "Sends emails through\n<size:16>[SMTP]</size>"
+Atomanja.Atomanjaserver.store --> Atomanja.Atomanjaserver.ledger <<Relationship-UmVsYXRpb25zaGlw>> : "Persists state of"
+Atomanja.Atomanjaserver.store --> Atomanja.Atomanjaserver.auth <<Relationship-UmVsYXRpb25zaGlw>> : "Persists accounts of"
+Atomanja.Atomanjaserver.store --> Atomanja.Ledgerdatabase <<Relationship-UmVsYXRpb25zaGlw>> : "Reads and appends\n<size:16>[SQL]</size>"
+Atomanja.Atomanjaserver.store --> Atomanja.Devdatabase <<Relationship-UmVsYXRpb25zaGlw>> : "Reads and writes\n<size:16>[SQL]</size>"
+
+@enduml

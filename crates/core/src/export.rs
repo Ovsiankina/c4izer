@@ -1,7 +1,9 @@
 //! Writes a scene as SVG text, and as PNG bytes behind the `png`
-//! feature (EXP-1, 2).
+//! feature (EXP-1, 2); writes a model's views in Structurizr's text
+//! formats (`text`), as Structurizr workspace JSON and as a Structurizr
+//! theme (SRS 4.7, row exporters: P3-400..P3-424).
 //!
-//! Depends on: `scene`.
+//! Depends on: `scene`, `model`, `pipeline`, `inspect`.
 
 // Shape of the API: `svg(&Scene) -> String` and, with feature `png`,
 // `png(&Scene, width_px) -> Result<Vec<u8>, PngError>`. Both take
@@ -52,6 +54,63 @@ use crate::scene::{
 };
 #[cfg(feature = "png")]
 use crate::scene::{FONT_BOLD, FONT_REGULAR};
+
+mod json_out;
+mod static_out;
+mod structurizr;
+pub mod text;
+mod theme_out;
+
+/// The two `PlantUML` exporters of Structurizr 6.2.4 (`export -f
+/// plantuml/structurizr`, `-f plantuml/c4plantuml`; `-f plantuml` is
+/// `Structurizr`). Serves P3-406, P3-407.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Flavour {
+    /// `StructurizrPlantUMLExporter`: `<style>` classes, a `-key.puml`
+    /// legend per view (P3-404, P3-406).
+    Structurizr,
+    /// `C4PlantUMLExporter`: the C4-PlantUML macros (P3-407).
+    C4PlantUml,
+}
+
+/// The workspace as Structurizr workspace JSON, the text of
+/// `<file stem>.json` (P3-413): every element, relationship (implied and
+/// copied ones included), view, style, theme reference, property,
+/// documentation section and decision (P3-414), each view element at its
+/// box's top-left in px from the scene of `all` and each relationship
+/// view with its vertices (P3-318), and the workspace properties
+/// `structurizr.dsl` (base64 of `dsl`, the root file's text, when given)
+/// and `structurizr.inspection.error|warning|info|ignore` (the counts of
+/// `inspect::inspect`, P3-415). Ids are Structurizr's (P3-408).
+/// Deterministic, `\n` line endings and a final newline (P3-403).
+/// Serves P3-413, P3-414, P3-415, P3-318.
+pub fn json(model: &crate::model::Model, all: &crate::pipeline::AllViews, dsl: Option<&str>) -> String {
+    json_out::workspace(model, all, dsl)
+}
+
+/// The workspace's own element and relationship styles (not those from
+/// themes) as a Structurizr theme, the text of `workspace-theme.json`:
+/// `name`, `description`, `elements`, `relationships` in Structurizr's
+/// order (P3-421). Loaded back with `theme <file>`, it gives the same
+/// resolved styles (P3-422). Serves P3-421, P3-422.
+pub fn theme(model: &crate::model::Model) -> String {
+    theme_out::write(model)
+}
+
+/// c4rizer's own script-free static site (P3-423, ruling E4): `index.html`
+/// listing every view in view-list order with title and key (P3-424),
+/// one `<key>.svg` per drawable view (P2-659 `name` mode) and one HTML
+/// page per view linking its enterable boxes and back to the index.
+/// Paths are relative to the output folder. Serves P3-423, P3-424.
+/// Every page needs no script and no network and passes the EXP-1 scan;
+/// view pages are `view-<key>.html` (`export/static_out.rs` DECISION).
+/// Deterministic (P3-403).
+pub fn static_site(
+    model: &crate::model::Model,
+    all: &crate::pipeline::AllViews,
+) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    static_out::site(model, all)
+}
 
 // DECISION: each item's `<g>` carries a `class` naming its kind
 // (`boundary`, `line`, `box`, `label`, `title`, `subtitle`, `key`), so a

@@ -2017,9 +2017,29 @@ impl State {
     /// through `files::Reads` (P2-5), and records the root text, the files
     /// read with their hashes (P2-141) and the included file an error is
     /// in (P2-136).
+    ///
+    /// A root file whose first non-whitespace byte is `{` is a
+    /// Structurizr workspace JSON (P3-416, P3-420): it is parsed as the
+    /// one-line DSL `workspace extends "<its file name>" {}` at its own
+    /// path, so the JSON becomes the base (P3-419) and its model the
+    /// file's model; the document is read-only (`json_doc`).
+    // DECISION: the editor reads JSON through `workspace extends` because
+    // it needs a `Parsed`, which `model::parse_json` does not give; the
+    // model is the same (P3-419 seeds the builder from the JSON).
     fn parse_doc(&mut self, path: &Path, text: &str) -> Result<Parsed, ModelError> {
         let mut reads = files::Reads::default();
-        let result = parse_with(text, Some(path), &mut reads);
+        let result = if is_json_text(text) {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // The stub is parsed at a sibling path that is never read or
+            // written, so `extends` of the file itself is no cycle. The
+            // name is a DSL string: `"` and `\` escaped, so it names this
+            // file and no other.
+            let stub = path.with_file_name(format!("{name}{}", crate::worker::JSON_STUB_SUFFIX));
+            let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+            parse_with(&format!("workspace extends \"{quoted}\" {{\n}}\n"), Some(&stub), &mut reads)
+        } else {
+            parse_with(text, Some(path), &mut reads)
+        };
         self.root_text = Some(text.to_owned());
         self.error_file = match &result {
             Ok(_) => None,
@@ -2046,13 +2066,30 @@ impl State {
     }
 
     /// True when edits are refused: no parse, a parse error, the file
-    /// missing (EDIT-11, EDIT-27). Undo and redo are refused too.
+    /// missing (EDIT-11, EDIT-27), or a workspace JSON (P3-420). Undo and
+    /// redo are refused too.
     #[must_use]
     pub fn read_only(&self) -> bool {
         match &self.doc {
-            Some(doc) => doc.parsed.is_none() || doc.parse_error.is_some() || doc.missing,
+            Some(doc) => doc.parsed.is_none() || doc.parse_error.is_some() || doc.missing || self.json_doc(),
             None => true,
         }
+    }
+
+    /// True when the open file is a Structurizr workspace JSON, which
+    /// the editor shows and exports but never writes (P3-420).
+    pub(crate) fn json_doc(&self) -> bool {
+        self.doc.is_some() && self.root_text.as_deref().is_some_and(is_json_text)
+    }
+
+    /// Sets the P3-420 notice and returns true when the open file is a
+    /// workspace JSON, so the caller refuses the edit.
+    fn refuse_json(&mut self) -> bool {
+        let json = self.json_doc();
+        if json {
+            self.notice = Some(JSON_REFUSED.to_owned());
+        }
+        json
     }
 
     /// The `edit` batch for `action` against `parsed`, the text it will
@@ -2992,6 +3029,10 @@ impl State {
     /// as a checked write (EDIT-3, EDIT-24); refused while read-only or a
     /// write is in flight.
     fn write(&mut self, action: Action) -> Vec<Effect> {
+        if self.refuse_json() {
+            self.give_back(action);
+            return Vec::new();
+        }
         if self.read_only() {
             self.notice = Some("change refused: the file is read-only until it parses and is on disk".to_owned());
             self.give_back(action);
@@ -3016,6 +3057,20 @@ impl State {
             return Vec::new();
         }
         match apply(parsed, &edits) {
+            // P3-419, P3-420: a batch that would rewrite a `workspace
+            // extends <file>.json` base is refused: that text was written
+            // from the JSON, and the editor never writes JSON.
+            Ok(applied)
+                if applied.files.iter().any(|(file, _)| {
+                    parsed.paths.get(file.0 as usize).is_some_and(|p| {
+                        p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                    })
+                }) =>
+            {
+                self.notice = Some(JSON_BASE_REFUSED.to_owned());
+                self.preview = None;
+                Vec::new()
+            }
             Ok(applied) => {
                 // P2-139: the patched included files first, each checked
                 // against its own hash (EDIT-24), then the root file when
@@ -3188,7 +3243,9 @@ impl State {
             return Vec::new();
         }
         let hit = self.hit(at);
-        let handle = if button == Button::Left && !self.read_only() {
+        // P3-420: on a workspace JSON the handle is found too, so the press
+        // says why a resize is refused instead of starting a rubber band.
+        let handle = if button == Button::Left && (!self.read_only() || self.json_doc()) {
             self.handle_under(at)
         } else {
             None
@@ -3270,6 +3327,12 @@ impl State {
         hit: Option<ItemKey>,
         handle: Option<(BoxId, Handle)>,
     ) -> Vec<Effect> {
+        // P3-420: a move or resize on a workspace JSON says why it is
+        // refused, and starts nothing else (no rubber band).
+        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some()) && self.refuse_json() {
+            self.gesture = Gesture::Idle;
+            return Vec::new();
+        }
         let read_only = self.read_only();
         if let Some((id, handle)) = handle
             && !read_only
@@ -3898,6 +3961,9 @@ impl State {
 
     /// Opens the in-place editor on the single selected item (EDIT-5).
     fn open_text_edit(&mut self) {
+        if self.selection.len() == 1 && self.refuse_json() {
+            return;
+        }
         if self.read_only() || self.selection.len() != 1 {
             return;
         }
@@ -4010,6 +4076,9 @@ impl State {
                 self.write_moves(&to)
             }
             Command::Undo => {
+                if self.refuse_json() {
+                    return Vec::new();
+                }
                 if self.read_only() || self.pending.is_some() {
                     self.notice = Some("undo refused: the file is read-only or a change is being written".to_owned());
                     return Vec::new();
@@ -4020,6 +4089,9 @@ impl State {
                 }
             }
             Command::Redo => {
+                if self.refuse_json() {
+                    return Vec::new();
+                }
                 if self.read_only() || self.pending.is_some() {
                     self.notice = Some("redo refused: the file is read-only or a change is being written".to_owned());
                     return Vec::new();
@@ -4028,6 +4100,15 @@ impl State {
                     Some(step) => self.write(Action::Redo(step)),
                     None => Vec::new(),
                 }
+            }
+            // P3-431: a whole-workspace format (Ilograph, JSON, theme,
+            // static site) writes a folder, so "Export view" asks for one.
+            Command::ExportView(format) if format.whole_workspace() => {
+                let Some(doc) = &self.doc else { return Vec::new() };
+                vec![Effect::Dialog(Dialog::ExportAll {
+                    dir: export_dir(&doc.path),
+                    format,
+                })]
             }
             Command::ExportView(format) => {
                 let (Some(doc), Some(view)) = (&self.doc, &self.view) else { return Vec::new() };
@@ -5110,6 +5191,21 @@ fn scope_contains(model: &Model, rank: u8, upper: Option<ElementId>, inner: Opti
             None => return false,
         }
     }
+}
+
+/// The P3-420 notice for an edit of a workspace JSON.
+const JSON_REFUSED: &str =
+    "change refused: the file is a workspace JSON, which the editor shows and exports but never writes — edit the DSL file it was exported from";
+
+/// The P3-420 notice for an edit that would rewrite a `workspace extends
+/// <file>.json` base.
+const JSON_BASE_REFUSED: &str =
+    "change refused: it would rewrite the workspace JSON this file extends, which the editor never writes — move the view into the DSL file";
+
+/// True when `text` is a Structurizr workspace JSON: its first
+/// non-whitespace byte is `{` (P3-416).
+fn is_json_text(text: &str) -> bool {
+    text.trim_start().starts_with('{')
 }
 
 fn counting_kind(kind: ElementKind) -> Option<ViewKind> {

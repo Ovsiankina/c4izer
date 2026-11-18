@@ -1,0 +1,277 @@
+@startuml
+title <size:24>Container View: Shapes</size>\n<size:24>Every shape, no relationships</size>
+
+set separator none
+top to bottom direction
+hide stereotype
+
+<style>
+  root {
+    BackgroundColor: #ffffff;
+    FontColor: #444444;
+  }
+  // Element,ShapeBox
+  .Element-RWxlbWVudCxTaGFwZUJveA== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeBucket
+  .Element-RWxlbWVudCxTaGFwZUJ1Y2tldA== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeCircle
+  .Element-RWxlbWVudCxTaGFwZUNpcmNsZQ== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeComponent
+  .Element-RWxlbWVudCxTaGFwZUNvbXBvbmVudA== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeCylinder
+  .Element-RWxlbWVudCxTaGFwZUN5bGluZGVy {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeDiamond
+  .Element-RWxlbWVudCxTaGFwZURpYW1vbmQ= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeEllipse
+  .Element-RWxlbWVudCxTaGFwZUVsbGlwc2U= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeFolder
+  .Element-RWxlbWVudCxTaGFwZUZvbGRlcg== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeHexagon
+  .Element-RWxlbWVudCxTaGFwZUhleGFnb24= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeMobileDeviceLandscape
+  .Element-RWxlbWVudCxTaGFwZU1vYmlsZURldmljZUxhbmRzY2FwZQ== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeMobileDevicePortrait
+  .Element-RWxlbWVudCxTaGFwZU1vYmlsZURldmljZVBvcnRyYWl0 {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapePerson
+  .Element-RWxlbWVudCxTaGFwZVBlcnNvbg== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapePipe
+  .Element-RWxlbWVudCxTaGFwZVBpcGU= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeRobot
+  .Element-RWxlbWVudCxTaGFwZVJvYm90 {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeRoundedBox
+  .Element-RWxlbWVudCxTaGFwZVJvdW5kZWRCb3g= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    RoundCorner: 20;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeShell
+  .Element-RWxlbWVudCxTaGFwZVNoZWxs {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeTerminal
+  .Element-RWxlbWVudCxTaGFwZVRlcm1pbmFs {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeWebBrowser
+  .Element-RWxlbWVudCxTaGFwZVdlYkJyb3dzZXI= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,ShapeWindow
+  .Element-RWxlbWVudCxTaGFwZVdpbmRvdw== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Shapes
+  .Boundary-U2hhcGVz {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+  }
+</style>
+
+rectangle "Shapes\n<size:16>[Software System]</size>" <<Boundary-U2hhcGVz>> {
+  person "==Person part\n<size:16>[Container: Kind]</size>\n\nDrawn as Person." <<Element-RWxlbWVudCxTaGFwZVBlcnNvbg==>> as Shapes.Personpart
+  database "==Cylinder part\n<size:16>[Container: Kind]</size>\n\nDrawn as Cylinder." <<Element-RWxlbWVudCxTaGFwZUN5bGluZGVy>> as Shapes.Cylinderpart
+  rectangle "==RoundedBox part\n<size:16>[Container: Kind]</size>\n\nDrawn as RoundedBox." <<Element-RWxlbWVudCxTaGFwZVJvdW5kZWRCb3g=>> as Shapes.RoundedBoxpart
+  storage "==Circle part\n<size:16>[Container: Kind]</size>\n\nDrawn as Circle." <<Element-RWxlbWVudCxTaGFwZUNpcmNsZQ==>> as Shapes.Circlepart
+  storage "==Ellipse part\n<size:16>[Container: Kind]</size>\n\nDrawn as Ellipse." <<Element-RWxlbWVudCxTaGFwZUVsbGlwc2U=>> as Shapes.Ellipsepart
+  hexagon "==Hexagon part\n<size:16>[Container: Kind]</size>\n\nDrawn as Hexagon." <<Element-RWxlbWVudCxTaGFwZUhleGFnb24=>> as Shapes.Hexagonpart
+  rectangle "==Diamond part\n<size:16>[Container: Kind]</size>\n\nDrawn as Diamond." <<Element-RWxlbWVudCxTaGFwZURpYW1vbmQ=>> as Shapes.Diamondpart
+  rectangle "==Bucket part\n<size:16>[Container: Kind]</size>\n\nDrawn as Bucket." <<Element-RWxlbWVudCxTaGFwZUJ1Y2tldA==>> as Shapes.Bucketpart
+  queue "==Pipe part\n<size:16>[Container: Kind]</size>\n\nDrawn as Pipe." <<Element-RWxlbWVudCxTaGFwZVBpcGU=>> as Shapes.Pipepart
+  person "==Robot part\n<size:16>[Container: Kind]</size>\n\nDrawn as Robot." <<Element-RWxlbWVudCxTaGFwZVJvYm90>> as Shapes.Robotpart
+  folder "==Folder part\n<size:16>[Container: Kind]</size>\n\nDrawn as Folder." <<Element-RWxlbWVudCxTaGFwZUZvbGRlcg==>> as Shapes.Folderpart
+  rectangle "==WebBrowser part\n<size:16>[Container: Kind]</size>\n\nDrawn as WebBrowser." <<Element-RWxlbWVudCxTaGFwZVdlYkJyb3dzZXI=>> as Shapes.WebBrowserpart
+  rectangle "==Window part\n<size:16>[Container: Kind]</size>\n\nDrawn as Window." <<Element-RWxlbWVudCxTaGFwZVdpbmRvdw==>> as Shapes.Windowpart
+  rectangle "==Terminal part\n<size:16>[Container: Kind]</size>\n\nDrawn as Terminal." <<Element-RWxlbWVudCxTaGFwZVRlcm1pbmFs>> as Shapes.Terminalpart
+  rectangle "==Shell part\n<size:16>[Container: Kind]</size>\n\nDrawn as Shell." <<Element-RWxlbWVudCxTaGFwZVNoZWxs>> as Shapes.Shellpart
+  rectangle "==MobileDevicePortrait part\n<size:16>[Container: Kind]</size>\n\nDrawn as MobileDevicePortrait." <<Element-RWxlbWVudCxTaGFwZU1vYmlsZURldmljZVBvcnRyYWl0>> as Shapes.MobileDevicePortraitpart
+  rectangle "==MobileDeviceLandscape part\n<size:16>[Container: Kind]</size>\n\nDrawn as MobileDeviceLandscape." <<Element-RWxlbWVudCxTaGFwZU1vYmlsZURldmljZUxhbmRzY2FwZQ==>> as Shapes.MobileDeviceLandscapepart
+  component "==Component part\n<size:16>[Container: Kind]</size>\n\nDrawn as Component." <<Element-RWxlbWVudCxTaGFwZUNvbXBvbmVudA==>> as Shapes.Componentpart
+  rectangle "==Box part\n<size:16>[Container: Kind]</size>\n\nDrawn as Box." <<Element-RWxlbWVudCxTaGFwZUJveA==>> as Shapes.Boxpart
+}
+
+@enduml

@@ -20,6 +20,11 @@ mod editor_breadth_tests;
 mod explore;
 #[cfg(test)]
 mod explore_tests;
+#[cfg(test)]
+mod exporters_tests;
+// The CLI's export files and output guards, one source for both (P3-431).
+#[path = "../../cli/src/export_files.rs"]
+mod export_files;
 mod files;
 mod history;
 #[cfg(test)]

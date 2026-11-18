@@ -1,0 +1,782 @@
+{
+  "configuration" : { },
+  "description" : "Every corner the exporters must get right.",
+  "documentation" : { },
+  "id" : 0,
+  "model" : {
+    "deploymentNodes" : [ {
+      "containerInstances" : [ {
+        "containerId" : "5",
+        "environment" : "Live",
+        "id" : "36",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "webInstance"
+        },
+        "relationships" : [ {
+          "description" : "Calls",
+          "destinationId" : "37",
+          "id" : "38",
+          "linkedRelationshipId" : "30",
+          "sourceId" : "36"
+        } ],
+        "tags" : "Container Instance"
+      }, {
+        "containerId" : "6",
+        "environment" : "Live",
+        "id" : "37",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "apiInstance"
+        },
+        "relationships" : [ {
+          "description" : "Reads",
+          "destinationId" : "40",
+          "id" : "41",
+          "linkedRelationshipId" : "31",
+          "sourceId" : "37"
+        } ],
+        "tags" : "Container Instance"
+      } ],
+      "environment" : "Live",
+      "id" : "35",
+      "instances" : "1",
+      "name" : "Server",
+      "properties" : {
+        "structurizr.dsl.identifier" : "server"
+      },
+      "relationships" : [ {
+        "description" : "Backs up to",
+        "destinationId" : "39",
+        "id" : "45",
+        "sourceId" : "35",
+        "tags" : "Relationship"
+      } ],
+      "tags" : "Element,Deployment Node",
+      "technology" : "Linux"
+    }, {
+      "containerInstances" : [ {
+        "containerId" : "7",
+        "environment" : "Live",
+        "id" : "40",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "dbInstance"
+        },
+        "tags" : "Container Instance"
+      } ],
+      "description" : "Keeps backups.",
+      "environment" : "Live",
+      "id" : "39",
+      "instances" : "1",
+      "name" : "Store",
+      "properties" : {
+        "structurizr.dsl.identifier" : "disk"
+      },
+      "tags" : "Element,Deployment Node",
+      "technology" : "Disk"
+    }, {
+      "environment" : "Live",
+      "id" : "42",
+      "infrastructureNodes" : [ {
+        "description" : "Forwards.",
+        "environment" : "Live",
+        "id" : "43",
+        "name" : "Proxy",
+        "properties" : {
+          "structurizr.dsl.identifier" : "proxy"
+        },
+        "relationships" : [ {
+          "description" : "Forwards to",
+          "destinationId" : "35",
+          "id" : "44",
+          "sourceId" : "43",
+          "tags" : "Relationship",
+          "technology" : "HTTPS"
+        } ],
+        "tags" : "Element,Infrastructure Node",
+        "technology" : "nginx"
+      } ],
+      "instances" : "1",
+      "name" : "Edge",
+      "properties" : {
+        "structurizr.dsl.identifier" : "edge"
+      },
+      "tags" : "Element,Deployment Node"
+    } ],
+    "people" : [ {
+      "description" : "Uses things: \"quotes\" & <angles>, café au lait.",
+      "id" : "1",
+      "name" : "User \"Q\" & <Co>",
+      "properties" : {
+        "structurizr.dsl.identifier" : "user"
+      },
+      "relationships" : [ {
+        "description" : "Browses \"fast\" & <well>",
+        "destinationId" : "5",
+        "id" : "28",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Browses \"fast\" & <well>",
+        "destinationId" : "4",
+        "id" : "29",
+        "linkedRelationshipId" : "28",
+        "sourceId" : "1",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "properties" : {
+      "structurizr.groupSeparator" : "/"
+    },
+    "softwareSystems" : [ {
+      "documentation" : { },
+      "group" : "Partners",
+      "id" : "2",
+      "name" : "Partner",
+      "properties" : {
+        "structurizr.dsl.identifier" : "partner"
+      },
+      "tags" : "Element,Software System,External"
+    }, {
+      "description" : "Pokes things now and then.",
+      "documentation" : { },
+      "id" : "3",
+      "name" : "Robot",
+      "properties" : {
+        "structurizr.dsl.identifier" : "robot"
+      },
+      "relationships" : [ {
+        "description" : "Pokes",
+        "destinationId" : "4",
+        "id" : "32",
+        "sourceId" : "3",
+        "tags" : "Relationship"
+      } ],
+      "tags" : "Element,Software System,Robo"
+    }, {
+      "containers" : [ {
+        "documentation" : { },
+        "group" : "Front/Edge",
+        "id" : "5",
+        "name" : "Web",
+        "properties" : {
+          "structurizr.dsl.identifier" : "web"
+        },
+        "relationships" : [ {
+          "description" : "Calls",
+          "destinationId" : "6",
+          "id" : "30",
+          "sourceId" : "5",
+          "tags" : "Relationship,Dotted"
+        } ],
+        "tags" : "Element,Container,Rounded",
+        "technology" : "Rust"
+      }, {
+        "description" : "Serves <things> & more.",
+        "documentation" : { },
+        "group" : "Front",
+        "id" : "6",
+        "name" : "Api \"v2\"",
+        "properties" : {
+          "structurizr.dsl.identifier" : "api"
+        },
+        "relationships" : [ {
+          "description" : "Reads",
+          "destinationId" : "7",
+          "id" : "31",
+          "sourceId" : "6",
+          "tags" : "Relationship,Thick"
+        }, {
+          "description" : "Reports to",
+          "destinationId" : "2",
+          "id" : "33",
+          "sourceId" : "6",
+          "tags" : "Relationship,Solid",
+          "technology" : "HTTPS"
+        } ],
+        "tags" : "Element,Container,Hex",
+        "technology" : "Rust"
+      }, {
+        "description" : "Stores things.",
+        "documentation" : { },
+        "id" : "7",
+        "name" : "Db",
+        "properties" : {
+          "structurizr.dsl.identifier" : "db"
+        },
+        "tags" : "Element,Container,Circ",
+        "technology" : "SQL"
+      } ],
+      "description" : "A system whose description is long enough to wrap in several places, really.",
+      "documentation" : { },
+      "id" : "4",
+      "name" : "Shop with a rather long name for wrapping tests",
+      "properties" : {
+        "structurizr.dsl.identifier" : "shop"
+      },
+      "relationships" : [ {
+        "description" : "Reports to",
+        "destinationId" : "2",
+        "id" : "34",
+        "linkedRelationshipId" : "33",
+        "sourceId" : "4",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Software System",
+      "url" : "https://example.com/shop?a=1&b=2"
+    }, {
+      "containers" : [ {
+        "description" : "Drawn as Box.",
+        "documentation" : { },
+        "id" : "9",
+        "name" : "Box part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k0"
+        },
+        "tags" : "Element,Container,ShapeBox",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Person.",
+        "documentation" : { },
+        "id" : "10",
+        "name" : "Person part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k1"
+        },
+        "tags" : "Element,Container,ShapePerson",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Cylinder.",
+        "documentation" : { },
+        "id" : "11",
+        "name" : "Cylinder part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k2"
+        },
+        "tags" : "Element,Container,ShapeCylinder",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as RoundedBox.",
+        "documentation" : { },
+        "id" : "12",
+        "name" : "RoundedBox part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k3"
+        },
+        "tags" : "Element,Container,ShapeRoundedBox",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Circle.",
+        "documentation" : { },
+        "id" : "13",
+        "name" : "Circle part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k4"
+        },
+        "tags" : "Element,Container,ShapeCircle",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Ellipse.",
+        "documentation" : { },
+        "id" : "14",
+        "name" : "Ellipse part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k5"
+        },
+        "tags" : "Element,Container,ShapeEllipse",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Hexagon.",
+        "documentation" : { },
+        "id" : "15",
+        "name" : "Hexagon part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k6"
+        },
+        "tags" : "Element,Container,ShapeHexagon",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Diamond.",
+        "documentation" : { },
+        "id" : "16",
+        "name" : "Diamond part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k7"
+        },
+        "tags" : "Element,Container,ShapeDiamond",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Bucket.",
+        "documentation" : { },
+        "id" : "17",
+        "name" : "Bucket part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k8"
+        },
+        "tags" : "Element,Container,ShapeBucket",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Pipe.",
+        "documentation" : { },
+        "id" : "18",
+        "name" : "Pipe part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k9"
+        },
+        "tags" : "Element,Container,ShapePipe",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Robot.",
+        "documentation" : { },
+        "id" : "19",
+        "name" : "Robot part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k10"
+        },
+        "tags" : "Element,Container,ShapeRobot",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Folder.",
+        "documentation" : { },
+        "id" : "20",
+        "name" : "Folder part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k11"
+        },
+        "tags" : "Element,Container,ShapeFolder",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as WebBrowser.",
+        "documentation" : { },
+        "id" : "21",
+        "name" : "WebBrowser part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k12"
+        },
+        "tags" : "Element,Container,ShapeWebBrowser",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Window.",
+        "documentation" : { },
+        "id" : "22",
+        "name" : "Window part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k13"
+        },
+        "tags" : "Element,Container,ShapeWindow",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Terminal.",
+        "documentation" : { },
+        "id" : "23",
+        "name" : "Terminal part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k14"
+        },
+        "tags" : "Element,Container,ShapeTerminal",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Shell.",
+        "documentation" : { },
+        "id" : "24",
+        "name" : "Shell part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k15"
+        },
+        "tags" : "Element,Container,ShapeShell",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as MobileDevicePortrait.",
+        "documentation" : { },
+        "id" : "25",
+        "name" : "MobileDevicePortrait part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k16"
+        },
+        "tags" : "Element,Container,ShapeMobileDevicePortrait",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as MobileDeviceLandscape.",
+        "documentation" : { },
+        "id" : "26",
+        "name" : "MobileDeviceLandscape part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k17"
+        },
+        "tags" : "Element,Container,ShapeMobileDeviceLandscape",
+        "technology" : "Kind"
+      }, {
+        "description" : "Drawn as Component.",
+        "documentation" : { },
+        "id" : "27",
+        "name" : "Component part",
+        "properties" : {
+          "structurizr.dsl.identifier" : "k18"
+        },
+        "tags" : "Element,Container,ShapeComponent",
+        "technology" : "Kind"
+      } ],
+      "description" : "Every shape.",
+      "documentation" : { },
+      "id" : "8",
+      "name" : "Shapes",
+      "properties" : {
+        "structurizr.dsl.identifier" : "shapes"
+      },
+      "tags" : "Element,Software System"
+    } ]
+  },
+  "name" : "Edge \"cases\" & <more>",
+  "properties" : {
+    "structurizr.inspection.error" : "38",
+    "structurizr.dsl" : "Ly8gZXhwb3J0ZXJzIGZpeC1yb3VuZCBmaXh0dXJlIChTUlMgNC43IFAzLTQwNi4uUDMtNDEyKTogZ3JvdXBzLCBldmVyeQovLyBzaGFwZSwgYm9yZGVycyBhbmQgbGluZXMgd2l0aCBzdHJva2Ugd2lkdGhzLCBhIGxhcmdlIGZvbnQsIGEgVVJMLCBhbgovLyBpY29uLCBxdW90ZXMsIGFuZ2xlIGJyYWNrZXRzLCBhbXBlcnNhbmRzIGFuZCBub24tQVNDSUkgdGV4dCwgYSBsb25nCi8vIG5hbWUsIGFuIGVtcHR5IGRlc2NyaXB0aW9uLCBhIHJlc3BvbnNlIHN0ZXAgYW5kIHJlbGF0aW9uc2hpcHMgdG8gYW5kCi8vIGZyb20gZGVwbG95bWVudCBub2Rlcy4gUm9sZXMgb25seSwgbm8gcGVyc29uYWwgbmFtZXMuCndvcmtzcGFjZSAiRWRnZSBcImNhc2VzXCIgJiA8bW9yZT4iICJFdmVyeSBjb3JuZXIgdGhlIGV4cG9ydGVycyBtdXN0IGdldCByaWdodC4iIHsKCiAgICBtb2RlbCB7CiAgICAgICAgcHJvcGVydGllcyB7CiAgICAgICAgICAgICJzdHJ1Y3R1cml6ci5ncm91cFNlcGFyYXRvciIgIi8iCiAgICAgICAgfQogICAgICAgIHVzZXIgPSBwZXJzb24gIlVzZXIgXCJRXCIgJiA8Q28+IiAiVXNlcyB0aGluZ3M6IFwicXVvdGVzXCIgJiA8YW5nbGVzPiwgY2Fmw6kgYXUgbGFpdC4iCiAgICAgICAgZ3JvdXAgIlBhcnRuZXJzIiB7CiAgICAgICAgICAgIHBhcnRuZXIgPSBzb2Z0d2FyZVN5c3RlbSAiUGFydG5lciIgIiIgIkV4dGVybmFsIgogICAgICAgIH0KICAgICAgICByb2JvdCA9IHNvZnR3YXJlU3lzdGVtICJSb2JvdCIgIlBva2VzIHRoaW5ncyBub3cgYW5kIHRoZW4uIiAiUm9ibyIKICAgICAgICBzaG9wID0gc29mdHdhcmVTeXN0ZW0gIlNob3Agd2l0aCBhIHJhdGhlciBsb25nIG5hbWUgZm9yIHdyYXBwaW5nIHRlc3RzIiAiQSBzeXN0ZW0gd2hvc2UgZGVzY3JpcHRpb24gaXMgbG9uZyBlbm91Z2ggdG8gd3JhcCBpbiBzZXZlcmFsIHBsYWNlcywgcmVhbGx5LiIgewogICAgICAgICAgICB1cmwgImh0dHBzOi8vZXhhbXBsZS5jb20vc2hvcD9hPTEmYj0yIgogICAgICAgICAgICBncm91cCAiRnJvbnQiIHsKICAgICAgICAgICAgICAgIGdyb3VwICJFZGdlIiB7CiAgICAgICAgICAgICAgICAgICAgd2ViID0gY29udGFpbmVyICJXZWIiICIiICJSdXN0IiAiUm91bmRlZCIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIGFwaSA9IGNvbnRhaW5lciAiQXBpIFwidjJcIiIgIlNlcnZlcyA8dGhpbmdzPiAmIG1vcmUuIiAiUnVzdCIgIkhleCIKICAgICAgICAgICAgfQogICAgICAgICAgICBkYiA9IGNvbnRhaW5lciAiRGIiICJTdG9yZXMgdGhpbmdzLiIgIlNRTCIgIkNpcmMiCiAgICAgICAgfQogICAgICAgIHNoYXBlcyA9IHNvZnR3YXJlU3lzdGVtICJTaGFwZXMiICJFdmVyeSBzaGFwZS4iIHsKICAgICAgICAgICAgazAgPSBjb250YWluZXIgIkJveCBwYXJ0IiAiRHJhd24gYXMgQm94LiIgIktpbmQiICJTaGFwZUJveCIKICAgICAgICAgICAgazEgPSBjb250YWluZXIgIlBlcnNvbiBwYXJ0IiAiRHJhd24gYXMgUGVyc29uLiIgIktpbmQiICJTaGFwZVBlcnNvbiIKICAgICAgICAgICAgazIgPSBjb250YWluZXIgIkN5bGluZGVyIHBhcnQiICJEcmF3biBhcyBDeWxpbmRlci4iICJLaW5kIiAiU2hhcGVDeWxpbmRlciIKICAgICAgICAgICAgazMgPSBjb250YWluZXIgIlJvdW5kZWRCb3ggcGFydCIgIkRyYXduIGFzIFJvdW5kZWRCb3guIiAiS2luZCIgIlNoYXBlUm91bmRlZEJveCIKICAgICAgICAgICAgazQgPSBjb250YWluZXIgIkNpcmNsZSBwYXJ0IiAiRHJhd24gYXMgQ2lyY2xlLiIgIktpbmQiICJTaGFwZUNpcmNsZSIKICAgICAgICAgICAgazUgPSBjb250YWluZXIgIkVsbGlwc2UgcGFydCIgIkRyYXduIGFzIEVsbGlwc2UuIiAiS2luZCIgIlNoYXBlRWxsaXBzZSIKICAgICAgICAgICAgazYgPSBjb250YWluZXIgIkhleGFnb24gcGFydCIgIkRyYXduIGFzIEhleGFnb24uIiAiS2luZCIgIlNoYXBlSGV4YWdvbiIKICAgICAgICAgICAgazcgPSBjb250YWluZXIgIkRpYW1vbmQgcGFydCIgIkRyYXduIGFzIERpYW1vbmQuIiAiS2luZCIgIlNoYXBlRGlhbW9uZCIKICAgICAgICAgICAgazggPSBjb250YWluZXIgIkJ1Y2tldCBwYXJ0IiAiRHJhd24gYXMgQnVja2V0LiIgIktpbmQiICJTaGFwZUJ1Y2tldCIKICAgICAgICAgICAgazkgPSBjb250YWluZXIgIlBpcGUgcGFydCIgIkRyYXduIGFzIFBpcGUuIiAiS2luZCIgIlNoYXBlUGlwZSIKICAgICAgICAgICAgazEwID0gY29udGFpbmVyICJSb2JvdCBwYXJ0IiAiRHJhd24gYXMgUm9ib3QuIiAiS2luZCIgIlNoYXBlUm9ib3QiCiAgICAgICAgICAgIGsxMSA9IGNvbnRhaW5lciAiRm9sZGVyIHBhcnQiICJEcmF3biBhcyBGb2xkZXIuIiAiS2luZCIgIlNoYXBlRm9sZGVyIgogICAgICAgICAgICBrMTIgPSBjb250YWluZXIgIldlYkJyb3dzZXIgcGFydCIgIkRyYXduIGFzIFdlYkJyb3dzZXIuIiAiS2luZCIgIlNoYXBlV2ViQnJvd3NlciIKICAgICAgICAgICAgazEzID0gY29udGFpbmVyICJXaW5kb3cgcGFydCIgIkRyYXduIGFzIFdpbmRvdy4iICJLaW5kIiAiU2hhcGVXaW5kb3ciCiAgICAgICAgICAgIGsxNCA9IGNvbnRhaW5lciAiVGVybWluYWwgcGFydCIgIkRyYXduIGFzIFRlcm1pbmFsLiIgIktpbmQiICJTaGFwZVRlcm1pbmFsIgogICAgICAgICAgICBrMTUgPSBjb250YWluZXIgIlNoZWxsIHBhcnQiICJEcmF3biBhcyBTaGVsbC4iICJLaW5kIiAiU2hhcGVTaGVsbCIKICAgICAgICAgICAgazE2ID0gY29udGFpbmVyICJNb2JpbGVEZXZpY2VQb3J0cmFpdCBwYXJ0IiAiRHJhd24gYXMgTW9iaWxlRGV2aWNlUG9ydHJhaXQuIiAiS2luZCIgIlNoYXBlTW9iaWxlRGV2aWNlUG9ydHJhaXQiCiAgICAgICAgICAgIGsxNyA9IGNvbnRhaW5lciAiTW9iaWxlRGV2aWNlTGFuZHNjYXBlIHBhcnQiICJEcmF3biBhcyBNb2JpbGVEZXZpY2VMYW5kc2NhcGUuIiAiS2luZCIgIlNoYXBlTW9iaWxlRGV2aWNlTGFuZHNjYXBlIgogICAgICAgICAgICBrMTggPSBjb250YWluZXIgIkNvbXBvbmVudCBwYXJ0IiAiRHJhd24gYXMgQ29tcG9uZW50LiIgIktpbmQiICJTaGFwZUNvbXBvbmVudCIKICAgICAgICB9CiAgICAgICAgdXNlciAtPiB3ZWIgIkJyb3dzZXMgXCJmYXN0XCIgJiA8d2VsbD4iICJIVFRQUyIKICAgICAgICB3ZWIgLT4gYXBpICJDYWxscyIgIiIgIkRvdHRlZCIKICAgICAgICBhcGkgLT4gZGIgIlJlYWRzIiAiIiAiVGhpY2siCiAgICAgICAgcm9ib3QgLT4gc2hvcCAiUG9rZXMiCiAgICAgICAgYXBpIC0+IHBhcnRuZXIgIlJlcG9ydHMgdG8iICJIVFRQUyIgIlNvbGlkIgoKICAgICAgICBsaXZlID0gZGVwbG95bWVudEVudmlyb25tZW50ICJMaXZlIiB7CiAgICAgICAgICAgIHNlcnZlciA9IGRlcGxveW1lbnROb2RlICJTZXJ2ZXIiICIiICJMaW51eCIgewogICAgICAgICAgICAgICAgd2ViSW5zdGFuY2UgPSBjb250YWluZXJJbnN0YW5jZSB3ZWIKICAgICAgICAgICAgICAgIGFwaUluc3RhbmNlID0gY29udGFpbmVySW5zdGFuY2UgYXBpCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZGlzayA9IGRlcGxveW1lbnROb2RlICJTdG9yZSIgIktlZXBzIGJhY2t1cHMuIiAiRGlzayIgewogICAgICAgICAgICAgICAgZGJJbnN0YW5jZSA9IGNvbnRhaW5lckluc3RhbmNlIGRiCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWRnZSA9IGRlcGxveW1lbnROb2RlICJFZGdlIiB7CiAgICAgICAgICAgICAgICBwcm94eSA9IGluZnJhc3RydWN0dXJlTm9kZSAiUHJveHkiICJGb3J3YXJkcy4iICJuZ2lueCIKICAgICAgICAgICAgfQogICAgICAgICAgICBwcm94eSAtPiBzZXJ2ZXIgIkZvcndhcmRzIHRvIiAiSFRUUFMiCiAgICAgICAgICAgIHNlcnZlciAtPiBkaXNrICJCYWNrcyB1cCB0byIKICAgICAgICB9CiAgICB9CgogICAgdmlld3MgewogICAgICAgIHN5c3RlbUxhbmRzY2FwZSAibGFuZHNjYXBlIiAiRXZlcnl0aGluZyBhdCBvbmNlIiB7CiAgICAgICAgICAgIGluY2x1ZGUgKgogICAgICAgIH0KICAgICAgICBjb250YWluZXIgc2hvcCAiY29udGFpbmVycyIgewogICAgICAgICAgICBpbmNsdWRlICoKICAgICAgICB9CiAgICAgICAgY29udGFpbmVyIHNoYXBlcyAic2hhcGVzIiAiRXZlcnkgc2hhcGUsIG5vIHJlbGF0aW9uc2hpcHMiIHsKICAgICAgICAgICAgaW5jbHVkZSAqCiAgICAgICAgfQogICAgICAgIGR5bmFtaWMgc2hvcCAiZmxvdyIgIldpdGggYSByZXNwb25zZSIgewogICAgICAgICAgICB1c2VyIC0+IHdlYiAiT3BlbnMiCiAgICAgICAgICAgIHdlYiAtPiBhcGkgIkNhbGxzIgogICAgICAgICAgICBhcGkgLT4gd2ViICJBbnN3ZXJzIgogICAgICAgIH0KICAgICAgICBkZXBsb3ltZW50ICogIkxpdmUiICJsaXZlIiB7CiAgICAgICAgICAgIGluY2x1ZGUgKgogICAgICAgIH0KICAgICAgICBzdHlsZXMgewogICAgICAgICAgICBlbGVtZW50ICJTaGFwZUJveCIgewogICAgICAgICAgICAgICAgc2hhcGUgQm94CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU2hhcGVQZXJzb24iIHsKICAgICAgICAgICAgICAgIHNoYXBlIFBlcnNvbgogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlQ3lsaW5kZXIiIHsKICAgICAgICAgICAgICAgIHNoYXBlIEN5bGluZGVyCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU2hhcGVSb3VuZGVkQm94IiB7CiAgICAgICAgICAgICAgICBzaGFwZSBSb3VuZGVkQm94CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU2hhcGVDaXJjbGUiIHsKICAgICAgICAgICAgICAgIHNoYXBlIENpcmNsZQogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlRWxsaXBzZSIgewogICAgICAgICAgICAgICAgc2hhcGUgRWxsaXBzZQogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlSGV4YWdvbiIgewogICAgICAgICAgICAgICAgc2hhcGUgSGV4YWdvbgogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlRGlhbW9uZCIgewogICAgICAgICAgICAgICAgc2hhcGUgRGlhbW9uZAogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlQnVja2V0IiB7CiAgICAgICAgICAgICAgICBzaGFwZSBCdWNrZXQKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJTaGFwZVBpcGUiIHsKICAgICAgICAgICAgICAgIHNoYXBlIFBpcGUKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJTaGFwZVJvYm90IiB7CiAgICAgICAgICAgICAgICBzaGFwZSBSb2JvdAogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlRm9sZGVyIiB7CiAgICAgICAgICAgICAgICBzaGFwZSBGb2xkZXIKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJTaGFwZVdlYkJyb3dzZXIiIHsKICAgICAgICAgICAgICAgIHNoYXBlIFdlYkJyb3dzZXIKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJTaGFwZVdpbmRvdyIgewogICAgICAgICAgICAgICAgc2hhcGUgV2luZG93CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU2hhcGVUZXJtaW5hbCIgewogICAgICAgICAgICAgICAgc2hhcGUgVGVybWluYWwKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJTaGFwZVNoZWxsIiB7CiAgICAgICAgICAgICAgICBzaGFwZSBTaGVsbAogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlTW9iaWxlRGV2aWNlUG9ydHJhaXQiIHsKICAgICAgICAgICAgICAgIHNoYXBlIE1vYmlsZURldmljZVBvcnRyYWl0CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU2hhcGVNb2JpbGVEZXZpY2VMYW5kc2NhcGUiIHsKICAgICAgICAgICAgICAgIHNoYXBlIE1vYmlsZURldmljZUxhbmRzY2FwZQogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIlNoYXBlQ29tcG9uZW50IiB7CiAgICAgICAgICAgICAgICBzaGFwZSBDb21wb25lbnQKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJSb3VuZGVkIiB7CiAgICAgICAgICAgICAgICBzaGFwZSBSb3VuZGVkQm94CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiSGV4IiB7CiAgICAgICAgICAgICAgICBzaGFwZSBIZXhhZ29uCiAgICAgICAgICAgICAgICBib3JkZXIgZGFzaGVkCiAgICAgICAgICAgICAgICBzdHJva2VXaWR0aCA0CiAgICAgICAgICAgICAgICBmb250U2l6ZSAzMgogICAgICAgICAgICAgICAgcHJvcGVydGllcyB7CiAgICAgICAgICAgICAgICAgICAgcGxhbnR1bWwuc2hhZG93IHRydWUKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJDaXJjIiB7CiAgICAgICAgICAgICAgICBzaGFwZSBDaXJjbGUKICAgICAgICAgICAgICAgIGJvcmRlciBkb3R0ZWQKICAgICAgICAgICAgICAgIHN0cm9rZVdpZHRoIDMKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJSb2JvIiB7CiAgICAgICAgICAgICAgICBzaGFwZSBSb2JvdAogICAgICAgICAgICAgICAgaWNvbiBkYXRhOmltYWdlL3BuZztiYXNlNjQsaVZCT1J3MEtHZ29BQUFBTlNVaEVVZ0FBQUFFQUFBQUJDQVlBQUFBZkZjU0pBQUFBRFVsRVFWUjQybVA4ejhCUUR3QUVoUUdBaEttTUlRQUFBQUJKUlU1RXJrSmdnZz09CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiRXh0ZXJuYWwiIHsKICAgICAgICAgICAgICAgIGJhY2tncm91bmQgIzk5OTk5OQogICAgICAgICAgICAgICAgY29sb3IgI2ZmZmZmZgogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIkdyb3VwIiB7CiAgICAgICAgICAgICAgICBjb2xvciAjYWEwMDAwCiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmVsYXRpb25zaGlwICJEb3R0ZWQiIHsKICAgICAgICAgICAgICAgIHN0eWxlIGRvdHRlZAogICAgICAgICAgICAgICAgdGhpY2tuZXNzIDMKICAgICAgICAgICAgfQogICAgICAgICAgICByZWxhdGlvbnNoaXAgIlRoaWNrIiB7CiAgICAgICAgICAgICAgICBzdHlsZSBkYXNoZWQKICAgICAgICAgICAgICAgIHRoaWNrbmVzcyA0CiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmVsYXRpb25zaGlwICJTb2xpZCIgewogICAgICAgICAgICAgICAgc3R5bGUgc29saWQKICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0KfQ==",
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "configuration" : {
+      "styles" : {
+        "elements" : [ {
+          "border" : "Dotted",
+          "shape" : "Circle",
+          "strokeWidth" : 3,
+          "tag" : "Circ"
+        }, {
+          "background" : "#999999",
+          "color" : "#ffffff",
+          "tag" : "External"
+        }, {
+          "color" : "#aa0000",
+          "tag" : "Group"
+        }, {
+          "border" : "Dashed",
+          "fontSize" : 32,
+          "properties" : {
+            "plantuml.shadow" : "true"
+          },
+          "shape" : "Hexagon",
+          "strokeWidth" : 4,
+          "tag" : "Hex"
+        }, {
+          "icon" : "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "shape" : "Robot",
+          "tag" : "Robo"
+        }, {
+          "shape" : "RoundedBox",
+          "tag" : "Rounded"
+        }, {
+          "shape" : "Box",
+          "tag" : "ShapeBox"
+        }, {
+          "shape" : "Bucket",
+          "tag" : "ShapeBucket"
+        }, {
+          "shape" : "Circle",
+          "tag" : "ShapeCircle"
+        }, {
+          "shape" : "Component",
+          "tag" : "ShapeComponent"
+        }, {
+          "shape" : "Cylinder",
+          "tag" : "ShapeCylinder"
+        }, {
+          "shape" : "Diamond",
+          "tag" : "ShapeDiamond"
+        }, {
+          "shape" : "Ellipse",
+          "tag" : "ShapeEllipse"
+        }, {
+          "shape" : "Folder",
+          "tag" : "ShapeFolder"
+        }, {
+          "shape" : "Hexagon",
+          "tag" : "ShapeHexagon"
+        }, {
+          "shape" : "MobileDeviceLandscape",
+          "tag" : "ShapeMobileDeviceLandscape"
+        }, {
+          "shape" : "MobileDevicePortrait",
+          "tag" : "ShapeMobileDevicePortrait"
+        }, {
+          "shape" : "Person",
+          "tag" : "ShapePerson"
+        }, {
+          "shape" : "Pipe",
+          "tag" : "ShapePipe"
+        }, {
+          "shape" : "Robot",
+          "tag" : "ShapeRobot"
+        }, {
+          "shape" : "RoundedBox",
+          "tag" : "ShapeRoundedBox"
+        }, {
+          "shape" : "Shell",
+          "tag" : "ShapeShell"
+        }, {
+          "shape" : "Terminal",
+          "tag" : "ShapeTerminal"
+        }, {
+          "shape" : "WebBrowser",
+          "tag" : "ShapeWebBrowser"
+        }, {
+          "shape" : "Window",
+          "tag" : "ShapeWindow"
+        } ],
+        "relationships" : [ {
+          "style" : "Dotted",
+          "tag" : "Dotted",
+          "thickness" : 3
+        }, {
+          "style" : "Solid",
+          "tag" : "Solid"
+        }, {
+          "style" : "Dashed",
+          "tag" : "Thick",
+          "thickness" : 4
+        } ]
+      },
+      "terminology" : { }
+    },
+    "containerViews" : [ {
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "5",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "7",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalSoftwareSystemBoundariesVisible" : false,
+      "key" : "containers",
+      "name" : "Container View: Shop with a rather long name for wrapping tests",
+      "order" : 2,
+      "relationships" : [ {
+        "id" : "28"
+      }, {
+        "id" : "30"
+      }, {
+        "id" : "31"
+      }, {
+        "id" : "33"
+      } ],
+      "softwareSystemId" : "4"
+    }, {
+      "description" : "Every shape, no relationships",
+      "elements" : [ {
+        "id" : "9",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "10",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "11",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "12",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "13",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "14",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "15",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "16",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "17",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "18",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "19",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "20",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "21",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "22",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "23",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "24",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "25",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "26",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "27",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalSoftwareSystemBoundariesVisible" : false,
+      "key" : "shapes",
+      "name" : "Container View: Shapes",
+      "order" : 3,
+      "softwareSystemId" : "8"
+    } ],
+    "deploymentViews" : [ {
+      "elements" : [ {
+        "id" : "35",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "36",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "37",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "39",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "40",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "42",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "43",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "environment" : "Live",
+      "key" : "live",
+      "name" : "Deployment View: Live",
+      "order" : 5,
+      "relationships" : [ {
+        "id" : "38"
+      }, {
+        "id" : "41"
+      }, {
+        "id" : "44"
+      }, {
+        "id" : "45"
+      } ]
+    } ],
+    "dynamicViews" : [ {
+      "description" : "With a response",
+      "elementId" : "4",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "5",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalBoundariesVisible" : false,
+      "key" : "flow",
+      "name" : "Dynamic View: Shop with a rather long name for wrapping tests",
+      "order" : 4,
+      "relationships" : [ {
+        "description" : "Opens",
+        "id" : "28",
+        "order" : "1",
+        "response" : false
+      }, {
+        "description" : "Calls",
+        "id" : "30",
+        "order" : "2",
+        "response" : false
+      }, {
+        "description" : "Answers",
+        "id" : "30",
+        "order" : "3",
+        "response" : true
+      } ]
+    } ],
+    "systemLandscapeViews" : [ {
+      "description" : "Everything at once",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "4",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "8",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "enterpriseBoundaryVisible" : true,
+      "key" : "landscape",
+      "name" : "System Landscape View",
+      "order" : 1,
+      "relationships" : [ {
+        "id" : "29"
+      }, {
+        "id" : "32"
+      }, {
+        "id" : "34"
+      } ]
+    } ]
+  }
+}

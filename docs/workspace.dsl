@@ -14,7 +14,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         textEditor = softwareSystem "Text editor" "Whatever editor the architect already uses for the diagram file. Half of hot reload." "External"
 
         system = softwareSystem "c4rizer" "Turns one text file into clean C1-C3 diagrams, lints them, and lets them be arranged by hand." {
-            core = container "c4rizer core" "Parses, places, routes and lints; builds a scene per view; turns scenes into SVG and PNG. No UI, no file I/O." "Rust library" "Core" {
+            core = container "c4rizer core" "Parses, places, routes and lints; builds a scene per view; writes SVG, PNG, Structurizr's text formats, workspace JSON, themes and a static site. No UI, no file I/O." "Rust library" "Core" {
                 // C3: one component per module (step 3, 2026-11-15). Tags group families.
                 cGeom = component "geom" "Grid units, points, rects, octilinear segments and crossing tests." "Rust module" "Layout"
                 cText = component "text" "Lossless lexer and syntax tree; printing gives the input back." "Rust module" "Parse"
@@ -27,16 +27,16 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
                 cScene = component "scene" "Builds the plain-data picture of a view, every item tagged with its model id." "Rust module" "Output"
                 cLint = component "lint" "Checks a scene against the C4 rules and the crossing budget." "Rust module" "Output"
                 cInspect = component "inspect" "Runs Structurizr's workspace inspections on the model." "Rust module" "Output"
-                cExport = component "export" "Writes a scene as SVG text or PNG bytes." "Rust module" "Output"
+                cExport = component "export" "Writes a scene as SVG or PNG; writes the views as PlantUML, Mermaid, WebSequenceDiagrams, DOT and Ilograph, the workspace as Structurizr JSON and theme, and a static HTML site." "Rust module" "Output"
                 cImport = component "import" "Turns box positions from a Structurizr workspace JSON into at-line edits." "Rust module" "Entry"
                 cPipeline = component "pipeline" "Entry points: one view's scene and lint report, or every view." "Rust module" "Entry"
                 cExplore = component "explore" "Model exploration without UI: relationship rows with implied ones, search, in no view, usages, graph layout and tree of a view, decision records." "Rust module" "Entry"
             }
-            cli = container "c4rizer CLI" "Exports views to SVG and PNG and lints them with an exit code, for scripts and agents." "Rust binary" "App"
-            editor = container "c4rizer editor" "Desktop canvas: reloads on save, drag boxes with live re-routing, edit text in place; explore pages render !docs Markdown with pulldown-cmark." "Rust, egui, pulldown-cmark" "App"
+            cli = container "c4rizer CLI" "Renders, lints and exports views in every export format, merges layouts and generates landscapes, with an exit code, for scripts and agents." "Rust binary" "App"
+            editor = container "c4rizer editor" "Desktop canvas: reloads on save, drag boxes with live re-routing, edit text in place, export in every format; shows workspace JSON read-only; explore pages render !docs Markdown with pulldown-cmark." "Rust, egui, pulldown-cmark" "App"
 
             model = container "Diagram file" "Single source of truth: elements, relationships, styles, views and box positions." "c4rizer DSL" "File"
-            exports = container "Diagram exports" "Rendered views for docs and reviews." "SVG, PNG" "File"
+            exports = container "Diagram exports" "Rendered views, text diagrams, workspace JSON, themes and static sites for docs and reviews." "SVG, PNG, PlantUML, Mermaid, DOT, JSON, HTML" "File"
         }
 
         // C1 / C2 relationships. Each line is one direction and says its intent.
@@ -50,9 +50,9 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         editor -> core "Renders, re-routes and lints views through" "Rust API"
 
         cli -> model "Reads the diagram file" "file I/O"
-        cli -> exports "Writes SVG and PNG to" "file I/O"
+        cli -> exports "Writes every export format to" "file I/O, atomic"
         editor -> model "Reads, and writes moves and edits back to" "file I/O, atomic"
-        editor -> exports "Writes SVG and PNG to" "file I/O"
+        editor -> exports "Writes every export format to" "file I/O, atomic"
 
         // C3 relationships (match the `Depends on:` lines in crates/core/src/*.rs).
         cli -> cPipeline "Builds scenes and lint reports with" "Rust API"
@@ -61,6 +61,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cli -> cLint "Reads lint findings from" "Rust API"
         cli -> cInspect "Runs workspace inspections with" "Rust API"
         cli -> cImport "Imports Structurizr layout with" "Rust API"
+        cli -> cEdit "Writes imported and merged positions with" "Rust API"
         editor -> cPipeline "Builds and re-routes scenes with" "Rust API"
         editor -> cEdit "Writes canvas edits back with" "Rust API"
         editor -> cExport "Exports the open view with" "Rust API"
@@ -100,7 +101,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cImport -> cModel "Matches JSON elements to elements of"
         cImport -> cView "Takes the drawn boxes from plans of"
         cImport -> cEdit "Writes positions as move edits of"
-        cImport -> cText "Reports JSON positions as line and column with"
+        cImport -> cText "Reads workspace JSON with the JSON reader of, and reports positions as line and column with"
         cLint -> cText "Reads source spans from"
         cExport -> cScene "Serialises"
         cExplore -> cModel "Reads elements, relationships and views of"
@@ -122,6 +123,8 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cExport -> cLabel "Reads font metrics from"
         cExport -> cGeom "Converts grid units with"
         cExport -> cModel "Reads ids from"
+        cExport -> cPipeline "Reads every built view of"
+        cExport -> cInspect "Counts inspection violations for the JSON with"
         cPipeline -> cText "Parses with"
         cPipeline -> cGeom "Uses points of"
         cLabel -> cGeom "Tests overlaps with"

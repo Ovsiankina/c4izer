@@ -1,5 +1,7 @@
-//! A small RFC 8259 JSON reader for `import` (P2-504): recursive
-//! descent into `Value`, std only, no serde (no new dependency).
+//! A small RFC 8259 JSON reader shared inside core: `import` (P2-504)
+//! and Structurizr workspace JSON in (`model::parse_json`, P3-416):
+//! recursive descent into `Value`, std only, no serde (no new
+//! dependency).
 
 use crate::text::{self, Position};
 

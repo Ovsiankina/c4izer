@@ -1,0 +1,15 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Dynamic View</font><br /><font point-size="24">The system in its estate</font>>
+
+  1 [id=1,shape=rect, label=<<font point-size="34">User</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Uses the system.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  2 [id=2,shape=rect, label=<<font point-size="34">System</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">The system in focus.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  7 [id=7,shape=rect, label=<<font point-size="34">Third Party</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Answers lookups.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+
+  1 -> 2 [id=9, label=<<font point-size="24">1. Sends a request</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  2 -> 7 [id=12, label=<<font point-size="24">2. Looks up data</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

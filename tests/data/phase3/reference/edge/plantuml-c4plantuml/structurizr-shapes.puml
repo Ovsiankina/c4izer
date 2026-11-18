@@ -1,0 +1,42 @@
+@startuml
+title <size:24>Container View: Shapes</size>\n<size:24>Every shape, no relationships</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+
+System_Boundary("Shapes_boundary", "Shapes", $tags="") {
+  Container(Shapes.Personpart, "Person part", $techn="Kind", $descr="Drawn as Person.", $tags="", $link="")
+  ContainerDb(Shapes.Cylinderpart, "Cylinder part", $techn="Kind", $descr="Drawn as Cylinder.", $tags="", $link="")
+  Container(Shapes.RoundedBoxpart, "RoundedBox part", $techn="Kind", $descr="Drawn as RoundedBox.", $tags="", $link="")
+  Container(Shapes.Circlepart, "Circle part", $techn="Kind", $descr="Drawn as Circle.", $tags="", $link="")
+  Container(Shapes.Ellipsepart, "Ellipse part", $techn="Kind", $descr="Drawn as Ellipse.", $tags="", $link="")
+  Container(Shapes.Hexagonpart, "Hexagon part", $techn="Kind", $descr="Drawn as Hexagon.", $tags="", $link="")
+  Container(Shapes.Diamondpart, "Diamond part", $techn="Kind", $descr="Drawn as Diamond.", $tags="", $link="")
+  Container(Shapes.Bucketpart, "Bucket part", $techn="Kind", $descr="Drawn as Bucket.", $tags="", $link="")
+  ContainerQueue(Shapes.Pipepart, "Pipe part", $techn="Kind", $descr="Drawn as Pipe.", $tags="", $link="")
+  Container(Shapes.Robotpart, "Robot part", $techn="Kind", $descr="Drawn as Robot.", $tags="", $link="")
+  Container(Shapes.Folderpart, "Folder part", $techn="Kind", $descr="Drawn as Folder.", $tags="", $link="")
+  Container(Shapes.WebBrowserpart, "WebBrowser part", $techn="Kind", $descr="Drawn as WebBrowser.", $tags="", $link="")
+  Container(Shapes.Windowpart, "Window part", $techn="Kind", $descr="Drawn as Window.", $tags="", $link="")
+  Container(Shapes.Terminalpart, "Terminal part", $techn="Kind", $descr="Drawn as Terminal.", $tags="", $link="")
+  Container(Shapes.Shellpart, "Shell part", $techn="Kind", $descr="Drawn as Shell.", $tags="", $link="")
+  Container(Shapes.MobileDevicePortraitpart, "MobileDevicePortrait part", $techn="Kind", $descr="Drawn as MobileDevicePortrait.", $tags="", $link="")
+  Container(Shapes.MobileDeviceLandscapepart, "MobileDeviceLandscape part", $techn="Kind", $descr="Drawn as MobileDeviceLandscape.", $tags="", $link="")
+  Container(Shapes.Componentpart, "Component part", $techn="Kind", $descr="Drawn as Component.", $tags="", $link="")
+  Container(Shapes.Boxpart, "Box part", $techn="Kind", $descr="Drawn as Box.", $tags="", $link="")
+}
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

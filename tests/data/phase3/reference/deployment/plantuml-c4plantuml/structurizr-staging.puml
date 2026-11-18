@@ -1,0 +1,30 @@
+@startuml
+title <size:24>Shop in staging</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+!include <C4/C4_Deployment>
+
+Deployment_Node(Staging.Testbox, "Test box", $type="Docker", $descr="One machine.", $tags="", $link="") {
+  Container(Staging.Testbox.Web_1, "Web", $techn="Rust", $descr="Serves the pages.", $tags="", $link="")
+  Container(Staging.Testbox.Api_1, "Api", $techn="Rust", $descr="Takes orders.", $tags="", $link="")
+  ContainerDb(Staging.Testbox.Db_1, "Db", $techn="PostgreSQL", $descr="Stores orders.", $tags="", $link="")
+}
+
+Rel(Staging.Testbox.Web_1, Staging.Testbox.Api_1, "Sends orders to", $techn="JSON/HTTPS", $tags="", $link="")
+Rel(Staging.Testbox.Api_1, Staging.Testbox.Db_1, "Reads and writes", $techn="SQL", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

@@ -13,8 +13,7 @@ use crate::model::{ElementId, ElementKind, Model, Notice, NoticeKind, Parsed, Vi
 use crate::view;
 use crate::text::Position;
 
-mod json;
-
+use crate::text::json;
 use json::Value;
 
 /// What `import_layout` found: the edits to apply, one line per matched
@@ -408,7 +407,7 @@ fn snap(start: i32, extent: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::json::{self, Value};
+    use crate::text::json::{self, Value};
 
     #[test]
     fn p2_504_json_reader_rfc8259() {

@@ -1,0 +1,33 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Dynamic View: Shop with a rather long name for wrapping tests"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph 4 ["Shop with a rather long name for wrapping tests"]
+      style 4 fill:#ffffff,stroke:#444444,color:#444444
+
+      subgraph group1 ["Front"]
+        style group1 fill:#ffffff,stroke:#aa0000,color:#aa0000,stroke-dasharray:5
+
+        6["<div style='font-weight: bold'>Api "v2"</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves <things> & more.</div>"]
+        style 6 fill:#ffffff,stroke:#444444,color:#444444
+          subgraph group2 ["Edge"]
+            style group2 fill:#ffffff,stroke:#aa0000,color:#aa0000,stroke-dasharray:5
+
+            5("<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div>")
+            style 5 fill:#ffffff,stroke:#444444,color:#444444
+          end
+
+      end
+
+    end
+
+    1["<div style='font-weight: bold'>User "Q" & <Co></div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Uses things: "quotes" &<br /><angles>, café au lait.</div>"]
+    style 1 fill:#ffffff,stroke:#444444,color:#444444
+
+    1-. "<div>1. Opens</div><div style='font-size: 70%'>[HTTPS]</div>" .->5
+    5-. "<div>2. Calls</div><div style='font-size: 70%'></div>" .->6
+    6-. "<div>3. Answers</div><div style='font-size: 70%'></div>" .->5
+
+  end

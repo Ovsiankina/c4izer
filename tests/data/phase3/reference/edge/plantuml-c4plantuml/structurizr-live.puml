@@ -1,0 +1,39 @@
+@startuml
+title <size:24>Deployment View: Live</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+!include <C4/C4_Deployment>
+
+Deployment_Node(Live.Server, "Server", $type="Linux", $descr="", $tags="", $link="") {
+  Container(Live.Server.Web_1, "Web", $techn="Rust", $descr="", $tags="", $link="")
+  Container(Live.Server.Apiv2_1, "Api "v2"", $techn="Rust", $descr="Serves <things> & more.", $tags="", $link="")
+}
+
+Deployment_Node(Live.Store, "Store", $type="Disk", $descr="Keeps backups.", $tags="", $link="") {
+  Container(Live.Store.Db_1, "Db", $techn="SQL", $descr="Stores things.", $tags="", $link="")
+}
+
+Deployment_Node(Live.Edge, "Edge", $type="", $descr="", $tags="", $link="") {
+  Deployment_Node(Live.Edge.Proxy, "Proxy", $type="nginx", $descr="Forwards.", $tags="", $link="")
+}
+
+Rel(Live.Server.Web_1, Live.Server.Apiv2_1, "Calls", $techn="", $tags="", $link="")
+Rel(Live.Server.Apiv2_1, Live.Store.Db_1, "Reads", $techn="", $tags="", $link="")
+Rel(Live.Edge.Proxy, Live.Server, "Forwards to", $techn="HTTPS", $tags="", $link="")
+Rel(Live.Server, Live.Store, "Backs up to", $techn="", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

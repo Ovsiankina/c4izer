@@ -1,0 +1,286 @@
+{
+  "configuration" : { },
+  "description" : "Phase-3 fixture of the dynamic-view row (SRS 4.7): the probe views seq, comp and star.",
+  "documentation" : { },
+  "id" : 0,
+  "model" : {
+    "people" : [ {
+      "description" : "Uses the system.",
+      "id" : "1",
+      "name" : "User",
+      "properties" : {
+        "structurizr.dsl.identifier" : "user"
+      },
+      "relationships" : [ {
+        "description" : "Sends requests to",
+        "destinationId" : "3",
+        "id" : "8",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Sends requests to",
+        "destinationId" : "2",
+        "id" : "9",
+        "linkedRelationshipId" : "8",
+        "sourceId" : "1",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Submits forms to",
+        "destinationId" : "4",
+        "id" : "14",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "softwareSystems" : [ {
+      "containers" : [ {
+        "components" : [ {
+          "description" : "Takes a request.",
+          "documentation" : { },
+          "id" : "4",
+          "name" : "Handler",
+          "properties" : {
+            "structurizr.dsl.identifier" : "h"
+          },
+          "relationships" : [ {
+            "description" : "Validates input with",
+            "destinationId" : "5",
+            "id" : "15",
+            "sourceId" : "4",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Rust"
+        }, {
+          "description" : "Checks input.",
+          "documentation" : { },
+          "id" : "5",
+          "name" : "Validator",
+          "properties" : {
+            "structurizr.dsl.identifier" : "v"
+          },
+          "relationships" : [ {
+            "description" : "Checks records in",
+            "destinationId" : "6",
+            "id" : "16",
+            "sourceId" : "5",
+            "tags" : "Relationship",
+            "technology" : "SQL"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Rust"
+        } ],
+        "description" : "Handles requests.",
+        "documentation" : { },
+        "id" : "3",
+        "name" : "App",
+        "properties" : {
+          "structurizr.dsl.identifier" : "a"
+        },
+        "relationships" : [ {
+          "description" : "Reads from and writes to",
+          "destinationId" : "6",
+          "id" : "10",
+          "sourceId" : "3",
+          "tags" : "Relationship",
+          "technology" : "SQL"
+        }, {
+          "description" : "Looks up data in",
+          "destinationId" : "7",
+          "id" : "11",
+          "sourceId" : "3",
+          "tags" : "Relationship",
+          "technology" : "HTTPS"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Rust"
+      }, {
+        "description" : "Keeps records.",
+        "documentation" : { },
+        "id" : "6",
+        "name" : "Store",
+        "properties" : {
+          "structurizr.dsl.identifier" : "b"
+        },
+        "relationships" : [ {
+          "description" : "Notifies of changes",
+          "destinationId" : "3",
+          "id" : "13",
+          "sourceId" : "6",
+          "tags" : "Relationship",
+          "technology" : "SQL"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "SQL"
+      } ],
+      "description" : "The system in focus.",
+      "documentation" : { },
+      "id" : "2",
+      "name" : "System",
+      "properties" : {
+        "structurizr.dsl.identifier" : "s"
+      },
+      "relationships" : [ {
+        "description" : "Looks up data in",
+        "destinationId" : "7",
+        "id" : "12",
+        "linkedRelationshipId" : "11",
+        "sourceId" : "2",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Software System"
+    }, {
+      "description" : "Answers lookups.",
+      "documentation" : { },
+      "id" : "7",
+      "name" : "Third Party",
+      "properties" : {
+        "structurizr.dsl.identifier" : "t"
+      },
+      "tags" : "Element,Software System,External"
+    } ]
+  },
+  "name" : "Dynamic",
+  "properties" : {
+    "structurizr.inspection.error" : "4",
+    "structurizr.dsl" : "d29ya3NwYWNlICJEeW5hbWljIiAiUGhhc2UtMyBmaXh0dXJlIG9mIHRoZSBkeW5hbWljLXZpZXcgcm93IChTUlMgNC43KTogdGhlIHByb2JlIHZpZXdzIHNlcSwgY29tcCBhbmQgc3Rhci4iIHsKICAgIG1vZGVsIHsKICAgICAgICB1c2VyID0gcGVyc29uICJVc2VyIiAiVXNlcyB0aGUgc3lzdGVtLiIKICAgICAgICBzID0gc29mdHdhcmVTeXN0ZW0gIlN5c3RlbSIgIlRoZSBzeXN0ZW0gaW4gZm9jdXMuIiB7CiAgICAgICAgICAgIGEgPSBjb250YWluZXIgIkFwcCIgIkhhbmRsZXMgcmVxdWVzdHMuIiAiUnVzdCIgewogICAgICAgICAgICAgICAgaCA9IGNvbXBvbmVudCAiSGFuZGxlciIgIlRha2VzIGEgcmVxdWVzdC4iICJSdXN0IgogICAgICAgICAgICAgICAgdiA9IGNvbXBvbmVudCAiVmFsaWRhdG9yIiAiQ2hlY2tzIGlucHV0LiIgIlJ1c3QiCiAgICAgICAgICAgIH0KICAgICAgICAgICAgYiA9IGNvbnRhaW5lciAiU3RvcmUiICJLZWVwcyByZWNvcmRzLiIgIlNRTCIKICAgICAgICB9CiAgICAgICAgdCA9IHNvZnR3YXJlU3lzdGVtICJUaGlyZCBQYXJ0eSIgIkFuc3dlcnMgbG9va3Vwcy4iICJFeHRlcm5hbCIKICAgICAgICB1c2VyIC0+IGEgIlNlbmRzIHJlcXVlc3RzIHRvIiAiSFRUUFMiCiAgICAgICAgYSAtPiBiICJSZWFkcyBmcm9tIGFuZCB3cml0ZXMgdG8iICJTUUwiCiAgICAgICAgYSAtPiB0ICJMb29rcyB1cCBkYXRhIGluIiAiSFRUUFMiCiAgICAgICAgYiAtPiBhICJOb3RpZmllcyBvZiBjaGFuZ2VzIiAiU1FMIgogICAgICAgIHVzZXIgLT4gaCAiU3VibWl0cyBmb3JtcyB0byIgIkhUVFBTIgogICAgICAgIGggLT4gdiAiVmFsaWRhdGVzIGlucHV0IHdpdGgiCiAgICAgICAgdiAtPiBiICJDaGVja3MgcmVjb3JkcyBpbiIgIlNRTCIKICAgIH0KICAgIHZpZXdzIHsKICAgICAgICBkeW5hbWljIHMgInNlcSIgIkEgcmVxdWVzdCB3aXRoIHBhcmFsbGVsIGxvb2t1cHMiIHsKICAgICAgICAgICAgdXNlciAtPiBhICJTZW5kcyBhIHJlcXVlc3QiCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgICAgICBhIC0+IGIgIlJlYWRzIHRoZSByZWNvcmQiCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAgICAgYSAtPiB0ICJMb29rcyB1cCB0aGUgcmF0ZSIKICAgICAgICAgICAgICAgICAgICBhIC0+IGIgIlN0b3JlcyB0aGUgcmF0ZSIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgICBiIC0+IGEgIk5vdGlmaWVzIG9mIHRoZSBjaGFuZ2UiCiAgICAgICAgICAgIGEgLT4gdCAiQ29uZmlybXMiCiAgICAgICAgfQogICAgICAgIGR5bmFtaWMgYSAiY29tcCIgIkZvcm0gc3VibWlzc2lvbiBpbnNpZGUgdGhlIGFwcCIgewogICAgICAgICAgICB1c2VyIC0+IGggIlN1Ym1pdHMgYSBmb3JtIgogICAgICAgICAgICBoIC0+IHYgIlZhbGlkYXRlcyB0aGUgZm9ybSIKICAgICAgICAgICAgdiAtPiBiICJDaGVja3MgdGhlIHJlY29yZCIKICAgICAgICB9CiAgICAgICAgZHluYW1pYyAqICJzdGFyIiAiVGhlIHN5c3RlbSBpbiBpdHMgZXN0YXRlIiB7CiAgICAgICAgICAgIHVzZXIgLT4gcyAiU2VuZHMgYSByZXF1ZXN0IgogICAgICAgICAgICBzIC0+IHQgIkxvb2tzIHVwIGRhdGEiCiAgICAgICAgfQogICAgfQp9",
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "configuration" : {
+      "styles" : { },
+      "terminology" : { }
+    },
+    "dynamicViews" : [ {
+      "description" : "A request with parallel lookups",
+      "elementId" : "2",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "7",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalBoundariesVisible" : false,
+      "key" : "seq",
+      "name" : "Dynamic View: System",
+      "order" : 1,
+      "relationships" : [ {
+        "description" : "Sends a request",
+        "id" : "8",
+        "order" : "1",
+        "response" : false
+      }, {
+        "description" : "Reads the record",
+        "id" : "10",
+        "order" : "2",
+        "response" : false
+      }, {
+        "description" : "Looks up the rate",
+        "id" : "11",
+        "order" : "2",
+        "response" : false
+      }, {
+        "description" : "Stores the rate",
+        "id" : "10",
+        "order" : "3",
+        "response" : false
+      }, {
+        "description" : "Notifies of the change",
+        "id" : "13",
+        "order" : "3",
+        "response" : false
+      }, {
+        "description" : "Confirms",
+        "id" : "11",
+        "order" : "4",
+        "response" : false
+      } ]
+    }, {
+      "description" : "Form submission inside the app",
+      "elementId" : "3",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "4",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "5",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalBoundariesVisible" : false,
+      "key" : "comp",
+      "name" : "Dynamic View: System - App",
+      "order" : 2,
+      "relationships" : [ {
+        "description" : "Submits a form",
+        "id" : "14",
+        "order" : "1",
+        "response" : false
+      }, {
+        "description" : "Validates the form",
+        "id" : "15",
+        "order" : "2",
+        "response" : false
+      }, {
+        "description" : "Checks the record",
+        "id" : "16",
+        "order" : "3",
+        "response" : false
+      } ]
+    }, {
+      "description" : "The system in its estate",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "7",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalBoundariesVisible" : false,
+      "key" : "star",
+      "name" : "Dynamic View",
+      "order" : 3,
+      "relationships" : [ {
+        "description" : "Sends a request",
+        "id" : "9",
+        "order" : "1",
+        "response" : false
+      }, {
+        "description" : "Looks up data",
+        "id" : "12",
+        "order" : "2",
+        "response" : false
+      } ]
+    } ]
+  }
+}

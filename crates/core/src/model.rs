@@ -61,6 +61,7 @@ pub(crate) use theme::sniff as sniff_image;
 mod archetype;
 mod deploy;
 mod expr;
+mod json;
 mod load;
 
 use crate::text::{
@@ -2948,6 +2949,90 @@ pub fn parse_with(
     loader: &mut dyn Loader,
 ) -> Result<Parsed, ModelError> {
     load::parse_with(source, path, loader)
+}
+
+/// Reads `source`, a Structurizr workspace JSON (what `export -f json`
+/// writes, P3-413), into the model the DSL it was exported from gives:
+/// same element names, kinds, parents, tags, relationships, views and
+/// styles (P3-416), each view keeping its element positions as `at` and
+/// `size` lines (P3-417). Unknown keys are ignored (P3-418). `loader`
+/// serves the same file access as `parse_with` (P3-416: callers pass
+/// what they pass there). Spans of the items point into the DSL text
+/// written from `source` (as `FileId::ROOT`), not into the JSON; a JSON
+/// syntax error carries the JSON's own line and column (approver
+/// ruling). Serves P3-416, P3-417, P3-418.
+///
+/// # Errors
+///
+/// A `ModelError` with the line and column in `source` when it is not
+/// RFC 8259 JSON (or not UTF-8), or is JSON but not a workspace (no
+/// top-level object with a `model` or `views` object) (P3-418).
+pub fn parse_json(source: &[u8], loader: &mut dyn Loader) -> Result<Model, ModelError> {
+    let text = std::str::from_utf8(source).map_err(|e| {
+        let at = index_u32(e.valid_up_to());
+        let shown = String::from_utf8_lossy(source);
+        json_error("it is not UTF-8 text".into(), at, text::position(&shown, at))
+    })?;
+    let dsl = json::to_dsl(text).map_err(|e| {
+        let at = offset_of(text, e.position);
+        json_error(e.message, at, e.position)
+    })?;
+    load::parse_with(&dsl, None, loader).map(|p| p.model)
+}
+
+/// The byte offset of `position` (1-based line and character column) in
+/// `source`, clamped to its end.
+fn offset_of(source: &str, position: Position) -> u32 {
+    let mut line = 1;
+    let mut column = 1;
+    for (i, c) in source.char_indices() {
+        if line == position.line && column == position.column {
+            return index_u32(i);
+        }
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    index_u32(source.len())
+}
+
+/// A JSON workspace that cannot be read (P3-418): `FileFormat`, at
+/// `at` in the JSON.
+fn json_error(reason: String, at: u32, position: Position) -> ModelError {
+    ModelError {
+        kind: ModelErrorKind::FileFormat {
+            path: "the workspace JSON".into(),
+            reason,
+        },
+        span: Span::new(FileId::ROOT, at, at),
+        position,
+    }
+}
+
+/// The Structurizr canonical name of element `id`: `<Type>://<names>`,
+/// the names of its ancestors and itself joined with `.`, each with `.`
+/// and `/` removed (`DefaultLayoutMergeStrategy`, P2-506, P3-427).
+/// Serves P3-427, P3-416.
+// TODO(srs): P3-427, deployment elements. Reading taken: the doc
+// sentence above for every kind (ancestors joined with `.`), the type
+// being the kind's name without spaces (`DeploymentNode://...`).
+pub fn canonical_name(model: &Model, id: ElementId) -> String {
+    let mut names = Vec::new();
+    let mut current = Some(id);
+    while let Some(e) = current {
+        let element = model.element(e);
+        names.push(element.name.value.replace(['.', '/'], ""));
+        current = element.parent;
+    }
+    names.reverse();
+    let kind = match model.element(id).kind {
+        ElementKind::Custom => "Custom",
+        k => k.default_tag(),
+    };
+    format!("{}://{}", kind.replace(' ', ""), names.join("."))
 }
 
 /// `parsed` with the tree of `file` replaced by `source`, the model built

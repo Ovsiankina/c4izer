@@ -238,17 +238,12 @@ fn p2_502_corpus_licence_present() {
 /// Roots c4rizer cannot open yet, each with a `docs/deferred.md` row
 /// naming what blocks it (never an `excluded` MANIFEST line).
 /// `p2_14_corpus_parses` checks every other root;
-/// `p2_14_corpus_parses_deferred_roots` checks these and is ignored until
-/// the rows are settled. After the fix rounds one is left: a phase-3
-/// feature (JSON in, P3-416..P3-420) whose span contract the owner has to
-/// rule.
-// DECISION: the oracle test stays strict on the 82 roots that open, and
-// the gap root moves to one ignored test, so this row is green without
-// hiding a gap: the list below is the gap list of the report.
-const KNOWN_GAPS: [(&str, &str); 1] = [(
-    "extend/extend-workspace-from-json-file.dsl",
-    "phase 3 (P3-416..P3-420, JSON in): `workspace extends <file>.json`; span contract for JSON-sourced elements to rule",
-)];
+/// `p2_14_corpus_parses_deferred_roots` checks these. The last one
+/// (`extend/extend-workspace-from-json-file.dsl`, JSON in) opens since
+/// the exporters row (P3-419), so the list is empty.
+// DECISION: the oracle test stays strict on every root, and a gap root
+// would move to the list below, so no gap is hidden.
+const KNOWN_GAPS: [(&str, &str); 0] = [];
 
 /// The MANIFEST roots, in path order.
 fn roots() -> Vec<String> {
@@ -309,9 +304,8 @@ fn p2_14_corpus_parses() {
     for (path, _) in KNOWN_GAPS {
         assert!(roots.contains(path), "KNOWN_GAPS names {path}, which is not a MANIFEST root");
     }
-    // Approver ruling: JSON in (exporters row, P3-416..P3-420) is the only
-    // gap left.
-    assert_eq!(KNOWN_GAPS.map(|(p, _)| p), ["extend/extend-workspace-from-json-file.dsl"]);
+    // Exporters row (P3-419): no gap left.
+    assert!(KNOWN_GAPS.is_empty());
     let failures: Vec<String> = openable()
         .into_iter()
         .filter_map(|(name, path)| open(&path).err().map(|e| format!("{name}: {e}")))
@@ -320,7 +314,6 @@ fn p2_14_corpus_parses() {
 }
 
 #[test]
-#[ignore = "deferred"]
 fn p2_14_corpus_parses_deferred_roots() {
     let failures: Vec<String> = KNOWN_GAPS
         .iter()

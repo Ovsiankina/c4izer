@@ -485,6 +485,32 @@ impl App {
                     command(Command::ExportAll(ExportFormat::Png));
                 }
             });
+            // P3-431: every format of `c4rizer export -f` (P3-400), the
+            // SVG with the SVG text chosen above.
+            let id = egui::Id::unique("c4rizer-export-format");
+            let formats = export_choices();
+            let mut format = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(formats.len() - 1);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Format");
+                egui::ComboBox::from_id_salt("c4rizer-export-format-combo")
+                    .width(150.0)
+                    .selected_text(formats[format].0)
+                    .show_ui(ui, |ui| {
+                        for (i, (label, _)) in formats.iter().enumerate() {
+                            ui.selectable_value(&mut format, i, *label);
+                        }
+                    });
+            });
+            ui.ctx().data_mut(|d| d.insert_temp(id, format));
+            let chosen = if formats[format].1 == ExportFormat::Svg { svg } else { formats[format].1 };
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Export view").clicked() {
+                    command(Command::ExportView(chosen));
+                }
+                if ui.button("Export all views").clicked() {
+                    command(Command::ExportAll(chosen));
+                }
+            });
         });
         out.extend(events);
         out
@@ -516,7 +542,10 @@ impl App {
             if let Some(notice) = &status.notice {
                 ui.label(notice);
             }
-            if self.state.doc.is_some() && self.state.read_only() {
+            // P3-420: a workspace JSON says why it is read-only.
+            if self.state.json_doc() {
+                ui.strong("read-only: workspace JSON");
+            } else if self.state.doc.is_some() && self.state.read_only() {
                 ui.strong("read-only");
             }
         });
@@ -846,6 +875,25 @@ pub(crate) fn draw_view_list(state: &State, width: f32, frames: usize) -> DrawnV
         output.textures_delta.clear();
     }
     drawn
+}
+
+/// The formats of the export panel, as `c4rizer export -f` names them
+/// (P3-400, P3-431), `svg` first (the default); animation is deferred
+/// (P3-432).
+pub(crate) fn export_choices() -> [(&'static str, ExportFormat); 11] {
+    [
+        ("svg", ExportFormat::Svg),
+        ("png", ExportFormat::Png),
+        ("plantuml", ExportFormat::PlantUml),
+        ("plantuml/c4plantuml", ExportFormat::C4PlantUml),
+        ("mermaid", ExportFormat::Mermaid),
+        ("websequencediagrams", ExportFormat::WebSequenceDiagrams),
+        ("dot", ExportFormat::Dot),
+        ("ilograph", ExportFormat::Ilograph),
+        ("json", ExportFormat::Json),
+        ("theme", ExportFormat::Theme),
+        ("static", ExportFormat::Static),
+    ]
 }
 
 /// The SVG text choices of the editor's export, `name` first (the

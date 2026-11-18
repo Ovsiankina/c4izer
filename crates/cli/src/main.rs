@@ -85,6 +85,7 @@
 // run is never stopped, and gives the same result as an unstopped run
 // (CORE-25).
 
+mod export_files;
 mod report;
 
 use std::ffi::OsString;
@@ -96,7 +97,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::import::{self, ImportError};
-use c4rizer_core::model::{self, Mode, ModelError};
+use c4rizer_core::model::{self, Mode, ModelError, ViewKind};
 use c4rizer_core::text::FileId;
 use c4rizer_core::{edit, export, inspect, pipeline};
 
@@ -110,15 +111,21 @@ usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg
        c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]
        c4rizer list -workspace FILE
        c4rizer import-layout JSON FILE
+       c4rizer export -f FORMAT [-o DIR] [-workspace] FILE [--positions]
+       c4rizer merge -w FILE -l LAYOUT.json [-v KEY] -o OUT
+       c4rizer generate system-landscape -i DIR -o OUT.dsl
        c4rizer version
        c4rizer help [COMMAND]
 FILE `-` reads the diagram from stdin; `-workspace` may be left out.
+export FORMAT: plantuml, plantuml/structurizr, plantuml/c4plantuml, mermaid,
+  websequencediagrams, dot, ilograph, json, theme, static, svg, png
 exit code: 0 clean, 1 lint errors, 2 parse, I/O or usage error;
+merge, generate: 1 on a parse error of any input;
 inspect: the number of error violations shown (at most 254), 255 on an error";
 
 /// Each subcommand with its usage line, in `USAGE` order (P2-647,
 /// P2-648): `help <command>` prints that line alone.
-const COMMAND_LINES: [(&str, &str); 8] = [
+const COMMAND_LINES: [(&str, &str); 11] = [
     (
         "render",
         "c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]",
@@ -131,6 +138,15 @@ const COMMAND_LINES: [(&str, &str); 8] = [
     ),
     ("list", "c4rizer list -workspace FILE"),
     ("import-layout", "c4rizer import-layout JSON FILE"),
+    (
+        "export",
+        "c4rizer export -f FORMAT [-o DIR] [-workspace] FILE [--positions]",
+    ),
+    ("merge", "c4rizer merge -w FILE -l LAYOUT.json [-v KEY] -o OUT"),
+    (
+        "generate",
+        "c4rizer generate system-landscape -i DIR -o OUT.dsl",
+    ),
     ("version", "c4rizer version"),
     ("help", "c4rizer help [COMMAND]"),
 ];
@@ -138,7 +154,10 @@ const COMMAND_LINES: [(&str, &str); 8] = [
 /// The seven subcommands as the no-subcommand and unknown-subcommand
 /// messages name them (P2-650).
 const SUBCOMMANDS: &str =
-    "`render`, `lint`, `validate`, `inspect`, `list`, `import-layout`, `version`, `help`";
+    "`render`, `lint`, `validate`, `inspect`, `list`, `import-layout`, `export`, `merge`, `generate`, `version`, `help`";
+
+/// The formats of `export -f`, as the usage errors list them (P3-401).
+const FORMATS: &str = "plantuml, plantuml/structurizr, plantuml/c4plantuml, mermaid, websequencediagrams, dot, ilograph, json, theme, static, svg, png";
 
 /// The outcome of a run that got as far as the report (CLI-2). `main`
 /// turns it into the process exit code; a `UsageError` or `CliError` is
@@ -238,6 +257,39 @@ pub(crate) enum Command {
         /// FILE, rewritten in place.
         file: PathBuf,
     },
+    /// `c4rizer export -f <format> [-o DIR] [-w] FILE [--positions]`:
+    /// the format's files into DIR (P3-400..P3-405).
+    Export {
+        /// FILE (`-w`/`-workspace` may stand before it).
+        input: Input,
+        /// `-f`/`--format`.
+        format: ExportFormat,
+        /// `-o`/`--output`; FILE's folder when not given (P3-400).
+        out_dir: Option<PathBuf>,
+        /// `--positions`: DOT nodes carry `pos` (P3-411).
+        positions: bool,
+    },
+    /// `c4rizer merge -w FILE -l LAYOUT.json [-v KEY] -o OUT`: a copy of
+    /// FILE with the `at` lines `import-layout` would add from LAYOUT
+    /// (P3-425..P3-427).
+    Merge {
+        /// FILE, read only (P3-426).
+        workspace: PathBuf,
+        /// LAYOUT.json, a Structurizr workspace JSON.
+        layout: PathBuf,
+        /// `-v KEY`: only that view changes.
+        view: Option<String>,
+        /// OUT.
+        out: PathBuf,
+    },
+    /// `c4rizer generate system-landscape -i DIR -o OUT.dsl`: one
+    /// landscape from every workspace in DIR (P3-428, P3-429).
+    Generate {
+        /// DIR.
+        input_dir: PathBuf,
+        /// OUT.dsl.
+        out: PathBuf,
+    },
     /// `c4rizer version` (P2-645).
     Version,
     /// `c4rizer help [COMMAND]`, `-h`, `--help` (P2-647).
@@ -245,6 +297,32 @@ pub(crate) enum Command {
         /// The subcommand asked about, `None` for all of them.
         command: Option<&'static str>,
     },
+}
+
+/// A format of `export -f` (P3-400), as Structurizr spells it plus
+/// c4rizer's `dot`, `ilograph`, `svg` and `png`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ExportFormat {
+    /// `plantuml`, `plantuml/structurizr`, `plantuml/c4plantuml`.
+    PlantUml(export::Flavour),
+    /// `mermaid`.
+    Mermaid,
+    /// `websequencediagrams`.
+    WebSequenceDiagrams,
+    /// `dot`.
+    Dot,
+    /// `ilograph`.
+    Ilograph,
+    /// `json`.
+    Json,
+    /// `theme`.
+    Theme,
+    /// `static` (part 2 of the row, P3-423).
+    Static,
+    /// `svg`, as `render` writes it (P3-402).
+    Svg,
+    /// `png`, as `render --png` writes it (P3-402).
+    Png,
 }
 
 /// A command line that is not one of the `USAGE` forms. `Display` is one
@@ -290,6 +368,17 @@ pub(crate) enum UsageError {
     UnknownSvgText(String),
     /// `import-layout` without both JSON and FILE (P2-504).
     MissingImportFiles,
+    /// `export` without `-f` (P3-401).
+    MissingFormat,
+    /// `export -f` with a format c4rizer does not write, `fqcn` or a Java
+    /// class name included, as given (P3-401).
+    UnknownFormat(String),
+    /// `merge` or `generate` without a required option, named as the
+    /// usage line spells it (P3-430).
+    MissingOption(&'static str),
+    /// `generate` without a generator, or with one other than
+    /// `system-landscape`, as given (empty when missing) (P3-430).
+    UnknownGenerator(String),
 }
 
 impl fmt::Display for UsageError {
@@ -339,6 +428,17 @@ impl fmt::Display for UsageError {
             UsageError::MissingImportFiles => f.write_str(
                 "`import-layout` needs the workspace JSON and the diagram file — give `import-layout JSON FILE`",
             ),
+            UsageError::MissingFormat => write!(f, "`export` needs `-f FORMAT` — give one of {FORMATS}"),
+            UsageError::UnknownFormat(format) => {
+                write!(f, "unknown export format \"{format}\" — give one of {FORMATS}")
+            }
+            UsageError::MissingOption(option) => write!(f, "`{option}` is required — add it"),
+            UsageError::UnknownGenerator(g) if g.is_empty() => {
+                f.write_str("`generate` needs a generator — give `generate system-landscape`")
+            }
+            UsageError::UnknownGenerator(g) => {
+                write!(f, "unknown generator \"{g}\" — give `system-landscape`")
+            }
         }
     }
 }
@@ -458,6 +558,14 @@ pub(crate) enum CliError {
         /// Why.
         source: io::Error,
     },
+    /// `merge`: a request refused before anything is written (OUT names
+    /// FILE, FILE is JSON, `-v` names no view of FILE).
+    Refused {
+        /// The file the refusal is about.
+        path: PathBuf,
+        /// What is wrong and what to change.
+        message: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -523,6 +631,7 @@ impl fmt::Display for CliError {
                 "{}: cannot rewrite ({source}) — the file is unchanged; check that its folder is writable",
                 path.display()
             ),
+            CliError::Refused { path, message } => write!(f, "{}: {message}", path.display()),
         }
     }
 }
@@ -558,6 +667,8 @@ where
             return parse_workspace_command(name, args);
         }
         Some("import-layout") => return parse_import_layout(args),
+        Some("export") => return parse_export(args),
+        Some(name @ ("merge" | "generate")) => return if name == "merge" { parse_merge(args) } else { parse_generate(args) },
         _ => return Err(UsageError::UnknownCommand(lossy(&first))),
     };
     let mut file: Option<OsString> = None;
@@ -744,6 +855,88 @@ fn parse_severities(value: &OsString) -> Result<Vec<inspect::Severity>, UsageErr
     Ok(out)
 }
 
+/// `export` arguments (P3-400, P3-401): `-f`/`--format` (also
+/// Structurizr's `-format`), `-o`/`--output` (`-output`), an optional
+/// `-w`/`-workspace` before FILE, `--positions`.
+// DECISION: format names compare without regard to case, as Structurizr's
+// do; a Java class name (any name with a `.`, `fqcn` included) is an
+// unknown format, as c4rizer runs no JVM.
+fn parse_export(mut args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let mut file: Option<OsString> = None;
+    let mut format: Option<ExportFormat> = None;
+    let mut out_dir: Option<PathBuf> = None;
+    let mut positions = false;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("-f" | "--format" | "-format") => {
+                let value = args.next().ok_or(UsageError::MissingValue("-f"))?;
+                if format.is_some() {
+                    return Err(UsageError::Repeated("-f"));
+                }
+                format = Some(export_format(&lossy(&value))?);
+            }
+            Some("-o" | "--output" | "-output") => {
+                let value = args.next().ok_or(UsageError::MissingValue("-o"))?;
+                if out_dir.is_some() {
+                    return Err(UsageError::Repeated("-o"));
+                }
+                out_dir = Some(PathBuf::from(value));
+            }
+            Some("-w" | "-workspace" | "--workspace") => {
+                let value = args.next().ok_or(UsageError::MissingValue("-workspace"))?;
+                if file.is_some() {
+                    return Err(UsageError::Repeated("-workspace"));
+                }
+                file = Some(value);
+            }
+            Some("--positions") => {
+                if positions {
+                    return Err(UsageError::Repeated("--positions"));
+                }
+                positions = true;
+            }
+            _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
+            _ if file.is_some() => return Err(UsageError::ExtraArgument(lossy(&arg))),
+            _ => file = Some(arg),
+        }
+    }
+    let format = format.ok_or(UsageError::MissingFormat)?;
+    let file = file.ok_or(UsageError::MissingFile)?;
+    if is_url(&file) {
+        return Err(UsageError::WorkspaceUrl(lossy(&file)));
+    }
+    let input = if file == "-" {
+        Input::Stdin
+    } else {
+        Input::Path(PathBuf::from(file))
+    };
+    Ok(Command::Export {
+        input,
+        format,
+        out_dir,
+        positions,
+    })
+}
+
+/// One `-f` value (P3-400, P3-401).
+fn export_format(value: &str) -> Result<ExportFormat, UsageError> {
+    let format = match value.to_ascii_lowercase().as_str() {
+        "plantuml" | "plantuml/structurizr" => ExportFormat::PlantUml(export::Flavour::Structurizr),
+        "plantuml/c4plantuml" => ExportFormat::PlantUml(export::Flavour::C4PlantUml),
+        "mermaid" => ExportFormat::Mermaid,
+        "websequencediagrams" => ExportFormat::WebSequenceDiagrams,
+        "dot" => ExportFormat::Dot,
+        "ilograph" => ExportFormat::Ilograph,
+        "json" => ExportFormat::Json,
+        "theme" => ExportFormat::Theme,
+        "static" => ExportFormat::Static,
+        "svg" => ExportFormat::Svg,
+        "png" => ExportFormat::Png,
+        _ => return Err(UsageError::UnknownFormat(value.to_owned())),
+    };
+    Ok(format)
+}
+
 /// `import-layout JSON FILE`: exactly two paths, no flags (P2-504).
 fn parse_import_layout(args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut paths = Vec::new();
@@ -761,6 +954,70 @@ fn parse_import_layout(args: impl Iterator<Item = OsString>) -> Result<Command, 
         (Some(json), Some(file)) => Ok(Command::ImportLayout { json, file }),
         _ => Err(UsageError::MissingImportFiles),
     }
+}
+
+/// `merge` arguments (P3-425, P3-430): `-w`/`-workspace`/`--workspace`,
+/// `-l`/`-layout`/`--layout`, `-v`/`-view`/`--view`,
+/// `-o`/`-output`/`--output`, each once, in any order; all but `-v`
+/// required.
+// DECISION: Structurizr's `merge` spells its options `-workspace`,
+// `-layout`, `-view`, `-output` with the short forms `-w`, `-l`, `-v`,
+// `-o`; the `--` long forms are accepted too, as `export` accepts them.
+fn parse_merge(mut args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let (mut workspace, mut layout, mut view, mut out) = (None, None, None, None);
+    while let Some(arg) = args.next() {
+        let (slot, name): (&mut Option<OsString>, &'static str) = match arg.to_str() {
+            Some("-w" | "-workspace" | "--workspace") => (&mut workspace, "-w"),
+            Some("-l" | "-layout" | "--layout") => (&mut layout, "-l"),
+            Some("-v" | "-view" | "--view") => (&mut view, "-v"),
+            Some("-o" | "-output" | "--output") => (&mut out, "-o"),
+            _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
+            _ => return Err(UsageError::ExtraArgument(lossy(&arg))),
+        };
+        let value = args.next().ok_or(UsageError::MissingValue(name))?;
+        if slot.is_some() {
+            return Err(UsageError::Repeated(name));
+        }
+        *slot = Some(value);
+    }
+    let workspace = workspace.ok_or(UsageError::MissingOption("-w FILE"))?;
+    if is_url(&workspace) {
+        return Err(UsageError::WorkspaceUrl(lossy(&workspace)));
+    }
+    Ok(Command::Merge {
+        workspace: PathBuf::from(workspace),
+        layout: PathBuf::from(layout.ok_or(UsageError::MissingOption("-l LAYOUT.json"))?),
+        view: view.map(|v| lossy(&v)),
+        out: PathBuf::from(out.ok_or(UsageError::MissingOption("-o OUT"))?),
+    })
+}
+
+/// `generate system-landscape -i DIR -o OUT.dsl` (P3-428, P3-430):
+/// `-i`/`-input`/`--input` and `-o`/`-output`/`--output`, each once.
+fn parse_generate(mut args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    match args.next() {
+        Some(g) if g == "system-landscape" => {}
+        Some(g) => return Err(UsageError::UnknownGenerator(lossy(&g))),
+        None => return Err(UsageError::UnknownGenerator(String::new())),
+    }
+    let (mut input_dir, mut out) = (None, None);
+    while let Some(arg) = args.next() {
+        let (slot, name): (&mut Option<OsString>, &'static str) = match arg.to_str() {
+            Some("-i" | "-input" | "--input") => (&mut input_dir, "-i"),
+            Some("-o" | "-output" | "--output") => (&mut out, "-o"),
+            _ if is_flag(&arg) => return Err(UsageError::UnknownFlag(lossy(&arg))),
+            _ => return Err(UsageError::ExtraArgument(lossy(&arg))),
+        };
+        let value = args.next().ok_or(UsageError::MissingValue(name))?;
+        if slot.is_some() {
+            return Err(UsageError::Repeated(name));
+        }
+        *slot = Some(value);
+    }
+    Ok(Command::Generate {
+        input_dir: PathBuf::from(input_dir.ok_or(UsageError::MissingOption("-i DIR"))?),
+        out: PathBuf::from(out.ok_or(UsageError::MissingOption("-o OUT.dsl"))?),
+    })
 }
 
 /// A workspace value naming an `http://` or `https://` URL.
@@ -904,27 +1161,81 @@ fn parse(input: &Input, text: &str, loader: &mut Recording) -> Result<model::Par
     })
 }
 
+/// What `render`, `lint`, `export`, `validate`, `inspect` and `list`
+/// read: the model only.
+struct Loaded {
+    model: model::Model,
+}
+
+/// Parses `text` as `parse` does, or as Structurizr workspace JSON when
+/// its first non-whitespace byte is `{` (P3-416).
+fn parse_model(input: &Input, text: &str, loader: &mut Recording) -> Result<Loaded, CliError> {
+    if text.trim_start().starts_with('{') {
+        return model::parse_json(text.as_bytes(), loader)
+            .map(|model| Loaded { model })
+            .map_err(|error| CliError::Parse {
+                file: InputName(input).to_string(),
+                error,
+            });
+    }
+    parse(input, text, loader).map(|p| Loaded { model: p.model })
+}
+
 /// The first pair of view keys equal up to ASCII case, in declaration
 /// order (header DECISION).
 fn key_collision(keys: &[&str]) -> Option<CliError> {
-    keys.iter().enumerate().find_map(|(i, first)| {
-        keys[i + 1..]
-            .iter()
-            .find(|second| first.eq_ignore_ascii_case(second))
-            .map(|second| CliError::KeyCollision {
-                first: (*first).to_owned(),
-                second: (*second).to_owned(),
-            })
+    export_files::case_collision(keys).map(|(first, second)| CliError::KeyCollision {
+        first: first.to_owned(),
+        second: second.to_owned(),
     })
 }
 
-/// Writes `bytes` to `path`, then its `wrote` line.
+/// Writes `bytes` to `path` atomically (approver ruling R1: a temporary
+/// file in the target folder, then renamed over `path`, never written in
+/// place), then its `wrote` line.
 fn write_file(path: &Path, bytes: &[u8], stdout: &mut impl Write) -> Result<(), CliError> {
-    std::fs::write(path, bytes).map_err(|source| CliError::Write {
+    export_files::replace_file(path, bytes).map_err(|source| CliError::Write {
         path: path.to_path_buf(),
         source,
     })?;
     report::wrote(stdout, path).map_err(CliError::Report)
+}
+
+
+/// The files `render` writes: `<key>.svg`, and `<key>.png` with `png`.
+fn view_files(out_dir: &Path, keys: &[&str], png: bool) -> Vec<PathBuf> {
+    keys.iter()
+        .flat_map(|key| {
+            let png = png.then(|| out_dir.join(format!("{key}.png")));
+            std::iter::once(out_dir.join(format!("{key}.svg"))).chain(png)
+        })
+        .collect()
+}
+
+/// The files a run read: FILE (not stdin) and every file the loader
+/// read for it (`!include`, `workspace extends`, themes), in read order.
+fn inputs_of(input: Option<&Input>, loader: &Recording) -> Vec<PathBuf> {
+    let file = match input {
+        Some(Input::Path(p)) => Some(p.clone()),
+        _ => None,
+    };
+    file.into_iter().chain(loader.read.iter().cloned()).collect()
+}
+
+/// R1: refuses (exit 2, nothing written) when an output is one of the
+/// inputs: the same file by device and inode, so hard links and
+/// symlinks count. Outputs that do not exist yet are no input.
+fn refuse_inputs(outputs: &[PathBuf], inputs: &[PathBuf]) -> Result<(), CliError> {
+    match export_files::input_hit(outputs, inputs) {
+        Some((out, input)) => Err(CliError::Refused {
+            path: out.to_path_buf(),
+            message: format!(
+                "it is an input ({}), which c4rizer never overwrites — choose another output path",
+                input.display()
+            ),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// The SVG of one view as `--svg-text` asks (P2-651): named, embedded or
@@ -1034,6 +1345,9 @@ pub(crate) fn run(
             return run_model_command(command, input, stdin, stdout);
         }
         Command::ImportLayout { json, file } => return run_import_layout(json, file, stdout),
+        Command::Export { .. } => return run_export(command, stdin, stdout),
+        Command::Merge { workspace, layout, view, out } => return run_merge(workspace, layout, view.as_deref(), out, stdout),
+        Command::Generate { input_dir, out } => return run_generate(input_dir, out, stdout),
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
@@ -1052,7 +1366,7 @@ pub(crate) fn run(
     }
     let text = read_input(input, stdin)?;
     let mut loader = Recording::default();
-    let parsed = parse(input, &text, &mut loader)?;
+    let parsed = parse_model(input, &text, &mut loader)?;
     // A flag that is never set: `build_all` cannot return `Stopped`.
     let Ok(all) = pipeline::build_all_in(&parsed.model, mode, &AtomicBool::new(false)) else {
         unreachable!("the stop flag is never set");
@@ -1062,6 +1376,9 @@ pub(crate) fn run(
         if let Some(collision) = key_collision(&keys) {
             return Err(collision);
         }
+        // R1: no view file may be one of the files read.
+        let png = render.is_some_and(|(_, png)| png.is_some());
+        refuse_inputs(&view_files(out_dir, &keys, png), &inputs_of(Some(input), &loader))?;
         // DECISION: `render` creates DIR even for a file with no views, so
         // a script can rely on DIR existing after exit 0 or 1.
         std::fs::create_dir_all(out_dir).map_err(|source| CliError::CreateDir {
@@ -1140,6 +1457,17 @@ fn run_import_layout(json: &Path, file: &Path, stdout: &mut impl Write) -> Resul
         }
         for (id, patched) in &applied.files {
             if let Some(path) = loader.path(*id) {
+                // DECISION: a `workspace extends <file>.json` base is read
+                // as DSL text written from the JSON (P3-419); writing that
+                // text over the JSON would destroy it, so the edit is
+                // refused (JSON is read-only, P3-420).
+                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+                    return Err(CliError::Edit {
+                        path: path.to_path_buf(),
+                        message: "it is a workspace JSON, which c4rizer never writes — move the view into the DSL file"
+                            .into(),
+                    });
+                }
                 writes.push((path.to_path_buf(), patched.as_str()));
             }
         }
@@ -1186,6 +1514,410 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     result
 }
 
+/// `merge -w FILE -l LAYOUT.json [-v KEY] -o OUT` (P3-425..P3-427):
+/// the `at` edits `import-layout` would apply to FILE (matched by
+/// canonical name, `import::import_layout`), applied in memory and
+/// written to OUT. FILE is only read (P3-426). Reports as
+/// `import-layout` does, then the `wrote` line.
+// DECISION: OUT holds the root file's text only, so edits for views
+// declared in an included file are left out (and not reported): OUT is
+// "a copy of FILE" (P3-425), and an included file is not FILE.
+// DECISION: OUT naming FILE, LAYOUT or a file FILE includes or extends
+// (same device and inode, approver ruling R1) is refused before anything
+// is written, as P3-426 says FILE never changes; a FILE that is
+// workspace JSON is refused too, as c4rizer never writes JSON (P3-420).
+// DECISION: `-v KEY` naming no view of FILE is refused (exit 2), so a
+// typo never gives an unchanged copy that looks merged.
+// DECISION: `via` lines: `import-layout` writes none yet (vertices row,
+// P3-317), so neither does `merge`; the copy gains what `import-layout`
+// would add, as P3-425 defines it.
+fn run_merge(
+    workspace: &Path,
+    layout: &Path,
+    view: Option<&str>,
+    out: &Path,
+    stdout: &mut impl Write,
+) -> Result<Exit, CliError> {
+    let input = Input::Path(workspace.to_path_buf());
+    let text = read_input(&input, &mut io::empty())?;
+    let layout_text = read_input(&Input::Path(layout.to_path_buf()), &mut io::empty())?;
+    refuse_inputs(&[out.to_path_buf()], &[workspace.to_path_buf(), layout.to_path_buf()])?;
+    if text.trim_start().starts_with('{') {
+        return Err(CliError::Refused {
+            path: workspace.to_path_buf(),
+            message: "it is a workspace JSON, which c4rizer never writes — merge into the DSL file instead".into(),
+        });
+    }
+    let mut loader = Recording::default();
+    let parsed = parse(&input, &text, &mut loader)?;
+    // R1: OUT is none of the files FILE includes or extends either.
+    refuse_inputs(&[out.to_path_buf()], &inputs_of(None, &loader))?;
+    if let Some(key) = view
+        && parsed.model.view(key).is_none()
+    {
+        let keys: Vec<&str> = parsed.model.views.iter().map(|v| v.key.as_str()).collect();
+        return Err(CliError::Refused {
+            path: workspace.to_path_buf(),
+            message: format!("no view \"{key}\" — give one of: {}", keys.join(", ")),
+        });
+    }
+    let mut imported = import::import_layout(&parsed, &layout_text).map_err(|error| CliError::Json {
+        path: layout.to_path_buf(),
+        error,
+    })?;
+    let keep = |key: &str| {
+        view.is_none_or(|v| v == key)
+            && parsed.model.view(key).is_some_and(|s| s.span.file == FileId::ROOT)
+    };
+    imported.edits.retain(|e| matches!(e, edit::Edit::Move { view, .. } if keep(view)));
+    imported.views.retain(|v| keep(&v.key));
+    imported.notices.retain(|n| n.view.as_deref().is_none_or(keep));
+    let merged = if imported.edits.is_empty() {
+        text
+    } else {
+        edit::apply(&parsed, &imported.edits)
+            .map_err(|e| CliError::Edit {
+                path: workspace.to_path_buf(),
+                message: e.to_string(),
+            })?
+            .text
+    };
+    report::imported(stdout, &imported).map_err(CliError::Report)?;
+    write_file(out, merged.as_bytes(), stdout)?;
+    stdout.flush().map_err(CliError::Report)?;
+    Ok(Exit::Clean)
+}
+
+
+/// `generate system-landscape -i DIR -o OUT.dsl` (P3-428, P3-429): reads
+/// every `*.dsl` and `*.json` file of DIR (not its subfolders) sorted by
+/// path, as `render` reads FILE (`parse_model`), and writes one DSL file
+/// with every person and software system once and the relationships
+/// between them, and one `systemLandscape` view with `include *`.
+// DECISION: people and software systems match by name across both kinds
+// (Structurizr requires those names to be unique in a model); the first
+// workspace that names one decides its kind, and the description is the
+// first non-empty one (P3-429, for people too).
+// DECISION: "the relationships between them" are every written
+// relationship (not copied instance ones) whose ends, each lifted to its
+// top-level person or software system, are two different ones; one
+// relationship per ordered pair, with the first non-empty description
+// and technology, as Structurizr's implied relationships keep one per
+// pair.
+// DECISION: the generated file carries names, descriptions and
+// relationships only: tags, styles and views of the inputs are not
+// copied. Identifiers are `person_<name>` / `system_<name>` in snake
+// case, with a number added on a clash, so no identifier is a keyword.
+// DECISION (approver ruling R2): OUT inside DIR (or a folder below it)
+// is refused with exit 2 before anything is read, and OUT naming any
+// file an input read (R1) is refused before anything is written.
+fn run_generate(input_dir: &Path, out: &Path, stdout: &mut impl Write) -> Result<Exit, CliError> {
+    let dir_error = |source| CliError::Read {
+        input: Input::Path(input_dir.to_path_buf()),
+        source,
+    };
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(input_dir)
+        .map_err(dir_error)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<io::Result<_>>()
+        .map_err(dir_error)?;
+    paths.retain(|p| {
+        p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dsl") || e.eq_ignore_ascii_case("json"))
+    });
+    paths.sort();
+    if inside(out, input_dir) {
+        return Err(CliError::Refused {
+            path: out.to_path_buf(),
+            message: format!(
+                "it lies inside the input folder {}, whose files generate reads — choose an output outside it",
+                input_dir.display()
+            ),
+        });
+    }
+    let mut landscape = Landscape::default();
+    let mut read = Vec::new();
+    for path in &paths {
+        let input = Input::Path(path.clone());
+        let text = read_input(&input, &mut io::empty())?;
+        let mut loader = Recording::default();
+        let workspace = parse_model(&input, &text, &mut loader)?;
+        landscape.add(&workspace.model);
+        read.extend(inputs_of(Some(&input), &loader));
+        writeln!(stdout, "   read {}", path.display()).map_err(CliError::Report)?;
+    }
+    refuse_inputs(&[out.to_path_buf()], &read)?;
+    write_file(out, landscape.dsl().as_bytes(), stdout)?;
+    stdout.flush().map_err(CliError::Report)?;
+    Ok(Exit::Clean)
+}
+
+/// True when `path` (which need not exist) lies inside folder `dir`, at
+/// any depth, once both are resolved.
+fn inside(path: &Path, dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    // The deepest existing ancestor of `path`, resolved.
+    let mut probe = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(probe) {
+            return resolved.starts_with(&dir);
+        }
+        match probe.parent() {
+            Some(p) if !p.as_os_str().is_empty() => probe = p,
+            _ => return false,
+        }
+    }
+}
+
+/// The landscape `generate` builds, in first-seen order.
+#[derive(Debug, Default)]
+struct Landscape {
+    /// People and software systems: is a person, name, description.
+    elements: Vec<(bool, String, String)>,
+    /// Source and destination (indices into `elements`), description,
+    /// technology.
+    relationships: Vec<(usize, usize, String, String)>,
+}
+
+impl Landscape {
+    /// Adds the people, software systems and relationships of `model`.
+    fn add(&mut self, model: &model::Model) {
+        use model::ElementKind;
+        let mut index = vec![None; model.elements.len()];
+        for e in &model.elements {
+            let person = match e.kind {
+                ElementKind::Person => true,
+                ElementKind::SoftwareSystem => false,
+                _ => continue,
+            };
+            let description = e.description.as_ref().map_or("", |d| d.value.as_str());
+            let i = self.elements.iter().position(|(_, n, _)| *n == e.name.value).unwrap_or_else(|| {
+                self.elements.push((person, e.name.value.clone(), String::new()));
+                self.elements.len() - 1
+            });
+            if self.elements[i].2.is_empty() {
+                description.clone_into(&mut self.elements[i].2);
+            }
+            index[e.id.0 as usize] = Some(i);
+        }
+        let top = |mut id: model::ElementId| {
+            while let Some(parent) = model.element(id).parent {
+                id = parent;
+            }
+            index[id.0 as usize]
+        };
+        for r in model.relationships.iter().filter(|r| r.copied_from.is_none()) {
+            let (Some(s), Some(d)) = (top(r.source.value), top(r.destination.value)) else {
+                continue;
+            };
+            if s == d {
+                continue;
+            }
+            let text = |l: &Option<model::Literal>| l.as_ref().map_or(String::new(), |l| l.value.clone());
+            let i = self.relationships.iter().position(|(a, b, _, _)| (*a, *b) == (s, d)).unwrap_or_else(|| {
+                self.relationships.push((s, d, String::new(), String::new()));
+                self.relationships.len() - 1
+            });
+            let slot = &mut self.relationships[i];
+            if slot.2.is_empty() {
+                slot.2 = text(&r.description);
+            }
+            if slot.3.is_empty() {
+                slot.3 = text(&r.technology);
+            }
+        }
+    }
+
+    /// The landscape as a DSL file (P3-428).
+    fn dsl(&self) -> String {
+        use std::fmt::Write as _;
+        let mut ids: Vec<String> = Vec::new();
+        for (person, name, _) in &self.elements {
+            let mut slug = String::from(if *person { "person_" } else { "system_" });
+            let mut gap = false;
+            for c in name.chars() {
+                if c.is_ascii_alphanumeric() {
+                    if gap && !slug.ends_with('_') {
+                        slug.push('_');
+                    }
+                    slug.push(c.to_ascii_lowercase());
+                    gap = false;
+                } else {
+                    gap = true;
+                }
+            }
+            let mut id = slug.clone();
+            let mut n = 2;
+            while ids.contains(&id) {
+                id = format!("{slug}_{n}");
+                n += 1;
+            }
+            ids.push(id);
+        }
+        let mut out = String::from("workspace \"System Landscape\" {\n    model {\n");
+        for ((person, name, description), id) in self.elements.iter().zip(&ids) {
+            let keyword = if *person { "person" } else { "softwareSystem" };
+            let _ = write!(out, "        {id} = {keyword} {}", quote(name));
+            if !description.is_empty() {
+                let _ = write!(out, " {}", quote(description));
+            }
+            out.push('\n');
+        }
+        if !self.relationships.is_empty() {
+            out.push('\n');
+        }
+        for (s, d, description, technology) in &self.relationships {
+            let _ = write!(out, "        {} -> {}", ids[*s], ids[*d]);
+            if !description.is_empty() || !technology.is_empty() {
+                let _ = write!(out, " {}", quote(description));
+            }
+            if !technology.is_empty() {
+                let _ = write!(out, " {}", quote(technology));
+            }
+            out.push('\n');
+        }
+        out.push_str("    }\n    views {\n        systemLandscape \"SystemLandscape\" \"System Landscape\" {\n            include *\n        }\n    }\n}\n");
+        out
+    }
+}
+
+/// `text` as a DSL string literal: `"` and `\` escaped, line breaks and
+/// other control characters as spaces (a DSL string is one line).
+fn quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `export -f <format>` (P3-400..P3-405): reads and builds FILE, writes
+/// the format's files into the output folder, prints one `wrote` line
+/// per file and one skip line per view the format cannot express.
+// DECISION: `export` exits 0 once its files are written (P3-400), lint
+// errors included: `-f svg|png` writes and reports as `render` does but
+// does not turn its lint errors into exit 1.
+// DECISION: without `-o`, a FILE read from stdin writes into the current
+// folder; `json` of stdin is `workspace.json`.
+// DECISION: a view a format cannot express gets the P3-405 line: image
+// and filtered views for every text format (Structurizr's exporters
+// write neither), every non-dynamic view for `websequencediagrams`.
+fn run_export(
+    command: &Command,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+) -> Result<Exit, CliError> {
+    let Command::Export {
+        input,
+        format,
+        out_dir,
+        positions,
+    } = command
+    else {
+        unreachable!("run_export is called with Command::Export");
+    };
+    let out_dir = out_dir.clone().unwrap_or_else(|| match input {
+        Input::Path(p) => p.parent().map_or_else(PathBuf::new, Path::to_path_buf),
+        Input::Stdin => PathBuf::new(),
+    });
+    if matches!(format, ExportFormat::Svg | ExportFormat::Png) {
+        let render = Command::Render {
+            input: input.clone(),
+            out_dir,
+            png: (*format == ExportFormat::Png).then_some(Png { width: None }),
+            mode: Mode::Light,
+            svg_text: SvgText::Name,
+        };
+        return run(&render, stdin, stdout).map(|_| Exit::Clean);
+    }
+    let text = read_input(input, stdin)?;
+    let mut loader = Recording::default();
+    let parsed = parse_model(input, &text, &mut loader)?;
+    let model = &parsed.model;
+    let Ok(all) = pipeline::build_all(model, &AtomicBool::new(false)) else {
+        unreachable!("the stop flag is never set");
+    };
+    let name = match format {
+        ExportFormat::PlantUml(export::Flavour::Structurizr) => "plantuml/structurizr",
+        ExportFormat::PlantUml(export::Flavour::C4PlantUml) => "plantuml/c4plantuml",
+        ExportFormat::Mermaid => "mermaid",
+        ExportFormat::WebSequenceDiagrams => "websequencediagrams",
+        ExportFormat::Dot => "dot",
+        ExportFormat::Ilograph => "ilograph",
+        ExportFormat::Json => "json",
+        ExportFormat::Theme => "theme",
+        ExportFormat::Static => "static",
+        ExportFormat::Svg | ExportFormat::Png => unreachable!("handled above"),
+    };
+    let source = export_files::Source {
+        model,
+        all: &all,
+        path: match input {
+            Input::Path(p) => Some(p.as_path()),
+            Input::Stdin => None,
+        },
+        dsl: (!text.trim_start().starts_with('{')).then_some(text.as_str()),
+    };
+    let Some(files) = export_files::files(name, &source, *positions) else {
+        unreachable!("export_files::files writes every format but svg and png");
+    };
+    // CLI-1's guard: keys equal up to case would overwrite each other's
+    // files on a case-insensitive file system (per-view formats, static).
+    if !matches!(format, ExportFormat::Json | ExportFormat::Theme | ExportFormat::Ilograph) {
+        let keys: Vec<&str> = all.views.iter().map(|v| v.plan.key.as_str()).collect();
+        if let Some(collision) = key_collision(&keys) {
+            return Err(collision);
+        }
+    }
+    // R1: no file written is one of the files read.
+    let outputs: Vec<PathBuf> = files.iter().map(|(p, _)| out_dir.join(p)).collect();
+    refuse_inputs(&outputs, &inputs_of(Some(input), &loader))?;
+    std::fs::create_dir_all(&out_dir).map_err(|source| CliError::CreateDir {
+        path: out_dir.clone(),
+        source,
+    })?;
+    for (path, bytes) in &files {
+        let path = out_dir.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        write_file(&path, bytes, stdout)?;
+    }
+    let per_view = matches!(
+        format,
+        ExportFormat::PlantUml(_)
+            | ExportFormat::Mermaid
+            | ExportFormat::WebSequenceDiagrams
+            | ExportFormat::Dot
+            | ExportFormat::Ilograph
+    );
+    if per_view {
+        for spec in &model.views {
+            let skipped = matches!(spec.kind, ViewKind::Image | ViewKind::Filtered)
+                || (*format == ExportFormat::WebSequenceDiagrams && spec.kind != ViewKind::Dynamic);
+            if skipped {
+                report::skipped(stdout, &spec.key, name, spec.kind.keyword()).map_err(CliError::Report)?;
+            }
+        }
+    }
+    stdout.flush().map_err(CliError::Report)?;
+    Ok(Exit::Clean)
+}
+
+
 /// `validate`, `inspect` or `list`: read and parse the workspace, never
 /// place, route or lint (P2-605, P2-609, P2-613), never write a file.
 fn run_model_command(
@@ -1203,7 +1935,7 @@ fn run_model_command(
     }
     let text = read_input(input, stdin)?;
     let mut loader = Recording::default();
-    let parsed = parse(input, &text, &mut loader)?;
+    let parsed = parse_model(input, &text, &mut loader)?;
     match command {
         // DECISION: `validate` prints nothing on success (B cli-breadth 4;
         // Structurizr's validate prints nothing either). Notices are not
@@ -1253,6 +1985,13 @@ fn main() -> ExitCode {
         Ok(exit) => exit_code(exit),
         Err(error) => {
             eprintln!("c4rizer: {error}");
+            // P3-430: `merge` and `generate` exit 1 on a parse error of
+            // any input (FILE, LAYOUT or a workspace of DIR).
+            if matches!(command, Command::Merge { .. } | Command::Generate { .. })
+                && matches!(error, CliError::Parse { .. } | CliError::Json { .. })
+            {
+                return ExitCode::from(1);
+            }
             // DECISION: P2-643 pins exit 2 for a refused `-inspector`; B
             // cli-breadth 5's 255 covers inspect's parse, I/O and usage
             // errors, and a refused inspector is none of those.

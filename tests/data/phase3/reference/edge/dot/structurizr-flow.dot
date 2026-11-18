@@ -1,0 +1,48 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Dynamic View: Shop with a rather long name for wrapping tests</font><br /><font point-size="24">With a response</font>>
+
+  subgraph cluster_4 {
+    margin=25
+    label=<<font point-size="24"><br />Shop with a rather long name for wrapping tests</font><br /><font point-size="19">[Software System]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#444444"
+
+    subgraph "cluster_group_Front" {
+      margin=25
+      label=<<font point-size="24"><br />Front</font>>
+      labelloc=b
+      color="#aa0000"
+      fontcolor="#aa0000"
+      fillcolor="#ffffff"
+      style="dashed"
+
+      6 [id=6,shape=hexagon, label=<<font point-size="42">Api \"v2\"</font><br /><font point-size="27">[Container: Rust]</font><br /><br /><font point-size="32">Serves <things> &<br />more.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+        subgraph "cluster_group_Edge" {
+          margin=25
+          label=<<font point-size="24"><br />Edge</font>>
+          labelloc=b
+          color="#aa0000"
+          fontcolor="#aa0000"
+          fillcolor="#ffffff"
+          style="dashed"
+
+          5 [id=5,shape=rect, label=<<font point-size="34">Web</font><br /><font point-size="19">[Container: Rust]</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+        }
+
+    }
+
+  }
+
+  1 [id=1,shape=rect, label=<<font point-size="34">User \"Q\" & <Co></font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Uses things: \"quotes\" &<br /><angles>, café au lait.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+
+  1 -> 5 [id=28, label=<<font point-size="24">1. Opens</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  5 -> 6 [id=30, label=<<font point-size="24">2. Calls</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  6 -> 5 [id=30, label=<<font point-size="24">3. Answers</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

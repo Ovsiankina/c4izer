@@ -1,0 +1,33 @@
+@startuml
+title <size:24>System Landscape View</size>\n<size:24>Everything at once</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+
+AddBoundaryTag("Partners", $borderColor="#aa0000", $fontColor="#aa0000", $borderStyle="dashed")
+Boundary(group_1, "Partners", $tags="Partners") {
+  System(Partner, "Partner", $descr="", $tags="", $link="")
+}
+
+Person(UserQCo, "User "Q" & <Co>", $descr="Uses things: "quotes" & <angles>, café au lait.", $tags="", $link="")
+System(Robot, "Robot", $descr="Pokes things now and then.", $tags="", $link="")
+System(Shopwitharatherlongnameforwrappingtests, "Shop with a rather long name for wrapping tests", $descr="A system whose description is long enough to wrap in several places, really.", $tags="", $link="https://example.com/shop?a=1&b=2")
+System(Shapes, "Shapes", $descr="Every shape.", $tags="", $link="")
+
+Rel(UserQCo, Shopwitharatherlongnameforwrappingtests, "Browses "fast" & <well>", $techn="HTTPS", $tags="", $link="")
+Rel(Robot, Shopwitharatherlongnameforwrappingtests, "Pokes", $techn="", $tags="", $link="")
+Rel(Shopwitharatherlongnameforwrappingtests, Partner, "Reports to", $techn="HTTPS", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

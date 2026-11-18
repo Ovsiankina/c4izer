@@ -31,6 +31,8 @@
 use std::fmt;
 use std::ops::Range;
 
+pub(crate) mod json;
+
 /// Which source file a span points into (DSL-16). In phase 1 every span
 /// is in the root file, `FileId::ROOT`; `!include` (P2-5) numbers the
 /// included files from 1 in the order they are first read.

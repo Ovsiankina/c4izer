@@ -1,0 +1,42 @@
+@startuml
+title <size:24>Container View: Shop with a rather long name for wrapping tests</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+
+Person(UserQCo, "User "Q" & <Co>", $descr="Uses things: "quotes" & <angles>, café au lait.", $tags="", $link="")
+System(Partner, "Partner", $descr="", $tags="", $link="")
+
+System_Boundary("Shopwitharatherlongnameforwrappingtests_boundary", "Shop with a rather long name for wrapping tests", $tags="") {
+  AddBoundaryTag("Front", $borderColor="#aa0000", $fontColor="#aa0000", $borderStyle="dashed")
+  Boundary(group_1, "Front", $tags="Front") {
+    Container(Shopwitharatherlongnameforwrappingtests.Apiv2, "Api "v2"", $techn="Rust", $descr="Serves <things> & more.", $tags="", $link="")
+      AddBoundaryTag("Front/Edge", $borderColor="#aa0000", $fontColor="#aa0000", $borderStyle="dashed")
+      Boundary(group_2, "Edge", $tags="Front/Edge") {
+        Container(Shopwitharatherlongnameforwrappingtests.Web, "Web", $techn="Rust", $descr="", $tags="", $link="")
+      }
+
+  }
+
+  Container(Shopwitharatherlongnameforwrappingtests.Db, "Db", $techn="SQL", $descr="Stores things.", $tags="", $link="")
+}
+
+Rel(UserQCo, Shopwitharatherlongnameforwrappingtests.Web, "Browses "fast" & <well>", $techn="HTTPS", $tags="", $link="")
+Rel(Shopwitharatherlongnameforwrappingtests.Web, Shopwitharatherlongnameforwrappingtests.Apiv2, "Calls", $techn="", $tags="", $link="")
+Rel(Shopwitharatherlongnameforwrappingtests.Apiv2, Shopwitharatherlongnameforwrappingtests.Db, "Reads", $techn="", $tags="", $link="")
+Rel(Shopwitharatherlongnameforwrappingtests.Apiv2, Partner, "Reports to", $techn="HTTPS", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

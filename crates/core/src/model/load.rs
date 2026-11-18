@@ -177,8 +177,8 @@ impl Reader<'_> {
     }
 
     /// The base `workspace extends <path>` names: a local DSL file, read
-    /// like an included one (B dsl-breadth 6: a URL is refused, a JSON
-    /// base is phase 3).
+    /// like an included one, or a local workspace JSON (P3-419); a URL is
+    /// refused (B dsl-breadth 6).
     fn read_base(&mut self, tree: &SyntaxTree, tokens: &[usize]) -> Result<FileId, ModelError> {
         let construct = "workspace extends";
         let Some(&arg) = tokens.get(2) else {
@@ -205,18 +205,12 @@ impl Reader<'_> {
         let json = Path::new(&written)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("json"));
-        if json {
-            // TODO(srs): P2-16, JSON bases. Reading taken (B dsl-breadth 6):
-            // phase 3.
-            return Err(self.error(
-                ModelErrorKind::LaterPhase {
-                    construct: format!("{construct} {written}"),
-                    phase: 3,
-                },
-                span,
-            ));
-        }
         let resolved = self.resolve(&written, span, construct)?;
+        if json {
+            // P3-419: a JSON base is read as the DSL text it gives
+            // (`model::json`), its own file in the parse.
+            return self.read_source(&resolved, &written, span, true);
+        }
         self.read_file(&resolved, &written, span)
     }
 
@@ -358,6 +352,12 @@ impl Reader<'_> {
     /// The file at `path` (written as `written`), read and parsed as the
     /// next `FileId`, or the id it was read as before.
     fn read_file(&mut self, path: &Path, written: &str, span: Span) -> Result<FileId, ModelError> {
+        self.read_source(path, written, span, false)
+    }
+
+    /// `read_file`; with `json`, the file is a Structurizr workspace JSON
+    /// whose DSL text (`model::json::to_dsl`) becomes its tree (P3-419).
+    fn read_source(&mut self, path: &Path, written: &str, span: Span, json: bool) -> Result<FileId, ModelError> {
         let resolved = self.loader.canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if self.chain.contains(&resolved) {
             return Err(self.error(ModelErrorKind::IncludeCycle { path: written.into() }, span));
@@ -382,6 +382,19 @@ impl Reader<'_> {
                 span,
             )
         })?;
+        let source = if json {
+            super::json::to_dsl(&source).map_err(|e| {
+                self.error(
+                    ModelErrorKind::FileFormat {
+                        path: written.into(),
+                        reason: format!("line {}, column {}: {}", e.position.line, e.position.column, e.message),
+                    },
+                    span,
+                )
+            })?
+        } else {
+            source
+        };
         let file = FileId(super::index_u32(self.trees.len()));
         let tree = text::parse(file, &source)?;
         self.trees.push(tree);

@@ -1,0 +1,28 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["System Landscape View"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph group1 ["Partners"]
+      style group1 fill:#ffffff,stroke:#aa0000,color:#aa0000,stroke-dasharray:5
+
+      2["<div style='font-weight: bold'>Partner</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div>"]
+      style 2 fill:#999999,stroke:#6b6b6b,color:#ffffff
+    end
+
+    1["<div style='font-weight: bold'>User "Q" & <Co></div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Uses things: "quotes" &<br /><angles>, café au lait.</div>"]
+    style 1 fill:#ffffff,stroke:#444444,color:#444444
+    3["<div style='font-weight: bold'>Robot</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Pokes things now and then.</div>"]
+    style 3 fill:#ffffff,stroke:#444444,color:#444444
+    4["<div style='font-weight: bold'>Shop with a rather long name for wrapping tests</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>A system whose description is<br />long enough to wrap in<br />several places, really.</div>"]
+    click 4 https://example.com/shop?a=1&b=2 "https://example.com/shop?a=1&b=2"
+    style 4 fill:#ffffff,stroke:#444444,color:#444444
+    8["<div style='font-weight: bold'>Shapes</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Every shape.</div>"]
+    style 8 fill:#ffffff,stroke:#444444,color:#444444
+
+    1-. "<div>Browses "fast" & <well></div><div style='font-size: 70%'>[HTTPS]</div>" .->4
+    3-. "<div>Pokes</div><div style='font-size: 70%'></div>" .->4
+    4-- "<div>Reports to</div><div style='font-size: 70%'>[HTTPS]</div>" -->2
+
+  end

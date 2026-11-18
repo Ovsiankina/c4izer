@@ -1,0 +1,37 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Container View: Shapes</font><br /><font point-size="24">Every shape, no relationships</font>>
+
+  subgraph cluster_8 {
+    margin=25
+    label=<<font point-size="24"><br />Shapes</font><br /><font point-size="19">[Software System]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#444444"
+
+    10 [id=10,shape=rect, label=<<font point-size="34">Person part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Person.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    11 [id=11,shape=cylinder, label=<<font point-size="34">Cylinder part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Cylinder.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    12 [id=12,shape=rect, label=<<font point-size="34">RoundedBox part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as RoundedBox.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    13 [id=13,shape=circle, label=<<font point-size="34">Circle part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Circle.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    14 [id=14,shape=ellipse, label=<<font point-size="34">Ellipse part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Ellipse.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    15 [id=15,shape=hexagon, label=<<font point-size="34">Hexagon part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Hexagon.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    16 [id=16,shape=diamond, label=<<font point-size="34">Diamond part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Diamond.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    17 [id=17,shape=rect, label=<<font point-size="34">Bucket part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Bucket.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    18 [id=18,shape=rect, label=<<font point-size="34">Pipe part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Pipe.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    19 [id=19,shape=rect, label=<<font point-size="34">Robot part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Robot.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    20 [id=20,shape=folder, label=<<font point-size="34">Folder part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Folder.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    21 [id=21,shape=rect, label=<<font point-size="34">WebBrowser part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as WebBrowser.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    22 [id=22,shape=rect, label=<<font point-size="34">Window part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Window.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    23 [id=23,shape=rect, label=<<font point-size="34">Terminal part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Terminal.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    24 [id=24,shape=rect, label=<<font point-size="34">Shell part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Shell.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    25 [id=25,shape=rect, label=<<font point-size="34">MobileDevicePortrait<br />part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as MobileDevicePortrait.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    26 [id=26,shape=rect, label=<<font point-size="34">MobileDeviceLandscape<br />part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as<br />MobileDeviceLandscape.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    27 [id=27,shape=component, label=<<font point-size="34">Component part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Component.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    9 [id=9,shape=rect, label=<<font point-size="34">Box part</font><br /><font point-size="19">[Container: Kind]</font><br /><br /><font point-size="24">Drawn as Box.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+}

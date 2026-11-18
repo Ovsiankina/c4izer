@@ -1,0 +1,69 @@
+@startuml
+title <size:24>Component View: Atomanja - Atomanja server</size>\n<size:24>Component diagram for the Atomanja server: serving and polling</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+!include <C4/C4_Component>
+
+Person(Worker, "Worker", $descr="The one person whose tasks are tracked. Sees own tasks and debts, marks debts as sent.", $tags="", $link="")
+Person(Witness, "Witness", $descr="Accountability partner. Sees late tasks, claims debts, marks them received.", $tags="", $link="")
+Person(Adminwitness, "Admin witness", $descr="Maintainer. Troubleshoots the witness view on fake data.", $tags="", $link="")
+
+System(Vikunja, "Vikunja", $descr="Existing task manager. Source of tasks and deadlines. Never modified.", $tags="", $link="")
+System(Pushservices, "Push services", $descr="Browser vendors' endpoints that deliver notifications to installed apps.", $tags="", $link="")
+System(Mailserver, "Mail server", $descr="Delivers invite and password-reset emails.", $tags="", $link="")
+
+System_Boundary("Atomanja_boundary", "Atomanja", $tags="") {
+  Container_Boundary("Atomanja.Atomanjaserver_boundary", "Atomanja server", $tags="") {
+    Component(Atomanja.Atomanjaserver.web, "web", $techn="Rust, axum, htmx", $descr="HTTP layer: both views, login flows, debt actions, push subscription.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.sync, "sync", $techn="Rust, tokio", $descr="Poll loop: fetch, apply to ledger, persist, notify.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.ledger, "ledger", $techn="Rust module", $descr="Pure domain rules: deadlines, met or late, debts, claims, marks, amount.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.auth, "auth", $techn="Rust module", $descr="Pure account rules: roles, password hashing, tokens, permission checks.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.vikunja, "vikunja", $techn="Rust, HTTP client", $descr="Read-only Vikunja client. Maps tasks to snapshot records.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.notify, "notify", $techn="Rust, Web Push", $descr="Turns ledger changes into push notifications. Owns the push keys.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.mail, "mail", $techn="Rust, SMTP client", $descr="Sends invite and password-reset emails.", $tags="", $link="")
+    Component(Atomanja.Atomanjaserver.store, "store", $techn="Rust, SQLite", $descr="Persistence for ledger and dev databases. Ledger is insert-only.", $tags="", $link="")
+  }
+
+  ContainerDb(Atomanja.Ledgerdatabase, "Ledger database", $techn="SQLite file", $descr="Append-only record of deadlines, debts, claims, marks and accounts.", $tags="", $link="")
+  ContainerDb(Atomanja.Devdatabase, "Dev database", $techn="SQLite file", $descr="Fake tasks and debts for the admin witness. Isolated from the real ledger.", $tags="", $link="")
+}
+
+Rel(Pushservices, Worker, "Delivers notifications to", $techn="", $tags="", $link="")
+Rel(Pushservices, Witness, "Delivers notifications to", $techn="", $tags="", $link="")
+Rel(Worker, Atomanja.Atomanjaserver.web, "Views tasks, marks debts sent", $techn="HTTPS", $tags="", $link="")
+Rel(Witness, Atomanja.Atomanjaserver.web, "Claims debts, marks them received", $techn="HTTPS", $tags="", $link="")
+Rel(Adminwitness, Atomanja.Atomanjaserver.web, "Troubleshoots on fake data", $techn="HTTPS", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.web, Atomanja.Atomanjaserver.ledger, "Runs debt actions on", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.web, Atomanja.Atomanjaserver.auth, "Checks sessions and permissions with", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.web, Atomanja.Atomanjaserver.store, "Loads and saves through", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.web, Atomanja.Atomanjaserver.notify, "Stores subscriptions, notifies through", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.web, Atomanja.Atomanjaserver.mail, "Sends invites and resets through", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.sync, Atomanja.Atomanjaserver.vikunja, "Fetches snapshot through", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.sync, Atomanja.Atomanjaserver.ledger, "Applies snapshot to", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.sync, Atomanja.Atomanjaserver.store, "Appends changes through", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.sync, Atomanja.Atomanjaserver.notify, "Hands changes to", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.vikunja, Vikunja, "Fetches tasks from", $techn="HTTPS/JSON", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.notify, Atomanja.Atomanjaserver.ledger, "Reads change types from", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.notify, Atomanja.Atomanjaserver.auth, "Picks recipients by role with", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.notify, Pushservices, "Sends notifications through", $techn="Web Push", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.mail, Mailserver, "Sends emails through", $techn="SMTP", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.store, Atomanja.Atomanjaserver.ledger, "Persists state of", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.store, Atomanja.Atomanjaserver.auth, "Persists accounts of", $techn="", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.store, Atomanja.Ledgerdatabase, "Reads and appends", $techn="SQL", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver.store, Atomanja.Devdatabase, "Reads and writes", $techn="SQL", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

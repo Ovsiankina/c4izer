@@ -1,0 +1,120 @@
+@startuml
+title <size:24>Deployment View: Live</size>
+
+set separator none
+top to bottom direction
+hide stereotype
+
+<style>
+  root {
+    BackgroundColor: #ffffff;
+    FontColor: #444444;
+  }
+  // Element
+  .Element-RWxlbWVudA== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Circ
+  .Element-RWxlbWVudCxDaXJj {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 3-3;
+    LineThickness: 3;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Element,Hex
+  .Element-RWxlbWVudCxIZXg= {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 20-20;
+    LineThickness: 4;
+    FontColor: #444444;
+    FontSize: 32;
+    HorizontalAlignment: center;
+    Shadowing: 10;
+    MaximumWidth: 450;
+  }
+  // Element,Rounded
+  .Element-RWxlbWVudCxSb3VuZGVk {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    RoundCorner: 20;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+    MaximumWidth: 450;
+  }
+  // Relationship
+  .Relationship-UmVsYXRpb25zaGlw {
+    LineThickness: 2;
+    LineStyle: 10-10;
+    LineColor: #444444;
+    FontColor: #444444;
+    FontSize: 24;
+    MaximumWidth: 200;
+  }
+  // Relationship,Dotted
+  .Relationship-UmVsYXRpb25zaGlwLERvdHRlZA== {
+    LineThickness: 3;
+    LineStyle: 3-3;
+    LineColor: #444444;
+    FontColor: #444444;
+    FontSize: 24;
+    MaximumWidth: 200;
+  }
+  // Relationship,Thick
+  .Relationship-UmVsYXRpb25zaGlwLFRoaWNr {
+    LineThickness: 4;
+    LineStyle: 20-20;
+    LineColor: #444444;
+    FontColor: #444444;
+    FontSize: 24;
+    MaximumWidth: 200;
+  }
+  // Element
+  .DeploymentNode-RWxlbWVudA== {
+    BackgroundColor: #ffffff;
+    LineColor: #444444;
+    LineStyle: 0;
+    LineThickness: 2;
+    FontColor: #444444;
+    FontSize: 24;
+    HorizontalAlignment: center;
+    Shadowing: 0;
+  }
+</style>
+
+rectangle "Server\n<size:16>[Deployment Node: Linux]</size>" <<DeploymentNode-RWxlbWVudA==>> as Live.Server {
+  rectangle "==Web\n<size:16>[Container: Rust]</size>" <<Element-RWxlbWVudCxSb3VuZGVk>> as Live.Server.Web_1
+  hexagon "==Api "v2"\n<size:22>[Container: Rust]</size>\n\nServes <things> & more." <<Element-RWxlbWVudCxIZXg=>> as Live.Server.Apiv2_1
+}
+
+rectangle "Store\n<size:16>[Deployment Node: Disk]</size>" <<DeploymentNode-RWxlbWVudA==>> as Live.Store {
+  storage "==Db\n<size:16>[Container: SQL]</size>\n\nStores things." <<Element-RWxlbWVudCxDaXJj>> as Live.Store.Db_1
+}
+
+rectangle "Edge\n<size:16>[Deployment Node]</size>" <<DeploymentNode-RWxlbWVudA==>> as Live.Edge {
+  rectangle "==Proxy\n<size:16>[Infrastructure Node: nginx]</size>\n\nForwards." <<Element-RWxlbWVudA==>> as Live.Edge.Proxy
+}
+
+Live.Server.Web_1 --> Live.Server.Apiv2_1 <<Relationship-UmVsYXRpb25zaGlwLERvdHRlZA==>> : "Calls"
+Live.Server.Apiv2_1 --> Live.Store.Db_1 <<Relationship-UmVsYXRpb25zaGlwLFRoaWNr>> : "Reads"
+Live.Edge.Proxy --> Live.Server <<Relationship-UmVsYXRpb25zaGlw>> : "Forwards to\n<size:16>[HTTPS]</size>"
+Live.Server --> Live.Store <<Relationship-UmVsYXRpb25zaGlw>> : "Backs up to"
+
+@enduml

@@ -1,0 +1,54 @@
+@startuml
+title <size:24>Shop in production</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+!include <C4/C4_Deployment>
+
+Deployment_Node(Live.Cloud, "Cloud", $type="AWS", $descr="The cloud account.", $tags="", $link="") {
+  Deployment_Node(Live.Cloud.DNS, "DNS", $type="Route 53", $descr="Routes requests.", $tags="", $link="")
+  Deployment_Node(Live.Cloud.Loadbalancer, "Load balancer", $type="ELB", $descr="Spreads requests.", $tags="", $link="")
+  Deployment_Node(Live.Cloud.Webhost, "Web host (x2)", $type="EC2", $descr="Runs the web tier.", $tags="", $link="") {
+    Container(Live.Cloud.Webhost.Web_1, "Web", $techn="Rust", $descr="Serves the pages.", $tags="", $link="")
+    Container(Live.Cloud.Webhost.Web_2, "Web", $techn="Rust", $descr="Serves the pages.", $tags="", $link="")
+  }
+
+  Deployment_Node(Live.Cloud.Apihost, "Api host (x2..4)", $type="EC2", $descr="Runs the api.", $tags="", $link="") {
+    Container(Live.Cloud.Apihost.Api_1, "Api", $techn="Rust", $descr="Takes orders.", $tags="", $link="")
+    Container(Live.Cloud.Apihost.Api_2, "Api", $techn="Rust", $descr="Takes orders.", $tags="", $link="")
+  }
+
+  Deployment_Node(Live.Cloud.Database, "Database", $type="RDS", $descr="Managed database.", $tags="", $link="") {
+    ContainerDb(Live.Cloud.Database.Db_1, "Db", $techn="PostgreSQL", $descr="Stores orders.", $tags="", $link="")
+  }
+
+}
+
+Deployment_Node(Live.Mailprovider, "Mail provider", $type="SaaS", $descr="A third party.", $tags="", $link="") {
+  System(Live.Mailprovider.Mail_1, "Mail", $descr="Sends mail.", $tags="", $link="")
+}
+
+Rel(Live.Cloud.Webhost.Web_1, Live.Cloud.Apihost.Api_1, "Sends orders to", $techn="JSON/HTTPS", $tags="", $link="")
+Rel(Live.Cloud.Webhost.Web_2, Live.Cloud.Apihost.Api_2, "Sends orders to", $techn="JSON/HTTPS", $tags="", $link="")
+Rel(Live.Cloud.Apihost.Api_1, Live.Cloud.Database.Db_1, "Reads and writes", $techn="SQL", $tags="", $link="")
+Rel(Live.Cloud.Apihost.Api_2, Live.Cloud.Database.Db_1, "Reads and writes", $techn="SQL", $tags="", $link="")
+Rel(Live.Cloud.Apihost.Api_1, Live.Mailprovider.Mail_1, "Sends mail through", $techn="SMTP", $tags="", $link="")
+Rel(Live.Cloud.Apihost.Api_2, Live.Mailprovider.Mail_1, "Sends mail through", $techn="SMTP", $tags="", $link="")
+Rel(Live.Cloud.DNS, Live.Cloud.Loadbalancer, "Forwards requests to", $techn="HTTPS", $tags="", $link="")
+Rel(Live.Cloud.Loadbalancer, Live.Cloud.Webhost.Web_1, "Forwards requests to", $techn="HTTPS", $tags="", $link="")
+Rel(Live.Cloud.Loadbalancer, Live.Cloud.Webhost.Web_2, "Forwards requests to", $techn="HTTPS", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

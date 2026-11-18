@@ -1,0 +1,21 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Shop in staging"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph 36 ["Test box"]
+      style 36 fill:#ffffff,stroke:#444444,color:#444444
+
+      37["<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves the pages.</div>"]
+      style 37 fill:#ffffff,stroke:#444444,color:#444444
+      38["<div style='font-weight: bold'>Api</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Takes orders.</div>"]
+      style 38 fill:#ffffff,stroke:#444444,color:#444444
+      40[("<div style='font-weight: bold'>Db</div><div style='font-size: 70%; margin-top: 0px'>[Container: PostgreSQL]</div><div style='font-size: 80%; margin-top:10px'>Stores orders.</div>")]
+      style 40 fill:#ffffff,stroke:#444444,color:#444444
+    end
+
+    37-. "<div>Sends orders to</div><div style='font-size: 70%'>[JSON/HTTPS]</div>" .->38
+    38-. "<div>Reads and writes</div><div style='font-size: 70%'>[SQL]</div>" .->40
+
+  end

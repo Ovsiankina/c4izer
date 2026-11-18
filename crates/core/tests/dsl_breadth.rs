@@ -3011,7 +3011,7 @@ fn p2_138_non_https_url_include_is_error() {
 /// `workspace extends <relative file>` puts the base's elements, relationships and views in the model.
 #[test]
 fn p2_16_extends_loads_base() {
-    // TODO(srs): P2-16 URL and JSON bases, edits to base literals. Readings taken (B dsl-breadth 6, 9): UrlNotSupported; JSON base LaterPhase (3); edits patch the base file.
+    // TODO(srs): P2-16 URL and JSON bases, edits to base literals. Readings taken (B dsl-breadth 6, 9): UrlNotSupported; JSON base read (P3-419); edits patch the base file.
     let p = extends_fixture();
     let m = &p.model;
     assert_eq!(m.name.as_ref().unwrap().value, "Base");
@@ -3030,15 +3030,11 @@ fn p2_16_extends_loads_base() {
     let path = Some(std::path::Path::new("/w/workspace.dsl"));
     let e = model::parse_with(&child("https://example.com/w.dsl"), path, &mut Mem::default()).unwrap_err();
     assert_eq!(e.kind, ModelErrorKind::UrlNotSupported { url: "https://example.com/w.dsl".into() });
+    // A JSON base is read since the exporters row (P3-419); `{}` is JSON
+    // but no workspace.
     let mut loader = Mem::default().file("/w/base.json", "{}");
     let e = model::parse_with(&child("base.json"), path, &mut loader).unwrap_err();
-    assert_eq!(
-        e.kind,
-        ModelErrorKind::LaterPhase {
-            construct: "workspace extends base.json".into(),
-            phase: 3
-        }
-    );
+    assert!(matches!(e.kind, ModelErrorKind::FileFormat { ref path, .. } if path == "base.json"), "{e:?}");
     let e = error_of(&child("base.dsl"));
     assert_eq!(e.kind, ModelErrorKind::NeedsFile { construct: "workspace extends".into() });
 }

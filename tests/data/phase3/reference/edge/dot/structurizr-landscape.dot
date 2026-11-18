@@ -1,0 +1,29 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">System Landscape View</font><br /><font point-size="24">Everything at once</font>>
+
+  subgraph "cluster_group_Partners" {
+    margin=25
+    label=<<font point-size="24"><br />Partners</font>>
+    labelloc=b
+    color="#aa0000"
+    fontcolor="#aa0000"
+    fillcolor="#ffffff"
+    style="dashed"
+
+    2 [id=2,shape=rect, label=<<font point-size="34">Partner</font><br /><font point-size="19">[Software System]</font>>, style=filled, color="#6b6b6b", fillcolor="#999999", fontcolor="#ffffff"]
+  }
+
+  1 [id=1,shape=rect, label=<<font point-size="34">User \"Q\" & <Co></font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Uses things: \"quotes\" &<br /><angles>, café au lait.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  3 [id=3,shape=rect, label=<<font point-size="34">Robot</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Pokes things now and then.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  4 [id=4,shape=rect, label=<<font point-size="34">Shop with a rather<br />long name for<br />wrapping tests</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">A system whose description is<br />long enough to wrap in several<br />places, really.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  8 [id=8,shape=rect, label=<<font point-size="34">Shapes</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Every shape.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+
+  1 -> 4 [id=29, label=<<font point-size="24">Browses "fast" & <well></font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  3 -> 4 [id=32, label=<<font point-size="24">Pokes</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  4 -> 2 [id=34, label=<<font point-size="24">Reports to</font><br /><font point-size="19">[HTTPS]</font>>, style="solid", color="#444444", fontcolor="#444444"]
+
+}

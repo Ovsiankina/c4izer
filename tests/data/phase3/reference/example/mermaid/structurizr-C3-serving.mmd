@@ -1,0 +1,75 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Component View: Atomanja - Atomanja server"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    1["<div style='font-weight: bold'>Worker</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>The one person whose tasks<br />are tracked. Sees own tasks<br />and debts, marks debts as<br />sent.</div>"]
+    style 1 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    2["<div style='font-weight: bold'>Witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Accountability partner. Sees<br />late tasks, claims debts,<br />marks them received.</div>"]
+    style 2 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    3["<div style='font-weight: bold'>Admin witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Maintainer. Troubleshoots the<br />witness view on fake data.</div>"]
+    style 3 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+
+    4["<div style='font-weight: bold'>Vikunja</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Existing task manager. Source<br />of tasks and deadlines. Never<br />modified.</div>"]
+    style 4 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+    5["<div style='font-weight: bold'>Push services</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Browser vendors' endpoints<br />that deliver notifications to<br />installed apps.</div>"]
+    style 5 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+    6["<div style='font-weight: bold'>Mail server</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Delivers invite and<br />password-reset emails.</div>"]
+    style 6 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+
+    subgraph 7 ["Atomanja"]
+      style 7 fill:#ffffff,stroke:#0e4686,color:#0e4686
+
+      subgraph 8 ["Atomanja server"]
+        style 8 fill:#ffffff,stroke:#155fa0,color:#155fa0
+
+        10["<div style='font-weight: bold'>web</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, axum, htmx]</div><div style='font-size: 80%; margin-top:10px'>HTTP layer: both views, login<br />flows, debt actions, push<br />subscription.</div>"]
+        style 10 fill:#c2410c,stroke:#872d08,color:#ffffff
+        11["<div style='font-weight: bold'>sync</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, tokio]</div><div style='font-size: 80%; margin-top:10px'>Poll loop: fetch, apply to<br />ledger, persist, notify.</div>"]
+        style 11 fill:#c2410c,stroke:#872d08,color:#ffffff
+        13["<div style='font-weight: bold'>ledger</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Pure domain rules: deadlines,<br />met or late, debts, claims,<br />marks, amount.</div>"]
+        style 13 fill:#2e7d32,stroke:#205723,color:#ffffff
+        14["<div style='font-weight: bold'>auth</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Pure account rules: roles,<br />password hashing, tokens,<br />permission checks.</div>"]
+        style 14 fill:#2e7d32,stroke:#205723,color:#ffffff
+        16["<div style='font-weight: bold'>vikunja</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, HTTP client]</div><div style='font-size: 80%; margin-top:10px'>Read-only Vikunja client.<br />Maps tasks to snapshot<br />records.</div>"]
+        style 16 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        17["<div style='font-weight: bold'>notify</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, Web Push]</div><div style='font-size: 80%; margin-top:10px'>Turns ledger changes into<br />push notifications. Owns the<br />push keys.</div>"]
+        style 17 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        18["<div style='font-weight: bold'>mail</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, SMTP client]</div><div style='font-size: 80%; margin-top:10px'>Sends invite and<br />password-reset emails.</div>"]
+        style 18 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        19["<div style='font-weight: bold'>store</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, SQLite]</div><div style='font-size: 80%; margin-top:10px'>Persistence for ledger and<br />dev databases. Ledger is<br />insert-only.</div>"]
+        style 19 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+      end
+
+      20[("<div style='font-weight: bold'>Ledger database</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQLite file]</div><div style='font-size: 80%; margin-top:10px'>Append-only record of<br />deadlines, debts, claims,<br />marks and accounts.</div>")]
+      style 20 fill:#00796b,stroke:#00544a,color:#ffffff
+      21[("<div style='font-weight: bold'>Dev database</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQLite file]</div><div style='font-size: 80%; margin-top:10px'>Fake tasks and debts for the<br />admin witness. Isolated from<br />the real ledger.</div>")]
+      style 21 fill:#00796b,stroke:#00544a,color:#ffffff
+    end
+
+    5-. "<div>Delivers notifications to</div><div style='font-size: 70%'></div>" .->1
+    5-. "<div>Delivers notifications to</div><div style='font-size: 70%'></div>" .->2
+    1-. "<div>Views tasks, marks debts sent</div><div style='font-size: 70%'>[HTTPS]</div>" .->10
+    2-. "<div>Claims debts, marks them<br />received</div><div style='font-size: 70%'>[HTTPS]</div>" .->10
+    3-. "<div>Troubleshoots on fake data</div><div style='font-size: 70%'>[HTTPS]</div>" .->10
+    10-. "<div>Runs debt actions on</div><div style='font-size: 70%'></div>" .->13
+    10-. "<div>Checks sessions and<br />permissions with</div><div style='font-size: 70%'></div>" .->14
+    10-. "<div>Loads and saves through</div><div style='font-size: 70%'></div>" .->19
+    10-. "<div>Stores subscriptions,<br />notifies through</div><div style='font-size: 70%'></div>" .->17
+    10-. "<div>Sends invites and resets<br />through</div><div style='font-size: 70%'></div>" .->18
+    11-. "<div>Fetches snapshot through</div><div style='font-size: 70%'></div>" .->16
+    11-. "<div>Applies snapshot to</div><div style='font-size: 70%'></div>" .->13
+    11-. "<div>Appends changes through</div><div style='font-size: 70%'></div>" .->19
+    11-. "<div>Hands changes to</div><div style='font-size: 70%'></div>" .->17
+    16-. "<div>Fetches tasks from</div><div style='font-size: 70%'>[HTTPS/JSON]</div>" .->4
+    17-. "<div>Reads change types from</div><div style='font-size: 70%'></div>" .->13
+    17-. "<div>Picks recipients by role with</div><div style='font-size: 70%'></div>" .->14
+    17-. "<div>Sends notifications through</div><div style='font-size: 70%'>[Web Push]</div>" .->5
+    18-. "<div>Sends emails through</div><div style='font-size: 70%'>[SMTP]</div>" .->6
+    19-. "<div>Persists state of</div><div style='font-size: 70%'></div>" .->13
+    19-. "<div>Persists accounts of</div><div style='font-size: 70%'></div>" .->14
+    19-. "<div>Reads and appends</div><div style='font-size: 70%'>[SQL]</div>" .->20
+    19-. "<div>Reads and writes</div><div style='font-size: 70%'>[SQL]</div>" .->21
+
+  end

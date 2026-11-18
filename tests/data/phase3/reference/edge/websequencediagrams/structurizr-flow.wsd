@@ -1,0 +1,9 @@
+title Dynamic View: Shop with a rather long name for wrapping tests\nWith a response
+
+actor <<Person>>\nUser "Q" & <Co> as User "Q" & <Co>
+participant <<Container>>\nWeb as Web
+participant <<Container>>\nApi "v2" as Api "v2"
+
+User "Q" & <Co>->Web: Opens
+Web->Api "v2": Calls
+Api "v2"-->Web: Answers

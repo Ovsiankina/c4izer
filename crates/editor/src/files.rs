@@ -577,6 +577,13 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
     let label = match format {
         ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "SVG image",
         ExportFormat::Png => "PNG image",
+        ExportFormat::PlantUml | ExportFormat::C4PlantUml => "PlantUML",
+        ExportFormat::Mermaid => "Mermaid",
+        ExportFormat::WebSequenceDiagrams => "WebSequenceDiagrams",
+        ExportFormat::Dot => "Graphviz DOT",
+        ExportFormat::Ilograph => "Ilograph",
+        ExportFormat::Json | ExportFormat::Theme => "JSON",
+        ExportFormat::Static => "HTML",
     };
     rfd::FileDialog::new()
         .set_title("Export view")
@@ -598,10 +605,16 @@ pub fn folder_dialog(dir: &Path) -> Option<PathBuf> {
         .pick_folder()
 }
 
-/// `<view key>.svg` or `<view key>.png` (EDIT-7).
+/// `<view key>.svg` or `<view key>.png` (EDIT-7); a Structurizr text
+/// format's `structurizr-<view key>.<ext>`, as `c4rizer export` names it
+/// (P3-404, P3-431).
 #[must_use]
 pub fn export_name(view_key: &str, format: ExportFormat) -> String {
-    format!("{view_key}.{}", format.extension())
+    if format.per_view_text() {
+        format!("structurizr-{view_key}.{}", format.extension())
+    } else {
+        format!("{view_key}.{}", format.extension())
+    }
 }
 
 /// The folder of the diagram file, the export dialogs' start (EDIT-7):

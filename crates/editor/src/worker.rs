@@ -43,6 +43,8 @@ use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
 use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
+
+use crate::export_files;
 use c4rizer_core::pipeline::{
     BuildError, PREVIEW_ROUTE, ViewBuild, build_spec_in, build_view_in, default_view, rebuild_after_move,
 };
@@ -116,16 +118,73 @@ pub enum ExportFormat {
     /// `--svg-text outline`).
     // APPROVER: new pub item beyond A.2 (as `SvgEmbedded`).
     SvgOutlined,
+    /// `export::text::plantuml` with `Flavour::Structurizr`: one
+    /// `structurizr-<key>.puml` and its `-key.puml` legend per view
+    /// (P3-406, P3-431).
+    // APPROVER: approved 2026-11-18
+    PlantUml,
+    /// `export::text::plantuml` with `Flavour::C4PlantUml` (P3-407).
+    // APPROVER: approved 2026-11-18
+    C4PlantUml,
+    /// `export::text::mermaid` (P3-408).
+    // APPROVER: approved 2026-11-18
+    Mermaid,
+    /// `export::text::websequencediagrams`, dynamic views only (P3-409).
+    // APPROVER: approved 2026-11-18
+    WebSequenceDiagrams,
+    /// `export::text::dot` without positions (P3-410).
+    // APPROVER: approved 2026-11-18
+    Dot,
+    /// `export::text::ilograph`, one file for the workspace (P3-412).
+    // APPROVER: approved 2026-11-18
+    Ilograph,
+    /// `export::json`, `<file stem>.json` (P3-413).
+    // APPROVER: approved 2026-11-18
+    Json,
+    /// `export::theme`, `workspace-theme.json` (P3-421).
+    // APPROVER: approved 2026-11-18
+    Theme,
+    /// `export::static_site` (P3-423).
+    // APPROVER: approved 2026-11-18
+    Static,
 }
 
 impl ExportFormat {
-    /// `svg` or `png`, the file extension (EDIT-7).
+    /// The file extension (EDIT-7, P3-404): `svg`, `png`, `puml`, `mmd`,
+    /// `wsd`, `dot`, `yaml` (Ilograph), `json` (JSON and theme), `html`
+    /// (static site).
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
             ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "svg",
             ExportFormat::Png => "png",
+            ExportFormat::PlantUml | ExportFormat::C4PlantUml => "puml",
+            ExportFormat::Mermaid => "mmd",
+            ExportFormat::WebSequenceDiagrams => "wsd",
+            ExportFormat::Dot => "dot",
+            ExportFormat::Ilograph => "yaml",
+            ExportFormat::Json | ExportFormat::Theme => "json",
+            ExportFormat::Static => "html",
         }
+    }
+
+    /// True for a Structurizr text format written one file per view,
+    /// named `structurizr-<key>.<ext>` (P3-404).
+    pub(crate) const fn per_view_text(self) -> bool {
+        matches!(
+            self,
+            ExportFormat::PlantUml
+                | ExportFormat::C4PlantUml
+                | ExportFormat::Mermaid
+                | ExportFormat::WebSequenceDiagrams
+                | ExportFormat::Dot
+        )
+    }
+
+    /// True for a format written for the whole workspace into a folder
+    /// (Ilograph, JSON, theme, static site), whatever view is open.
+    pub(crate) const fn whole_workspace(self) -> bool {
+        matches!(self, ExportFormat::Ilograph | ExportFormat::Json | ExportFormat::Theme | ExportFormat::Static)
     }
 }
 
@@ -469,7 +528,12 @@ pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
             mode,
         } => Some(Reply::Exported {
             generation,
-            result: export(&parsed.model, &targets, format, png_width, mode),
+            result: if format.per_view_text() || format.whole_workspace() {
+                export_files(&parsed, &targets, format)
+            } else {
+                refuse_inputs(&parsed, &targets.iter().map(|t| t.path.clone()).collect::<Vec<_>>())
+                    .and_then(|()| export(&parsed.model, &targets, format, png_width, mode))
+            },
         }),
     }
 }
@@ -540,12 +604,133 @@ fn export(
                     format!("cannot export view \"{}\" as PNG: {e}", target.view.key())
                 })?
             }
+            _ => unreachable!("text, JSON, theme and static go through `export_files`"),
         };
-        std::fs::write(&target.path, bytes)
+        export_files::replace_file(&target.path, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", target.path.display()))?;
         written.push(target.path.clone());
     }
     Ok(written)
+}
+
+/// Writes a Structurizr text format, JSON, theme or the static site
+/// (P3-431) with the same core functions and file names as `c4rizer
+/// export -f` (P3-400): a per-view text format writes each target's
+/// `structurizr-<key>.<ext>` to the target's path (`PlantUml` adds the
+/// `-key.puml` legend beside it); a whole-workspace format writes every
+/// file into the folder of the first target. Views a format cannot
+/// express are skipped, as the CLI skips them (P3-405).
+// DECISION: these formats are built from the file alone in light mode,
+// as the CLI builds them (`pipeline::build_all`), so the files equal
+// what `c4rizer export` writes; the canvas keep and the dark mode only
+// reach the SVG and PNG exports.
+// DECISION: `structurizr.dsl` of the JSON is the root file's text
+// (`trees[0]`), none for a workspace JSON (P3-420), and the JSON is
+// named after the root file's stem, as the CLI names it.
+fn export_files(parsed: &Parsed, targets: &[ExportTarget], format: ExportFormat) -> Result<Vec<PathBuf>, String> {
+    let model = &parsed.model;
+    let Ok(all) = c4rizer_core::pipeline::build_all(model, &AtomicBool::new(false)) else {
+        return Err("the export was stopped".to_owned());
+    };
+    // A workspace JSON is read through a stub `<name>.c4rizer-json.dsl`
+    // beside it (`state::parse_doc`): the file is the JSON, with no DSL.
+    let root = parsed.paths.first().cloned().unwrap_or_default();
+    let root_name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let json_doc = root_name.ends_with(JSON_STUB_SUFFIX);
+    let file = if json_doc { root.with_file_name(root_name.trim_end_matches(JSON_STUB_SUFFIX)) } else { root.clone() };
+    let dsl = (!json_doc).then(|| parsed.trees.first().map(c4rizer_core::text::SyntaxTree::print)).flatten();
+    let name = match format {
+        ExportFormat::PlantUml => "plantuml/structurizr",
+        ExportFormat::C4PlantUml => "plantuml/c4plantuml",
+        ExportFormat::Mermaid => "mermaid",
+        ExportFormat::WebSequenceDiagrams => "websequencediagrams",
+        ExportFormat::Dot => "dot",
+        ExportFormat::Ilograph => "ilograph",
+        ExportFormat::Json => "json",
+        ExportFormat::Theme => "theme",
+        ExportFormat::Static => "static",
+        ExportFormat::Svg | ExportFormat::Png | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => {
+            unreachable!("image formats go through `export`")
+        }
+    };
+    let source = export_files::Source {
+        model,
+        all: &all,
+        path: Some(&file),
+        dsl: dsl.as_deref(),
+    };
+    let Some(files) = export_files::files(name, &source, false) else {
+        unreachable!("every text, JSON, theme and static format is in export_files");
+    };
+    // CLI-1's guard, as `c4rizer export` applies it: keys equal up to case
+    // would overwrite each other's files (per-view formats, static).
+    if !matches!(format, ExportFormat::Json | ExportFormat::Theme | ExportFormat::Ilograph) {
+        let keys: Vec<&str> = all.views.iter().map(|v| v.plan.key.as_str()).collect();
+        if let Some((first, second)) = export_files::case_collision(&keys) {
+            return Err(format!(
+                "nothing exported: view keys \"{first}\" and \"{second}\" differ only in case, so their files would overwrite each other — rename one of the views"
+            ));
+        }
+    }
+    // Every file to write, decided before any is written (R1).
+    let mut plan: Vec<(PathBuf, &[u8])> = Vec::new();
+    let mut skipped = None;
+    if format.whole_workspace() {
+        let Some(folder) = targets.first().and_then(|t| t.path.parent()) else {
+            return Err("nothing to export: no folder chosen".to_owned());
+        };
+        plan.extend(files.iter().map(|(n, b)| (folder.join(n), b.as_slice())));
+    } else {
+        let ext = format.extension();
+        for target in targets {
+            let key = target.view.key();
+            let name = PathBuf::from(format!("structurizr-{key}.{ext}"));
+            let Some((_, bytes)) = files.iter().find(|(n, _)| *n == name) else {
+                skipped.get_or_insert(key);
+                continue;
+            };
+            plan.push((target.path.clone(), bytes));
+            let legend = PathBuf::from(format!("structurizr-{key}-key.{ext}"));
+            if let Some((_, bytes)) = files.iter().find(|(n, _)| *n == legend) {
+                let stem = target.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                plan.push((target.path.with_file_name(format!("{stem}-key.{ext}")), bytes));
+            }
+        }
+    }
+    if plan.is_empty()
+        && let Some(key) = skipped
+    {
+        return Err(format!("nothing to export: view \"{key}\" cannot be written in this format"));
+    }
+    let outputs: Vec<PathBuf> = plan.iter().map(|(p, _)| p.clone()).collect();
+    refuse_inputs(parsed, &outputs)?;
+    let mut written = Vec::new();
+    for (path, bytes) in plan {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        export_files::replace_file(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+/// The name suffix of the stub a workspace JSON is parsed through
+/// (`state::parse_doc`).
+pub(crate) const JSON_STUB_SUFFIX: &str = ".c4rizer-json.dsl";
+
+/// R1: an error naming both paths when an output is a file the
+/// document was read from (the root file, every included or extended
+/// file; same device and inode), so the export writes nothing.
+fn refuse_inputs(parsed: &Parsed, outputs: &[PathBuf]) -> Result<(), String> {
+    match export_files::input_hit(outputs, &parsed.paths) {
+        Some((out, input)) => Err(format!(
+            "export refused: {} is a file this diagram is read from ({}) — choose another folder or name",
+            out.display(),
+            input.display()
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The worker thread's loop: wait for a request, take every queued one,

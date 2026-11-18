@@ -1,0 +1,19 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">System Context View: Atomanja</font><br /><font point-size="24">System Context diagram for Atomanja</font>>
+
+  1 [id=1,shape=rect, label=<<font point-size="34">Worker</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">The one person whose tasks are<br />tracked. Sees own tasks and<br />debts, marks debts as sent.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  2 [id=2,shape=rect, label=<<font point-size="34">Witness</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Accountability partner. Sees<br />late tasks, claims debts,<br />marks them received.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  3 [id=3,shape=rect, label=<<font point-size="34">Admin witness</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Maintainer. Troubleshoots the<br />witness view on fake data.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  4 [id=4,shape=rect, label=<<font point-size="34">Vikunja</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Existing task manager. Source<br />of tasks and deadlines. Never<br />modified.</font>>, style=filled, color="#413e4a", fillcolor="#5d5a6b", fontcolor="#ffffff"]
+  7 [id=7,shape=rect, label=<<font point-size="34">Atomanja</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Records task deadlines, turns<br />missed ones into debts, and<br />tracks their settlement.</font>>, style=filled, color="#0e4686", fillcolor="#1565c0", fontcolor="#ffffff"]
+
+  1 -> 7 [id=23, label=<<font point-size="24">Views tasks and debts,<br />marks debts sent, invites<br />witnesses</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  2 -> 7 [id=25, label=<<font point-size="24">Views late tasks, claims<br />debts, marks debts<br />received</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  3 -> 7 [id=27, label=<<font point-size="24">Troubleshoots the witness<br />view on fake data</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  7 -> 4 [id=29, label=<<font point-size="24">Polls tasks and deadlines,<br />read-only</font><br /><font point-size="19">[HTTPS/JSON]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

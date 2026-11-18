@@ -1,0 +1,38 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Container View: Shop with a rather long name for wrapping tests"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    1["<div style='font-weight: bold'>User "Q" & <Co></div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Uses things: "quotes" &<br /><angles>, café au lait.</div>"]
+    style 1 fill:#ffffff,stroke:#444444,color:#444444
+    2["<div style='font-weight: bold'>Partner</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div>"]
+    style 2 fill:#999999,stroke:#6b6b6b,color:#ffffff
+
+    subgraph 4 ["Shop with a rather long name for wrapping tests"]
+      style 4 fill:#ffffff,stroke:#444444,color:#444444
+
+      subgraph group1 ["Front"]
+        style group1 fill:#ffffff,stroke:#aa0000,color:#aa0000,stroke-dasharray:5
+
+        6["<div style='font-weight: bold'>Api "v2"</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves <things> & more.</div>"]
+        style 6 fill:#ffffff,stroke:#444444,color:#444444
+          subgraph group2 ["Edge"]
+            style group2 fill:#ffffff,stroke:#aa0000,color:#aa0000,stroke-dasharray:5
+
+            5("<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div>")
+            style 5 fill:#ffffff,stroke:#444444,color:#444444
+          end
+
+      end
+
+      7["<div style='font-weight: bold'>Db</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQL]</div><div style='font-size: 80%; margin-top:10px'>Stores things.</div>"]
+      style 7 fill:#ffffff,stroke:#444444,color:#444444
+    end
+
+    1-. "<div>Browses "fast" & <well></div><div style='font-size: 70%'>[HTTPS]</div>" .->5
+    5-. "<div>Calls</div><div style='font-size: 70%'></div>" .->6
+    6-. "<div>Reads</div><div style='font-size: 70%'></div>" .->7
+    6-- "<div>Reports to</div><div style='font-size: 70%'>[HTTPS]</div>" -->2
+
+  end

@@ -1,0 +1,39 @@
+@startuml
+title <size:24>Dynamic View: System - App</size>\n<size:24>Form submission inside the app</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+!include <C4/C4_Component>
+
+Person(User, "User", $descr="Uses the system.", $tags="", $link="")
+
+System_Boundary("System_boundary", "System", $tags="") {
+  Container_Boundary("System.App_boundary", "App", $tags="") {
+    Component(System.App.Handler, "Handler", $techn="Rust", $descr="Takes a request.", $tags="", $link="")
+    Component(System.App.Validator, "Validator", $techn="Rust", $descr="Checks input.", $tags="", $link="")
+  }
+
+  Container(System.Store, "Store", $techn="SQL", $descr="Keeps records.", $tags="", $link="")
+}
+
+Person(User, "User", $descr="Uses the system.", $tags="", $link="")
+Container(System.Store, "Store", $techn="SQL", $descr="Keeps records.", $tags="", $link="")
+
+Rel(User, System.App.Handler, "1: Submits a form", $techn="HTTPS", $tags="", $link="")
+Rel(System.App.Handler, System.App.Validator, "2: Validates the form", $techn="", $tags="", $link="")
+Rel(System.App.Validator, System.Store, "3: Checks the record", $techn="SQL", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml
