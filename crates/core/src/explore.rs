@@ -6,8 +6,26 @@
 //!
 //! Depends on: `model`, `view`, `geom`, `inspect`.
 
+// DECISION: implied rows follow Structurizr's DSL default strategy
+// (`CreateImpliedRelationshipsUnlessAnyRelationshipExistsStrategy`): for
+// each relationship declared while implied relationships are on, one row
+// per (ancestor-or-self of the source, ancestor-or-self of the
+// destination) pair other than the relationship's own, skipping an
+// element and itself or its own ancestor, a pair any model relationship
+// already joins (in that direction, whatever its declaration order), and
+// a pair an earlier relationship already implied. c4rizer keeps implied
+// relationships out of the model (CORE-5 lifts at view time), so an
+// implied row carries the id of the relationship it is implied by.
+// DECISION: the id search and the tables show is the element's
+// `Model::full_key`, else its index (`ElementId.0`); a relationship's
+// key, else its index.
+
+use std::collections::BTreeSet;
+
 use crate::geom::Point;
-use crate::model::{ElementId, Model, RelationshipId, ViewKind, ViewSpec};
+use crate::model::{
+    Element, ElementId, ImpliedRelationships, Model, Property, Relationship, RelationshipId, ViewKind, ViewSpec,
+};
 use crate::view::ViewPlan;
 
 /// One row of the relationships table (P3-502) and of an element's
@@ -34,8 +52,85 @@ pub struct RelationshipRow {
 // APPROVER: new pub item (the sketch's tables need implied rows; core
 // owns lifting, CORE-5).
 pub fn relationship_rows(model: &Model) -> Vec<RelationshipRow> {
-    let _ = model;
-    todo!()
+    let mut rows: Vec<RelationshipRow> = model
+        .relationships
+        .iter()
+        .map(|r| RelationshipRow {
+            relationship: r.id,
+            source: r.source.value,
+            destination: r.destination.value,
+            implied: false,
+        })
+        .collect();
+    let joined: BTreeSet<(ElementId, ElementId)> =
+        model.relationships.iter().map(|r| (r.source.value, r.destination.value)).collect();
+    let mut implied = BTreeSet::new();
+    for r in &model.relationships {
+        if r.implied_relationships == ImpliedRelationships::False {
+            continue;
+        }
+        let (s, d) = (r.source.value, r.destination.value);
+        let (sources, destinations) = (lineage(model, s), lineage(model, d));
+        for &a in &sources {
+            for &b in &destinations {
+                if (a, b) == (s, d) || a == b || destinations.contains(&a) || sources.contains(&b) {
+                    continue;
+                }
+                if joined.contains(&(a, b)) || !implied.insert((a, b)) {
+                    continue;
+                }
+                rows.push(RelationshipRow {
+                    relationship: r.id,
+                    source: a,
+                    destination: b,
+                    implied: true,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// `element`, then its parent, grandparent, ... up to the top.
+fn lineage(model: &Model, element: ElementId) -> Vec<ElementId> {
+    let mut out = vec![element];
+    let mut parent = model.element(element).parent;
+    while let Some(p) = parent {
+        out.push(p);
+        parent = model.element(p).parent;
+    }
+    out
+}
+
+/// The id the tables show and search matches for `element`: its full
+/// key, else its index.
+#[must_use]
+fn element_id_text(model: &Model, element: &Element) -> String {
+    model.full_key(element.id).unwrap_or_else(|| element.id.0.to_string())
+}
+
+/// The id the tables show and search matches for `relationship`: its
+/// key, else its index.
+fn relationship_id_text(relationship: &Relationship) -> String {
+    relationship
+        .key
+        .as_ref()
+        .map_or_else(|| relationship.id.0.to_string(), |k| k.value.clone())
+}
+
+/// True when `haystack` contains `needle` (already lower case), ignoring
+/// case.
+fn has(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+        return n.is_empty() || h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+    }
+    haystack.to_lowercase().contains(needle)
+}
+
+/// True when any property value contains `needle`.
+fn any_property(properties: &[Property], needle: &str) -> bool {
+    properties.iter().any(|p| has(&p.value.value, needle))
 }
 
 /// The elements and relationships a search matches (P3-503), each in
@@ -54,8 +149,37 @@ pub struct Hits {
 /// technology, tag or property value contains `text`, ignoring case.
 /// An empty `text` matches everything. Serves P3-503.
 pub fn search(model: &Model, text: &str) -> Hits {
-    let _ = (model, text);
-    todo!()
+    let needle = text.to_lowercase();
+    let q = needle.as_str();
+    let opt = |l: &Option<crate::model::Literal>| l.as_ref().is_some_and(|l| has(&l.value, q));
+    let elements = model
+        .elements
+        .iter()
+        .filter(|e| {
+            q.is_empty()
+                || has(&e.name.value, q)
+                || has(&element_id_text(model, e), q)
+                || opt(&e.description)
+                || opt(&e.technology)
+                || e.tags.iter().any(|t| has(t, q))
+                || any_property(&e.properties, q)
+        })
+        .map(|e| e.id)
+        .collect();
+    let relationships = model
+        .relationships
+        .iter()
+        .filter(|r| {
+            q.is_empty()
+                || has(&relationship_id_text(r), q)
+                || opt(&r.description)
+                || opt(&r.technology)
+                || r.tags.iter().any(|t| has(t, q))
+                || any_property(&r.properties, q)
+        })
+        .map(|r| r.id)
+        .collect();
+    Hits { elements, relationships }
 }
 
 /// The elements inspection `model.element.noview` reports, in model
@@ -63,8 +187,8 @@ pub fn search(model: &Model, text: &str) -> Hits {
 // APPROVER: new pub item (P3-505 needs the inspection's set without
 // running every inspection).
 pub fn in_no_view(model: &Model) -> Vec<ElementId> {
-    let _ = model;
-    todo!()
+    let shown = crate::inspect::shown(model);
+    model.elements.iter().map(|e| e.id).filter(|e| !shown.contains(e)).collect()
 }
 
 /// How a view draws an element (P3-504).
