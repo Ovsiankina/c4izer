@@ -81,7 +81,7 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | DSL keyword | line continuation `\` at end of line | 2 | lexed in phase 1, rejected per DSL-4 |
 | DSL keyword | `"""` text blocks | 2 | lexed in phase 1, rejected per DSL-4; value rules (indent, escapes) as the Structurizr reference gives them |
 | DSL keyword | `--<archetype>->` relationship | 2 | Needs archetypes |
-| DSL keyword | `-/>` remove relationship (deployment environment) | 3 | Deployment |
+| DSL keyword | `-/>` remove relationship (deployment environment) | 3 | Deployment; differs (accepted): Structurizr 6.2.4 refuses it, c4rizer accepts it as a superset (P3-108) |
 | DSL keyword | `deploymentEnvironment <name>` | 3 | |
 | DSL keyword | `deploymentGroup <name>` | 3 | |
 | DSL keyword | `deploymentNode <name> [desc] [tech] [tags] [instances]` | 3 | |
@@ -191,11 +191,12 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | export format | `plantuml/c4plantuml` | 3 | |
 | export format | `mermaid` | 3 | |
 | export format | `websequencediagrams` | 3 | Dynamic views only |
-| export format | `static` (HTML site) | 3 | |
+| export format | `static` (HTML site) | 3 | differs (accepted): c4rizer's own script-free HTML+SVG site, not Structurizr's JS viewer (P3-423) |
 | export format | `json` (Structurizr workspace JSON) | 3 | |
 | export format | `theme` (JSON theme from workspace styles) | 3 | |
 | export format | Custom exporter by FQCN (`plugins` JAR) | never | Needs the JVM |
-| export format | DOT (Graphviz) | 3 | Not a Structurizr format; listed in the c4rizer phase-3 brief |
+| export format | DOT (Graphviz) | 3 | Not in Structurizr CLI 6.2.4; in structurizr-export 6.2.4 (`DOTExporter`) |
+| export format | `ilograph` | 3 | Not in Structurizr CLI 6.2.4; in structurizr-export 6.2.4 (`IlographExporter`) |
 | CLI command | `c4rizer render` | 1 | CLI-1; covers `export -format svg/png` |
 | CLI command | `c4rizer lint` | 1 | CLI-3 |
 | CLI command | `export` (non-SVG/PNG formats) | 3 | |
@@ -204,6 +205,7 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | CLI command | `list -workspace` | 2 | Lists elements |
 | CLI command | `merge -workspace -layout [-view] -output` | 3 | Layout from workspace JSON |
 | CLI command | `generate system-landscape -input -output` | 3 | Merges many workspaces, JSON input |
+| CLI command | `c4rizer cache list\|clear` | 3 | c4rizer only; the network fetch cache (P3-612) |
 | CLI command | `version`, `help` | 2 | hand-written, like the rest of the CLI (no `clap`); no phase 1 requirement names them |
 | CLI command | `local` (formerly Lite) | 1 | Replaced by `c4rizer-editor` (EDIT-13) |
 | CLI command | `playground` | never | Replaced by the editor |
@@ -664,6 +666,8 @@ Lint table. "Box" and "line" mean what the view draws, after lifting.
 | L24 | warning | a label has no room |
 | L25 | warning | a text does not fit its box or label rectangle (CORE-30) |
 | L26 | error | a box that is not a child of the scope overlaps the boundary rectangle |
+| L27 | error | a line crosses a deployment node boundary that contains neither of its ends (P3-126) |
+| L28 | warning | a vertex lies inside a box rectangle, or two consecutive vertices of one line are the same point (P3-309) |
 
 Placement
 
@@ -1468,7 +1472,7 @@ is marked "(memory)" and stays TODO(srs).
   (as DSL-5).
   - TODO(srs): base views of other kinds. From memory, Structurizr
     accepts only a `systemLandscape`, `systemContext`, `container` or
-    `component` view as the base. The reference pages read do not say.
+    `component` view, or a deployment view (P3-130), as the base. The reference pages read do not say.
     If confirmed, any other kind (filtered, custom, image) is an error
     naming the key and its kind.
   - TODO(srs): whether the base view may be declared after the filtered
@@ -2085,7 +2089,8 @@ contradicts P2-25 by design).
   `https://` (any case) is a usage error: nothing is fetched (network is
   the phase-3 row). A JSON workspace file fails as a parse error (JSON
   input is phase 3). The workspace may also be given as `-w`,
-  `--workspace` or one bare FILE.
+  `--workspace` or one bare FILE. Phase 3 amends this: a URL needs
+  `--network` (P3-603), and a JSON file is read per P3-416.
 
 **validate** (Structurizr: "Validates a workspace.")
 
@@ -2572,57 +2577,775 @@ Note after it is not part of the sentence.
 
 ### 4.7 Phase 3
 
-Stubs, grouped by ROADMAP phase 3 row; each becomes one testable
-sentence at the row's step 2.
+Requirements grouped by ROADMAP phase 3 row, one testable sentence each
+(rows' step 2, approver-signed 2026-11-18; source
+`docs/plans/phase3-srs-proposal.md`). The parity table (section 2) lists
+every feature they cover. Ids P3-1..P3-9 are the original stubs, kept as
+umbrellas; new ids are allocated in one block per row so rows never
+collide: deployment-view P3-100.., dynamic-view P3-200.., vertices
+P3-300.., exporters P3-400.., explore P3-500.., network P3-600..
+*(probed)* marks behaviour checked against Structurizr 6.2.4 (CLI
+v2026.10.26) in scratch files on 2026-11-18.
+
+Shared terms:
+
+- **Fixture**: a file under `tests/data/phase3/`.
+- **Reference output**: a file that Structurizr 6.2.4 wrote once from a
+  fixture and that is checked in under `tests/data/phase3/structurizr/`.
+  Tests never run Java or touch the network.
+
+Build order (approved): wave A = network, deployment-view, dynamic-view
+and the explore tables (P3-500..P3-507); wave B = vertices, exporters
+(JSON in first) and explore graph, tree and docs; wave C = the exporters'
+text formats and merge/generate. Animation (P3-222..P3-226) lands last
+in dynamic-view.
 
 deployment-view
 
+Authority: SRS 4.7 P3-1, P3-2; parity rows `deploymentEnvironment`,
+`deploymentGroup`, `deploymentNode`, `infrastructureNode`,
+`softwareSystemInstance`, `containerInstance`, `instanceOf`,
+`instances`, `-/>`, view type `deployment`; P2-120, P2-179, P2-2,
+P2-306, P2-632. Fixture `tests/data/phase3/deployment.dsl`.
+
+**Model**
+
 - **P3-1** `deploymentEnvironment`, `deploymentNode`,
-  `infrastructureNode`, `softwareSystemInstance` and
-  `containerInstance` build a deployment model with parents.
+  `infrastructureNode`, `softwareSystemInstance`, `containerInstance`
+  and `instanceOf` build a deployment model in which every node,
+  infrastructure node and instance knows its parent node and its
+  environment. Deployment nodes, infrastructure nodes and instances are
+  elements of the model, of four new element kinds, so styles,
+  expressions, `at` lines, edits and the details panel address them as
+  they address any element; a static view's `include *` still selects
+  none of them (P2-120). Split into P3-100..P3-109.
+- **P3-100** Every `deploymentEnvironment` gives one environment in the
+  model, holding its name and, when one is written, its identifier, in
+  declaration order. Two environments with the same name are a
+  `DuplicateName` error naming both lines.
+- **P3-101** A `deploymentNode` gives one deployment node holding its
+  name, description, technology, tags, `instances` value, parent node
+  (none at the top level) and environment. A nested `deploymentNode` has
+  the enclosing node as parent.
+- **P3-102** `instances` takes a positive integer or a range `m..n` with
+  `m <= n`. The value is kept as written and defaults to `1`. Any other
+  value is an error naming it.
+- **P3-103** An `infrastructureNode` gives one infrastructure node with
+  its name, description, technology, tags and parent node.
+- **P3-104** `softwareSystemInstance <id>`, `containerInstance <id>` and
+  `instanceOf <id>` each give one instance of the named element. It
+  holds its parent node, its deployment groups (default: none) and an
+  instance number. Instances of one element within one environment are
+  numbered 1, 2, ... in declaration order.
+- **P3-105** An instance carries the tag `Software System Instance` or
+  `Container Instance` and its own written tags. For styling it also
+  takes the tags of the element it is an instance of, applied before its
+  own (Structurizr `getAllTagsForElement`).
+- **P3-106** Copied relationships. For every model relationship `a -> b`
+  whose two ends each have at least one instance in the same environment,
+  each pair (instance of `a`, instance of `b`) gets one copied
+  relationship with the same description, technology and tags. A pair
+  gets one only when its two instances share a deployment group; an
+  instance with no group counts as being in a shared default group.
+  On the fixture this gives `A_1 -> B_1` and `A_2 -> B_2` but not
+  `A_1 -> B_2` *(probed)*.
+- **P3-107** A relationship written in a deployment block between a
+  node or infrastructure node and any deployment element is kept. A
+  relationship written between two software system or container
+  instances is an error naming both ends ("not permitted", as
+  Structurizr).
+- **P3-108** `a -/> b` in a deployment block removes the copied
+  relationship between instances `a` and `b` (both must be instances of
+  that environment). When there is no such copied relationship, it is an
+  error naming both ends. Structurizr 6.2.4 refuses `-/>` in every block
+  probed; c4rizer keeps accepting it with this meaning, a superset that
+  breaks no Structurizr file, recorded as "differs (accepted)" in the
+  parity table.
+- **P3-109** Under `!identifiers hierarchical`, a deployment id is
+  addressed by its full dotted path from the environment, as Structurizr
+  6.2.4 does (`live.aws.ec2.webi`), and a bare id inside the enclosing
+  block resolves as P2-142 does. This replaces the flat-id `DECISION`
+  in deploy.rs.
+
+**Drawing**
+
 - **P3-2** A `deployment <system|*> <environment> ["key"]
   ["description"]` view draws deployment nodes as nested boundaries
-  with their instances inside, each drawn instance under its own
-  view-local key. `TODO(srs)`: lint rules and how the router treats
-  nested node boundaries.
+  with their instances and infrastructure nodes inside. Each drawn
+  instance gets its own view-local key. `ViewKind::Deployment` becomes
+  drawable and the view leaves `AllViews::unsupported`. Split into
+  P3-110..P3-131.
+- **P3-110** In a view scoped to system `S`, `include *` selects every
+  container instance of `S`, every software system instance and every
+  infrastructure node of the environment. It selects no person, and no
+  container instance of another system *(probed)*.
+- **P3-111** In a `deployment *` view, `include *` selects every
+  container instance, every infrastructure node, and every software
+  system instance except those of a system that has a container instance
+  in the view *(probed)*.
+- **P3-112** `include <id>` / `exclude <id>` take deployment node,
+  infrastructure node and instance ids. Including a node includes every
+  instance and infrastructure node under it. Element expressions (P2-20)
+  select deployment elements by `element.type==DeploymentNode|
+  InfrastructureNode|SoftwareSystemInstance|ContainerInstance`, tag,
+  technology and properties.
+- **P3-113** A deployment node is drawn only when it contains, at any
+  depth, a drawn instance or infrastructure node. On the fixture, node
+  `Empty` is not drawn *(probed)*.
+- **P3-114** A drawn deployment node is a boundary with a solid border
+  around everything drawn under it. Its label at the top left is the
+  name, with `[Deployment Node: <technology>]` underneath
+  (`[Deployment Node]` when there is no technology). A nested node's
+  boundary lies wholly inside its parent's boundary with at least 20 px
+  between them.
+- **P3-115** A node whose `instances` is not `1` shows `x<value>`
+  (`x2`, `x1..3`) inside its boundary at the bottom-right corner, in the
+  node's text colour (Structurizr renderer `structurizrInstanceCount`).
+- **P3-116** An instance box draws its element's name, description and
+  technology, with the type line `[Container: <tech>]` or
+  `[Software System]`, styled by P3-105's tags. An infrastructure node
+  box has the type line `[Infrastructure Node: <tech>]`.
+- **P3-117** Every drawn instance, infrastructure node and node has a
+  view-local key. It is the written identifier when there is one,
+  otherwise `<element key>_<instance number>` (the PlantUML export's
+  form, P3-104). Two instances of one element in one view are two boxes
+  with two keys.
+- **P3-118** The view draws every copied relationship (P3-106) and
+  every written deployment relationship whose two ends are drawn, lifted
+  to the nearest drawn ancestor by CORE-5. A model relationship between
+  elements is never drawn directly on a deployment view.
+- **P3-119** The default title is the `title` line, else the
+  description. The subtitle is the c4rizer `subtitle` line. A view with
+  neither title nor description gets L8 as in phase 1 (CORE-1).
+- **P3-120** A deployment view with no key gets `Deployment-NNN`
+  (P2-124, already built). It needs no change and is listed here so
+  that row's tests cover it.
+
+**Placement and routing**
+
+- **P3-121** Auto-placement treats each node boundary as a unit: the
+  children of a node, nested nodes included, are placed as a block
+  inside it. Sibling boundaries do not overlap and keep at least 60 px
+  between them (L6 applied to boundaries). With no `at` line, two runs
+  give equal centres (CORE-25).
+- **P3-122** `at` and `size` lines take instance and infrastructure
+  node ids only. A node's boundary is always computed from its children
+  and is never written. An `at` or `size` line naming a deployment node
+  is an error naming the id and saying that node boundaries follow their
+  contents.
+- **P3-123** A line crosses a node boundary only to reach an end inside
+  it, and crosses each boundary on its path at most once. A line between
+  two boxes in the same node stays inside that node's boundary.
+- **P3-124** Layout targets on the fixture's view `live`: no L1, no L3,
+  no L24, crossings at most `maxCrossings` (L4), and building the view
+  takes under 1000 ms in release (P2-111 budget, `perf_p3_124`).
+
+**Lint and inspections**
+
+- **P3-125** On a deployment view, lint runs L1..L14 and L23..L26, and
+  none of L15..L21. L26 reads "a box drawn outside the boundary of its
+  own node, or inside the boundary of a node that is not one of its
+  ancestors".
+- **P3-126** New rule L27 (error): a line crosses a node boundary that
+  contains neither of its ends (P3-123).
+- **P3-127** L10 (no technology) on a container instance reads the
+  technology of the container it is an instance of.
+- **P3-128** The inspections of P2-632 are built:
+  `model.deploymentnode.description`, `model.deploymentnode.technology`,
+  `model.deploymentnode.empty` (a node with no child node, no
+  infrastructure node and no instance),
+  `model.infrastructurenode.description` and
+  `model.infrastructurenode.technology`. Each gives one violation naming
+  the node.
+- **P3-129** For `views.view.empty` (P2-627), a deployment view counts
+  the elements its `include *` selects (P3-110/P3-111). This closes the
+  open deferred row "P2-623/P2-627".
+
+**Other views and the editor**
+
+- **P3-130** A `filtered` view whose base is a deployment view draws
+  that view with the tag filter of P2-9. This closes the deferred P2-306
+  row.
+- **P3-131** In the editor, dragging an instance or infrastructure node
+  writes its `at` line (DSL-9). Its node boundaries are recomputed and
+  re-routed on the next build (EDIT-25). A click on a node boundary
+  selects it, and the details panel shows name, technology, `instances`
+  and environment (EDIT-10). A node is never enterable (EDIT-15).
 
 dynamic-view
 
+Authority: SRS 4.7 P3-3, P3-7; parity rows view type `dynamic`, dynamic
+`[order:]` steps, parallel `{ }` blocks, `animation`, PNG/SVG
+`-animation true`, UI "Animation step forward/back, start/stop"; P2-121.
+Fixture `tests/data/phase3/dynamic.dsl`, holding the views `seq`, `comp`
+and `star`.
+
+**Steps**
+
 - **P3-3** A `dynamic <scope|*> ["key"] ["description"]` view draws its
-  listed relationships in order, each label prefixed with its sequence
-  number, and the same relationship listed twice is two lines with two
-  view-local keys. `TODO(srs)`: parallel sequences and `{ }` blocks.
-- **P3-7** An `animation` block steps through a view's boxes in order;
-  the editor steps forward/back and starts/stops it, and PNG/SVG export
-  can write one image per step. `TODO(srs)`: whether animation of
-  static views belongs here or in its own row.
+  steps in order, each label prefixed with its sequence number. The same
+  relationship listed twice is drawn as two lines with two view-local
+  keys. Split into P3-200..P3-221.
+- **P3-200** Each step is stored in the view in file order, holding its
+  source, destination, the model relationship it stands for, its
+  written description and technology (if any), its sequence number and
+  its span. `ViewKind::Dynamic` becomes drawable.
+- **P3-201** A step `a -> b` stands for the first-declared relationship
+  from `a` to `b`, which may be implied (P2-7). When there is none, it
+  is an error naming both ends: "a relationship between A and B does not
+  exist in the model" *(probed)*.
+- **P3-202** A step `<relationship id> [desc]` stands for that
+  relationship. An id naming no relationship is a DSL-5 error.
+- **P3-203** A step with no description takes the relationship's
+  description. A step with no technology takes the relationship's
+  technology *(probed: `u -> a` drew "1: Uses")*.
+- **P3-204** In a view scoped to software system `S`, a step end may be
+  a person, a software system other than `S`, or a container of any
+  system. A component end is an error: "components can't be added to a
+  dynamic view when the scope is a software system" *(probed)*.
+- **P3-205** In a view scoped to container `C`, a step end may be a
+  component of `C`, a container, a person or a software system other
+  than the one holding `C`. A component of another container is an
+  error naming it.
+- **P3-206** In a `dynamic *` view, a step end must be a person or a
+  software system. Any other kind is an error: "only people and
+  software systems can be added to this dynamic view" *(probed)*.
+- **P3-207** A step end equal to the view's scope is an error: "<name>
+  is already the scope of this view" *(probed)*.
+
+**Numbering**
+
+- **P3-208** Steps with no written order are numbered `1, 2, 3, ...` in
+  file order.
+- **P3-209** A written `n:` sets that step's number to `n` as written,
+  and the following unwritten steps continue from `n + 1` when `n` is an
+  integer.
+- **P3-210** Parallel blocks follow Structurizr 6.2.4's
+  `ParallelSequenceCounter`: every inner `{ }` of an outer `{ }` starts
+  from the number before the outer block. On the fixture view `seq`
+  (`u->a; { {a->b} {a->t; a->b} }; b->a; a->t`), the numbers are
+  `1, 2, 2, 3, 3, 4` *(probed)*.
+- **P3-211** Each drawn line's label is `<number>: <description>`, and
+  the technology line follows CORE-14 and the `technology` option
+  (renderer `order + ": "`).
+
+**Drawing**
+
+- **P3-212** Every step is one drawn line, even when an earlier step has
+  the same two ends. Each step's view-local key is
+  `<relationship key or source->destination>#<number>`, unique in the
+  view. Lines between the same two boxes run as lanes (CORE-12).
+- **P3-213** The boxes drawn are exactly the step ends (no `include`
+  line exists in a dynamic view, `DYNAMIC_LINES`). There is no lifting:
+  each step is drawn between its own two ends.
+- **P3-214** A system-scoped view draws the scope as a dashed boundary
+  around the containers of `S` that are drawn. A container-scoped view
+  draws the container boundary inside the boundary of its system
+  *(probed `comp`)*. `dynamic *` has no boundary.
+- **P3-215** Auto-placement reads the step order: of two boxes, the one
+  that first appears as a step source is placed in an earlier or equal
+  rank (P2-100 applied to steps in order). On the fixture, `seq` has no
+  L1, no L3 and no L24.
+- **P3-216** Lint on a dynamic view runs L1..L13 and L23..L26, and
+  none of L14..L21: L14 (A -> B with B -> A) is a normal
+  request/response there, and the C1/C2/C3 kind rules do not apply,
+  while the label rules L12 and L13 stay.
+- **P3-217** For `views.view.empty` (P2-627), a dynamic view counts its
+  steps. A dynamic view with no step gives one violation. This closes
+  the deferred P2-623/627 row.
+
+**Editing**
+
+- **P3-218** The details panel of a selected step line shows its
+  number, description, technology, its two ends and the relationship it
+  stands for (EDIT-10). Enter edits the step's own description in place
+  (EDIT-5) and writes only that step's line.
+- **P3-219** A "Steps" list beside a dynamic view shows its steps in
+  number order. Selecting a row selects that line on the canvas, and the
+  other way round.
+- **P3-220** In the Steps list, moving a plain step up or down past one
+  neighbour in the same block swaps the two step lines in the file,
+  keeping each line's bytes and indentation. Only those lines change,
+  and the edit is one undo step (EDIT-19).
+- **P3-221** A reorder in a view that uses a written `n:` order, or
+  across a `{ }` block border, is refused with a status-bar message
+  naming the reason, and no file changes: written orders are never
+  renumbered automatically.
+
+**Animation (P3-7)**
+
+- **P3-7** A view can be animated step by step. The editor steps
+  forward and back and starts and stops it, and PNG/SVG export can
+  write one image per step. One animation engine serves every view
+  kind; it lives in this row and lands last in it, after deployment-view
+  merges (P3-223). Split into P3-222..P3-226.
+- **P3-222** A dynamic view's animation steps are its distinct sequence
+  numbers in ascending order. Step `k` shows every box touched by a
+  line with number `<= k` and those lines. Lines sharing a number appear
+  together (renderer `startAnimation`).
+- **P3-223** A static or deployment view with an `animation { }` block
+  has one step per line of the block. Step `k` shows the elements named
+  in lines `1..k` and the lines whose two ends are both shown. Naming an
+  element not in the view is an error naming it. A line that names only
+  deployment nodes is an error *(probed)*. The P2-3 notice for
+  `animation` is removed.
+- **P3-224** In the editor, Start shows step 1, and the keys
+  Right/Left (and buttons) go forward and back. Stop or Escape shows the
+  whole view. Animation changes no file.
+- **P3-225** `c4rizer render --animation FILE -o DIR` writes, for each
+  animated view, `<key>-<k>.svg` (and `.png` with `--png`) for `k = 1..`
+  steps, plus the usual `<key>.svg`. A view with no animation writes
+  only `<key>.svg`.
+- **P3-226** Every step image of P3-225 has the full view's canvas
+  size and box positions, so the frames overlay exactly.
 
 vertices
 
-- **P3-4** A line can carry hand-added vertices, written to the file
-  as one line per relationship in the view; the line passes through
-  them, still at 0°, 45° or 90° and on the grid, and the router routes
-  only the parts between them. `TODO(srs)`: the syntax (proposal:
-  `via <src> -> <dst> <x> <y> ...`).
-- **P3-5** Removing a line's vertices returns it to the router; with no
-  vertices anywhere, the scene equals the phase 1 scene (the router
-  stays the default).
+Authority: SRS 4.7 P3-4, P3-5; SRS 2 "hand-added line vertices as an
+override on top of the router (the router stays the default)"; parity
+rows UI "Add, move, remove line vertices" and "Remove all relationship
+vertices". Structurizr keeps vertices in workspace JSON
+(`relationshipView.vertices`, `Vertex{x,y}`), has no DSL form, and edits
+them with the jointjs `Vertices` tool. Fixture
+`tests/data/phase3/vertices.dsl` (a copy of `example.dsl` view C2 with
+`via` lines).
+
+- **P3-4** A line can carry hand-added vertices, written to the file as
+  one `via` line per drawn line in the view (not one line per point).
+  The line passes through them, still at 0°, 45° or 90° and on the grid,
+  and the router routes only the parts between them. Split into
+  P3-300..P3-318.
+- **P3-300** In a view block, `via <src> -> <dst> <x1> <y1> [<x2> <y2>
+  ...]` gives the drawn line from `<src>` to `<dst>` its vertices in
+  order. Coordinates are px, multiples of 10. Like `at` and `size`, one
+  `via` line holds every point of its line, so an edit rewrites a single
+  line.
+- **P3-301** In a dynamic view, `via <n>: <src> -> <dst> ...` names the
+  step with number `n`, and the plain form names the step with the
+  lowest number between those ends.
+- **P3-302** A `via` line naming a line that the view does not draw is
+  an error naming the line. An odd number of coordinates, or a
+  coordinate that is not a multiple of 10, is an error naming the value.
+  Two `via` lines for one line are a `DuplicateVia` error naming both.
+- **P3-303** A line with vertices `v1..vk` is routed as `k + 1` legs:
+  start port to `v1`, `v1` to `v2`, ..., `vk` to end port. Each leg is
+  routed by the phase-1 router under CORE-6..CORE-13, so every segment
+  is at 0°, 45° or 90° and on the 10 px grid.
+- **P3-304** A routed line with vertices passes through every vertex
+  point exactly, in order.
+- **P3-305** A vertex leg may bend wherever the router chooses. The
+  vertex point itself may be a bend, and only there may the turn exceed
+  45° (the user asked for that point).
+- **P3-306** Start and end ports of a line with vertices are chosen on
+  the box side facing `v1` and `vk` respectively (CORE-9 port rules,
+  applied to the vertex instead of the other box).
+- **P3-307** Lines without vertices are routed after the lines with
+  vertices, and treat the vertex legs as fixed obstacles for crossings
+  and lanes (CORE-8, CORE-12).
+- **P3-5** Removing a line's vertices returns it to the router. With no
+  `via` line anywhere, the scene of each `example/` view is
+  byte-identical to the phase-2 scene (goldens unchanged).
+- **P3-308** A line with vertices never joins a trunk (`bus`, CORE-8)
+  and is never a trunk for another line's join.
+- **P3-309** New lint rule L28 (warning): a vertex lies inside a box
+  rectangle, or two consecutive vertices of one line are the same point.
+  L1..L4 and L23 count lines with vertices like any other line.
+
+**Editor**
+
+- **P3-310** With a line selected, a left click on it adds a vertex at
+  the nearest grid point and writes the line's `via` line (DSL-9
+  placement rules: rewrite the existing `via` line, else add it after
+  the view's last `at` line).
+- **P3-311** Each vertex of the selected line shows a handle. Dragging
+  a handle moves the vertex on the 10 px grid, re-routes the legs off the
+  UI thread (EDIT-25), and on release rewrites only that `via` line.
+- **P3-312** A double click on a handle removes that vertex. Removing
+  the last vertex deletes the `via` line.
+- **P3-313** "Remove all vertices" (parity row) deletes every `via` line
+  of the open view as one undo step (EDIT-19). The canvas then equals
+  the routed view with no vertices.
+- **P3-314** Moving one box leaves every vertex where it is, as
+  Structurizr does. When a multi-select drag moves both ends of a line by
+  the same delta, that line's vertices move by the delta too, all in one
+  write.
+- **P3-315** Every vertex edit is atomic and checked against the file
+  on disk (EDIT-22, EDIT-24), and is one undo step.
+- **P3-316** SVG and PNG export draw lines with vertices exactly as the
+  canvas does (EDIT-12, one scene).
+- **P3-317** `c4rizer import-layout` (compat-fixtures) copies
+  `relationshipView.vertices` from a Structurizr JSON as `via` lines,
+  each point rounded to the nearest multiple of 10.
+- **P3-318** The JSON export (P3-413) writes each line's vertices as
+  `relationships[].vertices` of its view.
 
 exporters
 
-- **P3-6** Each export format the parity table gives phase 3 is written
-  by the CLI (`export`) and by the editor's export, with a golden test
-  on `example/`: `plantuml`, `plantuml/c4plantuml`, `mermaid`,
-  `websequencediagrams`, `static`, `json` (with the `structurizr.dsl`
-  properties), `theme` and DOT.
-- **P3-8** `merge` applies the layout of a Structurizr workspace JSON
-  to a workspace, and `generate system-landscape` merges several
-  workspaces into one landscape. `TODO(srs)`: argument names.
+Authority: SRS 4.7 P3-6, P3-8; parity rows export `plantuml`,
+`plantuml/c4plantuml`, `mermaid`, `websequencediagrams`, `static`,
+`json`, `theme`, DOT, `ilograph`, PNG/SVG `-animation`, CLI `export`,
+`merge`, `generate system-landscape`, `structurizr.dsl` properties;
+P2-603 (JSON input is phase 3); compat-fixtures plan (P3-8 reuses
+`import`). Structurizr CLI 6.2.4 `export -f` takes
+`plantuml[/structurizr|c4plantuml]|websequencediagrams|mermaid|json|theme|static|fqcn`
+*(probed)*; DOT and Ilograph live in `structurizr-export-6.2.4.jar`
+(`DOTExporter`, `IlographExporter`) but the CLI does not expose them.
+Fixtures: `tests/data/example.dsl`, `tests/data/phase3/deployment.dsl`
+and `tests/data/phase3/dynamic.dsl`, with reference outputs under
+`tests/data/phase3/structurizr/<format>/`.
 
-explore (ROADMAP row `explore`, phase 3)
+**Command**
 
-- **P3-9** The editor offers graph exploration and a viewer for the
-  documentation and decisions attached by `!docs` and `!adrs` (P2-7).
+- **P3-6** Each phase-3 export format is written by the CLI (`export`)
+  and by the editor's export, each with a fixture test: `plantuml`,
+  `plantuml/c4plantuml`, `mermaid`, `websequencediagrams`, `static`,
+  `json` (with the `structurizr.dsl` property), `theme`, `dot` and
+  `ilograph`. Split into P3-400..P3-424 and P3-431..P3-432.
+- **P3-400** `c4rizer export -f <format> [-o DIR] [-w] FILE` writes the
+  format's files into `DIR` (default: FILE's folder, as Structurizr's
+  `-output`) and exits 0. Accepted spellings are `-f`, `--format`,
+  `-o` and `--output`. `-f plantuml` means `plantuml/structurizr`.
+- **P3-401** An unknown format, a missing `-f`, or `-f fqcn` / any Java
+  class name is a usage error (exit 2) listing the accepted formats.
+- **P3-402** `export -f svg` and `-f png` write the same files as
+  `render` (CLI-1, CLI-4), so `export` covers every format.
+- **P3-403** Every text export is deterministic: the same file gives
+  the same bytes on every run and machine, with `\n` line endings and a
+  final newline (CORE-25).
+- **P3-404** Per-view formats write one file per drawable view, named
+  `structurizr-<key>.<ext>` as Structurizr names them (`.puml`, `.mmd`,
+  `.wsd`, `.dot`). PlantUML (`plantuml/structurizr`) also writes
+  `structurizr-<key>-key.puml`.
+- **P3-405** Views that a format cannot express are skipped with one
+  stdout line `== <key>: skipped (<format> does not support <kind>
+  views)` and do not change the exit code. This covers image views for
+  every text format, and every non-dynamic view for
+  `websequencediagrams`.
+
+**Diagram formats**
+
+- **P3-406** `plantuml/structurizr` output for each fixture view equals
+  the reference output byte for byte. The same byte-equality rule holds
+  for `c4plantuml`, `mermaid`, `websequencediagrams`, `dot` and
+  `ilograph` (P3-407..P3-410, P3-412); `json` alone is compared
+  semantically (P3-413, P3-416). A byte difference is accepted only
+  where Structurizr's output is plainly a bug, and each accepted one is
+  named here with its view: the duplicated `S.B` rectangle in the
+  PlantUML of view `comp`.
+- **P3-407** `plantuml/c4plantuml` output equals the reference output
+  byte for byte (P3-406).
+- **P3-408** `mermaid` output equals the reference output byte for byte
+  (P3-406), including Structurizr's numeric element ids. Those are
+  allocated in model creation order as Structurizr allocates them.
+- **P3-409** `websequencediagrams` writes one file per dynamic view: a
+  `title` line, one `actor` (person) or `participant` line per
+  participant in first-use order, and one `<src>-><dst>: <description>`
+  line per step in number order. On the fixture it equals the reference
+  output byte for byte.
+- **P3-410** `dot` writes one Graphviz file per view: a `digraph` with
+  one `subgraph cluster_<id>` per boundary (scope, group, deployment
+  node), one node per box labelled with name and type line, and one edge
+  per drawn line labelled with its description. It equals, byte for
+  byte, the output of `structurizr-export` 6.2.4 `DOTExporter` on the
+  fixtures, generated once into the reference folder.
+- **P3-411** Element positions: no text format carries c4rizer
+  coordinates by default, as Structurizr's output has none. The
+  exceptions are `json` (P3-413) and `dot` with `--positions`, where
+  each node gets `pos="<x>,<y>!"` from the scene (Graphviz honours
+  `pos`).
+- **P3-412** `ilograph` writes one `workspace.idl.yaml` for the whole
+  workspace (resources nested as the model, one perspective per static
+  view, one sequence perspective per dynamic view). It equals, byte for
+  byte, `structurizr-export` 6.2.4 `IlographExporter` output on the
+  fixtures.
+
+**JSON out and in**
+
+- **P3-413** `json` writes `<file stem>.json`, a Structurizr workspace
+  JSON. Read back by Structurizr 6.2.4 (`export -w x.json -f
+  plantuml`), it gives the same PlantUML as the source DSL does. That
+  check is run once to make the reference output; the test compares
+  c4rizer's own read-back.
+- **P3-414** The JSON holds every element, relationship (implied and
+  copied ones included), view, style, theme reference, property,
+  documentation section and decision of the model. Each view element
+  carries the scene's box centre as `x`, `y` (px, top-left as
+  Structurizr expects) and each relationship view carries its vertices
+  (P3-318).
+- **P3-415** The JSON's workspace `properties` hold `structurizr.dsl`,
+  the base64 of the root file's bytes, and
+  `structurizr.inspection.error|warning|info|ignore`, the violation
+  counts of `inspect` *(probed)*.
+- **P3-416** A file whose first non-whitespace byte is `{` is read as
+  Structurizr workspace JSON by `render`, `lint`, `export`, `validate`,
+  `inspect` and `list`. The model it gives equals the model of the DSL it
+  was exported from: same element names, kinds, parents, tags,
+  relationships, views and styles.
+- **P3-417** A JSON workspace keeps its element positions as `at` and
+  `size` in the built views, so `render` of an exported JSON gives the
+  same SVG as the source DSL.
+- **P3-418** Malformed JSON, or JSON that is not a workspace, is a parse
+  error naming the file, line and column (SRS 5.1). An unknown key is
+  ignored.
+- **P3-419** `workspace extends <relative .json file>` uses that JSON as
+  the base (closes the JSON part of the deferred P2-16 row).
+- **P3-420** The editor opens a JSON workspace read-only: views draw and
+  export, while moves, resizes, text, style and vertex edits are refused
+  with one status-bar message saying the file is JSON. The editor never
+  writes JSON, which would be a second source of truth (SRS 1).
+
+**Theme and static site**
+
+- **P3-421** `theme` writes `workspace-theme.json` with `name`,
+  `description`, and the `elements` and `relationships` style arrays of
+  the workspace's own styles (not those from themes) in Structurizr theme
+  format. It equals the reference output on the styles fixture
+  `tests/data/styles/`.
+- **P3-422** A theme written by P3-421 and loaded with `theme <file>`
+  gives the same resolved styles as the source workspace.
+- **P3-423** `static` writes c4rizer's own site, not Structurizr's JS
+  viewer: a folder with `index.html`, one `<key>.svg` per drawable view
+  (P2-659 `name` mode), and one HTML page per view. It needs no script
+  and no network, and vendors no JS: every page passes the EXP-1 scan.
+  The parity table records this as "differs (accepted)".
+- **P3-424** In the static site, `index.html` lists every view in view
+  list order (EDIT-8) with its title and key. Each view page links its
+  enterable boxes (EDIT-15) to the views they open, and links back to
+  the index.
+
+**merge and generate (P3-8)**
+
+- **P3-8** `merge` applies the layout of a Structurizr workspace JSON to
+  a workspace, and `generate system-landscape` merges several
+  workspaces into one landscape. Split into P3-425..P3-430.
+- **P3-425** `c4rizer merge -w FILE -l LAYOUT.json [-v KEY] -o OUT`
+  writes to OUT a copy of FILE whose views carry the `at`, `size` and
+  `via` lines that `import-layout` would add from LAYOUT. With `-v`,
+  only that view changes. Spellings follow Structurizr (`-w`, `-l`,
+  `-v`, `-o`, and the long forms).
+- **P3-426** `merge` never changes FILE. OUT equals FILE except for the
+  added or rewritten `at`/`size`/`via` lines.
+- **P3-427** `merge` matches elements by Structurizr canonical name
+  (Structurizr's `DefaultLayoutMergeStrategy`), and an element of FILE
+  missing from LAYOUT keeps its current position or auto-placement.
+- **P3-428** `c4rizer generate system-landscape -i DIR -o OUT.dsl`
+  reads every `*.dsl` and `*.json` workspace in DIR (sorted by path) and
+  writes one DSL file holding every person and software system once
+  (matched by name), the relationships between them, and one
+  `systemLandscape` view with `include *`.
+- **P3-429** In `generate`, a software system that appears in several
+  input workspaces keeps the description of the first one that has a
+  non-empty description.
+- **P3-430** `merge` and `generate` exit 2 on usage errors and 1 on a
+  parse error of any input, naming the file.
+
+**Editor and animation**
+
+- **P3-431** The editor's export dialog offers every format of P3-400.
+  "Export view" writes the open view's file and "Export all views"
+  writes every file into the chosen folder (EDIT-7 folder rule).
+- **P3-432** `export -f svg|png --animation` writes per-step images as
+  P3-225 says. `--mode dark` follows P2-21 for every image format.
+
+explore
+
+Authority: SRS 4.7 P3-9; parity rows UI "Graph exploration" and
+"Documentation and decisions viewer" (content parsed in phase 2,
+`!docs`/`!adrs`, `Model::docs`, `Element::docs`); Structurizr pages
+`explore.jsp` (graph for static and custom views, tree for static and
+deployment views), `graph.jsp`, `tree.jsp`, `model.jsp`,
+`documentation.jsp`, `decisions.jsp` (read from the 6.2.4 war). Fixture
+`tests/data/phase3/explore.dsl` with `!docs` and `!adrs` folders.
+
+- **P3-9** The editor offers model exploration (tables, search, usages,
+  graph and tree) and a viewer for the documentation and decisions
+  attached by `!docs` and `!adrs`. Split into P3-500..P3-517.
+
+**Model tables and search**
+
+- **P3-500** An "Explore" panel lists the static model nested as
+  Structurizr's Model page does: custom elements, people, software
+  systems with their containers and components. One deployment section
+  follows per environment, nested by node. Each row shows the id, name,
+  type line, description and tags.
+- **P3-501** Each element row expands to show its relationships, with
+  their direction, other end, description and technology. Implied
+  relationships are marked "implied" (Model page `implies`).
+- **P3-502** A relationships table lists every relationship of the
+  model, implied and copied ones included, with source, destination,
+  description, technology and tags. It sorts by any column, and every
+  row's id comes from the model.
+- **P3-503** A search field filters the tables to elements and
+  relationships whose name, id, description, technology, tag or property
+  value contains the typed text, case-insensitively. It updates within
+  one frame for a 1000-element model (`perf_p3_503`).
+- **P3-504** Selecting an element in the tables shows its usages: every
+  view that draws it, with key and title, and, for each, whether it is
+  drawn directly or through lifting (CORE-5). A click on a usage opens
+  that view with the box selected.
+- **P3-505** An element that no view draws is marked "in no view" in
+  the tables, matching inspection `model.element.noview` (P2-6xx
+  `ElementNoView`).
+- **P3-506** "Reveal in file" on any row copies
+  `<path>:<line>:<column>` of the declaration to the clipboard (the app
+  has no text editor, EDIT-21).
+- **P3-507** The explore panel is read-only: nothing in it writes the
+  file.
+
+**Graph and tree**
+
+- **P3-508** "Graph" for a static, custom or landscape view draws the
+  view's elements and relationships as a node-link graph with no
+  boundaries, laid out by a deterministic force layout (same positions
+  on every run, CORE-25).
+- **P3-509** In the graph, a click on a node keeps it, its neighbours
+  and their links fully opaque and fades every other node and link to
+  10% (graph.jsp `showConnectedNodes`). A click on empty space clears
+  this.
+- **P3-510** "Tree" for a static view draws the scope hierarchy of its
+  elements (system > container > component, people and external
+  systems as roots). For a deployment view it draws environment > node >
+  instance, laid out left to right (tree.jsp).
+- **P3-511** Graph and tree are offered for exactly the kinds
+  Structurizr offers. Graph: custom, landscape, context, container and
+  component views. Tree: the same plus deployment. Neither is offered
+  for dynamic, filtered or image views.
+- **P3-512** Graph and tree pan and zoom with EDIT-28 gestures, and a
+  double click on a node opens the diagram view with that box selected.
+
+**Documentation and decisions**
+
+- **P3-513** A "Documentation" view lists the sections attached by
+  `!docs` to the workspace and to each software system, in file-name
+  order (P2 `!docs` rule), and shows the selected section rendered.
+- **P3-514** Markdown sections are rendered, with `pulldown-cmark` in
+  the editor crate only, with headings, paragraphs, emphasis, lists,
+  code blocks, tables and links. Images with a relative path are drawn
+  from the docs folder, and remote images are not fetched unless network
+  (P3-600) is on.
+- **P3-515** AsciiDoc sections are shown as their source text in a
+  monospace block, with a one-line note that AsciiDoc is not rendered
+  (no maintained Rust AsciiDoc renderer exists).
+- **P3-516** A "Decisions" view lists the decisions attached by `!adrs`
+  with id, title, date and status, sorted by id. The selected decision is
+  rendered as P3-514 says, and the links between decisions ("Supersedes
+  2") open the linked decision.
+- **P3-517** An embedded diagram reference in Markdown, `![](embed:<view
+  key>)`, draws that view's scene inline at its fitted size. An unknown
+  key shows a one-line placeholder naming it, which matches inspection
+  `documentation.embeddedview`.
+
+network
+
+Authority: ROADMAP row `network` ("HTTPS themes, `!include`, `workspace
+extends`, image URLs, with a disk cache; skipped-URL notice names the
+URL and what was not drawn"); phase2-decisions Part C; deferred rows
+P2-138/P2-16, P2-322, P2-409, P2-429, P2-603, P2-321 extra. Today an
+HTTPS `!include`/`extends` is `UrlNotSupported`, and URL and named
+themes, URL icons and URL images give a notice or placeholder.
+
+**Opt-in**
+
+- **P3-600** No build of c4rizer opens a network connection unless the
+  user turned network on for that run: `--network` on `render`, `lint`,
+  `export`, `validate`, `inspect`, `list`, `merge` and `generate`, or
+  the editor's "Allow network for this file" switch.
+- **P3-601** With network off, behaviour is exactly phase 2:
+  - an HTTPS `!include` or `workspace extends` is `UrlNotSupported`;
+  - URL themes, named themes other than bundled `default`, URL icons and
+    URL images give the phase-2 placeholder or notice.
+
+  No cache entry is read either, so a build depends only on the files on
+  disk and is the same on every machine (CORE-25); the cache serves only
+  failed fetches (P3-611).
+- **P3-602** The editor's network switch is remembered per diagram file
+  (EDIT-13 recent-file state), is off for a file never opened before,
+  and shows a mark in the status bar while it is on.
+
+**What is fetched**
+
+- **P3-603** With network on, these are fetched:
+  - `!include <https url>`, inlined as P2-5 says;
+  - `workspace extends <https url>`, DSL or JSON (P3-419);
+  - `theme <https url>` / `themes`;
+  - a named theme as
+    `https://static.structurizr.com/themes/<name>/theme.json`
+    (Structurizr's own location, `DEFAULT_THEME_URL` pattern);
+  - `icon <https url>` in element styles and themes;
+  - `image <https url>` in image views;
+  - `-workspace <https url>` (P2-603).
+- **P3-604** Only `https://` URLs are fetched. Any other scheme is an
+  error naming the URL (P2-138, kept), and a redirect to a non-HTTPS URL
+  is refused with an error naming both URLs.
+- **P3-605** A fetch follows at most 5 redirects, times out after 10 s,
+  and refuses a body over 10 MiB, each with an error naming the URL and
+  the limit.
+- **P3-606** A relative `!include`, icon or image path inside a fetched
+  file resolves against that file's URL. It is still fetched only over
+  HTTPS, and it never resolves to a local path.
+- **P3-607** A fetched `!include` that includes itself, directly or
+  through others, stops with the P2-137 cycle error naming the URL.
+- **P3-608** PlantUML, Mermaid and Kroki image sources and their
+  `*.url` properties are never fetched, even with network on (parity
+  row: never). They keep their P2-321 placeholder.
+
+**Cache**
+
+- **P3-609** Every successful fetch is stored in
+  `$XDG_CACHE_HOME/c4rizer/net/` (default `~/.cache/c4rizer/net/`),
+  one file per URL plus its fetch time. A file is named by an in-house
+  FNV-1a hash of its URL, and an index file in that folder maps each
+  hash to its URL (no hash crate).
+- **P3-610** With network on, a URL is fetched again on every build
+  that needs it. The editor's rebuild after a local save reuses the
+  bytes fetched at file open (EDIT-29 timing is not affected by the
+  network).
+- **P3-611** With network on and a fetch that fails (no connection,
+  timeout, HTTP status not 2xx), the cached copy is used when one
+  exists, and a notice names the URL and the cached copy's fetch date.
+  With no cached copy, the construct falls back to its P3-601 behaviour
+  and the notice says that the fetch failed.
+- **P3-612** `c4rizer cache clear` deletes the cache folder and exits 0.
+  `c4rizer cache list` prints one line per cached URL with its fetch
+  time and size.
+
+**Notices and editing**
+
+- **P3-613** Every URL that was not drawn (network off, fetch failed
+  with no cache, or a never-fetched source) gives one notice naming the
+  URL and what was not drawn ("theme styles", "icon of tag X", "image of
+  view K", "included file"). The notice kind is the new `NotFetched`, not
+  `NoEffect`.
+- **P3-614** A text edit (DSL-10) or `at`/`size`/`via` write that would
+  land in a fetched file is refused with a status-bar message naming the
+  URL. No file changes.
+- **P3-615** The editor watches local files only. A fetched file is
+  re-read on an explicit "Reload" and on the next file open, never by
+  polling.
+
+**Tests and build**
+
+- **P3-616** No test opens a network connection. Fetching goes through
+  a `Loader` method that tests implement with in-memory bytes. A test
+  using the real fetcher is `#[ignore]` and named `net_*`.
+- **P3-617** The real fetcher uses `ureq` with `rustls` (blocking, no
+  async runtime, pure-Rust TLS) and lives behind the core cargo feature
+  `network`. The CLI and the editor enable it by default; core's tests
+  never do. A build without it treats `--network` as a usage error
+  saying that the build has no network support (exit 2), as `--png`
+  without `png` does.
+- **P3-618** A fetched SVG icon or image passes P2-340 and EXP-1 like a
+  local one: it is embedded as a data URI and nothing in the export
+  refers to the URL.
+- **P3-619** The scene and every export of a file built with network
+  on, from a fully cached state, are byte-identical across two runs
+  (CORE-25), and identical to a build whose loader serves the same
+  bytes from memory.
+- **P3-620** `render`, `lint` and the editor print or show which URLs
+  were fetched, one line each (`fetched <url> (<n> bytes)` on stderr for
+  the CLI), so the user can see every connection made.
+- **P3-621** Bundled `theme default` (styles-themes) is used without a
+  fetch whether network is on or off.
 
 ## 5. Cross-cutting
 
