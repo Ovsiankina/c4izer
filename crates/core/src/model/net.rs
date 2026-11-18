@@ -5,7 +5,7 @@
 //! is off.
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -22,17 +22,46 @@ pub const TIMEOUT_SECS: u64 = 10;
 /// (P3-609, ruling N2: no hash crate).
 #[must_use]
 pub fn fnv1a(bytes: &[u8]) -> u64 {
-    let _ = bytes;
-    todo!()
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    bytes
+        .iter()
+        .fold(OFFSET, |hash, &b| (hash ^ u64::from(b)).wrapping_mul(PRIME))
 }
 
 /// `secs` after the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`: how cache
 /// listings and notices show a fetch time (P3-611, P3-612).
 #[must_use]
 pub fn utc_text(secs: u64) -> String {
-    let _ = secs;
-    todo!()
+    let days = secs / 86_400;
+    let rest = secs % 86_400;
+    let (year, month, day) = civil(days);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
+
+/// Year, month and day of `days` after 1970-01-01 (proleptic Gregorian;
+/// H. Hinnant's `civil_from_days`, unsigned since days are never before
+/// the epoch here).
+fn civil(days: u64) -> (u64, u64, u64) {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    (year, month, day)
+}
+
+/// The name of the cache's index file.
+const INDEX: &str = "index";
 
 /// One cached URL (P3-612).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -57,23 +86,63 @@ impl NetCache {
     /// The cache in folder `dir` (created on the first `put`).
     #[must_use]
     pub fn new(dir: impl Into<PathBuf>) -> NetCache {
-        let _ = dir.into();
-        todo!()
+        NetCache { dir: dir.into() }
     }
 
     /// The cache at `$XDG_CACHE_HOME/c4rizer/net/`, else
     /// `$HOME/.cache/c4rizer/net/`, looking variables up through `env`;
     /// `None` when neither gives an absolute folder (P3-609).
     #[must_use]
+    // DECISION: the XDG base-directory rule: a relative or empty
+    // `$XDG_CACHE_HOME` is ignored, as the spec says.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<NetCache> {
-        let _ = env;
-        todo!()
+        let absolute = |v: Option<String>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+        let base = absolute(env("XDG_CACHE_HOME"))
+            .or_else(|| absolute(env("HOME")).map(|home| home.join(".cache")))?;
+        Some(NetCache::new(base.join("c4rizer").join("net")))
     }
 
     /// The cache folder.
     #[must_use]
     pub fn dir(&self) -> &Path {
-        todo!()
+        &self.dir
+    }
+
+    /// The index: hash to entry, as stored.
+    fn index(&self) -> io::Result<BTreeMap<u64, CacheEntry>> {
+        let text = match std::fs::read_to_string(self.dir.join(INDEX)) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(e),
+        };
+        // DECISION: one line per URL, `<hash hex>\t<fetch secs>\t<size>\t<url>`;
+        // a malformed line is skipped (a URL has no tab or newline).
+        let mut out = BTreeMap::new();
+        for line in text.lines() {
+            let mut fields = line.splitn(4, '\t');
+            let (Some(hash), Some(fetched), Some(size), Some(url)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let (Ok(hash), Ok(fetched), Ok(size)) =
+                (u64::from_str_radix(hash, 16), fetched.parse(), size.parse())
+            else {
+                continue;
+            };
+            out.insert(hash, CacheEntry { url: url.to_owned(), fetched, size });
+        }
+        Ok(out)
+    }
+
+    /// Writes `bytes` to `name` in the folder through a temporary file,
+    /// so a reader never sees half a file.
+    fn write(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        let tmp = self.dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, self.dir.join(name)).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
     }
 
     /// Stores `bytes` as the copy of `url`, fetched at `fetched`
@@ -82,9 +151,30 @@ impl NetCache {
     /// # Errors
     ///
     /// Any error creating the folder or writing its files.
+    // DECISION: two URLs with the same FNV-1a hash share one file; the
+    // later put wins and the index names its URL, so `get` of the other
+    // finds no copy rather than a wrong one.
     pub fn put(&self, url: &str, bytes: &[u8], fetched: u64) -> io::Result<()> {
-        let _ = (url, bytes, fetched);
-        todo!()
+        if url.contains(['\t', '\n', '\r']) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let hash = fnv1a(url.as_bytes());
+        self.write(&format!("{hash:016x}"), bytes)?;
+        let mut index = self.index()?;
+        index.insert(
+            hash,
+            CacheEntry {
+                url: url.to_owned(),
+                fetched,
+                size: bytes.len() as u64,
+            },
+        );
+        let mut text = String::new();
+        for (hash, entry) in &index {
+            let _ = writeln!(text, "{hash:016x}\t{}\t{}\t{}", entry.fetched, entry.size, entry.url);
+        }
+        self.write(INDEX, text.as_bytes())
     }
 
     /// The cached copy of `url` and its fetch time, `None` when there is
@@ -94,8 +184,15 @@ impl NetCache {
     ///
     /// Any read error other than a missing cache.
     pub fn get(&self, url: &str) -> io::Result<Option<(Vec<u8>, u64)>> {
-        let _ = url;
-        todo!()
+        let hash = fnv1a(url.as_bytes());
+        let Some(entry) = self.index()?.remove(&hash).filter(|e| e.url == url) else {
+            return Ok(None);
+        };
+        match std::fs::read(self.dir.join(format!("{hash:016x}"))) {
+            Ok(bytes) => Ok(Some((bytes, entry.fetched))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Every cached URL, sorted by URL; empty for a missing cache.
@@ -104,7 +201,9 @@ impl NetCache {
     ///
     /// Any read error other than a missing cache.
     pub fn list(&self) -> io::Result<Vec<CacheEntry>> {
-        todo!()
+        let mut out: Vec<CacheEntry> = self.index()?.into_values().collect();
+        out.sort();
+        Ok(out)
     }
 
     /// Deletes the cache folder; a missing folder is no error (P3-612).
@@ -113,7 +212,10 @@ impl NetCache {
     ///
     /// Any error removing it.
     pub fn clear(&self) -> io::Result<()> {
-        todo!()
+        match std::fs::remove_dir_all(&self.dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     }
 }
 
