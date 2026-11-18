@@ -1708,7 +1708,7 @@ impl fmt::Display for Notice {
             NoticeKind::NotImported => {
                 write!(f, "view {view}: `{subject}` not imported — c4rizer cannot hold it")
             }
-            NoticeKind::NotFetched => todo!(),
+            NoticeKind::NotFetched => write!(f, "not fetched: {subject}"),
         }
     }
 }
@@ -6204,12 +6204,24 @@ impl Builder<'_> {
             _ => ImageSource::File(value),
         };
         // P2-3 (P2-321, B landscape-filtered 10d): accepted, not drawn.
+        // network row: an `image <url>` is fetched after the build
+        // (`theme::apply`), which adds its notice when it is not drawn. A
+        // PlantUML, Mermaid or Kroki source is never fetched (P3-608); one
+        // naming a URL gets a `NotFetched` notice (P3-613).
         match &source {
-            ImageSource::Url(u) => {
-                let subject = format!("image {} (not fetched, a placeholder is drawn)", u.value);
+            ImageSource::Url(_) | ImageSource::File(_) => {}
+            ImageSource::PlantUml(v) | ImageSource::Mermaid(v) | ImageSource::Kroki { source: v, .. }
+                if v.value.to_ascii_lowercase().starts_with("http") =>
+            {
+                let subject = format!(
+                    "{} — image of view {} not drawn (c4rizer never fetches PlantUML, Mermaid or Kroki sources; a placeholder is drawn)",
+                    v.value, view.key
+                );
                 self.notice(&subject, Some(&view.key), span);
+                if let Some(n) = self.model.notices.last_mut() {
+                    n.kind = NoticeKind::NotFetched;
+                }
             }
-            ImageSource::File(_) => {}
             _ => self.notice(&keyword, Some(&view.key), span),
         }
         view.image = Some(ViewImage {

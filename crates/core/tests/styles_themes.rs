@@ -1544,7 +1544,8 @@ fn p2_429_url_or_name_theme_notice() {
         .iter()
         .find(|n| n.subject.contains("https://example.com/themes/roles/theme.json"))
         .expect("notice naming the URL");
-    assert_eq!(notice.kind, NoticeKind::NoEffect);
+    // P3-613 (network row) amends the kind: a URL not drawn is `NotFetched`.
+    assert_eq!(notice.kind, NoticeKind::NotFetched);
     assert_eq!(slice(&src, notice.span.unwrap()), "theme https://example.com/themes/roles/theme.json");
     assert_eq!(notice.position.unwrap().line, 7);
     // `default` is bundled (Apache-2.0, structurizr/themes): it draws.

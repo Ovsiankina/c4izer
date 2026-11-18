@@ -17,7 +17,6 @@ pub(super) fn is_https(text: &str) -> bool {
 }
 
 /// True when `text` starts with `http://` or `https://`, any case.
-#[allow(dead_code, reason = "used by the include and theme hooks (network-04, -05)")]
 pub(super) fn is_http_url(text: &str) -> bool {
     is_https(text) || text.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://"))
 }

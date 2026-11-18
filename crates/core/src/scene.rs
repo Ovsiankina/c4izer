@@ -1053,7 +1053,8 @@ const IMAGE_MAX_PX: i32 = 20_000;
 // title below the diagram too; B said above).
 fn scene_image(image: ViewImage) -> SceneImage {
     let placeholder = match (&image.source, &image.asset) {
-        (ImageSource::File(_), Some(_)) => None,
+        // network row: a fetched `image <url>` draws like a file (P3-603).
+        (ImageSource::File(_) | ImageSource::Url(_), Some(_)) => None,
         (ImageSource::File(f), None) => Some(format!("image {}", f.value)),
         (ImageSource::Url(u), _) => Some(format!("image {}", u.value)),
         (ImageSource::PlantUml(v), _) => Some(format!("plantuml {}", v.value)),

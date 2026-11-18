@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use super::{
     Asset, Border, ElementStyle, Loader, Mime, Model, ModelError, ModelErrorKind, Notice,
-    NoticeKind, RelationshipStyle, Routing, Shape, Spanned, Theme, ThemeSource, parse_colour,
+    NoticeKind, RelationshipStyle, Routing, Shape, Spanned, Theme, ThemeSource, net, parse_colour,
 };
-use crate::text::{self, Span, SyntaxTree};
+use crate::text::{self, FileId, Span, SyntaxTree};
 
 /// Structurizr's default theme, bundled. Source: github.com/structurizr/
 /// themes `default/theme.json`, copied on 2026-11-17.
@@ -82,8 +82,75 @@ pub(super) fn classify(source: &str) -> ThemeSource {
 pub(super) struct Files<'a> {
     /// The diagram file; `None` for stdin or in-memory text.
     pub(super) path: Option<&'a Path>,
+    /// The path of every DSL file by `FileId`; a fetched file's is its URL
+    /// (network row).
+    pub(super) paths: &'a [PathBuf],
     /// Every read goes through it.
     pub(super) loader: &'a mut dyn Loader,
+}
+
+/// Structurizr's theme location for a theme name (P3-603,
+/// `DEFAULT_THEME_URL` pattern).
+const NAMED_THEME_URL: (&str, &str) = ("https://static.structurizr.com/themes/", "/theme.json");
+
+/// What a fetch through the loader gave (network row).
+enum Fetched {
+    /// The bytes.
+    Bytes(Vec<u8>),
+    /// The network is off (`ErrorKind::Unsupported`, P3-601), or there is
+    /// no loader at all.
+    Off,
+    /// The URL is not HTTPS (P3-604).
+    Insecure,
+    /// The fetch failed and no cached copy exists (P3-611).
+    Failed(String),
+}
+
+/// `url` fetched through `files`' loader (P3-603).
+fn fetch(files: &mut Option<Files<'_>>, url: &str) -> Fetched {
+    let Some(files) = files.as_mut() else {
+        return Fetched::Off;
+    };
+    match files.loader.fetch(url) {
+        Ok(bytes) => Fetched::Bytes(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Fetched::Off,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Fetched::Insecure,
+        Err(e) => Fetched::Failed(e.to_string()),
+    }
+}
+
+/// The URL of the fetched DSL file `file`, `None` for a local one
+/// (P3-606).
+fn base_url(files: Option<&Files<'_>>, file: FileId) -> Option<String> {
+    let path = files?.paths.get(file.0 as usize)?.to_str()?;
+    net::is_https(path).then(|| path.to_owned())
+}
+
+/// The P3-613 notice subject: `<url> — <what> not drawn (<why>)`; `why`
+/// is `None` for "network off".
+fn not_fetched(url: &str, what: &str, failed: Option<&str>) -> String {
+    match failed {
+        None => format!(
+            "{url} — {what} not drawn (the network is off; turn it on with --network or \"Allow network for this file\")"
+        ),
+        Some(reason) => format!("{url} — {what} not drawn (the fetch failed: {reason})"),
+    }
+}
+
+/// The theme name of a bare theme value, `None` for a path: no folder
+/// separator and no `.json` ending (P3-603).
+// TODO(srs): P3-603 does not say when a bare value is a name. DECISION:
+// Structurizr 6.2.4 reads a bare non-`default` value as an installed
+// theme name, else a URL, else a file (ThemeParser); c4rizer has no
+// installed themes, so a value with no `/`, no `\`, no `.json` ending and
+// no such local file is a name, fetched from Structurizr's theme
+// location when the network is on; off, it stays the phase-2 file error.
+fn theme_name(value: &str) -> Option<&str> {
+    let named = !value.is_empty()
+        && !value.contains(['/', '\\'])
+        && !value.to_ascii_lowercase().ends_with(".json")
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    named.then_some(value)
 }
 
 /// Reads every theme of `model.themes` into theme styles, put before the
@@ -124,23 +191,73 @@ pub(super) fn apply(
 // DECISION: text parsed with no path (`parse`, stdin) keeps the source as
 // written and reads nothing; the view then draws a placeholder naming the
 // file, as an icon is then not drawn (B styles-themes 7e).
+// DECISION (network row): an `image <url>` source, and a file source in
+// a fetched DSL file (resolved against its URL, P3-606), is fetched;
+// network off or a failed fetch draws the placeholder with a `NotFetched`
+// notice (P3-613); the fetched bytes must be a PNG, JPEG or SVG image
+// like a local file's.
 fn view_images(
     model: &mut Model,
     trees: &[SyntaxTree],
     files: &mut Option<Files<'_>>,
 ) -> Result<(), ModelError> {
-    let no_path = files.as_ref().is_none_or(|f| f.path.is_none());
-    if no_path {
-        return Ok(());
-    }
     for index in 0..model.views.len() {
         let Some(image) = &model.views[index].image else {
             continue;
         };
-        let super::ImageSource::File(written) = &image.source else {
-            continue;
+        let (written, span) = match &image.source {
+            super::ImageSource::File(w) | super::ImageSource::Url(w) => (w.value.clone(), image.span),
+            _ => continue,
         };
-        let (written, span) = (written.value.clone(), image.span);
+        let url = if net::is_http_url(&written) {
+            Some(written.clone())
+        } else {
+            base_url(files.as_ref(), span.file).map(|base| net::join_url(&base, &written))
+        };
+        if let Some(url) = url {
+            let key = model.views[index].key.clone();
+            let error = |kind| ModelError {
+                kind,
+                span,
+                position: position(trees, span),
+            };
+            let asset = if let Some(a) = model.assets.iter().find(|a| a.path == url) {
+                a.clone()
+            } else {
+                let what = format!("image of view {key}");
+                let bytes = match fetch(files, &url) {
+                    Fetched::Bytes(bytes) => bytes,
+                    Fetched::Insecure => return Err(error(ModelErrorKind::InsecureUrl { url })),
+                    Fetched::Off => {
+                        model.notices.push(fetch_notice(trees, &not_fetched(&url, &what, None), Some(&key), span));
+                        continue;
+                    }
+                    Fetched::Failed(reason) => {
+                        let subject = not_fetched(&url, &what, Some(&reason));
+                        model.notices.push(fetch_notice(trees, &subject, Some(&key), span));
+                        continue;
+                    }
+                };
+                let Some(mime) = sniff(&bytes) else {
+                    return Err(error(format_error(&url, "the image is not a PNG, JPEG or SVG file")));
+                };
+                let asset = Asset {
+                    path: url,
+                    mime,
+                    bytes: Arc::from(bytes),
+                };
+                model.assets.push(asset.clone());
+                asset
+            };
+            if let Some(image) = model.views[index].image.as_mut() {
+                image.asset = Some(asset);
+            }
+            continue;
+        }
+        let no_path = files.as_ref().is_none_or(|f| f.path.is_none());
+        if no_path {
+            continue;
+        }
         let path = normalise(&written);
         let error = |kind| ModelError {
             kind,
@@ -189,23 +306,27 @@ fn file_icons(
     trees: &[SyntaxTree],
     files: &mut Option<Files<'_>>,
 ) -> Result<(), ModelError> {
-    let icons: Vec<(Spanned<String>, Span)> = model
+    let icons: Vec<(Spanned<String>, Span, String)> = model
         .element_styles
         .iter()
         .filter(|s| s.theme.is_none())
-        .filter_map(|s| s.icon.clone().map(|i| (i, s.span)))
+        .filter_map(|s| s.icon.clone().map(|i| (i, s.span, s.tag.value.clone())))
         .collect();
-    for (mut icon, statement) in icons {
+    for (mut icon, statement, tag) in icons {
         let written = icon.value.clone();
         let lower = written.to_ascii_lowercase();
+        // P3-606: a relative icon in a fetched DSL file resolves against
+        // that file's URL.
+        let folder = base_url(files.as_ref(), statement.file);
         // DECISION: text parsed without a path (`parse`, stdin) keeps a
         // file icon as written and draws none, rather than refusing the
         // file; with a path a missing file is `FileRead` (B ruling 7e).
         let no_path = files.as_ref().is_none_or(|f| f.path.is_none());
-        if no_path && !lower.starts_with("data:") && !lower.starts_with("http") {
+        if no_path && folder.is_none() && !lower.starts_with("data:") && !lower.starts_with("http") {
             continue;
         }
-        let loaded = load_icon(model, files, None, &mut icon).map_err(|kind| ModelError {
+        let what = format!("icon of tag {tag}");
+        let loaded = load_icon(model, files, folder.as_deref(), &mut icon, &what).map_err(|kind| ModelError {
             kind,
             span: icon.span,
             position: position(trees, icon.span),
@@ -221,9 +342,9 @@ fn file_icons(
                 ..asset
             });
         }
-        if let Some(subject) = loaded {
+        if let Some((kind, subject)) = loaded {
             model.notices.push(Notice {
-                kind: NoticeKind::NoEffect,
+                kind,
                 subject,
                 view: None,
                 span: Some(statement),
@@ -253,38 +374,86 @@ fn apply_themes(
     let themes = model.themes.clone();
     for (index, theme) in themes.iter().enumerate() {
         let source = theme.source.span;
-        let (json, folder) = match &theme.kind {
-            ThemeSource::Name(_) => (DEFAULT_THEME.to_owned(), None),
-            ThemeSource::Url(url) if url == DEFAULT_THEME_URL => (DEFAULT_THEME.to_owned(), None),
-            ThemeSource::Url(url) => {
-                model.notices.push(notice(trees, theme, &format!("theme {url}")));
-                continue;
-            }
-            ThemeSource::File(path) => {
-                let Some(files) = files.as_mut() else {
-                    return Err(error(needs_file(), source));
-                };
-                let bytes = read(files, path).map_err(|kind| error(kind, source))?;
-                let json = String::from_utf8(bytes).map_err(|_| {
-                    error(format_error(path, "the file is not UTF-8 text"), source)
-                })?;
-                let folder = parent(path);
-                (json, Some(folder))
-            }
+        // P3-621: `default`, by name or by its URL, is the bundled copy and
+        // is never fetched.
+        // P3-603: a URL theme, a file theme of a fetched DSL file (P3-606)
+        // and a theme name are fetched; network off or a failed fetch gives
+        // a `NotFetched` notice and no styles (P3-613).
+        let fetched_url = match &theme.kind {
+            ThemeSource::Url(url) if url != DEFAULT_THEME_URL => Some(url.clone()),
+            ThemeSource::File(path) => base_url(files.as_ref(), theme.span.file).map(|b| net::join_url(&b, path)),
+            _ => None,
         };
-        let label = match &theme.kind {
-            ThemeSource::File(path) => path.clone(),
-            _ => "default".into(),
+        let (json, folder, label) = if let Some(url) = fetched_url {
+            let bytes = match fetch(files, &url) {
+                Fetched::Bytes(bytes) => bytes,
+                Fetched::Insecure => return Err(error(ModelErrorKind::InsecureUrl { url }, source)),
+                Fetched::Off => {
+                    let subject = not_fetched(&url, "theme styles", None);
+                    model.notices.push(fetch_notice(trees, &subject, None, theme.span));
+                    continue;
+                }
+                Fetched::Failed(reason) => {
+                    let subject = not_fetched(&url, "theme styles", Some(&reason));
+                    model.notices.push(fetch_notice(trees, &subject, None, theme.span));
+                    continue;
+                }
+            };
+            let json = String::from_utf8(bytes)
+                .map_err(|_| error(format_error(&url, "the file is not UTF-8 text"), source))?;
+            (json, Some(url.clone()), url)
+        } else {
+            match &theme.kind {
+                ThemeSource::Name(_) | ThemeSource::Url(_) => (DEFAULT_THEME.to_owned(), None, "default".into()),
+                ThemeSource::File(path) => {
+                    let Some(local) = files.as_mut() else {
+                        return Err(error(needs_file(), source));
+                    };
+                    match read(local, path) {
+                        Ok(bytes) => {
+                            let json = String::from_utf8(bytes).map_err(|_| {
+                                error(format_error(path, "the file is not UTF-8 text"), source)
+                            })?;
+                            (json, Some(parent(path)), path.clone())
+                        }
+                        Err(kind @ ModelErrorKind::FileRead { .. }) => {
+                            let Some(name) = theme_name(path) else {
+                                return Err(error(kind, source));
+                            };
+                            let url = format!("{}{name}{}", NAMED_THEME_URL.0, NAMED_THEME_URL.1);
+                            let bytes = match fetch(files, &url) {
+                                Fetched::Bytes(bytes) => bytes,
+                                // Network off: the phase-2 file error (P3-601).
+                                Fetched::Off | Fetched::Insecure => return Err(error(kind, source)),
+                                Fetched::Failed(reason) => {
+                                    let subject = not_fetched(&url, "theme styles", Some(&reason));
+                                    model.notices.push(fetch_notice(trees, &subject, None, theme.span));
+                                    continue;
+                                }
+                            };
+                            let json = String::from_utf8(bytes).map_err(|_| {
+                                error(format_error(&url, "the file is not UTF-8 text"), source)
+                            })?;
+                            (json, Some(url.clone()), url)
+                        }
+                        Err(kind) => return Err(error(kind, source)),
+                    }
+                }
+            }
         };
         let value = json::parse(&json)
             .map_err(|reason| error(format_error(&label, &reason), source))?;
         let styles = ThemeStyles::read(&value, index, theme.span)
             .map_err(|reason| error(format_error(&label, &reason), source))?;
         for mut style in styles.elements {
+            let what = format!("icon of tag {}", style.tag.value);
             if let Some(icon) = style.icon.as_mut() {
-                let loaded = load_icon(model, files, folder.as_deref(), icon);
-                if let Some(subject) = loaded.map_err(|kind| error(kind, source))? {
-                    model.notices.push(notice(trees, theme, &subject));
+                let loaded = load_icon(model, files, folder.as_deref(), icon, &what);
+                if let Some((kind, subject)) = loaded.map_err(|kind| error(kind, source))? {
+                    model.notices.push(Notice {
+                        kind,
+                        ..notice(trees, theme, &subject)
+                    });
                 }
             }
             element_styles.push(style);
@@ -306,6 +475,17 @@ fn notice(trees: &[SyntaxTree], theme: &Theme, subject: &str) -> Notice {
         view: None,
         span: Some(theme.span),
         position: Some(position(trees, theme.span)),
+    }
+}
+
+/// A `NotFetched` notice (P3-613) for `subject` at `span`.
+fn fetch_notice(trees: &[SyntaxTree], subject: &str, view: Option<&str>, span: Span) -> Notice {
+    Notice {
+        kind: NoticeKind::NotFetched,
+        subject: subject.into(),
+        view: view.map(str::to_owned),
+        span: Some(span),
+        position: Some(position(trees, span)),
     }
 }
 
@@ -337,20 +517,56 @@ fn format_error(path: &str, reason: &str) -> ModelErrorKind {
 // TODO(srs): P2-409 (B styles-themes 7c, 7d): a URL icon gets a P2-3
 // notice and is not drawn; a `data:` URI is read as Structurizr reads it
 // (`data_uri`).
+// DECISION (network row): a URL icon, and a relative icon of a fetched
+// theme or DSL file (resolved against its URL, P3-606), is fetched and
+// keyed by its full URL; network off or a failed fetch is a `NotFetched`
+// notice (P3-613); fetched bytes that are no image follow the local-file
+// rule (notice for an image name, else `FileFormat`).
 fn load_icon(
     model: &mut Model,
     files: &mut Option<Files<'_>>,
     folder: Option<&str>,
     icon: &mut Spanned<String>,
-) -> Result<Option<String>, ModelErrorKind> {
-    let lower = icon.value.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("http://") {
-        return Ok(Some(format!("icon {}", icon.value)));
+    what: &str,
+) -> Result<Option<(NoticeKind, String)>, ModelErrorKind> {
+    let no_effect = |subject: String| Some((NoticeKind::NoEffect, subject));
+    let url = if net::is_http_url(&icon.value) {
+        Some(icon.value.clone())
+    } else if icon.value.starts_with("data:") {
+        None
+    } else {
+        folder.filter(|f| net::is_https(f)).map(|base| net::join_url(base, &icon.value))
+    };
+    if let Some(url) = url {
+        icon.value.clone_from(&url);
+        if model.assets.iter().any(|a| a.path == url) {
+            return Ok(None);
+        }
+        let bytes = match fetch(files, &url) {
+            Fetched::Bytes(bytes) => bytes,
+            Fetched::Insecure => return Err(ModelErrorKind::InsecureUrl { url }),
+            Fetched::Off => return Ok(Some((NoticeKind::NotFetched, not_fetched(&url, what, None)))),
+            Fetched::Failed(reason) => {
+                return Ok(Some((NoticeKind::NotFetched, not_fetched(&url, what, Some(&reason)))));
+            }
+        };
+        let Some(mime) = sniff(&bytes) else {
+            if image_name(&url) {
+                return Ok(no_effect(undrawn(&url)));
+            }
+            return Err(format_error(&url, "the icon is not a PNG, JPEG or SVG image"));
+        };
+        model.assets.push(Asset {
+            path: url,
+            mime,
+            bytes: Arc::from(bytes),
+        });
+        return Ok(None);
     }
     if icon.value.starts_with("data:") {
         if !model.assets.iter().any(|a| a.path == icon.value) {
             let Some((mime, bytes)) = data_uri(&icon.value)? else {
-                return Ok(Some(undrawn(&icon.value)));
+                return Ok(no_effect(undrawn(&icon.value)));
             };
             model.assets.push(Asset {
                 path: icon.value.clone(),
@@ -377,7 +593,7 @@ fn load_icon(
     let bytes = read(files, &path)?;
     let Some(mime) = sniff(&bytes) else {
         if image_name(&path) {
-            return Ok(Some(undrawn(&path)));
+            return Ok(no_effect(undrawn(&path)));
         }
         return Err(format_error(&path, "the icon is not a PNG, JPEG or SVG image"));
     };

@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use c4rizer_core::model::{self, ModelErrorKind};
+use c4rizer_core::model::{self, ModelErrorKind, NoticeKind};
+use c4rizer_core::{export, pipeline};
 use c4rizer_core::model::{
     CacheEntry, FetchEvent, FsLoader, Loader, MAX_BODY, NetCache, NetLoader, NoFiles, Response,
     Transport, fnv1a, utc_text,
@@ -140,6 +141,54 @@ fn parse(text: &str, loader: &mut Mem) -> Result<model::Parsed, model::ModelErro
 /// The element names of `parsed`, in model order.
 fn names(parsed: &model::Parsed) -> Vec<String> {
     parsed.model.elements.iter().map(|e| e.name.value.clone()).collect()
+}
+
+/// A small SVG image.
+const SVG: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>";
+
+/// A theme with one style for every software system, no icon.
+const THEME_PLAIN: &[u8] = b"{\"elements\": [{\"tag\": \"Software System\", \"background\": \"#123456\"}]}";
+
+/// A diagram naming a URL theme (whose icon is relative to it), a URL
+/// icon and a URL image.
+const FETCHING: &str = "workspace {
+  model {
+    shop = softwareSystem \"Shop\"
+    bank = softwareSystem \"Bank\" \"\" \"Ledger\"
+    shop -> bank \"Pays through\"
+  }
+  views {
+    systemContext shop \"ctx\" {
+      include *
+    }
+    image * \"pic\" {
+      image https://h.test/pic.svg
+    }
+    styles {
+      element \"Ledger\" {
+        icon https://h.test/ledger.svg
+      }
+    }
+    theme https://h.test/t/theme.json
+  }
+}
+";
+
+/// The URLs `FETCHING` names, served from memory.
+fn sources(network: bool) -> Mem {
+    Mem::new(network)
+        .url(
+            "https://h.test/t/theme.json",
+            b"{\"elements\": [{\"tag\": \"Software System\", \"background\": \"#123456\", \"icon\": \"icons/s.svg\"}]}",
+        )
+        .url("https://h.test/t/icons/s.svg", SVG)
+        .url("https://h.test/ledger.svg", SVG)
+        .url("https://h.test/pic.svg", SVG)
+}
+
+/// Every view of `model`, built.
+fn build(model: &model::Model) -> pipeline::AllViews {
+    pipeline::build_all_in(model, model::Mode::Light, &std::sync::atomic::AtomicBool::new(false)).expect("never stopped")
 }
 
 /// A `NetLoader` over `fake`, with `cache` if given.
@@ -455,32 +504,132 @@ fn p3_607_fetched_include_cycle_names_url() {
 
 #[test]
 fn p3_603_themes_icons_images_fetched() {
-    todo!()
+    let mut on = sources(true);
+    let parsed = parse(FETCHING, &mut on).expect("fetched sources");
+    let m = &parsed.model;
+    assert_eq!(
+        on.fetches(),
+        vec![
+            "https://h.test/t/theme.json",
+            "https://h.test/t/icons/s.svg",
+            "https://h.test/ledger.svg",
+            "https://h.test/pic.svg"
+        ],
+        "theme, its relative icon (P3-606), the style icon and the image"
+    );
+    assert!(m.notices.iter().all(|n| n.kind != NoticeKind::NotFetched), "{:?}", m.notices);
+    assert!(m.element_styles.iter().any(|s| s.theme == Some(0) && s.background.is_some()));
+    for url in ["https://h.test/t/icons/s.svg", "https://h.test/ledger.svg", "https://h.test/pic.svg"] {
+        assert!(m.assets.iter().any(|a| a.path == url), "asset {url}");
+    }
+    let pic = m.views.iter().find(|v| v.key == "pic").and_then(|v| v.image.as_ref()).expect("image view");
+    assert!(pic.asset.is_some(), "the fetched image is drawn");
+    // A theme name with no such file is fetched from Structurizr's theme
+    // location; network off it is the phase-2 file error.
+    let named = "workspace {\n  model {\n    shop = softwareSystem \"Shop\"\n  }\n  views {\n    theme roles-2024.01\n  }\n}\n";
+    let url = "https://static.structurizr.com/themes/roles-2024.01/theme.json";
+    let mut on = Mem::new(true).file("/w/ws.dsl", "").url(url, THEME_PLAIN);
+    let parsed = parse(named, &mut on).expect("named theme");
+    assert_eq!(on.fetches(), vec![url]);
+    assert!(parsed.model.element_styles.iter().any(|s| s.theme == Some(0)));
+    let mut off = Mem::new(false).file("/w/ws.dsl", "").url(url, THEME_PLAIN);
+    let e = parse(named, &mut off).expect_err("off");
+    assert!(matches!(e.kind, ModelErrorKind::FileRead { .. }), "{e:?}");
 }
 
 #[test]
 fn p3_608_diagram_sources_never_fetched() {
-    todo!()
+    let text = "workspace {\n  model {\n    shop = softwareSystem \"Shop\"\n  }\n  views {\n    image * \"p\" {\n      plantuml https://h.test/a.puml\n    }\n    image * \"m\" {\n      mermaid https://h.test/b.mmd\n    }\n    image * \"k\" {\n      kroki graphviz https://h.test/c.dot\n    }\n    properties {\n      plantuml.url https://plantuml.h.test\n      mermaid.url https://mermaid.h.test\n      kroki.url https://kroki.h.test\n    }\n  }\n}\n";
+    let mut on = Mem::new(true)
+        .url("https://h.test/a.puml", b"@startuml\n@enduml\n")
+        .url("https://h.test/b.mmd", b"graph TD\n")
+        .url("https://h.test/c.dot", b"digraph {}\n");
+    let parsed = parse(text, &mut on).expect("parses");
+    assert!(on.fetches().is_empty(), "never fetched: {:?}", on.fetches());
+    let not_fetched: Vec<&model::Notice> =
+        parsed.model.notices.iter().filter(|n| n.kind == NoticeKind::NotFetched).collect();
+    assert_eq!(not_fetched.len(), 3, "{:?}", parsed.model.notices);
+    for (n, (url, key)) in not_fetched.iter().zip([("a.puml", "p"), ("b.mmd", "m"), ("c.dot", "k")]) {
+        assert!(n.subject.contains(url) && n.subject.contains(&format!("image of view {key}")), "{}", n.subject);
+    }
+    for v in &parsed.model.views {
+        assert!(v.image.as_ref().is_some_and(|i| i.asset.is_none()), "placeholder kept");
+    }
 }
 
 #[test]
 fn p3_613_not_fetched_notice_names_url_and_what() {
-    todo!()
+    for (network, why) in [(false, "the network is off"), (true, "the fetch failed")] {
+        let mut loader = Mem::new(network);
+        let parsed = parse(FETCHING, &mut loader).expect("parses");
+        let notices: Vec<String> = parsed
+            .model
+            .notices
+            .iter()
+            .filter(|n| n.kind == NoticeKind::NotFetched)
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(notices.len(), 3, "{notices:?}");
+        for (url, what) in [
+            ("https://h.test/t/theme.json", "theme styles"),
+            ("https://h.test/ledger.svg", "icon of tag Ledger"),
+            ("https://h.test/pic.svg", "image of view pic"),
+        ] {
+            assert!(
+                notices.iter().any(|n| n.contains("not fetched: ") && n.contains(url) && n.contains(what) && n.contains(why)),
+                "{url} {what} {why}: {notices:?}"
+            );
+        }
+        assert!(parsed.model.notices.iter().all(|n| n.kind != NoticeKind::NoEffect), "not NoEffect");
+    }
 }
 
 #[test]
 fn p3_618_fetched_svg_embedded_as_data_uri() {
-    todo!()
+    let parsed = parse(FETCHING, &mut sources(true)).expect("parses");
+    let all = build(&parsed.model);
+    for view in &all.views {
+        let svg = export::svg(&view.scene);
+        assert!(!svg.contains("h.test"), "{}: the export never names the URL", view.plan.key);
+        assert!(svg.contains("data:image/svg+xml"), "{}: embedded as a data URI", view.plan.key);
+    }
 }
 
 #[test]
 fn p3_619_cached_builds_byte_identical() {
-    todo!()
+    let scratch = Scratch::new("619");
+    let cache = NetCache::new(scratch.path().join("net"));
+    let memory = sources(true);
+    for (url, bytes) in &memory.urls {
+        cache.put(url, bytes, 1_700_000_000).expect("seed");
+    }
+    // Fully cached: every connection fails, every URL has a copy.
+    let down: Vec<(&str, Route)> =
+        memory.urls.keys().map(|u| (u.as_str(), Route::Fail(io::ErrorKind::ConnectionRefused))).collect();
+    let exports = |loader: &mut dyn Loader| -> Vec<String> {
+        let parsed = model::parse_with(FETCHING, None, loader).expect("parses");
+        build(&parsed.model).views.iter().map(|v| export::svg(&v.scene)).collect()
+    };
+    let first = exports(&mut net(&Fake::with(&down), Some(cache.clone())));
+    let second = exports(&mut net(&Fake::with(&down), Some(cache.clone())));
+    let from_memory = exports(&mut sources(true));
+    assert_eq!(first.len(), 2);
+    assert_eq!(first, second, "two cached runs are byte-identical");
+    assert_eq!(first, from_memory, "and identical to a build served from memory");
 }
 
 #[test]
 fn p3_621_default_theme_never_fetched() {
-    todo!()
+    for theme in ["theme default", "theme https://static.structurizr.com/themes/default/theme.json"] {
+        let text = format!("workspace {{\n  model {{\n    shop = softwareSystem \"Shop\"\n  }}\n  views {{\n    {theme}\n  }}\n}}\n");
+        for network in [false, true] {
+            let mut loader = Mem::new(network);
+            let parsed = parse(&text, &mut loader).expect("default theme");
+            assert!(loader.fetches().is_empty(), "{theme}: never fetched");
+            assert!(parsed.model.element_styles.iter().any(|s| s.theme == Some(0)), "{theme}: bundled styles");
+            assert!(parsed.model.notices.is_empty(), "{:?}", parsed.model.notices);
+        }
+    }
 }
 
 #[cfg(feature = "network")]

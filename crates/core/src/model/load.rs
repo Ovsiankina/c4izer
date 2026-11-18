@@ -35,6 +35,9 @@ pub(super) struct Replay {
     pub(super) files: BTreeMap<PathBuf, Vec<u8>>,
     /// Every path the theme and icon reads canonicalized, and the result.
     pub(super) canonical: BTreeMap<PathBuf, PathBuf>,
+    /// Every theme, icon and image URL fetched after the DSL files, and
+    /// what the fetch gave (network row), so `reparse` never fetches.
+    pub(super) fetched: BTreeMap<String, Result<Vec<u8>, (io::ErrorKind, String)>>,
 }
 
 /// The `!include` statements of `tree` in document order, nested blocks
@@ -522,17 +525,23 @@ fn build(
         loader,
         files: BTreeMap::new(),
         canonical: BTreeMap::new(),
+        fetched: BTreeMap::new(),
     };
     let files = theme::Files {
         path: paths.first().map(PathBuf::as_path),
+        paths: &paths,
         loader: &mut tape,
     };
     theme::apply(&mut model, &trees, Some(files))?;
     let Tape {
-        files, canonical, ..
+        files,
+        canonical,
+        fetched,
+        ..
     } = tape;
     replay.files.extend(files);
     replay.canonical.extend(canonical);
+    replay.fetched.extend(fetched);
     replay.env.extend(env);
     Ok(Parsed {
         trees,
@@ -548,6 +557,7 @@ struct Tape<'l> {
     loader: &'l mut dyn Loader,
     files: BTreeMap<PathBuf, Vec<u8>>,
     canonical: BTreeMap<PathBuf, PathBuf>,
+    fetched: BTreeMap<String, Result<Vec<u8>, (io::ErrorKind, String)>>,
 }
 
 impl Loader for Tape<'_> {
@@ -570,6 +580,16 @@ impl Loader for Tape<'_> {
     fn env(&self, name: &str) -> Option<String> {
         self.loader.env(name)
     }
+
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        let result = self.loader.fetch(url);
+        let taped = match &result {
+            Ok(bytes) => Ok(bytes.clone()),
+            Err(e) => Err((e.kind(), e.to_string())),
+        };
+        self.fetched.insert(url.to_owned(), taped);
+        result
+    }
 }
 
 /// The `Loader` `reparse` builds with: the recorded environment, the
@@ -582,6 +602,7 @@ struct Recorded<'r> {
     env: &'r BTreeMap<String, Option<String>>,
     files: &'r BTreeMap<PathBuf, Vec<u8>>,
     canonical: &'r BTreeMap<PathBuf, PathBuf>,
+    fetched: &'r BTreeMap<String, Result<Vec<u8>, (io::ErrorKind, String)>>,
 }
 
 impl Loader for Recorded<'_> {
@@ -604,6 +625,16 @@ impl Loader for Recorded<'_> {
     fn env(&self, name: &str) -> Option<String> {
         self.env.get(name).cloned().flatten()
     }
+
+    // DECISION: a URL the first parse never asked for reads as "network
+    // off" (edits never add one, EDIT-21).
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        match self.fetched.get(url) {
+            Some(Ok(bytes)) => Ok(bytes.clone()),
+            Some(Err((kind, text))) => Err(io::Error::new(*kind, text.clone())),
+            None => Err(io::Error::new(io::ErrorKind::Unsupported, "reparse fetches nothing")),
+        }
+    }
 }
 
 /// See `model::reparse`.
@@ -621,6 +652,7 @@ pub(super) fn reparse(parsed: &Parsed, file: FileId, source: &str) -> Result<Par
         env: &parsed.replay.env,
         files: &parsed.replay.files,
         canonical: &parsed.replay.canonical,
+        fetched: &parsed.replay.fetched,
     };
     build(trees, parsed.paths.clone(), parsed.replay.clone(), &mut loader)
 }
