@@ -296,14 +296,35 @@ impl Watcher {
 // working on it unchanged.
 #[derive(Debug, Default)]
 pub(crate) struct Reads {
-    /// Every file read, in read order, with the hash of its bytes.
+    /// Every file read, in read order, with the hash of its bytes; a
+    /// fetched file by its URL (network row).
     pub(crate) read: Vec<(PathBuf, ContentHash)>,
+    /// The fetcher while "Allow network for this file" is on (P3-602);
+    /// `None`: network off, `fetch` keeps its default "off" answer.
+    pub(crate) net: Option<c4rizer_core::model::NetLoader>,
+}
+
+/// True when `path` is the URL of a fetched file, not a local path
+/// (P3-614, P3-615).
+pub(crate) fn is_fetched(path: &Path) -> bool {
+    path.to_str()
+        .and_then(|p| p.get(..8))
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
 }
 
 impl c4rizer_core::model::Loader for Reads {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         let bytes = c4rizer_core::model::FsLoader.read(path)?;
         self.read.push((path.to_path_buf(), hash(&bytes)));
+        Ok(bytes)
+    }
+
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        let Some(net) = self.net.as_mut() else {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "the network is off"));
+        };
+        let bytes = c4rizer_core::model::Loader::fetch(net, url)?;
+        self.read.push((PathBuf::from(url), hash(&bytes)));
         Ok(bytes)
     }
 
@@ -461,8 +482,8 @@ impl std::fmt::Debug for SharedTransport {
 
 impl Transport for SharedTransport {
     fn get(&mut self, url: &str, limit: u64) -> io::Result<Response> {
-        let _ = (url, limit);
-        todo!()
+        let mut inner = self.0.lock().map_err(|_| io::Error::other("the transport panicked earlier"))?;
+        inner.get(url, limit)
     }
 }
 
@@ -496,6 +517,9 @@ impl UiState {
         for line in text.lines() {
             let fields: Vec<String> = line.split('\t').map(unescape).collect();
             match fields.as_slice() {
+                [key, path] if key == "network" => {
+                    state.network.insert(PathBuf::from(path));
+                }
                 [key, path] if key == "recent" => {
                     if state.recent.len() < RECENT_MAX && !state.recent.iter().any(|p| p.as_os_str() == path.as_str()) {
                         state.recent.push(PathBuf::from(path));
@@ -533,6 +557,13 @@ impl UiState {
             // state file is text, and such paths are rare enough.
             if let Some(p) = path.to_str() {
                 out.push_str("recent\t");
+                out.push_str(&escape(p));
+                out.push('\n');
+            }
+        }
+        for path in &self.network {
+            if let Some(p) = path.to_str() {
+                out.push_str("network\t");
                 out.push_str(&escape(p));
                 out.push('\n');
             }

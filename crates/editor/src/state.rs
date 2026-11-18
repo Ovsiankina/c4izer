@@ -1094,6 +1094,12 @@ pub struct State {
     /// The bytes the open (or the last Reload) fetched, reused by the
     /// rebuild after a save (P3-610), and the fetch lines shown (P3-620).
     net: files::NetMemory,
+    /// The fetch cache the switch stores in and falls back to (P3-609);
+    /// `None` in tests.
+    net_cache: Option<c4rizer_core::model::NetCache>,
+    /// The next parse fetches afresh instead of reusing `net.bytes`: set
+    /// by an open, a Reload and the switch (P3-610, P3-615).
+    fetch_fresh: bool,
     /// The file of the write in flight (EDIT-22), so its result event is
     /// told apart: the root file's path as opened, or an included file's.
     in_flight: Option<PathBuf>,
@@ -1158,6 +1164,8 @@ impl State {
             error_file: None,
             transport: None,
             net: files::NetMemory::default(),
+            net_cache: None,
+            fetch_fresh: false,
             in_flight: None,
             queued: VecDeque::new(),
             aids: ViewAids::default(),
@@ -1938,13 +1946,14 @@ impl State {
     /// (P3-602).
     #[must_use]
     pub fn network_on(&self) -> bool {
-        todo!()
+        self.doc.as_ref().is_some_and(|d| self.ui.network.contains(&d.path))
     }
 
-    /// Sets the transport the network switch fetches through (P3-617).
-    pub(crate) fn set_transport(&mut self, transport: files::SharedTransport) {
-        let _ = transport;
-        todo!()
+    /// Sets the transport the network switch fetches through, and the
+    /// cache it uses (P3-617, P3-609).
+    pub(crate) fn set_transport(&mut self, transport: files::SharedTransport, cache: Option<c4rizer_core::model::NetCache>) {
+        self.transport = Some(transport);
+        self.net_cache = cache;
     }
 
     /// One line per fetch of the last parse with the network on:
@@ -1952,7 +1961,18 @@ impl State {
     /// (P3-611, P3-620).
     #[must_use]
     pub(crate) fn fetch_lines(&self) -> Vec<String> {
-        todo!()
+        self.net.lines.clone()
+    }
+
+    /// Parses the open file again from its last text, fetching every URL
+    /// afresh (P3-615): the Reload command and the network switch.
+    fn refetch(&mut self) -> Vec<Effect> {
+        let (Some(doc), Some(text)) = (&self.doc, self.root_text.clone()) else {
+            return Vec::new();
+        };
+        let hash = doc.hash;
+        self.fetch_fresh = true;
+        self.reload(&text, hash)
     }
 
     /// The included file the current parse error is in; `None` with no
@@ -1997,9 +2017,31 @@ impl State {
     /// through `files::Reads` (P2-5), and records the root text, the files
     /// read with their hashes (P2-141) and the included file an error is
     /// in (P2-136).
+    // DECISION (P3-610): with the switch on, an open, a Reload and the
+    // switch fetch every URL afresh; every other re-parse (a save, a
+    // watcher event) reuses the bytes the last fresh parse fetched, and
+    // fetches only a URL it never saw.
     fn parse_doc(&mut self, path: &Path, text: &str) -> Result<Parsed, ModelError> {
+        let fresh = std::mem::take(&mut self.fetch_fresh);
         let mut reads = files::Reads::default();
+        let network = self.ui.network.contains(path);
+        if let (true, Some(transport)) = (network, &self.transport) {
+            let mut net = c4rizer_core::model::NetLoader::new(Box::new(transport.clone()), self.net_cache.clone());
+            if !fresh {
+                net.reuse(&self.net.bytes);
+            }
+            reads.net = Some(net);
+        }
         let result = parse_with(text, Some(path), &mut reads);
+        match reads.net.take() {
+            Some(net) => {
+                if fresh || !net.events().is_empty() {
+                    self.net.lines = net.events().iter().map(ToString::to_string).collect();
+                }
+                self.net.bytes.clone_from(net.fetched());
+            }
+            None => self.net = files::NetMemory::default(),
+        }
         self.root_text = Some(text.to_owned());
         self.error_file = match &result {
             Ok(_) => None,
@@ -2008,7 +2050,9 @@ impl State {
                 .and_then(|i| reads.read.get(i))
                 .map(|(p, _)| p.clone()),
         };
-        let read: BTreeMap<PathBuf, ContentHash> = reads.read.into_iter().collect();
+        // P3-615: a fetched file is never watched.
+        let read: BTreeMap<PathBuf, ContentHash> =
+            reads.read.into_iter().filter(|(p, _)| !files::is_fetched(p)).collect();
         if result.is_err() {
             // DECISION: after a failed parse the files of the last parse
             // stay watched too (one that failed to read was not read), with
@@ -2992,6 +3036,24 @@ impl State {
         }
         match apply(parsed, &edits) {
             Ok(applied) => {
+                // P3-614: an edit that would land in a fetched file is
+                // refused, naming the URL; no file changes.
+                let fetched = applied
+                    .files
+                    .iter()
+                    .filter_map(|(file, _)| parsed.paths.get(file.0 as usize))
+                    .find(|p| files::is_fetched(p));
+                if let Some(url) = fetched {
+                    self.notice = Some(format!(
+                        "not changed: {} is a fetched file — download it and include it by path to edit it",
+                        url.display()
+                    ));
+                    self.preview = None;
+                    if matches!(action, Action::Undo(_) | Action::Redo(_)) {
+                        self.give_back(action);
+                    }
+                    return Vec::new();
+                }
                 // P2-139: the patched included files first, each checked
                 // against its own hash (EDIT-24), then the root file when
                 // its text changed; one at a time, each after the last
@@ -4082,7 +4144,19 @@ impl State {
                 }
                 Vec::new()
             }
-            Command::ToggleNetwork | Command::Reload => todo!(),
+            // P3-602: remembered per file in the UI state.
+            Command::ToggleNetwork => {
+                let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) else {
+                    return Vec::new();
+                };
+                if !self.ui.network.remove(&path) {
+                    self.ui.network.insert(path);
+                }
+                let mut effects = vec![Effect::SaveUiState(self.ui.clone())];
+                effects.extend(self.refetch());
+                effects
+            }
+            Command::Reload => self.refetch(),
             Command::Navigator => {
                 self.overlay = match self.overlay {
                     Some(Overlay::Navigator) => None,
@@ -4517,6 +4591,9 @@ impl State {
         self.included.clear();
         self.in_flight = None;
         self.queued.clear();
+        // P3-615: a file open fetches afresh.
+        self.fetch_fresh = true;
+        self.net = files::NetMemory::default();
         let (parsed, parse_error) = match self.parse_doc(&path, text) {
             Ok(p) => (Some(Arc::new(p)), None),
             Err(e) => (None, Some(e)),

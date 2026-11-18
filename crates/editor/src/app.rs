@@ -154,6 +154,14 @@ impl App {
             include_tx,
             include_rx,
         };
+        // P3-617: the switch fetches through the real HTTPS transport and
+        // the user's cache (P3-609); nothing is fetched until it is on.
+        let transport: Box<dyn c4rizer_core::model::Transport + Send> =
+            Box::new(c4rizer_core::model::HttpsTransport::new());
+        app.state.set_transport(
+            files::SharedTransport(std::sync::Arc::new(std::sync::Mutex::new(transport))),
+            c4rizer_core::model::NetCache::from_env(&|name| std::env::var(name).ok()),
+        );
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
         }
@@ -287,6 +295,16 @@ impl App {
             }
             return out;
         }
+        // P3-602, P3-615: the per-file network switch and Reload.
+        ui.horizontal_wrapped(|ui| {
+            let mut on = self.state.network_on();
+            if ui.checkbox(&mut on, "Allow network for this file").changed() {
+                out.push(Event::Command(Command::ToggleNetwork));
+            }
+            if ui.button("Reload").clicked() {
+                out.push(Event::Command(Command::Reload));
+            }
+        });
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             for (i, crumb) in self.state.breadcrumb().iter().enumerate() {
@@ -437,6 +455,10 @@ impl App {
             for notice in &notices {
                 ui.label(format!("notice: {notice}"));
             }
+            // P3-620: every fetch of the last parse with the network on.
+            for line in self.state.fetch_lines() {
+                ui.label(line);
+            }
             ui.separator();
             ui.strong("Export");
             // P2-663: the SVG text choice, `name` by default; it lives in
@@ -509,6 +531,10 @@ impl App {
             }
             if self.state.doc.is_some() && self.state.read_only() {
                 ui.strong("read-only");
+            }
+            // P3-602: a mark while the network switch is on.
+            if self.state.network_on() {
+                ui.strong("network on");
             }
         });
     }
