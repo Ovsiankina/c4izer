@@ -105,33 +105,36 @@ use c4rizer_core::{edit, export, inspect, pipeline};
 /// stdout by `help`. Names all seven subcommands and every argument
 /// (CLI-1, CLI-3, CLI-4, P2-648).
 pub(crate) const USAGE: &str = "\
-usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]
-       c4rizer lint FILE
-       c4rizer validate -workspace FILE
-       c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]
-       c4rizer list -workspace FILE
+usage: c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline] [--network]
+       c4rizer lint FILE [--network]
+       c4rizer validate -workspace FILE [--network]
+       c4rizer inspect -workspace FILE [-severity error,warning,info,ignore] [--network]
+       c4rizer list -workspace FILE [--network]
        c4rizer import-layout JSON FILE
+       c4rizer cache list|clear
        c4rizer version
        c4rizer help [COMMAND]
 FILE `-` reads the diagram from stdin; `-workspace` may be left out.
+--network fetches https:// includes, themes, icons and images (and a -workspace URL).
 exit code: 0 clean, 1 lint errors, 2 parse, I/O or usage error;
 inspect: the number of error violations shown (at most 254), 255 on an error";
 
 /// Each subcommand with its usage line, in `USAGE` order (P2-647,
 /// P2-648): `help <command>` prints that line alone.
-const COMMAND_LINES: [(&str, &str); 8] = [
+const COMMAND_LINES: [(&str, &str); 9] = [
     (
         "render",
-        "c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline]",
+        "c4rizer render FILE -o DIR [--png [--width N]] [--mode light|dark] [--svg-text name|embed|outline] [--network]",
     ),
-    ("lint", "c4rizer lint FILE"),
-    ("validate", "c4rizer validate -workspace FILE"),
+    ("lint", "c4rizer lint FILE [--network]"),
+    ("validate", "c4rizer validate -workspace FILE [--network]"),
     (
         "inspect",
-        "c4rizer inspect -workspace FILE [-severity error,warning,info,ignore]",
+        "c4rizer inspect -workspace FILE [-severity error,warning,info,ignore] [--network]",
     ),
-    ("list", "c4rizer list -workspace FILE"),
+    ("list", "c4rizer list -workspace FILE [--network]"),
     ("import-layout", "c4rizer import-layout JSON FILE"),
+    ("cache", "c4rizer cache list|clear"),
     ("version", "c4rizer version"),
     ("help", "c4rizer help [COMMAND]"),
 ];
@@ -139,7 +142,7 @@ const COMMAND_LINES: [(&str, &str); 8] = [
 /// The seven subcommands as the no-subcommand and unknown-subcommand
 /// messages name them (P2-650).
 const SUBCOMMANDS: &str =
-    "`render`, `lint`, `validate`, `inspect`, `list`, `import-layout`, `version`, `help`";
+    "`render`, `lint`, `validate`, `inspect`, `list`, `import-layout`, `cache`, `version`, `help`";
 
 /// The outcome of a run that got as far as the report (CLI-2). `main`
 /// turns it into the process exit code; a `UsageError` or `CliError` is
@@ -344,7 +347,15 @@ impl fmt::Display for UsageError {
                 f,
                 "invalid --svg-text \"{v}\" — give `name`, `embed` or `outline`"
             ),
-            UsageError::NoNetworkSupport | UsageError::CacheAction(_) => todo!(),
+            UsageError::NoNetworkSupport => f.write_str(
+                "--network needs network support, which this build lacks — rebuild with `cargo build -p c4rizer-cli --features network`",
+            ),
+            UsageError::CacheAction(a) if a.is_empty() => {
+                f.write_str("`cache` needs `list` or `clear`")
+            }
+            UsageError::CacheAction(a) => {
+                write!(f, "unknown cache action \"{a}\" — give `list` or `clear`")
+            }
             UsageError::MissingImportFiles => f.write_str(
                 "`import-layout` needs the workspace JSON and the diagram file — give `import-layout JSON FILE`",
             ),
@@ -542,7 +553,14 @@ impl fmt::Display for CliError {
                 "{}: cannot rewrite ({source}) — the file is unchanged; check that its folder is writable",
                 path.display()
             ),
-            CliError::NoCache | CliError::Cache { .. } => todo!(),
+            CliError::NoCache => f.write_str(
+                "no cache folder: neither $XDG_CACHE_HOME nor $HOME is set to an absolute path — set one of them",
+            ),
+            CliError::Cache { path, source } => write!(
+                f,
+                "{}: cannot read or remove the cache ({source}) — check the folder's permissions",
+                path.display()
+            ),
         }
     }
 }
@@ -558,7 +576,22 @@ impl std::error::Error for CliError {}
 ///
 /// A `UsageError` for anything that is not one of the `USAGE` forms
 /// (header DECISION lists them).
+#[cfg_attr(not(test), expect(dead_code, reason = "main parses through parse_args_net; tests use this"))]
 pub(crate) fn parse_args<I>(args: I) -> Result<Command, UsageError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    parse_args_net(args, false)
+}
+
+/// `parse_args` for a run whose `--network` flag `net::take_network_flag`
+/// already removed: with `network`, a `-workspace` URL is accepted
+/// (P3-603, amending P2-603).
+///
+/// # Errors
+///
+/// As `parse_args`.
+pub(crate) fn parse_args_net<I>(args: I, network: bool) -> Result<Command, UsageError>
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -575,9 +608,10 @@ where
         }
         Some(flag @ ("help" | "-h" | "--help")) => return parse_help(flag, args),
         Some(name @ ("validate" | "inspect" | "list")) => {
-            return parse_workspace_command(name, args);
+            return parse_workspace_command(name, args, network);
         }
         Some("import-layout") => return parse_import_layout(args),
+        Some("cache") => return net::parse_cache(args).map(Command::Cache),
         _ => return Err(UsageError::UnknownCommand(lossy(&first))),
     };
     let mut file: Option<OsString> = None;
@@ -680,6 +714,7 @@ where
 fn parse_workspace_command(
     name: &str,
     mut args: impl Iterator<Item = OsString>,
+    network: bool,
 ) -> Result<Command, UsageError> {
     let inspect = name == "inspect";
     let mut file: Option<OsString> = None;
@@ -716,7 +751,9 @@ fn parse_workspace_command(
         }
     }
     let file = file.ok_or(UsageError::MissingWorkspace)?;
-    if is_url(&file) {
+    // P3-603: with `--network` a URL is read through the fetcher, which
+    // refuses anything but https:// (P3-604).
+    if is_url(&file) && !network {
         return Err(UsageError::WorkspaceUrl(lossy(&file)));
     }
     let input = if file == "-" {
@@ -868,14 +905,26 @@ fn read_input(input: &Input, stdin: &mut impl Read) -> Result<String, CliError> 
 // `Parsed`; adding a path to `ModelError` would be a pub change.
 #[derive(Debug, Default)]
 struct Recording {
-    /// Every file read, in read order.
+    /// Every file read, in read order; a fetched file by its URL.
     read: Vec<PathBuf>,
+    /// The fetcher with `--network` (P3-600); `None`: network off, and
+    /// `fetch` keeps its default "off" answer (P3-601).
+    net: Option<model::NetLoader>,
 }
 
 impl model::Loader for Recording {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         let bytes = model::FsLoader.read(path)?;
         self.read.push(path.to_path_buf());
+        Ok(bytes)
+    }
+
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        let Some(net) = self.net.as_mut() else {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "the network is off"));
+        };
+        let bytes = net.fetch(url)?;
+        self.read.push(PathBuf::from(url));
         Ok(bytes)
     }
 
@@ -893,6 +942,38 @@ impl model::Loader for Recording {
 }
 
 impl Recording {
+    /// A recording loader for `net`: fetching through a `NetLoader` when
+    /// it has a transport.
+    fn new(net: net::Net) -> Recording {
+        Recording {
+            read: Vec::new(),
+            net: net.transport.map(|t| model::NetLoader::new(t, net.cache)),
+        }
+    }
+
+    /// What every fetch did (P3-611, P3-620).
+    fn events(&self) -> &[model::FetchEvent] {
+        self.net.as_ref().map_or(&[], model::NetLoader::events)
+    }
+
+    /// The input's text: FILE or stdin as `read_input` reads it, or, with
+    /// the network on, a `-workspace` URL fetched (P3-603).
+    fn read_root(&mut self, input: &Input, stdin: &mut impl Read) -> Result<String, CliError> {
+        let url = match input {
+            Input::Path(p) => p.to_str().filter(|p| is_url(&OsString::from(p))),
+            Input::Stdin => None,
+        };
+        let (Some(url), Some(net)) = (url, self.net.as_mut()) else {
+            return read_input(input, stdin);
+        };
+        model::Loader::fetch(net, url)
+            .and_then(|b| String::from_utf8(b).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+            .map_err(|source| CliError::Read {
+                input: input.clone(),
+                source,
+            })
+    }
+
     /// The included file `file` (`FileId(i)`, `i >= 1`), `None` for the
     /// root file or an id never read.
     fn path(&self, file: FileId) -> Option<&Path> {
@@ -1013,8 +1094,19 @@ fn png_bytes(_view: &pipeline::ViewBuild, _png: Png) -> Result<Vec<u8>, CliError
 /// key-collision, directory, write or report failure, or `PngUnavailable` for `--png` without PNG support (checked
 /// before any file is read). Lint findings are not errors: they give
 /// `Ok(Exit::LintErrors)`.
+#[cfg_attr(not(test), expect(dead_code, reason = "main runs through run_with; tests use this"))]
 pub(crate) fn run(
     command: &Command,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+) -> Result<Exit, CliError> {
+    run_with(command, net::Net::off(), stdin, stdout, &mut io::sink())
+}
+
+/// `run`'s body for the drawing commands and the rest, with `loader`.
+fn run_inner(
+    command: &Command,
+    loader: &mut Recording,
     stdin: &mut impl Read,
     stdout: &mut impl Write,
 ) -> Result<Exit, CliError> {
@@ -1051,10 +1143,10 @@ pub(crate) fn run(
             return Ok(Exit::Clean);
         }
         Command::Validate { input } | Command::Inspect { input, .. } | Command::List { input } => {
-            return run_model_command(command, input, stdin, stdout);
+            return run_model_command(command, input, loader, stdin, stdout);
         }
         Command::ImportLayout { json, file } => return run_import_layout(json, file, stdout),
-        Command::Cache(_) => todo!(),
+        Command::Cache(action) => return net::run_cache(*action, net::user_cache().as_ref(), stdout),
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
@@ -1071,9 +1163,8 @@ pub(crate) fn run(
     if !cfg!(feature = "outline") && svg_text == SvgText::Outline {
         return Err(CliError::OutlineUnavailable);
     }
-    let text = read_input(input, stdin)?;
-    let mut loader = Recording::default();
-    let parsed = parse(input, &text, &mut loader)?;
+    let text = loader.read_root(input, stdin)?;
+    let parsed = parse(input, &text, loader)?;
     // A flag that is never set: `build_all` cannot return `Stopped`.
     let Ok(all) = pipeline::build_all_in(&parsed.model, mode, &AtomicBool::new(false)) else {
         unreachable!("the stop flag is never set");
@@ -1212,6 +1303,7 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 fn run_model_command(
     command: &Command,
     input: &Input,
+    loader: &mut Recording,
     stdin: &mut impl Read,
     stdout: &mut impl Write,
 ) -> Result<Exit, CliError> {
@@ -1222,9 +1314,8 @@ fn run_model_command(
     {
         return Err(CliError::InspectorUnsupported(class.clone()));
     }
-    let text = read_input(input, stdin)?;
-    let mut loader = Recording::default();
-    let parsed = parse(input, &text, &mut loader)?;
+    let text = loader.read_root(input, stdin)?;
+    let parsed = parse(input, &text, loader)?;
     match command {
         // DECISION: `validate` prints nothing on success (B cli-breadth 4;
         // Structurizr's validate prints nothing either). Notices are not
@@ -1265,6 +1356,9 @@ fn run_model_command(
 ///
 /// As `run`, plus `CliError::Parse` naming the URL when a fetch fails
 /// with no cached copy.
+// DECISION: the fetch lines go to stderr after the run, also when it
+// fails, so a failed fetch is always explained; the report on stdout is
+// unchanged by the network.
 pub(crate) fn run_with(
     command: &Command,
     net: net::Net,
@@ -1272,8 +1366,10 @@ pub(crate) fn run_with(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<Exit, CliError> {
-    let _ = (command, net, stdin, stdout, stderr);
-    todo!()
+    let mut loader = Recording::new(net);
+    let result = run_inner(command, &mut loader, stdin, stdout);
+    net::print_events(loader.events(), stderr).map_err(CliError::Report)?;
+    result
 }
 
 /// Parses `std::env::args_os()`; on a `UsageError` prints
@@ -1282,15 +1378,25 @@ pub(crate) fn run_with(
 /// `Exit::Clean`, 1 for `Exit::LintErrors`; on a `CliError` prints
 /// `c4rizer: <error>` to stderr and returns exit 2. Serves CLI-2.
 fn main() -> ExitCode {
-    let command = match parse_args(std::env::args_os().skip(1)) {
-        Ok(command) => command,
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let parsed = net::take_network_flag(args, cfg!(feature = "network"))
+        .and_then(|(args, network)| parse_args_net(args, network).map(|c| (c, network)));
+    let (command, network) = match parsed {
+        Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("c4rizer: {error}\n{USAGE}");
             let inspect = std::env::args_os().nth(1).is_some_and(|a| a == "inspect");
             return ExitCode::from(if inspect { INSPECT_ERROR } else { 2 });
         }
     };
-    match run(&command, &mut io::stdin().lock(), &mut io::stdout().lock()) {
+    let net = if network { net::Net::on() } else { net::Net::off() };
+    match run_with(
+        &command,
+        net,
+        &mut io::stdin().lock(),
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    ) {
         Ok(exit) => exit_code(exit),
         Err(error) => {
             eprintln!("c4rizer: {error}");
