@@ -30,9 +30,10 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
                 cExport = component "export" "Writes a scene as SVG text or PNG bytes." "Rust module" "Output"
                 cImport = component "import" "Turns box positions from a Structurizr workspace JSON into at-line edits." "Rust module" "Entry"
                 cPipeline = component "pipeline" "Entry points: one view's scene and lint report, or every view." "Rust module" "Entry"
+                cExplore = component "explore" "Model exploration without UI: relationship rows with implied ones, search, in no view, usages, graph layout and tree of a view, decision records." "Rust module" "Entry"
             }
             cli = container "c4rizer CLI" "Exports views to SVG and PNG and lints them with an exit code, for scripts and agents." "Rust binary" "App"
-            editor = container "c4rizer editor" "Desktop canvas: reloads on save, drag boxes with live re-routing, edit text in place." "Rust, egui" "App"
+            editor = container "c4rizer editor" "Desktop canvas: reloads on save, drag boxes with live re-routing, edit text in place; explore pages render !docs Markdown with pulldown-cmark." "Rust, egui, pulldown-cmark" "App"
 
             model = container "Diagram file" "Single source of truth: elements, relationships, styles, views and box positions." "c4rizer DSL" "File"
             exports = container "Diagram exports" "Rendered views for docs and reviews." "SVG, PNG" "File"
@@ -70,6 +71,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         editor -> cLint "Shows findings from" "Rust API"
         editor -> cLabel "Measures text with" "Rust API"
         editor -> cGeom "Snaps drags to the grid of" "Rust API"
+        editor -> cExplore "Fills the explore pages with" "Rust API"
 
         cPipeline -> cModel "Parses the file with"
         cPipeline -> cView "Resolves views with"
@@ -101,6 +103,11 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cImport -> cText "Reports JSON positions as line and column with"
         cLint -> cText "Reads source spans from"
         cExport -> cScene "Serialises"
+        cExplore -> cModel "Reads elements, relationships and views of"
+        cExplore -> cView "Finds usages and graph nodes in plans of"
+        cExplore -> cGeom "Lays out the graph with points of"
+        cExplore -> cInspect "Takes the in-no-view set from"
+        cExplore -> cScene "Reads image sizes with"
 
         cView -> cGeom "Sizes boxes on the grid of"
         cPlace -> cGeom "Snaps positions to the grid of"
@@ -140,7 +147,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
             autoLayout
         }
         component core "C3-entry" "Component diagram for c4rizer core: entry points" {
-            include cli editor cPipeline cImport cText cEdit cExport cModel cView cPlace cRoute cLabel cScene cLint
+            include cli editor cPipeline cImport cExplore cText cEdit cExport cModel cView cPlace cRoute cLabel cScene cLint cInspect
             autoLayout
         }
         component core "C3-geom" "Component diagram for c4rizer core: geometry" {

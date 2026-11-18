@@ -525,7 +525,7 @@ fn is_model_view(kind: ViewKind) -> bool {
 /// Every element some declared model view includes (P2-623). Default
 /// views the editor offers and has not written (EDIT-15) are not views of
 /// the model, so they never count.
-fn shown(model: &Model) -> BTreeSet<ElementId> {
+pub(crate) fn shown(model: &Model) -> BTreeSet<ElementId> {
     let mut set: BTreeSet<ElementId> = model
         .views
         .iter()

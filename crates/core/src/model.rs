@@ -57,6 +57,7 @@ use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod theme;
+pub(crate) use theme::sniff as sniff_image;
 mod archetype;
 mod deploy;
 mod expr;

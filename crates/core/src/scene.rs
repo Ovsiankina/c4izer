@@ -1103,7 +1103,7 @@ pub(crate) fn placeholder_text(image: &SceneImage) -> Option<TextBlock> {
 /// The width and height in px an image file declares: the PNG `IHDR`, the
 /// JPEG start-of-frame, the SVG root's `width`/`height` (px or unitless)
 /// or else its `viewBox`. `None` when they cannot be read.
-fn intrinsic_size(mime: Mime, bytes: &[u8]) -> Option<(i32, i32)> {
+pub(crate) fn intrinsic_size(mime: Mime, bytes: &[u8]) -> Option<(i32, i32)> {
     let clamp = |w: f64, h: f64| -> Option<(i32, i32)> {
         let fit = |v: f64| {
             // DECISION: sizes are rounded to whole px and kept within

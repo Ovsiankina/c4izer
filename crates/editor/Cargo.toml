@@ -18,6 +18,8 @@ eframe = "0.37"
 notify = "8.2"
 # HLD §2: native Open and Save dialogs for EDIT-13, EDIT-7 [approved 2026-11-15].
 rfd = "0.18"
+# P3-514 (ruling X1): Markdown in the documentation viewer.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [lints]
 workspace = true

@@ -80,6 +80,8 @@ pub struct App {
     include_tx: Sender<(PathBuf, FileEvent)>,
     /// Included-file events from the include watcher.
     include_rx: Receiver<(PathBuf, FileEvent)>,
+    /// The explore pages (P3-9), shown instead of the canvas while open.
+    explore: crate::explore::Explore,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -153,6 +155,7 @@ impl App {
             includes: None,
             include_tx,
             include_rx,
+            explore: crate::explore::Explore::default(),
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -1089,9 +1092,13 @@ impl eframe::App for App {
         let mut left = self.state.aids.view_list;
         let mut fit = fit_key_pressed(&ctx);
         let mut dark = self.state.mode() == Mode::Dark;
+        let mut explore = self.explore.open;
         egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut left, "Views");
+                // P3-9: the explore pages replace the canvas while on.
+                ui.toggle_value(&mut explore, "Explore")
+                    .on_hover_text("Model, relationships, graph, tree, documentation and decisions");
                 if ui.button("Fit view").on_hover_text("F").clicked() {
                     fit = true;
                 }
@@ -1124,6 +1131,7 @@ impl eframe::App for App {
             });
         });
         self.panels = Some((left, right));
+        self.explore.open = explore;
         // DECISION: the toolbar toggle writes the view-only flag directly,
         // as the shell writes `io_error`; it changes no file (P2-730).
         self.state.aids.view_list = left;
@@ -1146,7 +1154,14 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(280.0_f32.clamp(min, max))
                 .size_range(min..=max)
-                .show(ui, |ui| events.extend(self.right_panel(ui)));
+                // P3-507: off while Explore is open (it can write the file).
+                .show(ui, |ui| events.extend(ui.add_enabled_ui(!self.explore.open, |ui| self.right_panel(ui)).inner));
+        }
+        if self.explore.open
+            && let Some(parsed) = self.state.doc.as_ref().and_then(|d| d.parsed.clone())
+        {
+            self.explore_frame(ui, &ctx, &parsed, events);
+            return;
         }
         egui::CentralPanel::default().show(ui, |ui| {
             let size = ui.available_size();
@@ -1167,7 +1182,70 @@ impl eframe::App for App {
     }
 }
 
+/// The panel and overlay events that pass while Explore is open (P3-507),
+/// and whether Explore closes: a view pick (view list, breadcrumb) passes
+/// and closes it, so that view opens; fitting, full screen and opening
+/// another file pass; every other event, all that could write the file,
+/// is dropped.
+// DECISION: an allow-list, so a control added later stays off in Explore
+// until it is listed here.
+pub(crate) fn explore_gate(events: Vec<Event>) -> (Vec<Event>, bool) {
+    let mut leave = false;
+    let kept = events
+        .into_iter()
+        .filter(|event| match event {
+            Event::Command(Command::ShowView(_) | Command::Crumb(_)) => {
+                leave = true;
+                true
+            }
+            Event::Command(Command::Open(_) | Command::ShowOpenDialog | Command::Fit(_) | Command::Fullscreen) => true,
+            _ => false,
+        })
+        .collect();
+    (kept, leave)
+}
+
 impl App {
+    /// The explore pages in the central panel (P3-9), and the actions
+    /// their clicks make: open a view with a box selected, or copy text.
+    /// Nothing here writes the file (P3-507).
+    fn explore_frame(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        parsed: &Arc<c4rizer_core::model::Parsed>,
+        mut events: Vec<Event>,
+    ) {
+        let actions = egui::CentralPanel::default()
+            .show(ui, |ui| {
+                self.explore.mode = self.state.mode();
+                self.explore.sync(parsed);
+                self.explore.show(ui, &parsed.model)
+            })
+            .inner;
+        for action in actions {
+            match action {
+                crate::explore::Action::Open { view, element } => {
+                    self.explore.open = false;
+                    let effects = self.state.reveal(view, element);
+                    self.run(ctx, effects);
+                }
+                crate::explore::Action::Copy(text) => {
+                    ctx.copy_text(text.clone());
+                    self.state.notice = Some(format!("Copied {text}"));
+                }
+            }
+        }
+        events.extend(self.overlays(ctx));
+        let (events, leave) = explore_gate(events);
+        if leave {
+            self.explore.open = false;
+        }
+        for event in events {
+            self.dispatch(ctx, event);
+        }
+    }
+
     /// The list open over the canvas (P2-715 quick navigation, P2-725
     /// tag filter, P2-726 perspectives, P2-729 navigator), as a window;
     /// returns the events its widgets make.

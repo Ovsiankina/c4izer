@@ -1399,6 +1399,25 @@ impl State {
         }
     }
 
+    /// Opens `view` with the box of `element` (its canonical key)
+    /// selected: a usage click or a graph or tree double click on the
+    /// explore pages (P3-504, P3-512).
+    // DECISION: an element with no key (nothing to select by) opens the
+    // view with nothing selected; the selection is replaced, as a click
+    // on the box would replace it.
+    pub(crate) fn reveal(&mut self, view: ViewRef, element: String) -> Vec<Effect> {
+        self.overlay = None;
+        let effects = self.show(view);
+        self.selection.clear();
+        self.selection_order.clear();
+        if !element.is_empty() {
+            let picked = Selected::Element(element);
+            self.selection.insert(picked.clone());
+            self.selection_order.push(picked);
+        }
+        effects
+    }
+
     /// The light/dark mode the canvas shows and exports in (P2-433).
     pub(crate) fn mode(&self) -> Mode {
         self.mode
