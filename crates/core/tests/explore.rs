@@ -307,5 +307,43 @@ fn p3_511_graph_and_tree_offered_kinds() {
 /// P3-516: decisions parse from adr-tools and MADR files.
 #[test]
 fn p3_516_decision_parsed_from_adr_tools_and_madr() {
-    todo!()
+    let adrs = "../../tests/data/phase3/explore/adrs";
+    let read = |dir: &str, name: &str| std::fs::read_to_string(format!("{dir}/{name}")).expect("adr file");
+    let show = |d: &explore::Decision| {
+        let links: Vec<String> = d.links.iter().map(|l| format!("{} {}", l.kind, l.target)).collect();
+        format!("{} | {} | {} | {} | {}", d.id, d.title, d.date.as_deref().unwrap_or("-"), d.status, links.join(", "))
+    };
+    // adr-tools (the default importer): id from the file name, title
+    // without `N. `, `Date:`, the first word under `## Status`
+    // (Structurizr's `AdrToolsDecisionImporter`), links in the status.
+    let name = "0001-record-architecture-decisions.md";
+    assert_eq!(
+        show(&explore::parse_decision(name, &read(adrs, name), None)),
+        "1 | Record architecture decisions | 2026-01-05 | Superseded | Superseded by 3"
+    );
+    let name = "0003-keep-decisions-in-the-repository.md";
+    assert_eq!(
+        show(&explore::parse_decision(name, &read(adrs, name), Some("adrtools"))),
+        "3 | Keep decisions in the repository | 2026-02-02 | Accepted | Supersedes 1"
+    );
+    // No status: Proposed; "Superceded" is read as Superseded.
+    let d = explore::parse_decision("0007-x.md", "# 7. X\n\n## Status\n\nSuperceded\n", None);
+    assert_eq!(show(&d), "7 | X | - | Superseded | ");
+    assert_eq!(explore::parse_decision("0000-y.md", "# Y\n", None).status, "Proposed");
+    assert_eq!(explore::parse_decision("0000-y.md", "# Y\n", None).id, "0");
+    // MADR with YAML front matter, log4brains with list metadata.
+    let madr = "../../tests/data/structurizr/decisions/madr";
+    let name = "0013-use-yaml-front-matter-for-meta-data.md";
+    assert_eq!(
+        show(&explore::parse_decision(name, &read(madr, name), Some("madr"))),
+        "13 | Use YAML front matter for metadata | - | Proposed | "
+    );
+    let d = explore::parse_decision("0020-z.md", "---\nstatus: accepted\ndate: 2026-03-01\n---\n# Z\n", Some("madr"));
+    assert_eq!(show(&d), "20 | Z | 2026-03-01 | accepted | ");
+    let l4b = "../../tests/data/structurizr/decisions/log4brains";
+    let name = "20240111-use-log4brains-to-manage-the-adrs.md";
+    assert_eq!(
+        show(&explore::parse_decision(name, &read(l4b, name), Some("log4brains"))),
+        "20240111-use-log4brains-to-manage-the-adrs | Use Log4brains to manage the ADRs | 2024-01-10 | accepted | "
+    );
 }

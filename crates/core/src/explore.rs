@@ -488,7 +488,106 @@ pub struct Decision {
 /// (`adrtools` by default, `madr`, `log4brains`). Serves P3-516.
 // APPROVER: new pub item (the sketch's `Decision` is "parsed from `!adrs`
 // content"; this is that parser).
+// DECISION: one parser for the three importers Structurizr 6.2.4 ships
+// (structurizr-import `AdrToolsDecisionImporter`, `MadrDecisionImporter`,
+// `Log4brainsDecisionImporter`): YAML front matter `status:`/`date:`,
+// list lines `- Status:`/`- Date:`, adr-tools `Date:` and the first word
+// under `## Status` (`Superceded` read as `Superseded`), in that order of
+// preference; the id is the file name's leading number without zeros
+// (the file stem for log4brains, whose names start with a date); links
+// are the `<words> [<title>](<file>)` lines of the status section.
 pub fn parse_decision(file_name: &str, text: &str, importer: Option<&str>) -> Decision {
-    let _ = (file_name, text, importer);
-    todo!()
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+    let log4brains = importer.is_some_and(|i| i.eq_ignore_ascii_case("log4brains"));
+    let id = if log4brains { stem.to_owned() } else { number_of(stem).unwrap_or_else(|| stem.to_owned()) };
+    let text = text.replace("\r\n", "\n");
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut front: Vec<(String, String)> = Vec::new();
+    if lines.first().is_some_and(|l| l.trim() == "---")
+        && let Some(end) = lines.iter().skip(1).position(|l| l.trim() == "---")
+    {
+        for l in &lines[1..=end] {
+            if let Some((k, v)) = l.split_once(':') {
+                front.push((k.trim().to_ascii_lowercase(), v.trim().trim_matches('"').to_owned()));
+            }
+        }
+        lines.drain(..=end + 1);
+    }
+    let field = |name: &str| front.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    let listed = |name: &str| {
+        lines.iter().find_map(|l| {
+            let l = l.trim_start().strip_prefix("- ").or_else(|| l.trim_start().strip_prefix("* "))?;
+            let (k, v) = l.split_once(':')?;
+            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_owned())
+        })
+    };
+    let title = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("# "))
+        .map_or_else(|| stem.to_owned(), |t| strip_number(t.trim()).to_owned());
+    let date = field("date")
+        .or_else(|| listed("date"))
+        .or_else(|| lines.iter().find_map(|l| l.strip_prefix("Date:").map(|d| d.trim().to_owned())));
+    let status_at = lines.iter().position(|l| l.trim_end().eq_ignore_ascii_case("## status"));
+    let section: &[&str] = status_at.map_or(&[], |at| {
+        let rest = &lines[at + 1..];
+        let end = rest.iter().position(|l| l.starts_with("## ")).unwrap_or(rest.len());
+        &rest[..end]
+    });
+    let status = field("status")
+        .or_else(|| listed("status"))
+        .or_else(|| {
+            let first = section.iter().find(|l| !l.trim().is_empty())?;
+            first.split_whitespace().next().map(str::to_owned)
+        })
+        .map_or_else(
+            || "Proposed".to_owned(),
+            |s| if s.eq_ignore_ascii_case("superceded") { "Superseded".to_owned() } else { s },
+        );
+    Decision {
+        id,
+        title,
+        date,
+        status,
+        links: section.iter().filter_map(|l| decision_link(l)).collect(),
+    }
+}
+
+/// The leading number of `stem` without leading zeros (`0` for all
+/// zeros), `None` when it starts with no digit.
+fn number_of(stem: &str) -> Option<String> {
+    let digits: String = stem.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let trimmed = digits.trim_start_matches('0');
+    Some(if trimmed.is_empty() { "0".to_owned() } else { trimmed.to_owned() })
+}
+
+/// `title` without a leading `N. `.
+fn strip_number(title: &str) -> &str {
+    let digits = title.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0
+        && let Some(rest) = title[digits..].strip_prefix(". ")
+    {
+        return rest.trim_start();
+    }
+    title
+}
+
+/// A `<words> [<title>](<file>)` line linking to another decision file.
+fn decision_link(line: &str) -> Option<DecisionLink> {
+    let (kind, rest) = line.split_once('[')?;
+    let kind = kind.trim();
+    let (_, target) = rest.split_once("](")?;
+    let target = target.split(')').next()?.trim();
+    if kind.is_empty() || target.contains("://") {
+        return None;
+    }
+    let name = target.rsplit('/').next().unwrap_or(target);
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    Some(DecisionLink {
+        kind: kind.to_owned(),
+        target: number_of(stem).unwrap_or_else(|| stem.to_owned()),
+    })
 }
