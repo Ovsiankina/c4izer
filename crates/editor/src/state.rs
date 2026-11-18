@@ -92,15 +92,15 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, Mode, Model, ModelError, Parsed, RelationshipId, Shape, ViewKind,
-    parse_with,
+    Colour, ElementId, ElementKind, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
+    ViewKind, parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
 use c4rizer_core::place::Keep;
 use c4rizer_core::scene::{ItemKey, ModelId, Scene, texts_fit};
 use c4rizer_core::view::{BoxId, PlanBox};
 
-use crate::camera::{Camera, ScenePoint, ScreenPoint, ZOOM_STEP};
+use crate::camera::{Camera, Fit, ScenePoint, ScreenPoint, ZOOM_STEP};
 use crate::files::{self, ContentHash, FileEvent, FileMemory, UiState, WriteRequest, export_dir, export_name};
 use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
@@ -112,6 +112,9 @@ pub const CLICK_SLOP_PX: f32 = 4.0;
 /// Hit tolerance for lines and boundary outlines, in scene px
 /// (`Scene::hit`) (EDIT-28).
 pub const HIT_TOLERANCE_PX: i32 = 4;
+
+/// Most views kept in the session's history of views shown (P2-714).
+const VISITED_MAX: usize = 100;
 
 /// Half the side of a resize handle, in screen px (EDIT-18).
 pub const HANDLE_PX: f32 = 4.0;
@@ -140,7 +143,7 @@ pub enum Key {
     Escape,
     /// Parent crumb unless a text field has focus (EDIT-16).
     Backspace,
-    /// With Alt: parent crumb (EDIT-16).
+    /// With Alt: parent crumb (EDIT-16); alone: next view (P2-713).
     ArrowLeft,
     /// Held: drag pans (EDIT-28).
     Space,
@@ -148,6 +151,51 @@ pub enum Key {
     Z,
     /// With Ctrl: redo (EDIT-19).
     Y,
+    /// Previous view (P2-713); with a hovered line, nothing.
+    ArrowUp,
+    /// Previous view (P2-713).
+    ArrowRight,
+    /// Next view (P2-713); with a hovered line, nothing.
+    ArrowDown,
+    /// Zoom in one `ZOOM_STEP` at the canvas centre (P2-711); `+` and `=`.
+    Plus,
+    /// Zoom out one `ZOOM_STEP` at the canvas centre (P2-711).
+    Minus,
+    /// Align bottom (P2-707), else back to the last viewed view (P2-714).
+    B,
+    /// Align centre (P2-707), else fit content (P2-705).
+    C,
+    /// Toggle descriptions (P2-721).
+    D,
+    /// Open the tag filter (P2-725).
+    G,
+    /// Distribute horizontally (P2-707), else fit height (P2-705).
+    H,
+    /// Show or hide the key (P2-728).
+    I,
+    /// Toggle jumps of the hovered line (P2-710).
+    J,
+    /// Align left (P2-707), else open the navigator (P2-729).
+    L,
+    /// Align middle (P2-707), else toggle metadata (P2-722).
+    M,
+    /// Show or hide the view list (P2-727).
+    N,
+    /// Open the perspectives list (P2-726).
+    P,
+    /// Align right (P2-707), or cycle the hovered line's routing (P2-709).
+    R,
+    /// Align top (P2-707), else toggle tooltips (P2-723).
+    T,
+    /// Distribute vertically (P2-707).
+    V,
+    /// Fit width (P2-705).
+    W,
+    /// Fullscreen (P2-706).
+    F11,
+    /// Alt went down: makes a shown tooltip sticky (P2-724). The shell
+    /// reports it when the Alt modifier turns on.
+    Alt,
 }
 
 /// Modifier keys held during an event (EDIT-28).
@@ -215,6 +263,42 @@ pub enum Input {
         /// Which key.
         key: Key,
     },
+    /// The canvas widget's size, screen px, reported each frame: the
+    /// anchor of the `+`/`-` zoom and of the fits (P2-705, P2-711).
+    CanvasSize {
+        /// Width and height.
+        size: ScreenPoint,
+    },
+    /// A double click (the second release of two quick clicks) over the
+    /// canvas: with Alt, opens the URL of the item (P2-719, P2-720).
+    DoubleClick {
+        /// Where.
+        at: ScreenPoint,
+        /// Modifiers held.
+        mods: Modifiers,
+    },
+}
+
+/// One step of the canvas size list (P2-701).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CanvasStep {
+    /// The previous size of the list.
+    Decrease,
+    /// The smallest size that holds the scene.
+    Auto,
+    /// The next size of the list.
+    Increase,
+}
+
+/// One per-view line setting (P2-708..P2-710).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineChange {
+    /// Label position, 0..100, `None` to drop it.
+    Position(Option<u8>),
+    /// Routing, `None` to drop it.
+    Routing(Option<Routing>),
+    /// Jumps on or off, `None` to drop it.
+    Jump(Option<bool>),
 }
 
 /// Box alignment (EDIT-20).
@@ -293,6 +377,55 @@ pub enum Command {
     /// Select the items of the `n`-th finding of `State::findings`
     /// (EDIT-6).
     PickFinding(usize),
+    /// "Auto-place view": every box placed afresh and written, one undo
+    /// step (P2-700).
+    AutoPlace,
+    /// Decrease, auto or increase the canvas size, one undo step; the
+    /// drawing stays centred unless `keep_positions` (Alt) (P2-701,
+    /// P2-702).
+    Canvas {
+        /// Which step.
+        step: CanvasStep,
+        /// Alt held: every box keeps its position.
+        keep_positions: bool,
+    },
+    /// "Bring boxes onto the canvas" (the magnet), one undo step (P2-703).
+    BringOntoCanvas,
+    /// "Centre": the selection, else every box, centred on the canvas,
+    /// one undo step (P2-704).
+    Centre,
+    /// Fit the camera to the scene's width, height or both (P2-705).
+    Fit(Fit),
+    /// Toggle fullscreen (P2-706).
+    Fullscreen,
+    /// Open the previous view of the view list (P2-713).
+    PreviousView,
+    /// Open the next view of the view list (P2-713).
+    NextView,
+    /// Open the last viewed view (P2-714).
+    Back,
+    /// Open quick navigation (P2-715).
+    QuickNavigation,
+    /// Toggle descriptions (P2-721).
+    ToggleDescriptions,
+    /// Toggle metadata (P2-722).
+    ToggleMetadata,
+    /// Toggle tooltips (P2-723).
+    ToggleTooltips,
+    /// Open or close the tag filter (P2-725).
+    TagFilterPanel,
+    /// The tags chosen in the tag filter, empty to clear it (P2-725).
+    TagFilter(Vec<String>),
+    /// Open or close the perspectives list (P2-726).
+    PerspectivePanel,
+    /// The chosen perspective, `None` for the normal view (P2-726).
+    Perspective(Option<String>),
+    /// Show or hide the view list panel (P2-727).
+    ToggleViewList,
+    /// Show or hide the drawn key (P2-728).
+    ToggleKey,
+    /// Open or close the diagram navigator (P2-729).
+    Navigator,
 }
 
 /// Everything that goes into the state machine.
@@ -360,6 +493,11 @@ pub enum Effect {
     Dialog(Dialog),
     /// Save the per-user state (EDIT-13).
     SaveUiState(UiState),
+    /// Enter (`true`) or leave fullscreen (P2-706).
+    Fullscreen(bool),
+    /// Open this `http`/`https` URL in the system browser (P2-719,
+    /// P2-720).
+    OpenUrl(String),
 }
 
 /// A selected item, by the keys in the file so it survives a reload
@@ -554,6 +692,27 @@ pub enum Action {
         /// Canonical element keys.
         elements: Vec<String>,
     },
+    /// Set the canvas size, moving boxes to keep the drawing centred, one
+    /// batch (P2-701, P2-702).
+    SetCanvasSize {
+        /// The view.
+        view: ViewRef,
+        /// The size, `None` for auto.
+        size: Option<PaperSize>,
+        /// Boxes moved, canonical key to centre px.
+        boxes: BTreeMap<String, (i32, i32)>,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
+    /// Set one per-view line setting (P2-708..P2-710).
+    SetLine {
+        /// The view.
+        view: ViewRef,
+        /// The line's winning relationship.
+        relationship: RelationshipRef,
+        /// The setting.
+        change: LineChange,
+    },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
     /// Apply a redo step (EDIT-19).
@@ -624,6 +783,7 @@ pub struct Mark {
 /// What the canvas paints this frame: the scene and the marks, nothing
 /// else (EDIT-12).
 #[derive(Debug, Clone, PartialEq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent view-only flags (EDIT-11, P2-721, P2-722, P2-728)")]
 pub struct DrawList<'a> {
     /// The scene shown (the drag preview while dragging); `None` before
     /// the first build or when the file never parsed (EDIT-11).
@@ -642,6 +802,109 @@ pub struct DrawList<'a> {
     pub editing: Option<ItemKey>,
     /// True when edits are refused (EDIT-11, EDIT-27): no handles.
     pub read_only: bool,
+    /// Descriptions off (P2-721): no description text is painted; every
+    /// rect, line and label keeps its geometry.
+    pub hide_descriptions: bool,
+    /// Metadata off (P2-722): no type line and no label technology is
+    /// painted; geometry kept.
+    pub hide_metadata: bool,
+    /// The key is hidden (P2-728).
+    pub hide_key: bool,
+    /// Items faded by the tag filter or the chosen perspective (P2-725,
+    /// P2-726): marks, painted at reduced opacity.
+    pub faded: Vec<ItemKey>,
+    /// The tooltip overlay (P2-723, P2-724).
+    pub tooltip: Option<Tooltip>,
+}
+
+/// The tooltip overlay (P2-723): the hovered item's details, at the
+/// pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tooltip {
+    /// The item it describes.
+    pub item: ItemKey,
+    /// Its details (EDIT-10 fields, URL, properties).
+    pub details: Details,
+    /// Stays after the pointer leaves the item (P2-724).
+    pub sticky: bool,
+    /// The item's `url`, if any.
+    // APPROVER: new pub item beyond A.2 (tooltip content, B
+    // editor-breadth 9: URL and properties beyond the EDIT-10 details).
+    pub url: Option<String>,
+    /// The item's properties, name and value, in file order.
+    // APPROVER: new pub item beyond A.2 (as `url`).
+    pub properties: Vec<(String, String)>,
+}
+
+/// The view-only viewing aids (P2-721..P2-729): none writes the file
+/// (P2-730), all survive a reload (P2-731).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent view-only toggles (P2-706, P2-721..P2-728)")]
+pub struct ViewAids {
+    /// Descriptions shown (P2-721).
+    pub descriptions: bool,
+    /// Metadata shown (P2-722).
+    pub metadata: bool,
+    /// Tooltips on; `None` until toggled: the view's or view set's
+    /// `structurizr.tooltips` decides (P2-723).
+    pub tooltips: Option<bool>,
+    /// Tags chosen in the tag filter, empty for none (P2-725).
+    pub tags: Vec<String>,
+    /// The chosen perspective (P2-726).
+    pub perspective: Option<String>,
+    /// The key drawn (P2-728).
+    pub key: bool,
+    /// The view list panel shown (P2-727).
+    pub view_list: bool,
+    /// Fullscreen (P2-706).
+    pub fullscreen: bool,
+}
+
+impl Default for ViewAids {
+    fn default() -> Self {
+        ViewAids {
+            descriptions: true,
+            metadata: true,
+            tooltips: None,
+            tags: Vec::new(),
+            perspective: None,
+            key: true,
+            view_list: true,
+            fullscreen: false,
+        }
+    }
+}
+
+/// A list open over the canvas; while one is open it takes the keys
+/// (P2-712).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overlay {
+    /// Quick navigation (P2-715): the typed text and the highlighted
+    /// entry of `State::quick_nav_entries`.
+    QuickNavigation {
+        /// The typed text.
+        query: String,
+        /// Index of the highlighted entry.
+        highlighted: usize,
+    },
+    /// The tag filter (P2-725).
+    TagFilter,
+    /// The perspectives list (P2-726).
+    Perspectives,
+    /// The diagram navigator (P2-729).
+    Navigator,
+}
+
+/// Where a navigator entry sits relative to the open view (P2-729).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum NavLevel {
+    /// Above: views of a higher C4 level that contain the open view's
+    /// scope.
+    Above,
+    /// Next to: other views of the same level and kind.
+    NextTo,
+    /// Below: the views the open view's boxes enter.
+    Below,
 }
 
 /// One entry of the view list (EDIT-8).
@@ -821,6 +1084,26 @@ pub struct State {
     /// The writes of the pending batch still to go after `in_flight`, in
     /// order: included files first, the root file last (P2-139).
     queued: VecDeque<WriteRequest>,
+    /// The viewing aids (P2-721..P2-729).
+    pub aids: ViewAids,
+    /// The list open over the canvas (P2-715, P2-725, P2-726, P2-729).
+    pub overlay: Option<Overlay>,
+    /// The views shown this session, oldest first, the open one last
+    /// (P2-714).
+    visited: Vec<ViewRef>,
+    /// The selection in the order it was made (P2-707: align to the first
+    /// selected box).
+    selection_order: Vec<Selected>,
+    /// The sticky tooltip's item (P2-724).
+    sticky: Option<ItemKey>,
+    /// Space went down and no drag happened since (P2-715).
+    space_tap: bool,
+    /// The last pointer position over the canvas, screen px.
+    pointer: Option<ScreenPoint>,
+    /// The navigator's search text (P2-729), cleared when it opens.
+    nav_query: String,
+    /// Auto-place wrote; fit the camera when its build is shown (P2-700).
+    after_place: AfterPlace,
 }
 
 impl State {
@@ -859,6 +1142,224 @@ impl State {
             error_file: None,
             in_flight: None,
             queued: VecDeque::new(),
+            aids: ViewAids::default(),
+            overlay: None,
+            visited: Vec::new(),
+            selection_order: Vec::new(),
+            sticky: None,
+            space_tap: false,
+            pointer: None,
+            nav_query: String::new(),
+            after_place: AfterPlace::Nothing,
+        }
+    }
+
+    /// The views quick navigation offers for its typed text, in view-list
+    /// order (P2-715).
+    // TODO(srs): P2-715, the matching rule. DECISION: reading taken (B
+    // editor-breadth 9): a case-insensitive substring of the key or the
+    // drawn title.
+    #[must_use]
+    pub fn quick_nav_entries(&self) -> Vec<ViewEntry> {
+        let query = match &self.overlay {
+            Some(Overlay::QuickNavigation { query, .. }) => query.to_lowercase(),
+            _ => String::new(),
+        };
+        self.views()
+            .into_iter()
+            .filter(|e| e.view.key().to_lowercase().contains(&query) || e.label.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// True when tooltips are on (P2-723): toggled this session, else the
+    /// open view's `structurizr.tooltips`, else the view set's, else off.
+    // TODO(srs): P2-723, the default. DECISION: reading taken (B
+    // editor-breadth 9; Structurizr 6.2.4 diagrams.jsp disables the
+    // tooltip at start): off.
+    fn tooltips_on(&self) -> bool {
+        if let Some(on) = self.aids.tooltips {
+            return on;
+        }
+        let Some(model) = self.model() else { return false };
+        let read = |props: &[c4rizer_core::model::Property]| {
+            props
+                .iter()
+                .rev()
+                .find(|p| p.name.value == "structurizr.tooltips")
+                .map(|p| p.value.value.eq_ignore_ascii_case("true"))
+        };
+        let view = self.view.as_ref().and_then(|v| model.view(&v.key()));
+        view.and_then(|v| read(&v.properties))
+            .or_else(|| read(&model.views_properties))
+            .unwrap_or(false)
+    }
+
+    /// The user-defined tags of the open view's boxes and lines, sorted:
+    /// the tag filter's choices (P2-725).
+    // P2-725 as written: the built-ins are the six the sentence names, so
+    // `External` is listed (as Structurizr 6.2.4 lists it; B
+    // editor-breadth 9 hid it). TODO(srs): P2-725, the full built-in list
+    // once groups and deployment tags land. DECISION: a line carries the
+    // tags of every relationship it stands for.
+    #[must_use]
+    pub fn tag_choices(&self) -> Vec<String> {
+        const BUILT_IN: [&str; 6] = ["Element", "Person", "Software System", "Container", "Component", "Relationship"];
+        let mut out = BTreeSet::new();
+        for (tags, _) in self.view_items() {
+            out.extend(tags.into_iter().filter(|t| !BUILT_IN.contains(&t.as_str())));
+        }
+        out.into_iter().collect()
+    }
+
+    /// The perspective names of the open view's elements and
+    /// relationships, sorted (P2-726).
+    #[must_use]
+    pub fn perspective_choices(&self) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        for (_, perspectives) in self.view_items() {
+            out.extend(perspectives);
+        }
+        out.into_iter().collect()
+    }
+
+    /// The tags and perspective names of every box and line of the scene
+    /// on screen, in scene order, with their items (P2-725, P2-726).
+    fn view_items(&self) -> Vec<(Vec<String>, Vec<String>)> {
+        self.view_items_keyed().into_iter().map(|(_, tags, p)| (tags, p)).collect()
+    }
+
+    /// `view_items` with each item's keys: a box, or a line and its label.
+    fn view_items_keyed(&self) -> Vec<(Vec<ItemKey>, Vec<String>, Vec<String>)> {
+        let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for b in &scene.boxes {
+            let e = model.element(b.element);
+            let perspectives = e.perspectives.iter().map(|p| p.name.value.clone()).collect();
+            out.push((vec![ItemKey::Box(b.id)], e.tags.clone(), perspectives));
+        }
+        for l in &scene.lines {
+            let mut tags: Vec<String> = Vec::new();
+            let mut perspectives: Vec<String> = Vec::new();
+            for &r in &l.relationships {
+                let rel = model.relationship(r);
+                for t in &rel.tags {
+                    if !tags.contains(t) {
+                        tags.push(t.clone());
+                    }
+                }
+                for p in &rel.perspectives {
+                    if !perspectives.contains(&p.name.value) {
+                        perspectives.push(p.name.value.clone());
+                    }
+                }
+            }
+            out.push((vec![ItemKey::Line(l.edge), ItemKey::Label(l.edge)], tags, perspectives));
+        }
+        out
+    }
+
+    /// The navigator's entries: the views above, next to and below the
+    /// open view by C4 level, kept to those whose key or title contains
+    /// the search text, ignoring case (P2-729).
+    // TODO(srs): P2-729, the form. DECISION: reading taken (B
+    // editor-breadth 7 asked for a searchable tree grouped by kind; the
+    // fix-round ruling keeps three groups by C4 level). Above: views of a
+    // higher level whose scope contains the open view's scope (a
+    // landscape contains every scope, a context or container view of a
+    // system its containers). Next to: views of the same level and kind.
+    // Below: per enterable box of the open view, the views it enters — a
+    // landscape's system box its context views, else the system's
+    // container views (a container's component views), else EDIT-15
+    // `view_into`. A filtered view takes its base view's level; custom
+    // and image views have no level, so only same-kind views sit next to
+    // them. Above and next to keep declaration order, below scene order;
+    // an entry sits in the first group that takes it.
+    /// The navigator's search text (P2-729).
+    pub(crate) fn nav_query(&self) -> &str {
+        &self.nav_query
+    }
+
+    #[must_use]
+    pub fn navigator(&self) -> Vec<(NavLevel, ViewEntry)> {
+        let (Some(model), Some(view)) = (self.model(), self.view.as_ref()) else {
+            return Vec::new();
+        };
+        let place = c4_place(model, view);
+        let kind = view_kind(model, view);
+        let drawn = || model.views.iter().filter(|v| v.kind.drawable());
+        let mut out: Vec<(NavLevel, ViewEntry)> = Vec::new();
+        let push = |out: &mut Vec<(NavLevel, ViewEntry)>, level, r: ViewRef| {
+            if r != *view && !out.iter().any(|(_, e)| e.view == r) {
+                out.push((level, self.entry_of(model, r)));
+            }
+        };
+        if let Some((rank, scope)) = place {
+            for v in drawn() {
+                let r = ViewRef::Declared(v.key.clone());
+                if let Some((up, up_scope)) = c4_place(model, &r)
+                    && up < rank
+                    && scope_contains(model, up, up_scope, scope)
+                {
+                    push(&mut out, NavLevel::Above, r);
+                }
+            }
+        }
+        for v in drawn().filter(|v| Some(v.kind) == kind) {
+            let r = ViewRef::Declared(v.key.clone());
+            if c4_place(model, &r).map(|p| p.0) == place.map(|p| p.0) {
+                push(&mut out, NavLevel::NextTo, r);
+            }
+        }
+        if let Some(scene) = self.scene() {
+            for b in &scene.boxes {
+                if !enterable(model, b.element) {
+                    continue;
+                }
+                let scoped = |k: Option<ViewKind>| -> Vec<ViewRef> {
+                    drawn()
+                        .filter(|v| Some(v.kind) == k && v.scope.element() == Some(b.element))
+                        .map(|v| ViewRef::Declared(v.key.clone()))
+                        .collect()
+                };
+                let e = model.element(b.element);
+                let mut into = Vec::new();
+                if place.map(|p| p.0) == Some(0) && e.kind == ElementKind::SoftwareSystem {
+                    into = scoped(Some(ViewKind::SystemContext));
+                }
+                if into.is_empty() {
+                    into = scoped(counting_kind(e.kind));
+                }
+                if into.is_empty() {
+                    into.extend(view_into(model, b.element));
+                }
+                for r in into {
+                    push(&mut out, NavLevel::Below, r);
+                }
+            }
+        }
+        let query = self.nav_query.to_lowercase();
+        out.retain(|(_, e)| e.view.key().to_lowercase().contains(&query) || e.label.to_lowercase().contains(&query));
+        out
+    }
+
+    /// The view list entry of `view` (EDIT-8): its drawn title, else its
+    /// key; a default view's label is its scope's name.
+    fn entry_of(&self, model: &Model, view: ViewRef) -> ViewEntry {
+        let (label, kind) = match (&view, model.view(&view.key())) {
+            (_, Some(v)) => (v.drawn_title().map_or_else(|| v.key.clone(), |t| t.value.clone()), v.kind),
+            (ViewRef::Default { scope, kind }, None) => (
+                model.find(scope).map_or_else(|| view.key(), |id| model.element(id).name.value.clone()),
+                *kind,
+            ),
+            (ViewRef::Declared(key), None) => (key.clone(), ViewKind::SystemContext),
+        };
+        ViewEntry {
+            current: self.view.as_ref() == Some(&view),
+            view,
+            label,
+            kind,
         }
     }
 
@@ -891,6 +1392,28 @@ impl State {
         let before = self.camera;
         let effects = self.handle_event(event);
         self.settle_camera(before);
+        // P2-707: the selection's order is the order its items were added
+        // in; one event adds at most one item by a click, so syncing after
+        // each event keeps it.
+        let selection = &self.selection;
+        self.selection_order.retain(|s| selection.contains(s));
+        for s in selection {
+            if !self.selection_order.contains(s) {
+                self.selection_order.push(s.clone());
+            }
+        }
+        // P2-714: the session's history of views shown.
+        // DECISION: kept by `ViewRef` (keys, so it survives a re-parse),
+        // consecutive repeats are one entry, bounded to `VISITED_MAX`
+        // entries, the oldest dropped first.
+        if let Some(view) = &self.view
+            && self.visited.last() != Some(view)
+        {
+            self.visited.push(view.clone());
+            if self.visited.len() > VISITED_MAX {
+                self.visited.remove(0);
+            }
+        }
         effects
     }
 
@@ -973,6 +1496,15 @@ impl State {
         match event {
             Event::Input(input) => self.input(input),
             Event::Text(text) => {
+                if let Some(Overlay::QuickNavigation { query, highlighted }) = self.overlay.as_mut() {
+                    *query = text;
+                    *highlighted = 0;
+                    return Vec::new();
+                }
+                if self.overlay == Some(Overlay::Navigator) {
+                    self.nav_query = text;
+                    return Vec::new();
+                }
                 if let Some(edit) = self.text_edit.as_mut()
                     && let Some(field) = edit.fields.get_mut(edit.current)
                 {
@@ -1060,11 +1592,17 @@ impl State {
             resize_outline,
             editing,
             read_only,
+            hide_descriptions: !self.aids.descriptions,
+            hide_metadata: !self.aids.metadata,
+            hide_key: !self.aids.key,
+            faded: self.faded(),
+            tooltip: self.tooltip(),
         }
     }
 
-    /// Every view of the file in declaration order, plus the open default
-    /// view when one is shown (EDIT-8, EDIT-15). Empty with no parse.
+    /// Every view of the file in declaration order, or as the view set's
+    /// `structurizr.sort` orders them (P2-716), plus the open default view
+    /// when one is shown (EDIT-8, EDIT-15). Empty with no parse.
     #[must_use]
     pub fn views(&self) -> Vec<ViewEntry> {
         let Some(model) = self.model() else {
@@ -1092,6 +1630,7 @@ impl State {
                 }
             })
             .collect();
+        sort_views(model, &mut out);
         if let Some(view @ ViewRef::Default { scope, kind }) = &self.view
             && model.view(&view.key()).is_none()
         {
@@ -1141,6 +1680,36 @@ impl State {
         out
     }
 
+    /// The view crumb `n` of `breadcrumb` opens (EDIT-16, P2-305): the
+    /// workspace crumb a landscape or context view, an element's crumb
+    /// the view into it (`view_into`); `None` when there is none.
+    pub(crate) fn crumb_target(&self, n: usize) -> Option<ViewRef> {
+        let model = self.model()?;
+        if n == 0 {
+            // TODO(srs): P2-305, the workspace crumb. DECISION: reading
+            // taken (B landscape-filtered 8): the first system landscape
+            // view, else the first system context view (EDIT-16), else
+            // the first view.
+            return model
+                .views
+                .iter()
+                .find(|v| v.kind == ViewKind::SystemLandscape)
+                .or_else(|| model.views.iter().find(|v| v.kind == ViewKind::SystemContext))
+                .or_else(|| model.views.first())
+                .map(|v| ViewRef::Declared(v.key.clone()));
+        }
+        self.breadcrumb()
+            .get(n)
+            .and_then(|c| c.scope.as_deref())
+            .and_then(|k| model.find(k))
+            .and_then(|id| view_into(model, id))
+    }
+
+    /// The kind of `view` in the open model, `None` without one.
+    pub(crate) fn kind_of(&self, view: &ViewRef) -> Option<ViewKind> {
+        view_kind(self.model()?, view)
+    }
+
     /// The details of the single selected item, `None` for no selection
     /// or several items (EDIT-10, EDIT-5).
     #[must_use]
@@ -1148,8 +1717,14 @@ impl State {
         if self.selection.len() != 1 {
             return None;
         }
-        let model = self.model()?;
         let subject = self.selection.iter().next()?.clone();
+        self.details_of(subject)
+    }
+
+    /// The details of `subject` (EDIT-10), the selection or a tooltip's
+    /// item (P2-723).
+    fn details_of(&self, subject: Selected) -> Option<Details> {
+        let model = self.model()?;
         match &subject {
             Selected::Element(key) => {
                 let e = model.element(model.find(key)?);
@@ -1359,7 +1934,7 @@ impl State {
 
     /// True when `view` is a declared view whose kind is not drawn yet
     /// (P2-2, P2-123).
-    fn unsupported(&self, view: &ViewRef) -> bool {
+    pub(crate) fn unsupported(&self, view: &ViewRef) -> bool {
         self.model().is_some_and(|m| is_unsupported(m, view))
     }
 
@@ -1432,6 +2007,7 @@ impl State {
     /// EDIT-26.
     #[must_use]
     #[expect(clippy::unused_self, reason = "contract signature: a method of the state machine")]
+    #[expect(clippy::too_many_lines, reason = "one flat arm per action reads best")]
     pub fn edits_for(&self, action: &Action, parsed: &Parsed) -> Vec<Edit> {
         let model = &parsed.model;
         match action {
@@ -1503,6 +2079,54 @@ impl State {
                 out
             }
             Action::Undo(step) | Action::Redo(step) => rebuild_first_write(parsed, &step.edits),
+            Action::SetLine {
+                view,
+                relationship,
+                change,
+            } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                let (view, relationship) = (view.key(), relationship.clone());
+                out.push(match *change {
+                    LineChange::Position(position) => Edit::SetLinePosition {
+                        view,
+                        relationship,
+                        position,
+                    },
+                    LineChange::Routing(routing) => Edit::SetLineRouting {
+                        view,
+                        relationship,
+                        routing,
+                    },
+                    LineChange::Jump(jump) => Edit::SetLineJump {
+                        view,
+                        relationship,
+                        jump,
+                    },
+                });
+                out
+            }
+            Action::SetCanvasSize {
+                view,
+                size,
+                boxes,
+                layout,
+            } => {
+                let view = &layout_view(model, view);
+                let mut own: Vec<Edit> = boxes
+                    .iter()
+                    .map(|(element, &centre)| Edit::Move {
+                        view: view.key(),
+                        element: element.clone(),
+                        centre: Some(centre),
+                    })
+                    .collect();
+                own.push(Edit::SetCanvasSize {
+                    view: view.key(),
+                    size: *size,
+                });
+                layout_batch(model, view, layout, Some(boxes), own)
+            }
         }
     }
 }
@@ -1560,26 +2184,114 @@ pub fn min_size(plan_box: &PlanBox) -> (i32, i32) {
 }
 
 /// The resize handle of `rect` (scene px) under `at` (screen px) through
-/// `camera`, within `HANDLE_PX`; corners win over sides (EDIT-18).
+/// `camera`, within `HANDLE_PX`, with every handle on the box edge (no
+/// line ends to keep clear); corners win over sides (EDIT-18). The
+/// editor's own hit test keeps line ends clear (`handle_spots`, P2-735).
 #[must_use]
+#[allow(dead_code, reason = "the EDIT-18 contract reader; the editor hits handle_spots with line ends (P2-735)")]
 pub fn handle_at(rect: Rect, camera: &Camera, at: ScreenPoint) -> Option<Handle> {
+    handle_spots(rect, camera, &[])
+        .into_iter()
+        .find(|(_, c)| (at.x - c.x).abs() <= HANDLE_PX && (at.y - c.y).abs() <= HANDLE_PX)
+        .map(|(h, _)| h)
+}
+
+/// Length of a line's end kept clear of handles, scene px: the arrowhead
+/// (P2-735).
+// DECISION: 10 scene px, the arrowhead length `place` reserves
+// (`ARROW_LEN_PX`), plus the 2px gap a tip may stand off the edge.
+const LINE_END_CLEAR_PX: f32 = 12.0;
+
+/// Each line end of `scene` with the stretch of line behind it that its
+/// arrowhead covers, screen px through `camera`: `(end, toward)`, both
+/// ends of every line (P2-735).
+pub(crate) fn line_ends(scene: &Scene, camera: &Camera) -> Vec<(ScreenPoint, ScreenPoint)> {
+    let mut out = Vec::new();
+    for l in &scene.lines {
+        let n = l.points.len();
+        if n < 2 {
+            continue;
+        }
+        for (end, next) in [(l.points[0], l.points[1]), (l.points[n - 1], l.points[n - 2])] {
+            let e = camera.to_screen(end);
+            let t = camera.to_screen(next);
+            let (dx, dy) = (t.x - e.x, t.y - e.y);
+            let len = dx.hypot(dy);
+            let reach = (LINE_END_CLEAR_PX * camera.zoom).min(len);
+            let toward = if len > 0.0 {
+                ScreenPoint {
+                    x: e.x + dx / len * reach,
+                    y: e.y + dy / len * reach,
+                }
+            } else {
+                e
+            };
+            out.push((e, toward));
+        }
+    }
+    out
+}
+
+/// The eight resize handles of `rect` (scene px), centres in screen px
+/// through `camera`, corners first. A handle whose square would cover a
+/// line end or its arrowhead (`ends`, from `line_ends`) is drawn outside
+/// the box edge, slid along it when straight out still covers (P2-735,
+/// EDIT-18).
+// DECISION: candidates in order: on the edge (EDIT-18), straight out by
+// two handle sides, then out and slid either way along the edge by three
+// and six half sides; the first clear one wins, the last if none is (a
+// crowded edge). The hit test (`handle_under`) uses the same centres.
+pub(crate) fn handle_spots(rect: Rect, camera: &Camera, ends: &[(ScreenPoint, ScreenPoint)]) -> [(Handle, ScreenPoint); 8] {
     let a = camera.to_screen(rect.min);
     let b = camera.to_screen(rect.max);
     let (mx, my) = (f32::midpoint(a.x, b.x), f32::midpoint(a.y, b.y));
-    let near = |x: f32, y: f32| (at.x - x).abs() <= HANDLE_PX && (at.y - y).abs() <= HANDLE_PX;
+    let covers = |c: ScreenPoint| {
+        let reach = HANDLE_PX + 1.0;
+        ends.iter().any(|&(end, toward)| {
+            (0..=6_u8).any(|step| {
+                let f = f32::from(step) / 6.0;
+                let px = end.x + (toward.x - end.x) * f;
+                let py = end.y + (toward.y - end.y) * f;
+                (px - c.x).abs() <= reach && (py - c.y).abs() <= reach
+            })
+        })
+    };
+    let out_by = 4.0 * HANDLE_PX;
+    let slide = 3.0 * HANDLE_PX;
+    let spot = |h: Handle, x: f32, y: f32, ox: f32, oy: f32| {
+        // Along the edge: x for top and bottom, y for left and right; a
+        // corner slides across its diagonal.
+        let (tx, ty) = if oy == 0.0 {
+            (0.0, 1.0)
+        } else if ox == 0.0 {
+            (1.0, 0.0)
+        } else {
+            (ox, -oy)
+        };
+        let at = |o: f32, s: f32| ScreenPoint {
+            x: x + ox * o + tx * s,
+            y: y + oy * o + ty * s,
+        };
+        let pick = [
+            at(0.0, 0.0),
+            at(out_by, 0.0),
+            at(out_by, slide),
+            at(out_by, -slide),
+            at(out_by, 2.0 * slide),
+            at(out_by, -2.0 * slide),
+        ];
+        (h, pick.iter().copied().find(|&p| !covers(p)).unwrap_or(pick[5]))
+    };
     [
-        (Handle::NW, a.x, a.y),
-        (Handle::NE, b.x, a.y),
-        (Handle::SE, b.x, b.y),
-        (Handle::SW, a.x, b.y),
-        (Handle::N, mx, a.y),
-        (Handle::E, b.x, my),
-        (Handle::S, mx, b.y),
-        (Handle::W, a.x, my),
+        spot(Handle::NW, a.x, a.y, -1.0, -1.0),
+        spot(Handle::NE, b.x, a.y, 1.0, -1.0),
+        spot(Handle::SE, b.x, b.y, 1.0, 1.0),
+        spot(Handle::SW, a.x, b.y, -1.0, 1.0),
+        spot(Handle::N, mx, a.y, 0.0, -1.0),
+        spot(Handle::E, b.x, my, 1.0, 0.0),
+        spot(Handle::S, mx, b.y, 0.0, 1.0),
+        spot(Handle::W, a.x, my, -1.0, 0.0),
     ]
-    .into_iter()
-    .find(|&(_, x, y)| near(x, y))
-    .map(|(h, ..)| h)
 }
 
 /// New centres, grid units, aligning `boxes` (id to rect in scene px) as
@@ -1606,6 +2318,39 @@ pub fn align(boxes: &BTreeMap<BoxId, Rect>, how: Alignment) -> BTreeMap<BoxId, P
                 Alignment::Top => (c.x, top + hh),
                 Alignment::Bottom => (c.x, bottom - hh),
                 Alignment::Middle => (c.x, cy),
+            };
+            (id, Point::new(snap_px_to_grid(x), snap_px_to_grid(y)))
+        })
+        .collect()
+}
+
+/// `align` with the first selected box as the reference (P2-707): its
+/// edge, centre or middle is the line every box moves to; without a
+/// reference in `boxes`, `align`'s outermost edges.
+// TODO(srs): P2-707, the alignment reference. DECISION: reading taken (B
+// editor-breadth 4, Structurizr 6.2.4 `alignSelectedElementsLeft` uses
+// `selectedElements[0]`): the first box selected. This also changes the
+// EDIT-20 commands, which P2-707 makes the same as the keys.
+fn align_to(boxes: &BTreeMap<BoxId, Rect>, how: Alignment, reference: Option<BoxId>) -> BTreeMap<BoxId, Point> {
+    let Some(r) = reference.and_then(|id| boxes.get(&id)) else {
+        return align(boxes, how);
+    };
+    if boxes.len() < 2 {
+        return BTreeMap::new();
+    }
+    let c = r.centre();
+    boxes
+        .iter()
+        .map(|(&id, b)| {
+            let bc = b.centre();
+            let (hw, hh) = (b.width() / 2, b.height() / 2);
+            let (x, y) = match how {
+                Alignment::Left => (r.min.x + hw, bc.y),
+                Alignment::Right => (r.max.x - hw, bc.y),
+                Alignment::Centre => (c.x, bc.y),
+                Alignment::Top => (bc.x, r.min.y + hh),
+                Alignment::Bottom => (bc.x, r.max.y - hh),
+                Alignment::Middle => (bc.x, c.y),
             };
             (id, Point::new(snap_px_to_grid(x), snap_px_to_grid(y)))
         })
@@ -1696,10 +2441,90 @@ pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
     })
 }
 
+/// Orders the declared views of the view list by the view set's
+/// `structurizr.sort` (P2-716): `key` by key, `type` by kind then key,
+/// `created` or none in declaration order (stable).
+// TODO(srs): P2-716, the type order, the tie-breaks and the default.
+// DECISION: reading taken (B editor-breadth 8): no property keeps
+// declaration order (EDIT-8); `type` is landscape, context, container,
+// component, filtered, custom, image, dynamic, deployment, then key;
+// keys compare byte by byte (deterministic; Structurizr uses the
+// browser's `localeCompare`). Structurizr 6.2.4 sorts `type` by the base
+// view's kind for a filtered view and by scope before key, and with no
+// property by software system; B's [P] rulings are kept.
+fn sort_views(model: &Model, list: &mut [ViewEntry]) {
+    let sort = model
+        .views_properties
+        .iter()
+        .rev()
+        .find(|p| p.name.value == "structurizr.sort")
+        .map(|p| p.value.value.to_ascii_lowercase());
+    let rank = |kind: ViewKind| match kind {
+        ViewKind::SystemLandscape => 0,
+        ViewKind::SystemContext => 1,
+        ViewKind::Container => 2,
+        ViewKind::Component => 3,
+        ViewKind::Filtered => 4,
+        ViewKind::Custom => 5,
+        ViewKind::Image => 6,
+        ViewKind::Dynamic => 7,
+        _ => 8,
+    };
+    match sort.as_deref() {
+        Some("key") => list.sort_by_key(|e| e.view.key()),
+        Some("type") => list.sort_by_key(|e| (rank(e.kind), e.view.key())),
+        _ => {}
+    }
+}
+
+/// True for an `http://` or `https://` URL, ignoring case (P2-719).
+fn is_web_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
+
+/// The canvas size list (P2-701): every `PaperSize`, ordered by area,
+/// ties in Structurizr's enum order (portrait before landscape).
+// TODO(srs): P2-701 (a). DECISION: reading taken (B editor-breadth 5a):
+// ordered by area. Structurizr 6.2.4 lists landscape sizes then portrait
+// ones (`PaperSize.getOrderedPaperSizes`) and its editor now steps free
+// dimensions instead; B's [P] ruling is kept.
+fn paper_sizes() -> Vec<PaperSize> {
+    use PaperSize as P;
+    let mut list = vec![
+        P::A6Portrait,
+        P::A6Landscape,
+        P::A5Portrait,
+        P::A5Landscape,
+        P::A4Portrait,
+        P::A4Landscape,
+        P::A3Portrait,
+        P::A3Landscape,
+        P::A2Portrait,
+        P::A2Landscape,
+        P::A1Portrait,
+        P::A1Landscape,
+        P::A0Portrait,
+        P::A0Landscape,
+        P::LetterPortrait,
+        P::LetterLandscape,
+        P::LegalPortrait,
+        P::LegalLandscape,
+        P::Slide4x3,
+        P::Slide16x9,
+        P::Slide16x10,
+    ];
+    list.sort_by_key(|p| {
+        let (w, h) = p.size_px();
+        i64::from(w) * i64::from(h)
+    });
+    list
+}
+
 /// The first image view scoped to `element` (P2-322 f).
 // TODO(srs): P2-322 (f). DECISION: reading taken (B landscape-filtered
 // 10f): an element-scoped image view makes its element enterable, and a
-// click opens it when no container or component view of the element is
+// double click opens it when no container or component view of the element is
 // declared (the cookbook's "level 4" zoom-in).
 fn image_view_of(model: &Model, element: ElementId) -> Option<&str> {
     model
@@ -1726,7 +2551,10 @@ pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewR
             _ => view.clone(),
         });
     }
-    // P2-338: the view carrying `default`, when it is drawn.
+    // P2-338, P2-717: the view carrying `default`, when it is drawn.
+    // TODO(srs): P2-717. DECISION: reading taken (B editor-breadth 10): a
+    // remembered view beats `default`, and the EDIT-27 fallback (this
+    // function with no remembered view) prefers it.
     if let Some(v) = model.default_view_key().and_then(|k| model.view(k))
         && v.kind.drawable()
     {
@@ -1852,7 +2680,7 @@ pub fn kind_label(kind: ElementKind, external: bool) -> &'static str {
 
 impl State {
     /// The model of the last good parse.
-    fn model(&self) -> Option<&Model> {
+    pub(crate) fn model(&self) -> Option<&Model> {
         self.doc.as_ref()?.parsed.as_ref().map(|p| &p.model)
     }
 
@@ -2032,6 +2860,7 @@ impl State {
         }
         let cached = self.cache.get(&view).cloned();
         self.view = Some(view);
+        self.sticky = None;
         self.cancel_gesture();
         self.gesture = Gesture::Idle;
         self.hover = None;
@@ -2213,9 +3042,22 @@ impl State {
                 self.notice = None;
                 self.pointer_down(at, button, mods)
             }
-            Input::PointerMove { at } => self.pointer_move(at),
+            Input::PointerMove { at } => {
+                // DECISION: a move outside the reported canvas with no
+                // gesture under way is the pointer leaving (P2-712): a
+                // line beyond the canvas edge is not hovered, and the
+                // re-hit after a write has no stale point to find it by.
+                if matches!(self.gesture, Gesture::Idle) && !self.on_canvas(at) {
+                    self.pointer = None;
+                    self.hover = None;
+                    return Vec::new();
+                }
+                self.pointer = Some(at);
+                self.pointer_move(at)
+            }
             Input::PointerUp { at, button } => self.pointer_up(at, button),
             Input::PointerLeft => {
+                self.pointer = None;
                 self.hover = None;
                 Vec::new()
             }
@@ -2231,13 +3073,32 @@ impl State {
             Input::KeyUp { key } => {
                 if key == Key::Space {
                     self.space = false;
+                    // P2-715: a Space press released with no drag in
+                    // between opens quick navigation.
+                    if std::mem::take(&mut self.space_tap) && self.text_edit.is_none() && self.overlay.is_none() {
+                        return self.command(Command::QuickNavigation);
+                    }
                 }
                 Vec::new()
             }
+            Input::CanvasSize { size } => {
+                self.set_canvas_size(size);
+                Vec::new()
+            }
+            Input::DoubleClick { at, mods } => self.double_click(at, mods),
         }
     }
 
+    /// Whether `at` lies on the canvas last reported (true while no size
+    /// is known).
+    fn on_canvas(&self, at: ScreenPoint) -> bool {
+        self.canvas
+            .is_none_or(|size| (0.0..=size.x).contains(&at.x) && (0.0..=size.y).contains(&at.y))
+    }
+
     fn pointer_down(&mut self, at: ScreenPoint, button: Button, mods: Modifiers) -> Vec<Effect> {
+        // P2-715: a press while Space is held starts a pan, not a tap.
+        self.space_tap = false;
         if button == Button::Middle || (button == Button::Left && self.space) {
             self.gesture = Gesture::Panning { last: at };
             return Vec::new();
@@ -2267,7 +3128,12 @@ impl State {
             return None;
         };
         let rect = scene.boxes.get(id.0 as usize)?.rect;
-        handle_at(rect, &self.camera, at).map(|h| (id, h))
+        // P2-735: the handles as drawn, moved off line ends.
+        let ends = line_ends(scene, &self.camera);
+        handle_spots(rect, &self.camera, &ends)
+            .into_iter()
+            .find(|(_, c)| (at.x - c.x).abs() <= HANDLE_PX && (at.y - c.y).abs() <= HANDLE_PX)
+            .map(|(h, _)| (id, h))
     }
 
     fn pointer_move(&mut self, at: ScreenPoint) -> Vec<Effect> {
@@ -2556,14 +3422,21 @@ impl State {
 
     /// A click (EDIT-15, EDIT-28): enter an enterable box, else select;
     /// Ctrl or right selects only; Shift toggles; empty canvas deselects.
-    fn click(&mut self, button: Button, mods: Modifiers, hit: Option<ItemKey>) -> Vec<Effect> {
+    fn click(&mut self, _button: Button, mods: Modifiers, hit: Option<ItemKey>) -> Vec<Effect> {
         self.text_edit = None;
+        // TODO(srs): P2-724, the release. DECISION: reading taken (B
+        // editor-breadth 9): Escape, or a click anywhere but the item.
+        if self.sticky.is_some() && self.sticky != hit {
+            self.sticky = None;
+        }
         let (Some(scene), Some(model)) = (self.scene(), self.model()) else {
             self.selection.clear();
             return Vec::new();
         };
         let selected = hit.and_then(|h| selected_of(scene, model, h));
-        if mods.shift {
+        // P2-718: Alt+click toggles like Shift+click and never enters (B
+        // editor-breadth 3, amending EDIT-28).
+        if mods.shift || mods.alt {
             if let Some(s) = selected
                 && !self.selection.remove(&s)
             {
@@ -2571,15 +3444,9 @@ impl State {
             }
             return Vec::new();
         }
-        let plain = button == Button::Left && !mods.ctrl;
-        if plain
-            && let Some(ItemKey::Box(id)) = hit
-            && let Some(b) = scene.boxes.get(id.0 as usize)
-            && enterable(model, b.element)
-            && let Some(view) = view_into(model, b.element)
-        {
-            return self.show(view);
-        }
+        // EDIT-15 as amended by the owner: a single click selects an
+        // enterable box like any other; a double click enters it
+        // (`enter_at`). Every button selects.
         self.selection.clear();
         if let Some(s) = selected {
             self.selection.insert(s);
@@ -2604,6 +3471,7 @@ impl State {
         self.selection.extend(inside);
     }
 
+    #[expect(clippy::too_many_lines, reason = "the whole P2-712 key table in one place")]
     fn key_down(&mut self, key: Key, mods: Modifiers, text_focus: bool) -> Vec<Effect> {
         if self.text_edit.is_some() {
             return match key {
@@ -2623,26 +3491,325 @@ impl State {
                 _ => Vec::new(),
             };
         }
+        // P2-712 (1): an open quick-navigation list takes every key.
+        if let Some(Overlay::QuickNavigation { .. }) = self.overlay {
+            return self.quick_nav_key(key);
+        }
         match key {
             Key::Enter | Key::F2 => {
                 self.open_text_edit();
-                Vec::new()
+                return Vec::new();
             }
             Key::Escape => {
-                self.selection.clear();
-                Vec::new()
+                // DECISION: Escape closes an open list first; otherwise it
+                // releases a sticky tooltip (P2-724, B editor-breadth 9)
+                // and deselects (EDIT-28) in the same press.
+                if self.overlay.take().is_none() {
+                    self.sticky = None;
+                    self.selection.clear();
+                }
+                return Vec::new();
             }
-            Key::Backspace if !text_focus => self.go_up(),
-            Key::ArrowLeft if mods.alt => self.go_up(),
+            Key::Backspace if !text_focus => return self.go_up(),
+            Key::ArrowLeft if mods.alt => return self.go_up(),
             Key::Space => {
                 self.space = true;
+                self.space_tap = !text_focus;
+                return Vec::new();
+            }
+            Key::Z if mods.ctrl && mods.shift => return self.command(Command::Redo),
+            Key::Z if mods.ctrl => return self.command(Command::Undo),
+            Key::Y if mods.ctrl => return self.command(Command::Redo),
+            _ => {}
+        }
+        // P2-712: the single-key bindings act only with no text focus and
+        // no chord modifier.
+        if text_focus || mods.ctrl {
+            return Vec::new();
+        }
+        // P2-712 (2): a line or label under the pointer.
+        if let Some(effects) = self.line_key(key) {
+            return effects;
+        }
+        // P2-712 (3): two or more selected boxes.
+        if self.selected_rects().len() >= 2 {
+            let command = match key {
+                Key::L => Some(Command::Align(Alignment::Left)),
+                Key::C => Some(Command::Align(Alignment::Centre)),
+                Key::R => Some(Command::Align(Alignment::Right)),
+                Key::T => Some(Command::Align(Alignment::Top)),
+                Key::M => Some(Command::Align(Alignment::Middle)),
+                Key::B => Some(Command::Align(Alignment::Bottom)),
+                Key::H => Some(Command::Distribute(Axis::Horizontal)),
+                Key::V => Some(Command::Distribute(Axis::Vertical)),
+                _ => None,
+            };
+            if let Some(command) = command {
+                return self.command(command);
+            }
+        }
+        // P2-712 (4): the viewer bindings.
+        let command = match key {
+            // P2-713 as written: Up or Right opens the previous view, Down
+            // or Left the next (Structurizr 6.2.4's diagrams.jsp maps
+            // Left/Right the other way; the written sentence wins, see
+            // docs/deferred.md). TODO(srs): P2-713, the ends; DECISION:
+            // the list stops at its ends, as Structurizr's code does.
+            Key::ArrowUp | Key::ArrowRight => Command::PreviousView,
+            Key::ArrowDown | Key::ArrowLeft => Command::NextView,
+            Key::Plus | Key::Minus => {
+                let canvas = self.canvas.unwrap_or_default();
+                let centre = ScreenPoint {
+                    x: canvas.x / 2.0,
+                    y: canvas.y / 2.0,
+                };
+                let factor = if key == Key::Plus { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+                self.camera.zoom_at(centre, factor);
+                self.remember();
+                return Vec::new();
+            }
+            Key::W => Command::Fit(Fit::Width),
+            Key::H => Command::Fit(Fit::Height),
+            Key::C => Command::Fit(Fit::Content),
+            Key::B => Command::Back,
+            Key::D => Command::ToggleDescriptions,
+            Key::M => Command::ToggleMetadata,
+            Key::T => Command::ToggleTooltips,
+            Key::G => Command::TagFilterPanel,
+            Key::P => Command::PerspectivePanel,
+            Key::I => Command::ToggleKey,
+            Key::L => Command::Navigator,
+            Key::N => Command::ToggleViewList,
+            Key::F11 => Command::Fullscreen,
+            Key::Alt => {
+                // P2-724: Alt while a tooltip shows makes it sticky.
+                if self.sticky.is_none()
+                    && let Some(tip) = self.tooltip()
+                {
+                    self.sticky = Some(tip.item);
+                }
+                return Vec::new();
+            }
+            _ => return Vec::new(),
+        };
+        self.command(command)
+    }
+
+    /// A key while quick navigation is open (P2-712 (1), P2-715): Enter
+    /// opens the highlighted view, Escape closes, Up and Down move the
+    /// highlight; every other key is swallowed.
+    fn quick_nav_key(&mut self, key: Key) -> Vec<Effect> {
+        let count = self.quick_nav_entries().len();
+        let Some(Overlay::QuickNavigation { highlighted, .. }) = self.overlay.as_mut() else {
+            return Vec::new();
+        };
+        match key {
+            Key::Escape => self.overlay = None,
+            Key::ArrowDown if count > 0 => *highlighted = (*highlighted + 1).min(count - 1),
+            Key::ArrowUp => *highlighted = highlighted.saturating_sub(1),
+            Key::Enter => {
+                let pick = *highlighted;
+                let entry = self.quick_nav_entries().into_iter().nth(pick);
+                self.overlay = None;
+                if let Some(entry) = entry {
+                    return self.show(entry.view);
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The line or label under the pointer, as its winning relationship,
+    /// when it can be written (P2-712 (2)).
+    fn hovered_line(&self) -> Option<RelationshipRef> {
+        let hover = self.hover?;
+        if !matches!(hover, ItemKey::Line(_) | ItemKey::Label(_)) {
+            return None;
+        }
+        let (scene, model) = (self.scene()?, self.scene_model()?);
+        match scene.model_id(hover)? {
+            ModelId::Relationship(r) => Some(RelationshipRef::of(model, r)),
+            _ => None,
+        }
+    }
+
+    /// Up, Down, `r` and `j` over a line (P2-708..P2-710); `None` when no
+    /// line is under the pointer or the key is not one of these.
+    // TODO(srs): P2-708, direction and step. DECISION: reading taken (B
+    // editor-breadth 6): Up moves the label 5 position units toward the
+    // source, Down 5 toward the destination, clamped to 0..100; an unset
+    // position counts as 50 (Structurizr's default label position).
+    // DECISION: an unset routing counts as Direct (Structurizr's default),
+    // so the first `r` writes Orthogonal; an unset jump counts as off.
+    fn line_key(&mut self, key: Key) -> Option<Vec<Effect>> {
+        if !matches!(key, Key::ArrowUp | Key::ArrowDown | Key::R | Key::J) {
+            return None;
+        }
+        let relationship = self.hovered_line()?;
+        let style = self.hovered_style()?;
+        let change = match key {
+            Key::ArrowUp => LineChange::Position(Some(style.position.unwrap_or(50).saturating_sub(5))),
+            Key::ArrowDown => LineChange::Position(Some(style.position.unwrap_or(50).saturating_add(5).min(100))),
+            Key::R => LineChange::Routing(Some(match style.routing {
+                Some(Routing::Orthogonal) => Routing::Curved,
+                Some(Routing::Curved) => Routing::Direct,
+                _ => Routing::Orthogonal,
+            })),
+            _ => LineChange::Jump(Some(!style.jump)),
+        };
+        let view = self.view.clone()?;
+        Some(self.write(Action::SetLine {
+            view,
+            relationship,
+            change,
+        }))
+    }
+
+    /// The resolved style of the hovered line in the shown plan.
+    fn hovered_style(&self) -> Option<c4rizer_core::model::ResolvedRelationshipStyle> {
+        let (ItemKey::Line(edge) | ItemKey::Label(edge)) = self.hover? else {
+            return None;
+        };
+        let (_, build) = self.shown.as_ref()?;
+        build.plan.edges.get(edge.0 as usize).map(|e| e.style)
+    }
+
+    /// The items the tag filter or the perspective fades (P2-725,
+    /// P2-726).
+    // TODO(srs): P2-725, fade or hide, any or all; P2-726, what is drawn.
+    // DECISION: reading taken (B editor-breadth 9): an item carrying none
+    // of the chosen tags (any-of), or without the chosen perspective, is
+    // faded (painted at 20% opacity), never hidden; the scene is not
+    // rebuilt.
+    fn faded(&self) -> Vec<ItemKey> {
+        if self.aids.tags.is_empty() && self.aids.perspective.is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (keys, tags, perspectives) in self.view_items_keyed() {
+            let by_tag = !self.aids.tags.is_empty() && !tags.iter().any(|t| self.aids.tags.contains(t));
+            let by_perspective = self.aids.perspective.as_ref().is_some_and(|p| !perspectives.contains(p));
+            if by_tag || by_perspective {
+                out.extend(keys);
+            }
+        }
+        out
+    }
+
+    /// After a reload, drops a chosen tag or perspective the open view no
+    /// longer has (P2-731).
+    fn drop_stale_aids(&mut self) {
+        if !self.aids.tags.is_empty() {
+            let choices = self.tag_choices();
+            self.aids.tags.retain(|t| choices.contains(t));
+        }
+        if let Some(p) = &self.aids.perspective
+            && !self.perspective_choices().contains(p)
+        {
+            self.aids.perspective = None;
+        }
+    }
+
+    /// The tooltip to show now (P2-723, P2-724): the sticky one, else,
+    /// with tooltips on, the hovered box or line's.
+    // TODO(srs): P2-723, the content. DECISION: reading taken (B
+    // editor-breadth 9): name, type, description, technology, tags (the
+    // EDIT-10 details), URL and properties.
+    fn tooltip(&self) -> Option<Tooltip> {
+        let scene = self.scene()?;
+        let (item, sticky) = match self.sticky {
+            Some(item) => (item, true),
+            None if self.tooltips_on() => (self.hover?, false),
+            None => return None,
+        };
+        if !matches!(item, ItemKey::Box(_) | ItemKey::Line(_) | ItemKey::Label(_)) || scene.item_bounds(item).is_none() {
+            return None;
+        }
+        let model = self.scene_model()?;
+        let subject = selected_of(scene, model, item)?;
+        let details = self.details_of(subject)?;
+        let (url, properties) = match scene.model_id(item)? {
+            ModelId::Element(e) => {
+                let e = model.element(e);
+                (e.url.as_ref().map(|u| u.value.clone()), &e.properties)
+            }
+            ModelId::Relationship(r) => {
+                let r = model.relationship(r);
+                (r.url.as_ref().map(|u| u.value.clone()), &r.properties)
+            }
+            _ => return None,
+        };
+        Some(Tooltip {
+            item,
+            details,
+            sticky,
+            url,
+            properties: properties.iter().map(|p| (p.name.value.clone(), p.value.value.clone())).collect(),
+        })
+    }
+
+    /// A double click (P2-719, P2-720): with Alt, opens the URL of the
+    /// box's element or the line's winning relationship.
+    // TODO(srs): P2-719, the schemes. DECISION: reading taken (B
+    // editor-breadth 10): only `http` and `https` URLs are opened; any
+    // other URL, or none, leaves a status notice naming the item. The
+    // URLs in `properties` and docs are not offered (no parity row).
+    fn double_click(&mut self, at: ScreenPoint, mods: Modifiers) -> Vec<Effect> {
+        if !mods.alt {
+            return self.enter_at(at, mods);
+        }
+        let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else { return Vec::new() };
+        let Some(hit) = self.hit(at) else { return Vec::new() };
+        let (name, url) = match (hit, scene.model_id(hit)) {
+            (ItemKey::Box(_), Some(ModelId::Element(e))) => {
+                let e = model.element(e);
+                (e.name.value.clone(), e.url.as_ref().map(|u| u.value.clone()))
+            }
+            (ItemKey::Line(_) | ItemKey::Label(_), Some(ModelId::Relationship(r))) => {
+                let rel = model.relationship(r);
+                let name = format!(
+                    "{} -> {}",
+                    model.element(rel.source.value).name.value,
+                    model.element(rel.destination.value).name.value
+                );
+                (name, rel.url.as_ref().map(|u| u.value.clone()))
+            }
+            _ => return Vec::new(),
+        };
+        match url {
+            Some(url) if is_web_url(&url) => vec![Effect::OpenUrl(url)],
+            Some(url) => {
+                self.notice = Some(format!("not opened: {url} ({name}) is not an http or https URL"));
                 Vec::new()
             }
-            Key::Z if mods.ctrl && mods.shift => self.command(Command::Redo),
-            Key::Z if mods.ctrl => self.command(Command::Undo),
-            Key::Y if mods.ctrl => self.command(Command::Redo),
-            _ => Vec::new(),
+            None => {
+                self.notice = Some(format!("nothing to open: {name} has no URL"));
+                Vec::new()
+            }
         }
+    }
+
+    /// A plain double click on an enterable box opens its view, one
+    /// level down (EDIT-15 as amended by the owner). The double click
+    /// arrives once, after both clicks have only selected, so it enters
+    /// exactly once.
+    // DECISION: Shift or Ctrl held keeps the double click a selection
+    // gesture (its two clicks toggled or selected), matching EDIT-28's
+    // "selects without entering" for those modifiers.
+    fn enter_at(&mut self, at: ScreenPoint, mods: Modifiers) -> Vec<Effect> {
+        if mods.shift || mods.ctrl || self.text_edit.is_some() {
+            return Vec::new();
+        }
+        let (Some(scene), Some(model)) = (self.scene(), self.model()) else { return Vec::new() };
+        if let Some(ItemKey::Box(id)) = self.hit(at)
+            && let Some(b) = scene.boxes.get(id.0 as usize)
+            && enterable(model, b.element)
+            && let Some(view) = view_into(model, b.element)
+        {
+            return self.show(view);
+        }
+        Vec::new()
     }
 
     /// Opens the in-place editor on the single selected item (EDIT-5).
@@ -2716,30 +3883,15 @@ impl State {
             Command::ShowOpenDialog => vec![Effect::Dialog(Dialog::Open {
                 dir: self.doc.as_ref().map(|d| export_dir(&d.path)),
             })],
-            Command::ShowView(view) => self.show(view),
-            Command::Crumb(n) => {
-                let Some(model) = self.model() else { return Vec::new() };
-                let target = if n == 0 {
-                    // TODO(srs): P2-305, the workspace crumb. DECISION:
-                    // reading taken (B landscape-filtered 8): the first
-                    // system landscape view, else the first system context
-                    // view (EDIT-16), else the first view.
-                    model
-                        .views
-                        .iter()
-                        .find(|v| v.kind == ViewKind::SystemLandscape)
-                        .or_else(|| model.views.iter().find(|v| v.kind == ViewKind::SystemContext))
-                        .or_else(|| model.views.first())
-                        .map(|v| ViewRef::Declared(v.key.clone()))
-                } else {
-                    self.breadcrumb()
-                        .get(n)
-                        .and_then(|c| c.scope.as_deref())
-                        .and_then(|k| model.find(k))
-                        .and_then(|id| view_into(model, id))
-                };
-                target.map_or_else(Vec::new, |v| self.show(v))
+            Command::ShowView(view) => {
+                // P2-715, P2-729: picking a view in quick navigation or the
+                // navigator closes it.
+                if matches!(self.overlay, Some(Overlay::QuickNavigation { .. } | Overlay::Navigator)) {
+                    self.overlay = None;
+                }
+                self.show(view)
             }
+            Command::Crumb(n) => self.crumb_target(n).map_or_else(Vec::new, |v| self.show(v)),
             Command::SetStyle { target, property } => {
                 let elements = self.selected_elements();
                 let Some(view) = self.view.clone() else { return Vec::new() };
@@ -2763,7 +3915,7 @@ impl State {
             }
             Command::Align(how) => {
                 let rects = self.selected_rects();
-                let to = align(&rects, how);
+                let to = align_to(&rects, how, self.first_selected_box());
                 self.write_moves(&to)
             }
             Command::Distribute(axis) => {
@@ -2861,7 +4013,361 @@ impl State {
                 self.selection = picked;
                 Vec::new()
             }
+            Command::Fit(how) => {
+                if let (Some(scene), Some(canvas)) = (self.scene(), self.canvas)
+                    && let Some(camera) = crate::camera::fit(scene.bounds, canvas, how)
+                {
+                    self.camera = camera;
+                    self.fit_pending = false;
+                    self.remember();
+                }
+                Vec::new()
+            }
+            Command::Navigator => {
+                self.overlay = match self.overlay {
+                    Some(Overlay::Navigator) => None,
+                    _ => Some(Overlay::Navigator),
+                };
+                self.nav_query.clear();
+                Vec::new()
+            }
+            Command::Fullscreen => {
+                // P2-706: the view, camera and selection are untouched.
+                self.aids.fullscreen = !self.aids.fullscreen;
+                vec![Effect::Fullscreen(self.aids.fullscreen)]
+            }
+            Command::PreviousView | Command::NextView => {
+                // TODO(srs): P2-713, the ends. DECISION: reading taken from
+                // Structurizr 6.2.4 diagrams.jsp (`navigateToPreviousDiagram`
+                // and `navigateToNextDiagram` stop at the ends); B
+                // editor-breadth 9 proposed wrapping, Structurizr wins.
+                let list = self.views();
+                let Some(at) = list.iter().position(|e| e.current) else {
+                    return list.first().map_or_else(Vec::new, |e| self.show(e.view.clone()));
+                };
+                let next = if command == Command::PreviousView {
+                    at.checked_sub(1)
+                } else {
+                    Some(at + 1)
+                };
+                match next.and_then(|i| list.get(i)) {
+                    Some(e) => {
+                        let view = e.view.clone();
+                        self.show(view)
+                    }
+                    None => Vec::new(),
+                }
+            }
+            Command::Back => {
+                // P2-714: the view shown before the current one, Structurizr's
+                // `viewsVisited.pop()` then `peek()`.
+                if self.visited.len() < 2 {
+                    return Vec::new();
+                }
+                self.visited.pop();
+                match self.visited.last().cloned() {
+                    Some(view) => self.show(view),
+                    None => Vec::new(),
+                }
+            }
+            Command::QuickNavigation => {
+                self.overlay = Some(Overlay::QuickNavigation {
+                    query: String::new(),
+                    highlighted: 0,
+                });
+                Vec::new()
+            }
+            // TODO(srs): P2-721, P2-722 with a style's `description false` or
+            // `metadata false` (P2-10). DECISION: the toggles only hide; a
+            // text the style already left out of the scene is never shown.
+            // TODO(srs): P2-722, what metadata is. DECISION: reading taken
+            // (B editor-breadth 9): the box type line and the label's
+            // technology line.
+            Command::ToggleDescriptions => {
+                self.aids.descriptions = !self.aids.descriptions;
+                Vec::new()
+            }
+            Command::ToggleMetadata => {
+                self.aids.metadata = !self.aids.metadata;
+                Vec::new()
+            }
+            Command::ToggleTooltips => {
+                self.aids.tooltips = Some(!self.tooltips_on());
+                self.sticky = None;
+                Vec::new()
+            }
+            Command::TagFilterPanel => {
+                self.overlay = match self.overlay {
+                    Some(Overlay::TagFilter) => None,
+                    _ => Some(Overlay::TagFilter),
+                };
+                Vec::new()
+            }
+            Command::TagFilter(mut tags) => {
+                tags.sort();
+                tags.dedup();
+                self.aids.tags = tags;
+                Vec::new()
+            }
+            Command::PerspectivePanel => {
+                self.overlay = match self.overlay {
+                    Some(Overlay::Perspectives) => None,
+                    _ => Some(Overlay::Perspectives),
+                };
+                Vec::new()
+            }
+            Command::Perspective(p) => {
+                self.aids.perspective = p;
+                Vec::new()
+            }
+            Command::ToggleViewList => {
+                self.aids.view_list = !self.aids.view_list;
+                Vec::new()
+            }
+            // TODO(srs): P2-728, what "show" means. DECISION: reading taken
+            // (B editor-breadth 7): `i` toggles the drawn key's visibility on
+            // the canvas. P2-732's list of canvas-only differences does not
+            // name a hidden key yet; the export always draws it.
+            Command::ToggleKey => {
+                self.aids.key = !self.aids.key;
+                Vec::new()
+            }
+            Command::AutoPlace => self.auto_place(),
+            Command::Canvas { step, keep_positions } => self.canvas_step(step, keep_positions),
+            Command::BringOntoCanvas => self.bring_onto_canvas(),
+            Command::Centre => self.centre(),
         }
+    }
+
+    /// The spec whose `at` lines a layout command in the open view
+    /// writes: the declared view (a filtered view's base, P2-313), or the
+    /// default view as `pipeline::default_view` builds it (EDIT-15).
+    fn layout_spec(&self) -> Option<(ViewRef, c4rizer_core::model::ViewSpec)> {
+        let (view, model) = (self.view.as_ref()?, self.model()?);
+        if self.unsupported(view) {
+            return None;
+        }
+        let layout = layout_view(model, view);
+        let spec = match (&layout, model.view(&layout.key())) {
+            (_, Some(spec)) => spec.clone(),
+            (ViewRef::Default { scope, kind }, None) => default_view(model, model.find(scope)?, *kind)?,
+            (ViewRef::Declared(_), None) => return None,
+        };
+        Some((view.clone(), spec))
+    }
+
+    /// "Auto-place view" (P2-700): every box of the open view placed by
+    /// CORE-22 as though it had no `at` line and no previous scene
+    /// (`size` lines kept), then one `Action::Move` writing every box's
+    /// `at` line at its new centre; the default view goes first when it
+    /// is not written yet (EDIT-15).
+    // DECISION: placement only, on the UI thread, as `rebuild_first_write`
+    // already does (EDIT-25: no routing here); the worker's build of the
+    // written file routes the lines.
+    fn auto_place(&mut self) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        let Some(model) = self.model() else { return Vec::new() };
+        let mut plan = c4rizer_core::view::plan_in(model, &spec, self.mode);
+        for b in &mut plan.boxes {
+            b.centre = None;
+        }
+        let centres = c4rizer_core::place::place(&plan, &Keep::default());
+        let boxes: BTreeMap<String, (i32, i32)> = plan
+            .boxes
+            .iter()
+            .filter_map(|b| {
+                let key = model.full_key(b.element)?;
+                let c = centres.get(b.id.0 as usize)?;
+                Some((key, (c.x * GRID_PX, c.y * GRID_PX)))
+            })
+            .collect();
+        if boxes.is_empty() {
+            return Vec::new();
+        }
+        let effects = self.write(Action::Move {
+            view,
+            layout: boxes.clone(),
+            boxes,
+        });
+        // DECISION: the camera fits the re-placed drawing once its build is
+        // shown (fix round): the new layout can sit anywhere, and a camera
+        // kept from the old one may show nothing of it.
+        if !effects.is_empty() {
+            self.after_place = AfterPlace::Fit;
+        }
+        effects
+    }
+
+    /// The canvas of the open view, scene px: its `paperSize` from (0, 0),
+    /// or the scene bounds on auto (P2-703, P2-704).
+    // TODO(srs): P2-703, P2-704 on an auto canvas. DECISION: reading taken
+    // (B editor-breadth 5d): the scene bounds are the canvas.
+    fn canvas_rect(&self) -> Option<Rect> {
+        let scene = self.scene()?;
+        let (_, spec) = self.layout_spec()?;
+        Some(match spec.paper_size {
+            Some(p) => {
+                let (w, h) = p.value.size_px();
+                Rect::from_corners(Point::new(0, 0), Point::new(w, h))
+            }
+            None => scene.bounds,
+        })
+    }
+
+    /// The paper of the open view, scene px from (0, 0): its `paperSize`;
+    /// `None` on an auto canvas (P2-701). The shell paints it under the
+    /// page so the canvas size is visible.
+    pub(crate) fn paper_rect(&self) -> Option<Rect> {
+        let (_, spec) = self.layout_spec()?;
+        let (w, h) = spec.paper_size?.value.size_px();
+        Some(Rect::from_corners(Point::new(0, 0), Point::new(w, h)))
+    }
+
+    /// Decrease, Auto or Increase canvas size (P2-701, P2-702): the
+    /// previous, smallest-holding or next size of `paper_sizes`, written
+    /// with every box moved by one grid offset that centres the scene on
+    /// the new canvas, unless `keep_positions` (Alt); one undo step.
+    // TODO(srs): P2-702, Auto. DECISION: reading taken (B editor-breadth
+    // 5d; Structurizr 6.2.4 `autoPageSize` calls `centreDiagram`): Auto
+    // always re-centres. From an auto canvas, Decrease and Increase step
+    // from the size Auto would pick.
+    // DECISION: the drawing centred is the whole scene (drawing, title
+    // and key: `Scene::bounds`), the canvas from (0, 0).
+    fn canvas_step(&mut self, step: CanvasStep, keep_positions: bool) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else { return Vec::new() };
+        let list = paper_sizes();
+        let b = scene.bounds;
+        let auto = list
+            .iter()
+            .position(|p| p.size_px().0 >= b.width() && p.size_px().1 >= b.height())
+            .unwrap_or(list.len() - 1);
+        let current = spec.paper_size.and_then(|p| list.iter().position(|&q| q == p.value)).unwrap_or(auto);
+        let target = match step {
+            CanvasStep::Auto => Some(auto),
+            CanvasStep::Decrease => current.checked_sub(1),
+            CanvasStep::Increase => Some(current + 1).filter(|&i| i < list.len()),
+        };
+        let Some(size) = target.map(|i| list[i]) else { return Vec::new() };
+        let mut boxes = BTreeMap::new();
+        let mut shift = (0, 0);
+        if step == CanvasStep::Auto || !keep_positions {
+            let (w, h) = size.size_px();
+            let c = b.centre();
+            let (dx, dy) = (snap_px_to_grid(w / 2 - c.x), snap_px_to_grid(h / 2 - c.y));
+            if (dx, dy) != (0, 0) {
+                shift = (dx * GRID_PX, dy * GRID_PX);
+                for bx in &scene.boxes {
+                    let Some(key) = model.full_key(bx.element) else { continue };
+                    let at = scene.centres[bx.id.0 as usize];
+                    boxes.insert(key, ((at.x + dx) * GRID_PX, (at.y + dy) * GRID_PX));
+                }
+            }
+        }
+        if spec.paper_size.map(|p| p.value) == Some(size) && boxes.is_empty() {
+            return Vec::new();
+        }
+        let layout = self.layout();
+        let effects = self.write(Action::SetCanvasSize {
+            view,
+            size: Some(size),
+            boxes,
+            layout,
+        });
+        // The camera follows the shared offset, so the drawing stays where
+        // it was on screen and the page grows or shrinks around it.
+        // DECISION: follow rather than refit (the zoom the user chose is
+        // kept); found in the real-window check, where the re-centred
+        // drawing jumped off screen. Undo moves it back like any write.
+        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+        if shift != (0, 0) && !effects.is_empty() {
+            self.camera.pan.x += shift.0 as f32;
+            self.camera.pan.y += shift.1 as f32;
+            self.remember();
+        }
+        effects
+    }
+
+    /// "Bring boxes onto the canvas" (P2-703): each box lying wholly or
+    /// partly outside the canvas moves to the nearest grid centre that
+    /// puts it inside; one undo step, nothing written when all are in.
+    // TODO(srs): P2-703, "nearest". DECISION: reading taken (B
+    // editor-breadth 5d): per axis, the box is clamped into the canvas
+    // and its centre rounded inward to the 10px grid; a box larger than
+    // the canvas keeps its top-left edge on the canvas's.
+    fn bring_onto_canvas(&mut self) -> Vec<Effect> {
+        let (Some(canvas), Some(scene)) = (self.canvas_rect(), self.scene()) else { return Vec::new() };
+        let inward = |lo: i32, hi: i32, c: i32| -> i32 {
+            if c < lo || hi < lo {
+                (lo + GRID_PX - 1).div_euclid(GRID_PX)
+            } else if c > hi {
+                hi.div_euclid(GRID_PX)
+            } else {
+                c.div_euclid(GRID_PX)
+            }
+        };
+        let mut to = BTreeMap::new();
+        for b in &scene.boxes {
+            let r = b.rect;
+            if canvas.contains(r.min) && canvas.contains(r.max) {
+                continue;
+            }
+            let (hw, hh) = (r.width() / 2, r.height() / 2);
+            let c = r.centre();
+            let x = inward(canvas.min.x + hw, canvas.max.x - hw, c.x);
+            let y = inward(canvas.min.y + hh, canvas.max.y - hh, c.y);
+            let at = scene.centres[b.id.0 as usize];
+            // Keep an axis already inside exactly where it is.
+            let x = if c.x - hw >= canvas.min.x && c.x + hw <= canvas.max.x { at.x } else { x };
+            let y = if c.y - hh >= canvas.min.y && c.y + hh <= canvas.max.y { at.y } else { y };
+            to.insert(b.id, Point::new(x, y));
+        }
+        self.write_moves(&to)
+    }
+
+    /// "Centre" (P2-704): the selected boxes, else every box, moved by
+    /// one grid offset that puts the centre of their bounding rectangle
+    /// on the canvas centre; one undo step.
+    fn centre(&mut self) -> Vec<Effect> {
+        let (Some(canvas), Some(scene)) = (self.canvas_rect(), self.scene()) else { return Vec::new() };
+        let mut rects = self.selected_rects();
+        if rects.is_empty() {
+            rects = scene.boxes.iter().map(|b| (b.id, b.rect)).collect();
+        }
+        let Some(first) = rects.values().next().copied() else { return Vec::new() };
+        let union = rects.values().fold(first, |a, r| {
+            Rect::from_corners(
+                Point::new(a.min.x.min(r.min.x), a.min.y.min(r.min.y)),
+                Point::new(a.max.x.max(r.max.x), a.max.y.max(r.max.y)),
+            )
+        });
+        let (c, u) = (canvas.centre(), union.centre());
+        let (dx, dy) = (snap_px_to_grid(c.x - u.x), snap_px_to_grid(c.y - u.y));
+        if (dx, dy) == (0, 0) {
+            return Vec::new();
+        }
+        let to: BTreeMap<BoxId, Point> = rects
+            .keys()
+            .map(|&id| {
+                let at = scene.centres[id.0 as usize];
+                (id, Point::new(at.x + dx, at.y + dy))
+            })
+            .collect();
+        self.write_moves(&to)
+    }
+
+    /// The box of the first selected element still selected and on
+    /// screen (P2-707).
+    fn first_selected_box(&self) -> Option<BoxId> {
+        let (scene, model) = (self.scene()?, self.model()?);
+        self.selection_order
+            .iter()
+            .filter(|s| self.selection.contains(s))
+            .flat_map(|s| items_of(scene, model, s))
+            .find_map(|k| match k {
+                ItemKey::Box(id) => Some(id),
+                _ => None,
+            })
     }
 
     /// The selected boxes' rectangles, scene px (EDIT-20).
@@ -2933,6 +4439,7 @@ impl State {
             }
             FileEvent::WriteFailed { error } => {
                 self.queued.clear();
+                self.after_place = AfterPlace::Nothing;
                 self.io_error = Some(error);
                 if let Some(pending) = self.pending.take() {
                     self.give_back(pending.action);
@@ -3114,6 +4621,16 @@ impl State {
                     let Some(parsed) = self.parsed() else { return Vec::new() };
                     self.cache.insert(view, Arc::clone(&build));
                     let old = self.shown.replace((Arc::clone(&parsed), build));
+                    // P2-731: a reload of the same view drops stale aids.
+                    // DECISION: only a new parse of the view on screen drops
+                    // them; a view switch keeps the filter and perspective
+                    // for the session (B editor-breadth 10).
+                    if let Some((old_parsed, old_build)) = &old
+                        && !Arc::ptr_eq(old_parsed, &parsed)
+                        && self.shown.as_ref().is_some_and(|(_, b)| b.scene.key == old_build.scene.key)
+                    {
+                        self.drop_stale_aids();
+                    }
                     self.dragged = None;
                     if matches!(self.gesture, Gesture::Dragging { .. }) {
                         if let Some((old_parsed, old_build)) = old
@@ -3124,7 +4641,16 @@ impl State {
                     } else {
                         self.preview = None;
                     }
-                    self.hover = None;
+                    // DECISION: the item under a still pointer is hit again
+                    // in the new scene, so a hovered line keeps taking its
+                    // keys after its own write (P2-708..P2-710).
+                    if std::mem::replace(&mut self.after_place, AfterPlace::Nothing) == AfterPlace::Fit {
+                        self.fit_view();
+                    }
+                    self.hover = match (self.pointer, &self.gesture) {
+                        (Some(p), Gesture::Idle) => self.hit(p),
+                        _ => None,
+                    };
                     return self.request_background();
                 }
                 // A background build from before a mode switch is dropped.
@@ -3427,6 +4953,58 @@ fn rebuild_first_write(parsed: &Parsed, edits: &[Edit]) -> Vec<Edit> {
 }
 
 /// The view kind a click into an element of `kind` opens (EDIT-15).
+/// What the next shown build of the open view does after Auto-place
+/// (P2-700).
+// DECISION: an enum, not a fifth bool on `State` (clippy's
+// struct_excessive_bools).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterPlace {
+    /// Nothing pending.
+    Nothing,
+    /// Fit the camera to the re-placed drawing.
+    Fit,
+}
+
+/// The C4 level of `view` (0 landscape, 1 context, 2 container, 3
+/// component) and its scope; a filtered view takes its base view's; none
+/// for custom and image views (P2-729).
+fn c4_place(model: &Model, view: &ViewRef) -> Option<(u8, Option<ElementId>)> {
+    let kind = view_kind(model, view)?;
+    let rank = match kind {
+        ViewKind::SystemLandscape => 0,
+        ViewKind::SystemContext => 1,
+        ViewKind::Container => 2,
+        ViewKind::Component => 3,
+        ViewKind::Filtered => {
+            let spec = model.view(&view.key())?;
+            let base = model.base_view(spec).filter(|b| b.kind != ViewKind::Filtered)?;
+            return c4_place(model, &ViewRef::Declared(base.key.clone()));
+        }
+        _ => return None,
+    };
+    Some((rank, view_scope(model, view)))
+}
+
+/// True when a view of level `rank` scoped to `upper` shows the element
+/// `inner` (or every element, for a landscape) (P2-729).
+fn scope_contains(model: &Model, rank: u8, upper: Option<ElementId>, inner: Option<ElementId>) -> bool {
+    if rank == 0 {
+        return true;
+    }
+    let (Some(upper), Some(mut at)) = (upper, inner) else {
+        return false;
+    };
+    loop {
+        if at == upper {
+            return true;
+        }
+        match model.element(at).parent {
+            Some(p) => at = p,
+            None => return false,
+        }
+    }
+}
+
 fn counting_kind(kind: ElementKind) -> Option<ViewKind> {
     match kind {
         ElementKind::SoftwareSystem => Some(ViewKind::Container),
@@ -3553,6 +5131,8 @@ mod tests {
         held_writes: Vec<WriteRequest>,
         dialogs: Vec<Dialog>,
         saved: Vec<UiState>,
+        fullscreen: Vec<bool>,
+        urls: Vec<String>,
     }
 
     impl H {
@@ -3571,6 +5151,8 @@ mod tests {
                 held_writes: Vec::new(),
                 dialogs: Vec::new(),
                 saved: Vec::new(),
+                fullscreen: Vec::new(),
+                urls: Vec::new(),
             }
         }
 
@@ -3634,6 +5216,14 @@ mod tests {
                     }
                     Effect::SaveUiState(ui) => {
                         self.saved.push(ui);
+                        Vec::new()
+                    }
+                    Effect::Fullscreen(on) => {
+                        self.fullscreen.push(on);
+                        Vec::new()
+                    }
+                    Effect::OpenUrl(url) => {
+                        self.urls.push(url);
                         Vec::new()
                     }
                 };
@@ -3703,6 +5293,15 @@ mod tests {
         fn click(&mut self, key: &str, button: Button, mods: Modifiers) {
             let at = self.screen(key);
             self.click_at(at, button, mods);
+        }
+
+        /// A plain left double click on `key`'s box: two clicks, then the
+        /// shell's double-click event (EDIT-15 as amended).
+        fn enter(&mut self, key: &str) {
+            let at = self.screen(key);
+            self.click_at(at, Button::Left, NONE);
+            self.click_at(at, Button::Left, NONE);
+            self.input(Input::DoubleClick { at, mods: NONE });
         }
 
         /// A left drag from `from` by `(dx, dy)` screen px, in steps.
@@ -4280,9 +5879,9 @@ mod tests {
         assert_eq!(h.scene().key, "containers");
     }
 
-    /// EDIT-15 (plan editor-03): a click on an enterable system opens its
-    /// container view; a non-enterable box is selected; hover marks
-    /// enterable boxes.
+    /// EDIT-15 (plan editor-03, as amended): a double click on an
+    /// enterable system opens its container view; a single click on any
+    /// box selects it; hover marks enterable boxes.
     #[test]
     fn edit_15_click_system_opens_container_view() {
         let mut h = H::with_file(SHOP);
@@ -4305,7 +5904,12 @@ mod tests {
         assert_eq!(h.s.view, Some(declared("context")));
         assert_eq!(h.selection(), vec![el("bank")]);
 
+        // EDIT-15 as amended: a single click selects, a double click
+        // enters.
         h.click("shop", Button::Left, NONE);
+        assert_eq!(h.s.view, Some(declared("context")));
+        assert_eq!(h.selection(), vec![el("shop")]);
+        h.enter("shop");
         assert_eq!(h.s.view, Some(declared("containers")));
         assert_eq!(h.scene().key, "containers");
     }
@@ -4317,7 +5921,7 @@ mod tests {
     fn edit_15_default_view_when_none() {
         let mut h = H::with_file(SHOP);
         h.cmd(Command::ShowView(declared("containers")));
-        h.click("web", Button::Left, NONE);
+        h.enter("web");
         let default = ViewRef::Default {
             scope: "web".to_owned(),
             kind: ViewKind::Component,
@@ -4355,8 +5959,8 @@ mod tests {
         assert_eq!(h.scene().key, "web-component");
     }
 
-    /// EDIT-15: with several container views scoped to a system, a click
-    /// opens the first declared one and the view list shows the others;
+    /// EDIT-15: with several container views scoped to a system, a double
+    /// click opens the first declared one and the view list shows the others;
     /// a childless system with only a system context view scoped to it
     /// is not enterable (EDIT-15).
     #[test]
@@ -4368,7 +5972,7 @@ mod tests {
             )
             .replace("        customer -> shop", "        lone = softwareSystem \"Lone\" \"Stands alone.\"\n        customer -> shop");
         let mut h = H::with_file(&text);
-        h.click("shop", Button::Left, NONE);
+        h.enter("shop");
         assert_eq!(h.s.view, Some(declared("containers")));
         let listed: Vec<ViewRef> = h.s.views().into_iter().map(|v| v.view).collect();
         assert_eq!(listed, [declared("context"), declared("containers"), declared("again"), declared("lonely")]);
@@ -4386,7 +5990,7 @@ mod tests {
     fn edit_15_reapply_after_view_switch_targets_action_view() {
         let mut h = H::with_file(SHOP);
         h.cmd(Command::ShowView(declared("containers")));
-        h.click("web", Button::Left, NONE);
+        h.enter("web");
         let (cx, cy) = h.centre_px("cart");
         h.hold_writes = true;
         h.drag_box("cart", 100.0, 0.0);
@@ -4411,7 +6015,7 @@ mod tests {
     fn edit_15_title_edit_writes_default_view() {
         let mut h = H::with_file(SHOP);
         h.cmd(Command::ShowView(declared("containers")));
-        h.click("web", Button::Left, NONE);
+        h.enter("web");
         let title = h.scene().title.clone().expect("a drawn title");
         assert_eq!(title.lines.join(" "), "Web app");
 
@@ -4472,8 +6076,8 @@ mod tests {
         let crumbs = |h: &H| -> Vec<Option<String>> { h.s.breadcrumb().into_iter().map(|c| c.scope).collect() };
         assert_eq!(crumbs(&h), [None, Some("shop".to_owned())]);
         assert_eq!(h.s.breadcrumb()[0].label, "Shop");
-        h.click("shop", Button::Left, NONE);
-        h.click("web", Button::Left, NONE);
+        h.enter("shop");
+        h.enter("web");
         assert_eq!(crumbs(&h), [None, Some("shop".to_owned()), Some("web".to_owned())]);
         assert_eq!(h.s.breadcrumb()[2].label, "Web app");
 
@@ -4489,7 +6093,9 @@ mod tests {
         assert_eq!(h.s.view, Some(declared("context")));
         h.key(Key::ArrowLeft, ALT);
         assert_eq!(h.s.view, Some(declared("context")), "the top stays");
-        h.key(Key::ArrowLeft, NONE);
+        // P2-713 (editor-breadth fix round): plain Right is "previous",
+        // which stops at the first view.
+        h.key(Key::ArrowRight, NONE);
         assert_eq!(h.s.view, Some(declared("context")));
 
         h.cmd(Command::Crumb(1));
@@ -4818,6 +6424,25 @@ mod tests {
                     }
                 }
                 step(&mut h, Event::Input(Input::KeyDown { key: Key::Escape, mods: NONE, text_focus: false }));
+                // editor-breadth: the new keys and inputs (P2-733).
+                step(&mut h, Event::Command(Command::ShowView(view.clone())));
+                let at = h.screen(key);
+                step(&mut h, Event::Input(Input::PointerMove { at }));
+                step(&mut h, Event::Input(Input::DoubleClick { at, mods: ALT }));
+                step(&mut h, Event::Input(Input::CanvasSize { size: pt(900.0, 700.0) }));
+                for k in [
+                    Key::ArrowUp, Key::ArrowRight, Key::ArrowDown, Key::Plus, Key::Minus, Key::B, Key::C, Key::D,
+                    Key::G, Key::H, Key::I, Key::J, Key::L, Key::M, Key::N, Key::P, Key::R, Key::T, Key::V, Key::W,
+                    Key::F11, Key::Alt,
+                ] {
+                    for m in [NONE, ALT] {
+                        step(&mut h, Event::Command(Command::ShowView(view.clone())));
+                        step(&mut h, Event::Input(Input::PointerMove { at }));
+                        step(&mut h, Event::Input(Input::KeyDown { key: k, mods: m, text_focus: false }));
+                        step(&mut h, Event::Input(Input::KeyUp { key: k }));
+                        step(&mut h, Event::Input(Input::KeyDown { key: Key::Escape, mods: NONE, text_focus: false }));
+                    }
+                }
             }
             let all: Vec<Selected> = boxes.iter().map(|k| el(k)).collect();
             h.s.selection = all.into_iter().collect();
@@ -4843,6 +6468,29 @@ mod tests {
                 Command::Crumb(0),
                 Command::Crumb(1),
                 Command::Crumb(2),
+                Command::AutoPlace,
+                Command::Canvas { step: super::CanvasStep::Auto, keep_positions: false },
+                Command::Canvas { step: super::CanvasStep::Increase, keep_positions: false },
+                Command::Canvas { step: super::CanvasStep::Decrease, keep_positions: true },
+                Command::BringOntoCanvas,
+                Command::Centre,
+                Command::Fit(crate::camera::Fit::Width),
+                Command::Fullscreen,
+                Command::PreviousView,
+                Command::NextView,
+                Command::Back,
+                Command::QuickNavigation,
+                Command::ToggleDescriptions,
+                Command::ToggleMetadata,
+                Command::ToggleTooltips,
+                Command::TagFilterPanel,
+                Command::TagFilter(vec!["Database".to_owned()]),
+                Command::PerspectivePanel,
+                Command::Perspective(None),
+                Command::ToggleViewList,
+                Command::ToggleKey,
+                Command::Navigator,
+                Command::Undo,
             ];
             for c in commands {
                 step(&mut h, Event::Command(c));
@@ -5150,7 +6798,7 @@ mod tests {
     }
 
     /// EDIT-28 (plan Review Focus): a press and release moving under 4 px
-    /// is a click (enters or selects), 4 px or more is a drag; Shift-click
+    /// is a click (selects), 4 px or more is a drag; Shift-click
     /// toggles and never enters; empty-canvas click and Escape deselect;
     /// Space+drag pans.
     #[test]
@@ -5167,8 +6815,8 @@ mod tests {
         h.press(p, Button::Left, NONE);
         h.move_to(pt(p.x + 3.0, p.y));
         h.up(pt(p.x + 3.0, p.y), Button::Left);
-        assert_eq!(h.s.view, Some(declared("containers")), "a click enters");
-        h.cmd(Command::ShowView(declared("context")));
+        assert_eq!(h.s.view, Some(declared("context")), "a click selects, never enters (EDIT-15 as amended)");
+        assert_eq!(h.selection(), vec![el("shop")], "still a click");
 
         h.drag_box("shop", 5.0, 0.0);
         assert_eq!(h.s.view, Some(declared("context")), "a drag never enters");
@@ -5271,8 +6919,12 @@ mod tests {
     #[test]
     fn edit_30_fit_covers_title_and_key() {
         // A canvas smaller than the scene, so only a fit shows it all.
-        let small = pt(360.0, 260.0);
+        // Amended by P2-738: 90% of the scene plus the margins, so the
+        // fit stays above the 9px text floor.
         let mut h = H::with_file(SHOP);
+        let b = h.scene().bounds;
+        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+        let small = pt(b.width() as f32 * 0.9 + 40.0, b.height() as f32 * 0.9 + 40.0);
         h.s.set_canvas_size(small);
         let scene = h.scene().clone();
         let inside = |p: Point| {
@@ -5324,7 +6976,7 @@ mod tests {
         h.s.camera.pan_by(pt(7.0, 3.0));
         let context = h.s.camera;
 
-        h.click("shop", Button::Left, NONE);
+        h.enter("shop");
         assert_eq!(h.s.view, Some(declared("containers")));
         assert_eq!(h.s.camera, fitted(&h), "first show of containers fits");
         h.s.camera.pan_by(pt(-12.0, 5.0));

@@ -137,6 +137,12 @@ pub struct PlanBox {
     /// Half the height in grid units, from the `size` line or the CORE-2
     /// default.
     pub half_height: i32,
+    /// The CORE-1 key name of the box: its last tag, in DSL-15 order, that
+    /// has an element style in the plan's mode and is not `Element`, else
+    /// its kind's tag.
+    // DECISION: crate-private like `PlanEdge::style_tag`: `scene` builds
+    // the key from the plan alone, and the pub surface gains nothing.
+    pub(crate) style_tag: String,
 }
 
 impl PlanBox {
@@ -440,7 +446,7 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
     filter_focus_and_hide(model, view, &boxes, &mut edges);
     for (i, e) in edges.iter_mut().enumerate() {
         e.id = EdgeId(index_u32(i));
-        e.style = model.relationship_style_of_in(e.winner(), mode);
+        e.style = fold_line(model.relationship_style_of_in(e.winner(), mode), view, e.winner());
         e.style_tag = style_tag(model, e.winner(), mode);
     }
     let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes, mode).into_iter().collect();
@@ -553,7 +559,10 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 relationships: survivors,
                 description: r.description.as_ref().map(|d| d.value.clone()),
                 technology: r.technology.as_ref().map(|t| t.value.clone()),
-                style: model.relationship_style_of_in(winner, mode),
+                style: match model.base_view(view) {
+                    Some(base) => fold_line(model.relationship_style_of_in(winner, mode), base, winner),
+                    None => model.relationship_style_of_in(winner, mode),
+                },
                 style_tag: style_tag(model, winner, mode),
             })
         })
@@ -879,7 +888,21 @@ fn plan_box(
     let centre = view
         .position_of(element)
         .map(|at| Point::new(snap_px_to_grid(at.x.value), snap_px_to_grid(at.y.value)));
+    // CORE-1 (editor-breadth fix): a tag without an element style names
+    // no key entry, as in Structurizr's key, whose entries are the styles
+    // in use (structurizr-diagram.js `registerElementStyle`).
+    let styled = model.styles_for_in(element, mode);
+    let style_tag = e
+        .tags
+        .iter()
+        .rev()
+        .find(|t| {
+            t.as_str() != "Element" && styled.iter().any(|&i| model.element_styles[i].tag.value == **t)
+        })
+        .cloned()
+        .unwrap_or_else(|| e.kind.default_tag().to_owned());
     PlanBox {
+        style_tag,
         id: BoxId(index),
         element,
         kind: e.kind,
@@ -924,6 +947,25 @@ fn is_ancestor(model: &Model, ancestor: ElementId, element: ElementId) -> bool {
         current = model.element(p).parent;
     }
     false
+}
+
+/// `style` with `view`'s `line` line for `winner` folded over it (O9):
+/// each setting the line holds replaces the style's (P2-708..P2-710).
+// DECISION: a filtered view uses its base view's `line` lines, as it
+// uses its `at` lines (P2-312; the layout is shared).
+fn fold_line(mut style: ResolvedRelationshipStyle, view: &ViewSpec, winner: RelationshipId) -> ResolvedRelationshipStyle {
+    if let Some(line) = view.lines.iter().find(|l| l.relationship.value == winner) {
+        if let Some(p) = line.position {
+            style.position = Some(p.value);
+        }
+        if let Some(r) = line.routing {
+            style.routing = Some(r.value);
+        }
+        if let Some(j) = line.jump {
+            style.jump = j.value;
+        }
+    }
+    style
 }
 
 /// The P2-27 key tag of `relationship` in `mode` (`PlanEdge::style_tag`).

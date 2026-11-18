@@ -994,6 +994,190 @@ pub struct ViewSpec {
     /// The `default` line, if written: the view the editor opens when no
     /// last-viewed view applies (EDIT-13). Serves P2-20, P2-338.
     pub default: Option<Span>,
+    /// `paperSize <keyword>` (c4rizer extension): the view's canvas size,
+    /// `None` for auto (P2-701). Serves P2-701..P2-704.
+    pub paper_size: Option<Spanned<PaperSize>>,
+    /// `line <relationship> [position N] [routing R] [jump on|off]`
+    /// lines (c4rizer extension), in file order, at most one per
+    /// relationship. Serves P2-708..P2-710.
+    pub lines: Vec<LineLayout>,
+}
+
+/// Canvas size of a view (P2-701), Structurizr's `PaperSize` list: the
+/// `keyword` is the Structurizr enum name (`A4_Landscape`), and
+/// `size_px` its width and height in px at 300 dpi.
+// TODO(srs): P2-701 (a), (b). Reading taken (B editor-breadth 5): the
+// list is A6..A0 portrait and landscape, Letter, Legal, the three slide
+// formats; the view line is `paperSize <keyword>`, placed like `at`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaperSize {
+    /// A6 portrait.
+    A6Portrait,
+    /// A6 landscape.
+    A6Landscape,
+    /// A5 portrait.
+    A5Portrait,
+    /// A5 landscape.
+    A5Landscape,
+    /// A4 portrait.
+    A4Portrait,
+    /// A4 landscape.
+    A4Landscape,
+    /// A3 portrait.
+    A3Portrait,
+    /// A3 landscape.
+    A3Landscape,
+    /// A2 portrait.
+    A2Portrait,
+    /// A2 landscape.
+    A2Landscape,
+    /// A1 portrait.
+    A1Portrait,
+    /// A1 landscape.
+    A1Landscape,
+    /// A0 portrait.
+    A0Portrait,
+    /// A0 landscape.
+    A0Landscape,
+    /// US Letter portrait.
+    LetterPortrait,
+    /// US Letter landscape.
+    LetterLandscape,
+    /// US Legal portrait.
+    LegalPortrait,
+    /// US Legal landscape.
+    LegalLandscape,
+    /// Slide 4:3.
+    Slide4x3,
+    /// Slide 16:9.
+    Slide16x9,
+    /// Slide 16:10.
+    Slide16x10,
+}
+
+impl PaperSize {
+    /// Every size, in declaration order (Structurizr's enum order).
+    pub(crate) const ALL: [PaperSize; 21] = [
+        PaperSize::A6Portrait,
+        PaperSize::A6Landscape,
+        PaperSize::A5Portrait,
+        PaperSize::A5Landscape,
+        PaperSize::A4Portrait,
+        PaperSize::A4Landscape,
+        PaperSize::A3Portrait,
+        PaperSize::A3Landscape,
+        PaperSize::A2Portrait,
+        PaperSize::A2Landscape,
+        PaperSize::A1Portrait,
+        PaperSize::A1Landscape,
+        PaperSize::A0Portrait,
+        PaperSize::A0Landscape,
+        PaperSize::LetterPortrait,
+        PaperSize::LetterLandscape,
+        PaperSize::LegalPortrait,
+        PaperSize::LegalLandscape,
+        PaperSize::Slide4x3,
+        PaperSize::Slide16x9,
+        PaperSize::Slide16x10,
+    ];
+
+    /// The written keyword, Structurizr's enum name: `A4_Landscape`,
+    /// `Letter_Portrait`, `Slide_16_9`. Serves P2-701.
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            PaperSize::A6Portrait => "A6_Portrait",
+            PaperSize::A6Landscape => "A6_Landscape",
+            PaperSize::A5Portrait => "A5_Portrait",
+            PaperSize::A5Landscape => "A5_Landscape",
+            PaperSize::A4Portrait => "A4_Portrait",
+            PaperSize::A4Landscape => "A4_Landscape",
+            PaperSize::A3Portrait => "A3_Portrait",
+            PaperSize::A3Landscape => "A3_Landscape",
+            PaperSize::A2Portrait => "A2_Portrait",
+            PaperSize::A2Landscape => "A2_Landscape",
+            PaperSize::A1Portrait => "A1_Portrait",
+            PaperSize::A1Landscape => "A1_Landscape",
+            PaperSize::A0Portrait => "A0_Portrait",
+            PaperSize::A0Landscape => "A0_Landscape",
+            PaperSize::LetterPortrait => "Letter_Portrait",
+            PaperSize::LetterLandscape => "Letter_Landscape",
+            PaperSize::LegalPortrait => "Legal_Portrait",
+            PaperSize::LegalLandscape => "Legal_Landscape",
+            PaperSize::Slide4x3 => "Slide_4_3",
+            PaperSize::Slide16x9 => "Slide_16_9",
+            PaperSize::Slide16x10 => "Slide_16_10",
+        }
+    }
+
+    /// Width and height in px (Structurizr's 300 dpi values). Serves
+    /// P2-701.
+    // DECISION: the values of structurizr-core 6.2.4 `PaperSize`, read
+    // from its bytecode (A3 portrait is 3508 x 4961 there, not 4960).
+    #[must_use]
+    pub const fn size_px(self) -> (i32, i32) {
+        match self {
+            PaperSize::A6Portrait => (1240, 1748),
+            PaperSize::A6Landscape => (1748, 1240),
+            PaperSize::A5Portrait => (1748, 2480),
+            PaperSize::A5Landscape => (2480, 1748),
+            PaperSize::A4Portrait => (2480, 3508),
+            PaperSize::A4Landscape => (3508, 2480),
+            PaperSize::A3Portrait => (3508, 4961),
+            PaperSize::A3Landscape => (4961, 3508),
+            PaperSize::A2Portrait => (4961, 7016),
+            PaperSize::A2Landscape => (7016, 4961),
+            PaperSize::A1Portrait => (7016, 9933),
+            PaperSize::A1Landscape => (9933, 7016),
+            PaperSize::A0Portrait => (9933, 14043),
+            PaperSize::A0Landscape => (14043, 9933),
+            PaperSize::LetterPortrait => (2550, 3300),
+            PaperSize::LetterLandscape => (3300, 2550),
+            PaperSize::LegalPortrait => (2550, 4200),
+            PaperSize::LegalLandscape => (4200, 2550),
+            PaperSize::Slide4x3 => (3306, 2480),
+            PaperSize::Slide16x9 => (3508, 1973),
+            PaperSize::Slide16x10 => (3508, 2193),
+        }
+    }
+
+    /// The size whose keyword is `word`, ignoring ASCII case.
+    pub(crate) fn from_keyword(word: &str) -> Option<PaperSize> {
+        PaperSize::ALL.into_iter().find(|p| p.keyword().eq_ignore_ascii_case(word))
+    }
+}
+
+impl Routing {
+    /// The `line` keyword: `direct`, `orthogonal`, `curved` (P2-709).
+    pub(crate) const fn line_keyword(self) -> &'static str {
+        match self {
+            Routing::Direct => "direct",
+            Routing::Orthogonal => "orthogonal",
+            Routing::Curved => "curved",
+        }
+    }
+}
+
+/// One per-view `line` extension line: the label position, routing and
+/// jumps of one relationship's line in this view, folded over its
+/// relationship style by `view::plan_in` (O9). Serves P2-708..P2-710.
+// TODO(srs): P2-708..P2-710, the per-view syntax. Reading taken (B
+// editor-breadth 6): `line <relationship id | src -> dst> [position N]
+// [routing direct|orthogonal|curved] [jump on|off]`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineLayout {
+    /// The relationship, as written (its id, or `src -> dst`).
+    pub relationship: Spanned<RelationshipId>,
+    /// `position N`, 0..100.
+    pub position: Option<Spanned<u8>>,
+    /// `routing direct|orthogonal|curved`.
+    pub routing: Option<Spanned<Routing>>,
+    /// `jump on|off`.
+    pub jump: Option<Spanned<bool>>,
+    /// The whole line.
+    pub span: Span,
 }
 
 /// The mode of a `filtered` view. Serves P2-9, P2-308.
@@ -5602,6 +5786,7 @@ impl Builder<'_> {
                     span: head.span_of(0, head.len() - 1),
                 });
             }
+            "papersize" | "line" => self.layout_line(head, view)?,
             "size" => {
                 let (element, width, height) = self.box_line(head, true)?;
                 view.sizes.push(Size {
@@ -5740,6 +5925,127 @@ impl Builder<'_> {
             destination: self.view_element(head, 3)?,
             span: head.span_of(0, head.len() - 1),
         })
+    }
+
+    /// A `paperSize` (P2-701) or `line` (P2-708..P2-710) extension line,
+    /// at most one `paperSize` per view and one `line` per relationship.
+    fn layout_line(&self, head: &Head<'_>, view: &mut ViewSpec) -> Result<(), ModelError> {
+        if head.is_keyword(0, "paperSize") {
+            once(view.paper_size.is_some(), || self.duplicate_line("paperSize", head))?;
+            let word = self.one_word(head)?;
+            let value = PaperSize::from_keyword(word).ok_or_else(|| self.invalid(head, "paperSize", 1))?;
+            view.paper_size = Some(Spanned {
+                value,
+                span: head.span(1),
+            });
+            return Ok(());
+        }
+        let line = self.line_layout(head)?;
+        if view.lines.iter().any(|l| l.relationship.value == line.relationship.value) {
+            return Err(self.duplicate_line("line", head));
+        }
+        view.lines.push(line);
+        Ok(())
+    }
+
+    /// `line <relationship id | src -> dst> [position N] [routing
+    /// direct|orthogonal|curved] [jump on|off]` (P2-708..P2-710).
+    // DECISION: `src -> dst` names the first relationship from `src` to
+    // `dst` in declaration order (`Model::find_relationship`), as
+    // `edit` writes it; any other one needs its identifier.
+    // DECISION: `jump` also takes `true`/`false`, the relationship style's
+    // spelling (P2-12); `edit` writes `on`/`off` (B editor-breadth 6).
+    // DECISION: each option at most once per line, at least one option.
+    fn line_layout(&self, head: &Head<'_>) -> Result<LineLayout, ModelError> {
+        if head.len() < 2 {
+            return Err(self.missing(head, "relationship"));
+        }
+        let (relationship, mut i) = if head.kind(2) == Some(TokenKind::Arrow) {
+            if head.len() < 4 {
+                return Err(self.missing(head, "destination"));
+            }
+            let source = self.view_element(head, 1)?;
+            let destination = self.view_element(head, 3)?;
+            let found = self.model.find_relationship(source.value, destination.value);
+            let Some(&id) = found.first() else {
+                return Err(self.error(
+                    ModelErrorKind::UndeclaredId {
+                        id: format!("{} -> {}", head.text(1), head.text(3)),
+                    },
+                    head.span_of(1, 3),
+                ));
+            };
+            (
+                Spanned {
+                    value: id,
+                    span: head.span_of(1, 3),
+                },
+                4,
+            )
+        } else {
+            if head.kind(1) != Some(TokenKind::Word) {
+                return Err(self.invalid(head, "line", 1));
+            }
+            let Some(&id) = self.relationship_keys.get(&head.text(1).to_ascii_lowercase()) else {
+                return Err(self.error(
+                    ModelErrorKind::UndeclaredId {
+                        id: head.text(1).into(),
+                    },
+                    head.span(1),
+                ));
+            };
+            (
+                Spanned {
+                    value: id,
+                    span: head.span(1),
+                },
+                2,
+            )
+        };
+        if i >= head.len() {
+            return Err(self.missing(head, "position, routing or jump"));
+        }
+        let mut line = LineLayout {
+            relationship,
+            position: None,
+            routing: None,
+            jump: None,
+            span: head.span_of(0, head.len() - 1),
+        };
+        while i < head.len() {
+            if i + 1 >= head.len() || head.kind(i + 1) != Some(TokenKind::Word) {
+                return Err(self.invalid(head, "line", i));
+            }
+            let (word, value) = (head.text(i).to_ascii_lowercase(), head.text(i + 1));
+            let span = head.span(i + 1);
+            let bad = || self.invalid(head, "line", i + 1);
+            match word.as_str() {
+                "position" if line.position.is_none() => {
+                    let n = value.parse::<u8>().ok().filter(|n| *n <= 100).ok_or_else(bad)?;
+                    line.position = Some(Spanned { value: n, span });
+                }
+                "routing" if line.routing.is_none() => {
+                    let r = [Routing::Direct, Routing::Orthogonal, Routing::Curved]
+                        .into_iter()
+                        .find(|r| r.line_keyword().eq_ignore_ascii_case(value))
+                        .ok_or_else(bad)?;
+                    line.routing = Some(Spanned { value: r, span });
+                }
+                "jump" if line.jump.is_none() => {
+                    let on = if value.eq_ignore_ascii_case("on") || value.eq_ignore_ascii_case("true") {
+                        true
+                    } else if value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("false") {
+                        false
+                    } else {
+                        return Err(bad());
+                    };
+                    line.jump = Some(Spanned { value: on, span });
+                }
+                _ => return Err(self.invalid(head, "line", i)),
+            }
+            i += 2;
+        }
+        Ok(line)
     }
 
     /// `at <id> <x> <y>` or, with `size`, `size <id> <w> <h>` (both `> 0`).
@@ -6367,6 +6673,8 @@ fn new_view(
         filter: None,
         image: None,
         default: None,
+        paper_size: None,
+        lines: Vec::new(),
     }
 }
 

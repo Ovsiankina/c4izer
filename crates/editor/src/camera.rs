@@ -25,6 +25,25 @@ pub const ZOOM_STEP: f32 = 1.1;
 /// Margin kept around the scene by "Fit view", screen px (EDIT-30).
 const FIT_MARGIN_PX: f32 = 20.0;
 
+/// Smallest text drawn on a canvas, scene px: the label and small-text
+/// size of `label` and `scene` (P2-738).
+#[expect(clippy::cast_precision_loss, reason = "a small font size fits f32 exactly")]
+const SMALLEST_TEXT_PX: f32 = c4rizer_core::label::LABEL_FONT_PX as f32;
+
+/// Smallest text height a fit leaves on screen, px (P2-738).
+// TODO(srs): P2-738, "confirm 9px after measuring". DECISION: reading
+// taken: 9px, as written.
+const MIN_TEXT_ON_SCREEN_PX: f32 = 9.0;
+
+/// Smallest zoom a fit goes to: below it the smallest text would be under
+/// `MIN_TEXT_ON_SCREEN_PX`; the fit stops there and the rest of the view
+/// is reached by panning (P2-738).
+// DECISION: the fitted scene stays centred at the floor (as EDIT-30
+// centres it), so panning reaches every side equally; the floor counts
+// the default 11px text only, a style's smaller `fontSize` is not
+// looked up (fit takes bounds, not the scene).
+const MIN_FIT_ZOOM: f32 = MIN_TEXT_ON_SCREEN_PX / SMALLEST_TEXT_PX;
+
 /// A point in screen px, origin at the canvas's top-left corner, y down.
 /// Every pointer event carries one (EDIT-28).
 // DECISION: hot (one per pointer event, EDIT-25): repr(C), 8 bytes.
@@ -117,8 +136,8 @@ impl Camera {
 
     /// The camera that shows all of `bounds` (scene px) centred in a
     /// canvas of `canvas` screen px, with `FIT_MARGIN_PX` around it,
-    /// never above zoom 1 nor outside `MIN_ZOOM..=MAX_ZOOM`. Serves
-    /// EDIT-30.
+    /// never above zoom 1 nor below `MIN_FIT_ZOOM` (P2-738). Serves
+    /// EDIT-30, P2-738.
     // DECISION: crate-private, so the step-4 contract gains no pub item;
     // `state` calls it on first show and on "Fit view".
     pub(crate) fn fit(bounds: Rect, canvas: ScreenPoint) -> Camera {
@@ -132,7 +151,7 @@ impl Camera {
         if h > 0.0 {
             zoom = zoom.min(room(canvas.y) / h);
         }
-        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        let zoom = zoom.clamp(MIN_FIT_ZOOM, MAX_ZOOM);
         #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
         let (cx, cy) = (
             (bounds.min.x + bounds.max.x) as f32 / 2.0,
@@ -153,6 +172,52 @@ impl Camera {
         self.pan.x -= delta.x / self.zoom;
         self.pan.y -= delta.y / self.zoom;
     }
+}
+
+/// What `fit` fits (P2-705): the scene's width, its height, or both
+/// (`Content`, EDIT-30 "Fit view").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fit {
+    /// `w`: the scene's width fills the canvas width.
+    Width,
+    /// `h`: the scene's height fills the canvas height.
+    Height,
+    /// `c`: the whole scene, as EDIT-30's Fit view.
+    Content,
+}
+
+/// The camera fitting `bounds` (scene px) to a canvas of `canvas` screen
+/// px as `how` says, centred, with the EDIT-30 margin, never above
+/// 100% zoom nor below the zoom that keeps text 9px high (P2-738); `None` for an empty scene (zero width and height), so the
+/// caller keeps its camera. Serves P2-705, EDIT-30.
+#[must_use]
+pub fn fit(bounds: Rect, canvas: ScreenPoint, how: Fit) -> Option<Camera> {
+    if bounds.width() <= 0 && bounds.height() <= 0 {
+        return None;
+    }
+    #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+    let (w, h) = (bounds.width() as f32, bounds.height() as f32);
+    let room = |side: f32| (side - 2.0 * FIT_MARGIN_PX).max(0.0);
+    let mut zoom: f32 = 1.0;
+    if w > 0.0 && how != Fit::Height {
+        zoom = zoom.min(room(canvas.x) / w);
+    }
+    if h > 0.0 && how != Fit::Width {
+        zoom = zoom.min(room(canvas.y) / h);
+    }
+    let zoom = zoom.clamp(MIN_FIT_ZOOM, MAX_ZOOM);
+    #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+    let (cx, cy) = (
+        (bounds.min.x + bounds.max.x) as f32 / 2.0,
+        (bounds.min.y + bounds.max.y) as f32 / 2.0,
+    );
+    Some(Camera {
+        pan: ScenePoint {
+            x: cx - canvas.x / 2.0 / zoom,
+            y: cy - canvas.y / 2.0 / zoom,
+        },
+        zoom,
+    })
 }
 
 #[cfg(test)]
@@ -222,15 +287,17 @@ mod tests {
 
     /// EDIT-30: a scene larger than the canvas is fitted with a 20px
     /// margin on the tighter axis and centred on the other.
+    // Amended by P2-738: the scene is only a little larger than the
+    // canvas, so the fit stays above the 9px text floor.
     #[test]
     fn edit_30_fit_large_scene_into_canvas_with_margin() {
-        let bounds = Rect::from_corners(Point::new(-100, 50), Point::new(1900, 1050));
+        let bounds = Rect::from_corners(Point::new(-100, 50), Point::new(800, 550));
         let canvas = ScreenPoint {
             x: 848.0,
             y: 1400.0,
         };
         let camera = Camera::fit(bounds, canvas);
-        assert!(close(camera.zoom, (848.0 - 40.0) / 2000.0), "{camera:?}");
+        assert!(close(camera.zoom, (848.0 - 40.0) / 900.0), "{camera:?}");
         let a = camera.to_screen(bounds.min);
         let b = camera.to_screen(bounds.max);
         assert!(close(a.x, 20.0) && close(b.x, 828.0), "{a:?} {b:?}");
@@ -266,7 +333,8 @@ mod tests {
             ScreenPoint { x: 0.0, y: 0.0 },
         ] {
             let camera = Camera::fit(bounds, canvas);
-            assert!(close(camera.zoom, MIN_ZOOM), "{camera:?}");
+            // Amended by P2-738: the fit stops at the 9px text floor.
+            assert!(close(camera.zoom, super::MIN_FIT_ZOOM), "{camera:?}");
             assert!(camera.pan.x.is_finite() && camera.pan.y.is_finite());
         }
         let empty = Rect::from_corners(Point::new(5, 5), Point::new(5, 5));

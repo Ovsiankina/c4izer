@@ -11,6 +11,8 @@ mod camera;
 mod canvas;
 #[cfg(test)]
 mod dsl_breadth_tests;
+#[cfg(test)]
+mod editor_breadth_tests;
 mod files;
 mod history;
 #[cfg(test)]

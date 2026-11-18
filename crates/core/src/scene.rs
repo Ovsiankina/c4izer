@@ -89,7 +89,7 @@ use crate::label::{
     boundary_tag_text, boundary_tag_with, text_advance,
 };
 use crate::model::{
-    Asset, Border, Colour, ElementId, ElementKind, ImageSource, MetadataSymbols, Mime, Mode, RelationshipId, Shape,
+    Asset, Border, Colour, ElementId, ElementKind, ImageSource, Mime, Mode, RelationshipId, Shape,
     ViewKind, ViewOptions, ViewImage, ViewScope,
 };
 use crate::route::{Line, Routes};
@@ -2467,14 +2467,7 @@ fn looks(
     let mut looks: Vec<(Look, Vec<String>)> = Vec::new();
     for b in boxes {
         let pb = &plan.boxes[b.id.0 as usize];
-        let bare = Words {
-            metadata: MetadataSymbols::None,
-            ..*words
-        };
-        let name = pb
-            .tags
-            .last()
-            .map_or_else(|| type_text(pb, &bare), Clone::clone);
+        let name = pb.style_tag.clone();
         let look = Look::Box {
             shape: b.shape,
             fill: b.fill,

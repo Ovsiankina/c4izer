@@ -9,8 +9,9 @@ name = "c4rizer-editor"
 path = "src/main.rs"
 
 [dependencies]
-# EDIT-7: PNG export in phase 1 [resvg approved 2026-11-15].
-c4rizer-core = { path = "../core", features = ["png"] }
+# EDIT-7: PNG export in phase 1 [resvg approved 2026-11-15]; P2-663
+# `outline` SVG text (phase2-decisions A.2 Cargo, Part C sign-off).
+c4rizer-core = { path = "../core", features = ["png", "outline"] }
 # HLD §2: window, canvas, input (egui) [delegated].
 eframe = "0.37"
 # HLD §2: directory watching for EDIT-1, EDIT-23 [approved 2026-11-15].

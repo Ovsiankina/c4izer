@@ -575,7 +575,7 @@ pub fn open_dialog(dir: Option<&Path>) -> Option<PathBuf> {
 #[must_use]
 pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathBuf> {
     let label = match format {
-        ExportFormat::Svg => "SVG image",
+        ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "SVG image",
         ExportFormat::Png => "PNG image",
     };
     rfd::FileDialog::new()

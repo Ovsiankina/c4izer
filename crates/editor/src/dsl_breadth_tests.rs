@@ -98,7 +98,11 @@ impl Shell {
                     Some(reply) => self.s.handle(Event::Worker(reply)),
                     None => Vec::new(),
                 },
-                Effect::Watch(_) | Effect::Dialog(_) | Effect::SaveUiState(_) => Vec::new(),
+                Effect::Watch(_)
+                | Effect::Dialog(_)
+                | Effect::SaveUiState(_)
+                | Effect::Fullscreen(_)
+                | Effect::OpenUrl(_) => Vec::new(),
             };
             count += self.run(next);
         }

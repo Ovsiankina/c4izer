@@ -107,6 +107,15 @@ pub enum ExportFormat {
     /// bundled font (`scene::FONT_REGULAR`, `scene::FONT_BOLD`); the
     /// editor's `c4rizer-core` dependency enables feature `png`.
     Png,
+    /// `export::svg_embedded`: SVG with the bundled faces embedded
+    /// (P2-663, `--svg-text embed`).
+    // APPROVER: new pub item beyond A.2 (P2-663 moved here by O14; the
+    // smallest additive form is two more formats, same `.svg` extension).
+    SvgEmbedded,
+    /// `export::svg_outlined`: SVG with text as paths (P2-663,
+    /// `--svg-text outline`).
+    // APPROVER: new pub item beyond A.2 (as `SvgEmbedded`).
+    SvgOutlined,
 }
 
 impl ExportFormat {
@@ -114,7 +123,7 @@ impl ExportFormat {
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
-            ExportFormat::Svg => "svg",
+            ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "svg",
             ExportFormat::Png => "png",
         }
     }
@@ -518,6 +527,11 @@ fn export(
         };
         let bytes = match format {
             ExportFormat::Svg => c4rizer_core::export::svg(&build.scene).into_bytes(),
+            // P2-664: the same functions as `c4rizer render --svg-text`.
+            ExportFormat::SvgEmbedded => c4rizer_core::export::svg_embedded(&build.scene).into_bytes(),
+            ExportFormat::SvgOutlined => c4rizer_core::export::svg_outlined(&build.scene)
+                .map_err(|e| format!("cannot export view \"{}\" with outlined text: {e}", target.view.key()))?
+                .into_bytes(),
             ExportFormat::Png => {
                 let width = png_width.unwrap_or_else(|| {
                     u32::try_from(build.scene.bounds.width()).unwrap_or(0).saturating_mul(2)

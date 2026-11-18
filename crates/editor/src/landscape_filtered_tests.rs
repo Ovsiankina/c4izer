@@ -89,7 +89,11 @@ impl Shell {
                     Some(reply) => self.s.handle(Event::Worker(reply)),
                     None => Vec::new(),
                 },
-                Effect::Watch(_) | Effect::Dialog(_) | Effect::SaveUiState(_) => Vec::new(),
+                Effect::Watch(_)
+                | Effect::Dialog(_)
+                | Effect::SaveUiState(_)
+                | Effect::Fullscreen(_)
+                | Effect::OpenUrl(_) => Vec::new(),
             };
             self.run(next);
         }
@@ -123,6 +127,18 @@ impl Shell {
             mods,
         }));
         self.event(Event::Input(Input::PointerUp { at, button: Button::Left }));
+    }
+
+    /// A plain double click on `key`'s box: two clicks, then the
+    /// shell's double-click event (EDIT-15 as amended: it enters).
+    fn enter(&mut self, key: &str) {
+        let at = self.screen(key);
+        self.click(key);
+        self.click(key);
+        self.event(Event::Input(Input::DoubleClick {
+            at,
+            mods: Modifiers::default(),
+        }));
     }
 
     fn drag(&mut self, key: &str, dx: f32, dy: f32) {
@@ -169,7 +185,7 @@ fn at_line(text: &str, view: &str, element: &str) -> Option<(i32, i32)> {
     v.position_of(id).map(|a| (a.x.value, a.y.value))
 }
 
-/// In a landscape view a click on an enterable box opens its view as
+/// In a landscape view a double click on an enterable box opens its view as
 /// EDIT-15 says, and the breadcrumb is the workspace crumb alone.
 // TODO(srs): P2-305, the workspace crumb. Reading taken (B
 // landscape-filtered 8): it opens the first `systemLandscape` view when
@@ -182,8 +198,9 @@ fn p2_305_landscape_click_enters_breadcrumb_is_workspace() {
     let crumbs = sh.s.breadcrumb();
     assert_eq!(crumbs.len(), 1, "{crumbs:?}");
     assert_eq!(crumbs[0].scope, None);
-    // A click on the shop (it has containers) opens its container view.
-    sh.click("shop");
+    // A double click on the shop (it has containers) opens its container
+    // view (EDIT-15 as amended).
+    sh.enter("shop");
     assert_eq!(sh.s.view, Some(declared("containers")));
     // A click on a person selects it and stays.
     sh.show("estate");
@@ -239,9 +256,9 @@ fn p2_314_base_view_hidden_from_view_list() {
     assert_eq!(sh.model().filtered_bases(), ["containers"]);
     let listed: Vec<String> = sh.s.views().iter().map(|v| v.view.key()).collect();
     assert_eq!(listed, ["context", "estate", "front", "estate2"]);
-    // EDIT-15 may open it: a click on the shop in the context view.
+    // EDIT-15 may open it: a double click on the shop in the context view.
     sh.show("context");
-    sh.click("shop");
+    sh.enter("shop");
     assert_eq!(sh.s.view, Some(declared("containers")));
     let listed: Vec<String> = sh.s.views().iter().map(|v| v.view.key()).collect();
     assert!(listed.contains(&"containers".to_owned()), "{listed:?}");
@@ -352,6 +369,6 @@ fn p2_322_image_view_makes_element_enterable() {
     sh.show("estate");
     let ledger = sh.model().find("ledger").expect("ledger");
     assert!(crate::state::enterable(sh.model(), ledger));
-    sh.click("ledger");
+    sh.enter("ledger");
     assert_eq!(sh.s.view, Some(declared("books")));
 }

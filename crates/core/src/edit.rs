@@ -31,6 +31,8 @@
 // none may be added. The complete list of bytes `apply` may insert or
 // remove, which the implementation's guard is built from:
 // - `at` and `size` lines in a view;
+// - the c4rizer view extension lines `paperSize` and `line` (P2-701,
+//   P2-708..P2-710, P2-733);
 // - `title` and `subtitle` lines in a view;
 // - a default view block (EDIT-15, `Edit::AddDefaultView`): a view, not
 //   an element, appended as the last view in `views`, and removed again
@@ -134,7 +136,9 @@
 use std::fmt;
 use std::ops::Range;
 
-use crate::model::{self, Colour, ElementId, ElementKind, ElementStyle, Parsed, RelationshipId, Shape, ViewKind, ViewSpec};
+use crate::model::{
+    self, Colour, ElementId, ElementKind, ElementStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
+};
 use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 
 /// A relationship named across parses by its ends and its position among
@@ -412,7 +416,9 @@ pub enum Edit {
     ///
     /// The view block is removed only while it holds nothing but what
     /// `edit` wrote there: one `include *` line plus `at` and `size`
-    /// lines, a head of keyword, scope and key only, and no comment.
+    /// lines (and the `paperSize` and `line` lines of P2-701 and
+    /// P2-708..P2-710), a head of keyword, scope and key only, and no
+    /// comment.
     /// Otherwise it is refused (`EditErrorKind::InvalidValue`) and nothing
     /// is written. The `views` block goes with it under the same rule:
     /// only when the view was all it held, as when `AddDefaultView`
@@ -427,6 +433,45 @@ pub enum Edit {
         /// `EditErrorKind::InvalidValue`, no view with that key is
         /// `EditErrorKind::TargetGone`.
         kind: ViewKind,
+    },
+    /// Set the canvas size of `view`: rewrite or add its `paperSize`
+    /// line, or remove it with `None` (auto). Serves P2-701.
+    SetCanvasSize {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The size, `None` for auto (no line).
+        size: Option<PaperSize>,
+    },
+    /// Set the label position of `relationship`'s line in `view`, in the
+    /// view's `line` line for it (added, rewritten, or removed when it
+    /// would hold nothing). Serves P2-708.
+    SetLinePosition {
+        /// View key.
+        view: String,
+        /// The relationship.
+        relationship: RelationshipRef,
+        /// 0..100, `None` to drop the setting.
+        position: Option<u8>,
+    },
+    /// Set the routing of `relationship`'s line in `view`, as
+    /// `SetLinePosition`. Serves P2-709.
+    SetLineRouting {
+        /// View key.
+        view: String,
+        /// The relationship.
+        relationship: RelationshipRef,
+        /// The routing, `None` to drop the setting.
+        routing: Option<Routing>,
+    },
+    /// Set jumps on `relationship`'s line in `view`, as
+    /// `SetLinePosition`. Serves P2-710.
+    SetLineJump {
+        /// View key.
+        view: String,
+        /// The relationship.
+        relationship: RelationshipRef,
+        /// On or off, `None` to drop the setting.
+        jump: Option<bool>,
     },
 }
 
@@ -675,6 +720,22 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::ResetStyle { element } => reset_style(current, element),
         Edit::AddDefaultView { scope, kind } => add_default_view(current, scope, *kind),
         Edit::RemoveDefaultView { scope, kind } => remove_default_view(current, scope, *kind),
+        Edit::SetCanvasSize { view, size } => set_canvas_size(current, view, *size),
+        Edit::SetLinePosition {
+            view,
+            relationship,
+            position,
+        } => set_line(current, view, relationship, LineSetting::Position(*position)),
+        Edit::SetLineRouting {
+            view,
+            relationship,
+            routing,
+        } => set_line(current, view, relationship, LineSetting::Routing(*routing)),
+        Edit::SetLineJump {
+            view,
+            relationship,
+            jump,
+        } => set_line(current, view, relationship, LineSetting::Jump(*jump)),
     }
 }
 
@@ -1143,7 +1204,7 @@ impl<'a> Ctx<'a> {
             }
             match words.first().map(|w| w.to_ascii_lowercase()).as_deref() {
                 Some("include") if words.len() == 2 && words[1] == "*" => includes += 1,
-                Some("at" | "size") => {}
+                Some("at" | "size" | "papersize" | "line") => {}
                 _ => return false,
             }
         }
@@ -1343,6 +1404,189 @@ fn box_line(
                     Some(after) => cx.insert_after(owner, block, after, &line),
                     None => cx.insert_last(owner, block, &line),
                 }
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+// ------------------------------------------- paperSize and line lines
+
+/// The view statement and its block for `spec` in `cx`.
+fn view_block<'a>(cx: &Ctx<'a>, spec: &ViewSpec, view: &str) -> Res<(&'a Statement, &'a Block)> {
+    let owner = cx.statement(spec.span).ok_or_else(|| gone(view))?;
+    match &owner.block {
+        Some(block) => Ok((owner, block)),
+        None => Err(gone(view)),
+    }
+}
+
+/// Inserts `line` after the last statement of `block` whose span is one
+/// of `anchors` (tried in order), else before the closing brace (DSL-9).
+fn insert_after_first(cx: &Ctx<'_>, owner: &Statement, block: &Block, anchors: &[Option<Span>], line: &Lines) -> Plan {
+    match anchors.iter().flatten().find_map(|a| Ctx::child_holding(block, *a)) {
+        Some(after) => cx.insert_after(owner, block, after, line),
+        None => cx.insert_last(owner, block, line),
+    }
+}
+
+/// `SetCanvasSize` (P2-701): the `paperSize` line, after the view's last
+/// `size` line, else its last `at` line, else before the closing brace.
+// DECISION: B editor-breadth 5b says "placed like `at` lines": a new
+// `paperSize` line follows the box lines it sizes the canvas for.
+fn set_canvas_size(current: &mut Parsed, view: &str, size: Option<PaperSize>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetCanvasSize {
+        view: view.to_owned(),
+        size: spec.paper_size.map(|p| p.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.paper_size, size) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.keyword().to_owned(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("paperSize {}", new.keyword()));
+                let anchors = [spec.sizes.last().map(|s| s.span), spec.positions.last().map(|a| a.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// One setting of a `line` line.
+#[derive(Clone, Copy)]
+enum LineSetting {
+    Position(Option<u8>),
+    Routing(Option<Routing>),
+    Jump(Option<bool>),
+}
+
+impl LineSetting {
+    /// This setting as `line` holds it now.
+    fn of(self, line: Option<&model::LineLayout>) -> LineSetting {
+        match self {
+            LineSetting::Position(_) => LineSetting::Position(line.and_then(|l| l.position).map(|p| p.value)),
+            LineSetting::Routing(_) => LineSetting::Routing(line.and_then(|l| l.routing).map(|r| r.value)),
+            LineSetting::Jump(_) => LineSetting::Jump(line.and_then(|l| l.jump).map(|j| j.value)),
+        }
+    }
+
+    fn edit(self, view: &str, relationship: &RelationshipRef) -> Edit {
+        let (view, relationship) = (view.to_owned(), relationship.clone());
+        match self {
+            LineSetting::Position(position) => Edit::SetLinePosition {
+                view,
+                relationship,
+                position,
+            },
+            LineSetting::Routing(routing) => Edit::SetLineRouting {
+                view,
+                relationship,
+                routing,
+            },
+            LineSetting::Jump(jump) => Edit::SetLineJump {
+                view,
+                relationship,
+                jump,
+            },
+        }
+    }
+}
+
+/// The options part of a `line` line: `position N`, `routing R`, `jump
+/// on|off`, in that order, those that are set.
+fn line_options(position: Option<u8>, routing: Option<Routing>, jump: Option<bool>) -> String {
+    let mut out = String::new();
+    if let Some(p) = position {
+        out.push_str(" position ");
+        out.push_str(&p.to_string());
+    }
+    if let Some(r) = routing {
+        out.push_str(" routing ");
+        out.push_str(r.line_keyword());
+    }
+    if let Some(j) = jump {
+        out.push_str(if j { " jump on" } else { " jump off" });
+    }
+    out
+}
+
+/// How a new `line` line names `relationship`: its identifier, else
+/// `src -> dst` when it is the first relationship between those ends.
+// DECISION: an unnamed relationship that is not the first `src -> dst`
+// one cannot be named by the line grammar (B editor-breadth 6); the edit
+// is refused, as P2-145 refuses edits on elements without an identifier.
+fn line_name(model: &model::Model, id: RelationshipId, r: &RelationshipRef) -> Res<String> {
+    if let Some(key) = &model.relationship(id).key {
+        return Ok(key.value.clone());
+    }
+    if r.ordinal == 0 {
+        return Ok(format!("{} -> {}", r.source, r.destination));
+    }
+    Err(EditErrorKind::InvalidValue {
+        value: format!("{} -> {}", r.source, r.destination),
+        reason: "give this relationship an identifier: another relationship has the same ends",
+    })
+}
+
+/// `SetLinePosition`, `SetLineRouting`, `SetLineJump` (P2-708..P2-710):
+/// the view's `line` line for the relationship, rewritten with the
+/// setting changed, added after the view's last `line` line (else its
+/// `paperSize`, last `size` or last `at` line), or removed when it would
+/// hold nothing.
+fn set_line(current: &mut Parsed, view: &str, relationship: &RelationshipRef, setting: LineSetting) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let id = resolve_relationship(&current.model, relationship)?;
+    let existing = spec.lines.iter().find(|l| l.relationship.value == id);
+    let inverse = vec![setting.of(existing).edit(view, relationship)];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        let existing = spec.lines.iter().find(|l| l.relationship.value == id);
+        let mut position = existing.and_then(|l| l.position).map(|p| p.value);
+        let mut routing = existing.and_then(|l| l.routing).map(|r| r.value);
+        let mut jump = existing.and_then(|l| l.jump).map(|j| j.value);
+        match setting {
+            LineSetting::Position(p) => position = p,
+            LineSetting::Routing(r) => routing = r,
+            LineSetting::Jump(j) => jump = j,
+        }
+        let empty = position.is_none() && routing.is_none() && jump.is_none();
+        Ok(match existing {
+            None if empty => Plan::Patches(Vec::new()),
+            Some(line) if empty => {
+                let statement = Ctx::child_holding(block, line.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(statement.span)])
+            }
+            Some(line) => {
+                let name = &cx.src[line.relationship.span.range()];
+                Plan::Patches(vec![Patch {
+                    range: line.span.range(),
+                    text: format!("line {name}{}", line_options(position, routing, jump)),
+                }])
+            }
+            None => {
+                let name = line_name(cx.model, id, relationship)?;
+                let line = one_line(format!("line {name}{}", line_options(position, routing, jump)));
+                let anchors = [
+                    spec.lines.last().map(|l| l.span),
+                    spec.paper_size.map(|p| p.span),
+                    spec.sizes.last().map(|s| s.span),
+                    spec.positions.last().map(|a| a.span),
+                ];
+                insert_after_first(cx, owner, block, &anchors, &line)
             }
         })
     })?;

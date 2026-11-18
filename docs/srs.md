@@ -224,7 +224,7 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | UI feature | Move a relationship label with Up/Down | 2 | Writes `position` |
 | UI feature | Cycle routing with `r`, toggle jumps with `j` | 2 | |
 | UI feature | Diagram navigator / view list | 1 | EDIT-8 |
-| UI feature | Open the next level of detail from an element | 1 | EDIT-15 (single click, not double-click) |
+| UI feature | Open the next level of detail from an element | 1 | EDIT-15 (double-click enters one level; a single click selects) |
 | UI feature | Keyboard prev/next/back/quick navigation between diagrams | 2 | Phase 1 has breadcrumb back only (EDIT-16) |
 | UI feature | Open an element/relationship URL (Alt+double-click) | 2 | Needs `url` |
 | UI feature | Zoom in/out | 1 | EDIT-9 |
@@ -821,9 +821,11 @@ C4 levels
 - **EDIT-15** A box is enterable when its element has at least one
   child in the model (opens the default view when no view is scoped to
   it), or a container view scoped to it (for a system) or a component
-  view scoped to it (for a container); a left click on an
+  view scoped to it (for a container); a left double-click on an
   enterable box opens its view (container view of a system, component
-  view of a container), and on any other box selects it; enterable
+  view of a container), exactly one level down and never twice for one
+  double-click; a single left click selects any box, enterable or not
+  (owner's ruling: "double click to enter next C4 level"); enterable
   boxes show a hover mark; when several views are scoped to it, the
   first declared opens and the view list (EDIT-8) shows the others;
   when none exists, a default view (`include *`, every box auto-placed)
@@ -872,7 +874,8 @@ Editing
   line for every box of that view at its current position, as one undo
   step; after that a move changes only the moved box's line (DSL-9).
 - **EDIT-28** Input gestures: a left click (pointer travel under 4
-  screen px) enters an enterable box, else selects; left drag on a box
+  screen px) selects; a left double-click enters an enterable box
+  (EDIT-15); left drag on a box
   moves it; left drag on empty canvas draws a rubber band; middle drag
   or Space+drag pans; the wheel zooms at the cursor; Ctrl-click or
   right-click selects without entering; Shift-click toggles selection
@@ -1449,7 +1452,7 @@ is marked "(memory)" and stays TODO(srs).
 - **P2-304** TODO(srs): which of the C1 rules L15..L18 apply to a system
   landscape view. The P2-8 stub said "same lint rules as C1", but L17
   (more than 8 boxes) works against the purpose of a landscape.
-- **P2-305** In a system landscape view, a click on an enterable box
+- **P2-305** In a system landscape view, a double-click on an enterable box
   opens its view exactly as EDIT-15 says, and the breadcrumb is the
   workspace crumb alone, since a landscape has no scope (EDIT-16).
   TODO(srs): whether the workspace crumb (EDIT-16) should open the first

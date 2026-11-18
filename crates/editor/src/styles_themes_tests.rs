@@ -80,7 +80,11 @@ impl Shell {
                         None => Vec::new(),
                     }
                 }
-                Effect::Watch(_) | Effect::Dialog(_) | Effect::SaveUiState(_) => Vec::new(),
+                Effect::Watch(_)
+                | Effect::Dialog(_)
+                | Effect::SaveUiState(_)
+                | Effect::Fullscreen(_)
+                | Effect::OpenUrl(_) => Vec::new(),
             };
             self.run(next);
         }
@@ -232,6 +236,7 @@ fn svg_opacity(group: &str) -> u8 {
 /// For the all-styles fixture the canvas draw list has the same items,
 /// outlines, strokes, dashes, opacities and jumps as its SVG (EDIT-12).
 #[test]
+#[expect(clippy::too_many_lines, reason = "one walk over every scene item")]
 fn p2_436_draw_list_matches_svg() {
     use c4rizer_core::scene::ItemKey;
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/styles/all_styles.dsl"))
@@ -261,6 +266,11 @@ fn p2_436_draw_list_matches_svg() {
             resize_outline: None,
             editing: None,
             read_only: false,
+            hide_descriptions: false,
+            hide_metadata: false,
+            hide_key: false,
+            faded: Vec::new(),
+            tooltip: None,
         };
         let items = paint_items(&list);
         let boxes = svg_groups(&svg, "box");

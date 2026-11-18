@@ -701,6 +701,8 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         filter: None,
         image: None,
         default: None,
+        paper_size: None,
+        lines: Vec::new(),
     })
 }
 

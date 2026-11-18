@@ -131,10 +131,13 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     let mut out = Vec::new();
     let opacity = std::cell::Cell::new(100_u8);
     let mut push = |source: Source, primitive: Primitive| {
+        // P2-725, P2-726: a faded item is painted at 20% of its opacity.
+        let faded = matches!(source, Source::Scene(k) if list.faded.contains(&k));
+        let opacity = if faded { opacity.get() / 5 } else { opacity.get() };
         out.push(PaintItem {
             source,
             primitive,
-            opacity: opacity.get(),
+            opacity,
         });
     };
 
@@ -212,21 +215,44 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                 asset: icon.asset.clone(),
             });
         }
-        for t in text_items(&b.name, cam)
-            .into_iter()
-            .chain(text_items(&b.type_line, cam))
-            .chain(b.description.iter().flat_map(|d| text_items(d, cam)))
-        {
+        // P2-721, P2-722: hidden texts are not painted; the box keeps its
+        // geometry.
+        let type_line = if list.hide_metadata { Vec::new() } else { text_items(&b.type_line, cam) };
+        let description = match &b.description {
+            Some(d) if !list.hide_descriptions => text_items(d, cam),
+            _ => Vec::new(),
+        };
+        for t in text_items(&b.name, cam).into_iter().chain(type_line).chain(description) {
             push(source, t);
         }
     }
     for l in &scene.labels {
         let source = Source::Scene(ItemKey::Label(l.edge));
         opacity.set(l.opacity);
-        if let Some(fill) = l.fill {
+        // P2-721, P2-722: the description lines and the technology line.
+        // DECISION: the technology line is the last line when it is
+        // bracketed, as `label::label_lines` writes it (`[<technology>]`);
+        // the draw list has no plan to ask.
+        let lines = &l.text.lines;
+        let tech = lines.last().is_some_and(|t| t.starts_with('[') && t.ends_with(']'));
+        let shown: Vec<Primitive> = text_items(&l.text, cam)
+            .into_iter()
+            .enumerate()
+            .filter(|&(i, _)| {
+                let is_tech = tech && i + 1 == lines.len();
+                !((is_tech && list.hide_metadata) || (!is_tech && list.hide_descriptions))
+            })
+            .map(|(_, t)| t)
+            .collect();
+        // A label with every line hidden paints no background either: its
+        // page-coloured box would cut a gap in the line (seen in the real
+        // window).
+        if let Some(fill) = l.fill
+            && !shown.is_empty()
+        {
             push(source, polygon(rect_points(cam, l.rect, 0), Some(rgb(fill)), None, cam));
         }
-        for t in text_items(&l.text, cam) {
+        for t in shown {
             push(source, t);
         }
     }
@@ -241,7 +267,9 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
             push(Source::Scene(ItemKey::Subtitle), t);
         }
     }
-    for entry in &scene.legend.entries {
+    // P2-728: the key may be hidden.
+    let legend: &[c4rizer_core::scene::LegendEntry] = if list.hide_key { &[] } else { &scene.legend.entries };
+    for entry in legend {
         let source = Source::Scene(ItemKey::Legend);
         match &entry.swatch {
             Swatch::Box { outline: o, fill, stroke } => {
@@ -283,7 +311,9 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
             dash: dashed.then_some([6.0, 4.0]),
         });
         if mark.kind == MarkKind::SelectedWithHandles && !list.read_only {
-            for centre in handle_centres(rect, cam) {
+            // P2-735: a handle over a line end is drawn outside the edge.
+            let ends = crate::state::line_ends(scene, cam);
+            for (_, centre) in crate::state::handle_spots(rect, cam, &ends) {
                 push(source, square(centre, HANDLE_PX, SELECTION));
             }
         }
@@ -618,17 +648,6 @@ fn tip(t: &Tip, colour: [u8; 3], cam: &Camera) -> Primitive {
     }
 }
 
-/// The eight handle centres of `rect` (scene px), screen px (EDIT-18).
-fn handle_centres(rect: Rect, cam: &Camera) -> Vec<ScreenPoint> {
-    let a = cam.to_screen(rect.min);
-    let b = cam.to_screen(rect.max);
-    let (mx, my) = (f32::midpoint(a.x, b.x), f32::midpoint(a.y, b.y));
-    [(a.x, a.y), (mx, a.y), (b.x, a.y), (b.x, my), (b.x, b.y), (mx, b.y), (a.x, b.y), (a.x, my)]
-        .into_iter()
-        .map(|(x, y)| ScreenPoint { x, y })
-        .collect()
-}
-
 /// A filled square of half side `half` around `centre`, screen px.
 fn square(centre: ScreenPoint, half: f32, colour: [u8; 3]) -> Primitive {
     let p = |dx: f32, dy: f32| ScreenPoint {
@@ -705,8 +724,39 @@ pub(crate) fn page(list: &DrawList<'_>) -> Option<Primitive> {
     ))
 }
 
-/// Paints the page of `list` (`page`), if any (EDIT-31).
-pub(crate) fn paint_page(painter: &eframe::egui::Painter, list: &DrawList<'_>) {
+/// The paper of a view with a canvas size (`State::paper_rect`, scene
+/// px): filled with the export background and outlined in grey, so the
+/// canvas size shows on screen (P2-701). Empty without a scene.
+// DECISION: painted under the page (the scene bounds), so a drawing that
+// spills over the paper still has its page; the outline is a thin grey
+// dash, which reads as an edge and not as a diagram boundary.
+pub(crate) fn paper(list: &DrawList<'_>, paper: Rect) -> Vec<Primitive> {
+    let Some(scene) = list.scene else { return Vec::new() };
+    let points = rect_points(&list.camera, paper, 0);
+    vec![
+        Primitive::Polygon {
+            points: points.clone(),
+            fill: Some(rgb(scene.background)),
+            stroke: None,
+            dash: None,
+        },
+        Primitive::Polygon {
+            points,
+            fill: None,
+            stroke: Some(([0x99, 0x99, 0x99], 1.0)),
+            dash: Some([6.0, 4.0]),
+        },
+    ]
+}
+
+/// Paints the paper (`paper`, when the view has a canvas size) and the
+/// page of `list` (`page`), if any (P2-701, EDIT-31).
+pub(crate) fn paint_page(painter: &eframe::egui::Painter, list: &DrawList<'_>, paper_rect: Option<Rect>) {
+    if let Some(r) = paper_rect {
+        for p in paper(list, r) {
+            paint_primitive(painter, &p, 100);
+        }
+    }
     if let Some(p) = page(list) {
         paint_primitive(painter, &p, 100);
     }
@@ -846,6 +896,7 @@ pub(crate) const BOLD_FAMILY: &str = "Inter Bold";
 /// the keys of `state::Key` with modifiers; `text_focus` true when an
 /// egui text field has focus. Serves EDIT-9, EDIT-28.
 #[must_use]
+#[expect(clippy::too_many_lines, reason = "one flat match over egui's events")]
 pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) -> Vec<Input> {
     use eframe::egui::{Event as E, Key as K, MouseWheelUnit, PointerButton};
     let rect = response.rect;
@@ -865,8 +916,13 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
         for event in &i.events {
             match event {
                 E::PointerMoved(p) => {
-                    if rect.contains(*p) || i.pointer.any_down() {
+                    // P2-712: off the canvas, or over a panel or overlay
+                    // drawn above it, nothing on the canvas is hovered; a
+                    // drag keeps its moves wherever the pointer goes.
+                    if (rect.contains(*p) && hovered) || i.pointer.any_down() {
                         out.push(Input::PointerMove { at: rel(*p) });
+                    } else if out.last() != Some(&Input::PointerLeft) {
+                        out.push(Input::PointerLeft);
                     }
                 }
                 E::PointerButton {
@@ -924,6 +980,29 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
                         K::Space => Key::Space,
                         K::Z => Key::Z,
                         K::Y => Key::Y,
+                        // P2-705..P2-729: the viewer and editor keys,
+                        // one-to-one; `=` is `+` (Structurizr binds both).
+                        K::ArrowUp => Key::ArrowUp,
+                        K::ArrowRight => Key::ArrowRight,
+                        K::ArrowDown => Key::ArrowDown,
+                        K::Plus | K::Equals => Key::Plus,
+                        K::Minus => Key::Minus,
+                        K::B => Key::B,
+                        K::C => Key::C,
+                        K::D => Key::D,
+                        K::G => Key::G,
+                        K::H => Key::H,
+                        K::I => Key::I,
+                        K::J => Key::J,
+                        K::L => Key::L,
+                        K::M => Key::M,
+                        K::N => Key::N,
+                        K::P => Key::P,
+                        K::R => Key::R,
+                        K::T => Key::T,
+                        K::V => Key::V,
+                        K::W => Key::W,
+                        K::F11 => Key::F11,
                         _ => continue,
                     };
                     if *pressed && !*repeat {
@@ -940,6 +1019,33 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
             }
         }
     });
+    // P2-724: egui sends no key event for a modifier, so Alt turning on
+    // or off between frames is reported as `Key::Alt`. Read outside
+    // `ctx.input`: the context's lock is not re-entrant.
+    let (modifiers, pointer) = ctx.input(|i| (i.modifiers, i.pointer.interact_pos()));
+    let id = eframe::egui::Id::unique("c4rizer-alt-held");
+    let was = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if modifiers.alt != was {
+        ctx.data_mut(|d| d.insert_temp(id, modifiers.alt));
+        if modifiers.alt {
+            out.push(Input::KeyDown {
+                key: Key::Alt,
+                mods: mods(modifiers),
+                text_focus,
+            });
+        } else {
+            out.push(Input::KeyUp { key: Key::Alt });
+        }
+    }
+    // P2-719, P2-720: a double click over the canvas.
+    if response.double_clicked()
+        && let Some(p) = pointer
+    {
+        out.push(Input::DoubleClick {
+            at: rel(p),
+            mods: mods(modifiers),
+        });
+    }
     out
 }
 
@@ -1003,6 +1109,11 @@ mod tests {
             resize_outline: None,
             editing: None,
             read_only: false,
+            hide_descriptions: false,
+            hide_metadata: false,
+            hide_key: false,
+            faded: Vec::new(),
+            tooltip: None,
         }
     }
 
@@ -1131,6 +1242,65 @@ mod tests {
         let bytes = |name: &str| (*defs.font_data[name].font).as_ref().to_vec();
         assert_eq!(bytes(&proportional[0]), c4rizer_core::scene::FONT_REGULAR);
         assert_eq!(bytes(&bold[0]), c4rizer_core::scene::FONT_BOLD);
+    }
+
+    /// The canvas inputs of one frame: a 400x300 canvas at (100, 100) in
+    /// a central panel, with an optional window covering its middle.
+    fn frame_inputs(ctx: &eframe::egui::Context, events: Vec<eframe::egui::Event>, overlay: bool) -> Vec<crate::state::Input> {
+        use eframe::egui::{self, Pos2, RawInput, Rect as ERect, Sense, vec2};
+        let input = RawInput {
+            screen_rect: Some(ERect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut got = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            let canvas = ERect::from_min_size(Pos2::new(100.0, 100.0), vec2(400.0, 300.0));
+            let response = ui.allocate_rect(canvas, Sense::click_and_drag());
+            if overlay {
+                egui::Area::new(egui::Id::unique("test-overlay"))
+                    .fixed_pos(Pos2::new(200.0, 200.0))
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        ui.allocate_exact_size(vec2(200.0, 100.0), Sense::click());
+                    });
+            }
+            got = super::inputs(ui.ctx(), &response);
+        });
+        output.textures_delta.clear();
+        got
+    }
+
+    /// Fix round (P2-712): the pointer moving off the canvas is reported
+    /// as `PointerLeft`, so the state drops its hover.
+    #[test]
+    fn p2_712_pointer_moving_off_canvas_reports_left() {
+        use eframe::egui::{Event as E, Pos2};
+        let ctx = eframe::egui::Context::default();
+        // egui hit-tests against the widgets of the frame before.
+        let _ = frame_inputs(&ctx, Vec::new(), false);
+        let first = frame_inputs(&ctx, vec![E::PointerMoved(Pos2::new(150.0, 150.0))], false);
+        assert!(matches!(first.as_slice(), [crate::state::Input::PointerMove { .. }]), "{first:?}");
+        let _ = frame_inputs(&ctx, Vec::new(), false);
+        let off = frame_inputs(&ctx, vec![E::PointerMoved(Pos2::new(650.0, 150.0))], false);
+        assert!(off.contains(&crate::state::Input::PointerLeft), "{off:?}");
+    }
+
+    /// Fix round (P2-712): over a window drawn above the canvas, the
+    /// canvas is not hovered: `PointerLeft`, not a move.
+    #[test]
+    fn p2_712_pointer_over_overlay_reports_left() {
+        use eframe::egui::{Event as E, Pos2};
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..3 {
+            let _ = frame_inputs(&ctx, vec![E::PointerMoved(Pos2::new(150.0, 150.0))], true);
+        }
+        let mut over = Vec::new();
+        for _ in 0..3 {
+            over = frame_inputs(&ctx, vec![E::PointerMoved(Pos2::new(250.0, 250.0))], true);
+        }
+        assert!(over.contains(&crate::state::Input::PointerLeft), "{over:?}");
+        assert!(!over.iter().any(|i| matches!(i, crate::state::Input::PointerMove { .. })), "{over:?}");
     }
 
     /// Every screen point of a primitive, plus its sizes.
