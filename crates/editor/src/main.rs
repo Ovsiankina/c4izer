@@ -19,6 +19,8 @@ mod files;
 mod history;
 #[cfg(test)]
 mod landscape_filtered_tests;
+#[cfg(test)]
+mod network_tests;
 mod state;
 #[cfg(test)]
 mod styles_themes_tests;

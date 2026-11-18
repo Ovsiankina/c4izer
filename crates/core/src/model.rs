@@ -61,6 +61,14 @@ mod archetype;
 mod deploy;
 mod expr;
 mod load;
+// network row (P3-600..P3-621): cache, fetch policy, real transport.
+mod net;
+pub use net::{
+    CacheEntry, FetchEvent, MAX_BODY, MAX_REDIRECTS, NetCache, NetLoader, Response, TIMEOUT_SECS,
+    Transport, fnv1a, utc_text,
+};
+#[cfg(feature = "network")]
+pub use net::HttpsTransport;
 
 use crate::text::{
     self, FileId, ParseError, ParseErrorKind, Position, Span, Statement, SyntaxTree, TokenKind,
@@ -1628,6 +1636,10 @@ pub enum NoticeKind {
     /// `vertices`, `routing`, `position`; view `paperSize`,
     /// `dimensions`; `themes`), named once per view (P2-510).
     NotImported,
+    /// network row: a URL that was not drawn: network off, fetch failed
+    /// with no cached copy, or a source c4rizer never fetches (P3-613).
+    /// `subject` is `<url> — <what> not drawn (<why>)`.
+    NotFetched,
 }
 
 /// Something the file says that c4rizer accepts with no effect: one per
@@ -1696,6 +1708,7 @@ impl fmt::Display for Notice {
             NoticeKind::NotImported => {
                 write!(f, "view {view}: `{subject}` not imported — c4rizer cannot hold it")
             }
+            NoticeKind::NotFetched => todo!(),
         }
     }
 }
@@ -1843,6 +1856,21 @@ pub trait Loader {
 
     /// The environment variable `name`, `None` when unset (P2-152).
     fn env(&self, name: &str) -> Option<String>;
+
+    /// The bytes at `url` (network row, P3-603). The default body returns
+    /// `ErrorKind::Unsupported`, which core reads as "network off": the
+    /// construct keeps its phase-2 behaviour and no cache is read
+    /// (P3-601). Any other error is a failed fetch (P3-611). Tests
+    /// implement it with in-memory bytes (P3-616).
+    ///
+    /// # Errors
+    ///
+    /// `ErrorKind::Unsupported` when the network is off; any other error
+    /// when the fetch failed.
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        let _ = url;
+        todo!()
+    }
 }
 
 /// `std::fs` and `std::env`: core's only I/O helper besides export (HLD
@@ -2971,6 +2999,14 @@ pub enum ModelErrorKind {
         /// The URL.
         url: String,
     },
+    /// network row: a fetch of an `!include`, `workspace extends` or
+    /// `-workspace` URL failed and no cached copy exists (P3-611).
+    FetchFailed {
+        /// The URL.
+        url: String,
+        /// Why, naming the limit for P3-605 failures.
+        reason: String,
+    },
     /// A file-relative construct (`!include`, `workspace extends`) in a
     /// file parsed without a path.
     NeedsFile {
@@ -3252,6 +3288,7 @@ fn phase_2_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
             f,
             "`{url}` is a URL and this version reads local files only — download the file and include it by path"
         ),
+        ModelErrorKind::FetchFailed { .. } => todo!(),
         ModelErrorKind::NeedsFile { construct } => write!(
             f,
             "`{construct}` reads a file relative to this one, and this text has no file — open it from a file"

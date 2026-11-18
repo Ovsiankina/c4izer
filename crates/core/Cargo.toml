@@ -12,10 +12,15 @@ png = ["dep:resvg"]
 # P2-25 `--svg-text outline`: text to paths through usvg's writer, bundled
 # faces only (no system-fonts). Owner sign-off A.2 Cargo, Part C.
 outline = ["dep:usvg"]
+# P3-617: the real HTTPS fetcher (`model::HttpsTransport`), ureq with
+# rustls, blocking, no async runtime (approver ruling N2, 2026-11-18).
+# The CLI and the editor enable it; core's own tests never need it.
+network = ["dep:ureq"]
 
 [dependencies]
 resvg = { version = "0.50", optional = true, default-features = false, features = ["text", "raster-images"] }
 usvg = { version = "0.50", optional = true, default-features = false, features = ["text", "writer"] }
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
 
 [lints]
 workspace = true

@@ -85,6 +85,7 @@
 // run is never stopped, and gives the same result as an unstopped run
 // (CORE-25).
 
+mod net;
 mod report;
 
 use std::ffi::OsString;
@@ -240,6 +241,8 @@ pub(crate) enum Command {
     },
     /// `c4rizer version` (P2-645).
     Version,
+    /// `c4rizer cache list|clear` (P3-612).
+    Cache(net::CacheAction),
     /// `c4rizer help [COMMAND]`, `-h`, `--help` (P2-647).
     Help {
         /// The subcommand asked about, `None` for all of them.
@@ -290,6 +293,11 @@ pub(crate) enum UsageError {
     UnknownSvgText(String),
     /// `import-layout` without both JSON and FILE (P2-504).
     MissingImportFiles,
+    /// `--network` on a build without the `network` feature (P3-617).
+    NoNetworkSupport,
+    /// `cache` without `list` or `clear`, or with another argument, as
+    /// given (empty for none) (P3-612).
+    CacheAction(String),
 }
 
 impl fmt::Display for UsageError {
@@ -336,6 +344,7 @@ impl fmt::Display for UsageError {
                 f,
                 "invalid --svg-text \"{v}\" — give `name`, `embed` or `outline`"
             ),
+            UsageError::NoNetworkSupport | UsageError::CacheAction(_) => todo!(),
             UsageError::MissingImportFiles => f.write_str(
                 "`import-layout` needs the workspace JSON and the diagram file — give `import-layout JSON FILE`",
             ),
@@ -458,6 +467,16 @@ pub(crate) enum CliError {
         /// Why.
         source: io::Error,
     },
+    /// `cache`: neither `$XDG_CACHE_HOME` nor `$HOME` gives a cache
+    /// folder (P3-609).
+    NoCache,
+    /// `cache`: the cache folder could not be read or removed (P3-612).
+    Cache {
+        /// The cache folder.
+        path: PathBuf,
+        /// Why.
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -523,6 +542,7 @@ impl fmt::Display for CliError {
                 "{}: cannot rewrite ({source}) — the file is unchanged; check that its folder is writable",
                 path.display()
             ),
+            CliError::NoCache | CliError::Cache { .. } => todo!(),
         }
     }
 }
@@ -1034,6 +1054,7 @@ pub(crate) fn run(
             return run_model_command(command, input, stdin, stdout);
         }
         Command::ImportLayout { json, file } => return run_import_layout(json, file, stdout),
+        Command::Cache(_) => todo!(),
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
@@ -1233,6 +1254,26 @@ fn run_model_command(
     }
     stdout.flush().map_err(CliError::Report)?;
     Ok(Exit::Clean)
+}
+
+/// `run` with the network setting `net` (P3-600): with a transport,
+/// URLs are fetched through `model::NetLoader` and each fetch event is
+/// written to `stderr` (P3-620); `-workspace <https url>` is read the
+/// same way (P3-603). `run` is `run_with(command, Net::off(), ..)`.
+///
+/// # Errors
+///
+/// As `run`, plus `CliError::Parse` naming the URL when a fetch fails
+/// with no cached copy.
+pub(crate) fn run_with(
+    command: &Command,
+    net: net::Net,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<Exit, CliError> {
+    let _ = (command, net, stdin, stdout, stderr);
+    todo!()
 }
 
 /// Parses `std::env::args_os()`; on a `UsageError` prints

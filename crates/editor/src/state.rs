@@ -426,6 +426,11 @@ pub enum Command {
     ToggleKey,
     /// Open or close the diagram navigator (P2-729).
     Navigator,
+    /// Turn "Allow network for this file" on or off for the open file,
+    /// remembered per file (P3-602); the file is fetched again.
+    ToggleNetwork,
+    /// Read the open file again and fetch every URL again (P3-615).
+    Reload,
 }
 
 /// Everything that goes into the state machine.
@@ -1082,6 +1087,13 @@ pub struct State {
     /// The included file holding `Doc::parse_error`, `None` when the
     /// error is in the root file (P2-136).
     error_file: Option<PathBuf>,
+    /// network row: the transport "Allow network for this file" fetches
+    /// through, set by the shell; `None` (tests, by default) never
+    /// fetches (P3-616).
+    transport: Option<files::SharedTransport>,
+    /// The bytes the open (or the last Reload) fetched, reused by the
+    /// rebuild after a save (P3-610), and the fetch lines shown (P3-620).
+    net: files::NetMemory,
     /// The file of the write in flight (EDIT-22), so its result event is
     /// told apart: the root file's path as opened, or an included file's.
     in_flight: Option<PathBuf>,
@@ -1144,6 +1156,8 @@ impl State {
             root_text: None,
             included: BTreeMap::new(),
             error_file: None,
+            transport: None,
+            net: files::NetMemory::default(),
             in_flight: None,
             queued: VecDeque::new(),
             aids: ViewAids::default(),
@@ -1918,6 +1932,27 @@ impl State {
     #[must_use]
     pub(crate) fn included_files(&self) -> Vec<PathBuf> {
         self.included.keys().cloned().collect()
+    }
+
+    /// True when "Allow network for this file" is on for the open file
+    /// (P3-602).
+    #[must_use]
+    pub fn network_on(&self) -> bool {
+        todo!()
+    }
+
+    /// Sets the transport the network switch fetches through (P3-617).
+    pub(crate) fn set_transport(&mut self, transport: files::SharedTransport) {
+        let _ = transport;
+        todo!()
+    }
+
+    /// One line per fetch of the last parse with the network on:
+    /// `fetched <url> (<n> bytes)` or the cache or failure notice
+    /// (P3-611, P3-620).
+    #[must_use]
+    pub(crate) fn fetch_lines(&self) -> Vec<String> {
+        todo!()
     }
 
     /// The included file the current parse error is in; `None` with no
@@ -4047,6 +4082,7 @@ impl State {
                 }
                 Vec::new()
             }
+            Command::ToggleNetwork | Command::Reload => todo!(),
             Command::Navigator => {
                 self.overlay = match self.overlay {
                     Some(Overlay::Navigator) => None,

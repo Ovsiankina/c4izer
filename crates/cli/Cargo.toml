@@ -9,6 +9,10 @@ name = "c4rizer"
 path = "src/main.rs"
 
 [features]
+# P3-617: `--network` fetches through core's `HttpsTransport`; on by
+# default. Without it `--network` exits 2.
+default = ["network"]
+network = ["c4rizer-core/network"]
 # CLI-4: `--png` needs core's PNG export; without it `--png` exits 2.
 png = ["c4rizer-core/png"]
 # P2-662: `--svg-text outline` needs core's outlined SVG export; without it

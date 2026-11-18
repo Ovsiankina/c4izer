@@ -39,17 +39,19 @@
 // DECISION: writes run on the UI thread: a diagram file is a few kB and
 // an atomic write is two syscalls plus a rename, far under a frame.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use c4rizer_core::model::ViewKind;
+use c4rizer_core::model::{Response, Transport};
 
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM, ScenePoint};
 use crate::worker::{ExportFormat, ViewRef, Wake};
@@ -441,6 +443,37 @@ pub struct UiState {
     pub recent: Vec<PathBuf>,
     /// Per file, by the path as opened.
     pub files: BTreeMap<PathBuf, FileMemory>,
+    /// The files with "Allow network for this file" on, by the path as
+    /// opened; a file never opened is off (P3-602).
+    pub network: BTreeSet<PathBuf>,
+}
+
+/// A `Transport` shared between builds (P3-617): the shell sets the real
+/// one, tests a double.
+#[derive(Clone)]
+pub(crate) struct SharedTransport(pub(crate) Arc<Mutex<Box<dyn Transport + Send>>>);
+
+impl std::fmt::Debug for SharedTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedTransport")
+    }
+}
+
+impl Transport for SharedTransport {
+    fn get(&mut self, url: &str, limit: u64) -> io::Result<Response> {
+        let _ = (url, limit);
+        todo!()
+    }
+}
+
+/// What the open file's fetches gave (P3-610, P3-620): the bytes per URL
+/// and the event lines.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NetMemory {
+    /// Every URL fetched by the open or the last Reload, with its bytes.
+    pub(crate) bytes: BTreeMap<String, Vec<u8>>,
+    /// One line per fetch event of the last parse.
+    pub(crate) lines: Vec<String>,
 }
 
 /// The most recent files kept (EDIT-13).
