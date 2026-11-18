@@ -105,6 +105,9 @@ use crate::files::{self, ContentHash, FileEvent, FileMemory, UiState, WriteReque
 use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
+mod steps;
+pub use steps::StepDetails;
+
 /// Pointer travel below which a press and release is a click, in screen
 /// px (EDIT-28).
 pub const CLICK_SLOP_PX: f32 = 4.0;
@@ -426,6 +429,19 @@ pub enum Command {
     ToggleKey,
     /// Open or close the diagram navigator (P2-729).
     Navigator,
+    /// Select step `n` (index into `ViewSpec::steps`) of the open dynamic
+    /// view, from the Steps list (P3-219).
+    // APPROVER: new pub item
+    SelectStep(u32),
+    /// Move step `step` of the open dynamic view one place up or down
+    /// within its block (P3-220, P3-221).
+    // APPROVER: new pub item
+    MoveStep {
+        /// Index into `ViewSpec::steps`.
+        step: u32,
+        /// Up (towards the first step) or down.
+        up: bool,
+    },
 }
 
 /// Everything that goes into the state machine.
@@ -510,6 +526,10 @@ pub enum Selected {
     Relationship(RelationshipRef),
     /// The view title (EDIT-5).
     Title,
+    /// A step line of the open dynamic view, by its index into
+    /// `ViewSpec::steps` (P3-218, P3-219).
+    // APPROVER: new pub item
+    Step(u32),
 }
 
 /// A resize handle of a box: its sides and corners (EDIT-18).
@@ -712,6 +732,14 @@ pub enum Action {
         relationship: RelationshipRef,
         /// The setting.
         change: LineChange,
+    },
+    /// Swap two neighbouring steps of a dynamic view (P3-220).
+    // APPROVER: new pub item
+    SwapSteps {
+        /// The view.
+        view: ViewRef,
+        /// Index into `ViewSpec::steps` of the upper step.
+        first: u32,
     },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
@@ -951,6 +979,10 @@ pub struct Details {
     /// The other relationships merged into the line, one per entry, same
     /// form (EDIT-5, CORE-5).
     pub merged: Vec<String>,
+    /// For a dynamic step line: its number, ends and relationship
+    /// (P3-218); `None` otherwise.
+    // APPROVER: new pub item
+    pub step: Option<StepDetails>,
     /// A deployment node's `instances` value as written (P3-131).
     pub instances: Option<String>,
     /// The deployment environment's name of a deployment element (P3-131).
@@ -1746,6 +1778,7 @@ impl State {
                     tags: e.tags.clone(),
                     lifted_from: None,
                     merged: Vec::new(),
+                    step: None,
                     instances: (e.kind == ElementKind::DeploymentNode)
                         .then(|| e.instances.as_ref().map_or_else(|| "1".to_owned(), |i| i.value.clone())),
                     environment: e
@@ -1793,11 +1826,13 @@ impl State {
                     tags: rel.tags.clone(),
                     lifted_from,
                     merged,
+                    step: None,
                     instances: None,
                     environment: None,
                     subject,
                 })
             }
+            Selected::Step(step) => self.step_details(*step, subject.clone()),
             Selected::Title => {
                 let view = self.view.as_ref()?;
                 let (name, description) = match model.view(&view.key()) {
@@ -1818,6 +1853,7 @@ impl State {
                     tags: Vec::new(),
                     lifted_from: None,
                     merged: Vec::new(),
+                    step: None,
                     instances: None,
                     environment: None,
                     subject,
@@ -2099,6 +2135,10 @@ impl State {
                 out
             }
             Action::Undo(step) | Action::Redo(step) => rebuild_first_write(parsed, &step.edits),
+            Action::SwapSteps { view, first } => vec![Edit::SwapSteps {
+                view: view.key(),
+                first: *first,
+            }],
             Action::SetLine {
                 view,
                 relationship,
@@ -2655,6 +2695,7 @@ pub fn text_fields(model: &Model, view: &ViewRef, selected: &Selected) -> Vec<Te
                 ),
             ]
         }
+        Selected::Step(step) => steps::step_text_fields(model, view, *step),
         Selected::Title => {
             let key = view.key();
             let spec = model.view(&key);
@@ -3900,6 +3941,8 @@ impl State {
     #[expect(clippy::too_many_lines, reason = "one flat arm per command reads best")]
     fn command(&mut self, command: Command) -> Vec<Effect> {
         match command {
+            Command::SelectStep(step) => self.select_step(step),
+            Command::MoveStep { step, up } => self.move_step(step, up),
             Command::Open(path) => {
                 self.remember();
                 vec![Effect::Read(path)]
@@ -4761,6 +4804,7 @@ fn items_of(scene: &Scene, model: &Model, selected: &Selected) -> Vec<ItemKey> {
                     .collect()
             })
             .unwrap_or_default(),
+        Selected::Step(step) => steps::step_items(scene, model, *step),
         Selected::Title => {
             if scene.title.is_some() {
                 vec![ItemKey::Title]
@@ -4774,6 +4818,9 @@ fn items_of(scene: &Scene, model: &Model, selected: &Selected) -> Vec<ItemKey> {
 /// The selection a hit item makes: a box's element, a line's or label's
 /// winning relationship, the title; nothing for the rest.
 fn selected_of(scene: &Scene, model: &Model, item: ItemKey) -> Option<Selected> {
+    if let Some(step) = steps::step_selected(scene, model, item) {
+        return Some(step);
+    }
     match item {
         ItemKey::Box(_) | ItemKey::Line(_) | ItemKey::Label(_) => match scene.model_id(item)? {
             ModelId::Element(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),

@@ -23,8 +23,8 @@ const WITH_UNSUPPORTED: &str = r#"workspace {
     }
   }
   views {
-    dynamic shop "flow" "Checkout flow" {
-      operator -> web "Opens the shop"
+    dynamic * "flow" "Checkout flow" {
+      operator -> shop "Opens the shop"
     }
     systemContext shop "ctx" "Shop context" {
       include *
@@ -105,15 +105,11 @@ fn p2_122_cli_prints_not_yet_supported() {
         let out = c4rizer(dir.path(), args);
         let text = stdout(&out);
         assert_eq!(out.status.code(), Some(0), "{args:?}\n{text}\n{}", stderr(&out));
-        assert!(
-            text.contains(
-                "== flow: Checkout flow\n   not yet supported: dynamic views are not drawn by this version\n"
-            ),
-            "{text}"
-        );
-        // deployment-view draws deployment views (P3-2).
+        // dynamic-view (P3-200) and deployment-view (P3-2) draw their
+        // views, so no view of this file is unsupported any more.
+        assert!(text.contains("== flow: Checkout flow\n"), "{text}");
         assert!(text.contains("== live: Live\n"), "{text}");
-        assert!(!text.contains("deployment views are not drawn"), "{text}");
+        assert!(!text.contains("not yet supported"), "{text}");
         // Views in declaration order: flow, ctx, live.
         let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s}\n{text}"));
         assert!(at("== flow:") < at("== ctx:") && at("== ctx:") < at("== live:"), "{text}");
@@ -123,7 +119,7 @@ fn p2_122_cli_prints_not_yet_supported() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     written.sort();
-    assert_eq!(written, ["ctx.svg", "live.svg"]);
+    assert_eq!(written, ["ctx.svg", "flow.svg", "live.svg"]);
 }
 
 /// `render` and `lint` print every notice before the first view, one

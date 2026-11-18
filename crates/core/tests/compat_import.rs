@@ -466,23 +466,42 @@ fn p2_510_vertices_routing_paper_size_themes_named() {
 
 #[test]
 fn p2_510_undrawable_view_skipped() {
-    let views = format!(
-        "{}, {}, {}",
-        view("dynamicViews", "Flow", &[("1", 0, 0)]),
-        view("deploymentViews", "Live", &[]),
-        view("imageViews", "Picture", &[])
-    );
+    let views = format!("{}, {}", view("deploymentViews", "Live", &[]), view("imageViews", "Picture", &[]));
     let import = run(DSL, &ws(MODEL, &views));
     assert!(import.edits.is_empty());
     let skipped: Vec<(NoticeKind, String)> = import.notices.iter().map(|n| (n.kind, n.subject.clone())).collect();
     assert_eq!(
         skipped,
+        [(NoticeKind::ViewNotDrawable, "Live".to_owned()), (NoticeKind::ViewNotDrawable, "Picture".to_owned())]
+    );
+}
+
+/// A JSON dynamic view is matched by key like a static one, and each box
+/// its plan draws (the step ends) takes its position (dynamic views draw
+/// since the dynamic-view row, P3-200); a dynamic view key the file
+/// lacks is skipped as not in the file.
+#[test]
+fn p2_510_dynamic_view_positions_imported() {
+    let dsl = DSL.replace(
+        "        filtered ",
+        "        dynamic sys \"Flow\" {\n            user -> web\n            web -> db\n        }\n        filtered ",
+    );
+    let views = format!("{}, {STYLES}", view("dynamicViews", "Flow", &[("4", 0, 800), ("1", 0, 0), ("3", 0, 400)]));
+    let import = run(&dsl, &ws(MODEL, &views));
+    assert_eq!(
+        moves(&import),
         [
-            (NoticeKind::ViewNotDrawable, "Flow".to_owned()),
-            (NoticeKind::ViewNotDrawable, "Live".to_owned()),
-            (NoticeKind::ViewNotDrawable, "Picture".to_owned()),
+            ("Flow".to_owned(), "user".to_owned(), (200, 100)),
+            ("Flow".to_owned(), "web".to_owned(), (200, 500)),
+            ("Flow".to_owned(), "db".to_owned(), (200, 900)),
         ]
     );
+    assert!(import.notices.is_empty(), "{:?}", notices(&import));
+    let after = parse(&applied(&dsl, &import));
+    assert_eq!(after.model.view("Flow").expect("view").positions.len(), 3);
+    let import = run(DSL, &ws(MODEL, &format!("{}, {STYLES}", view("dynamicViews", "Flow", &[("1", 0, 0)]))));
+    assert!(import.edits.is_empty());
+    assert!(has_notice(&import, NoticeKind::ViewNotInFile, "Flow"));
 }
 
 #[test]

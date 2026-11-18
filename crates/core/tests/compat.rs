@@ -395,6 +395,10 @@ fn p2_14_corpus_drawable_views_render() {
     assert!(failures.is_empty(), "{failures:#?}");
     assert!(drawn > 40, "the corpus draws views ({drawn})");
     assert!(deployment >= 10, "the corpus draws deployment views ({deployment})");
+    // dynamic-view (P3-200): dynamic views draw, response steps
+    // (P3-201) included, e.g. big-bank-plc.dsl's SignIn.
+    let dynamic = results.iter().filter(|r| matches!(r, Ok(Some(ViewKind::Dynamic)))).count();
+    assert!(dynamic >= 12, "the corpus draws dynamic views ({dynamic})");
 }
 
 // ---- P2-28, P2-503: house-style lint report -----------------------------

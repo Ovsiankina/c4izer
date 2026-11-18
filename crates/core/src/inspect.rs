@@ -548,10 +548,9 @@ fn shown(model: &Model) -> BTreeSet<ElementId> {
 /// The elements `view` includes: `Model::included`, plus what `include *`
 /// selects in a landscape (every person and software system) or custom
 /// view (every custom element), which `included` leaves to their row.
-// TODO(srs): P2-623, P2-627 for dynamic views: only their explicit
-// `include` lines count until they are modelled, so `include *` alone
-// leaves them empty. A deployment view counts what its `include *`
-// selects (P3-129).
+// A dynamic view's elements are its step ends (`Model::included`), so it
+// counts its steps (P3-217; closes the dynamic half of P2-623/627). A
+// deployment view counts what its `include *` selects (P3-129).
 fn view_elements(model: &Model, view: &ViewSpec) -> BTreeSet<ElementId> {
     let mut set: BTreeSet<ElementId> = model.included(view).into_iter().collect();
     let star = |list: &[crate::model::Spanned<Selector>]| {

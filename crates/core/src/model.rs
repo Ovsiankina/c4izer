@@ -830,8 +830,9 @@ impl ViewKind {
 
     /// True for the kinds c4rizer draws: the phase-1 kinds after
     /// dsl-breadth, plus `SystemLandscape`, `Filtered`, `Custom` and
-    /// `Image` once landscape-filtered lands, and `Deployment` once
-    /// deployment-view lands (P3-2). Never `Dynamic` yet. A view whose kind is not drawable is
+    /// `Image` once landscape-filtered lands, `Deployment` once
+    /// deployment-view lands (P3-2), and `Dynamic` once dynamic-view
+    /// lands (P3-200). A view whose kind is not drawable is
     /// listed in `pipeline::AllViews::unsupported`. Serves P2-2, P2-122,
     /// P2-123, P2-180.
     pub const fn drawable(self) -> bool {
@@ -845,6 +846,7 @@ impl ViewKind {
                 | ViewKind::Custom
                 | ViewKind::Image
                 | ViewKind::Deployment
+                | ViewKind::Dynamic
         )
     }
 }
@@ -1056,6 +1058,9 @@ pub struct ViewSpec {
     /// The source of an `image` view; `None` for any other kind. Serves
     /// P2-19, P2-320, P2-321.
     pub image: Option<ViewImage>,
+    /// The steps of a `dynamic` view, in file order (parallel blocks
+    /// flattened); empty for every other kind. Serves P3-3, P3-200.
+    pub steps: Vec<DynamicStep>,
     /// The `default` line, if written: the view the editor opens when no
     /// last-viewed view applies (EDIT-13). Serves P2-20, P2-338.
     pub default: Option<Span>,
@@ -1343,6 +1348,45 @@ pub enum ImageSource {
     },
 }
 
+/// One step of a `dynamic` view (P3-200): `[order:] <src> -> <dst>
+/// [desc] [tech]` or `[order:] <relationship id> [desc]`, in a view body
+/// or a parallel `{ }` block. Serves P3-3, P3-200..P3-210.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DynamicStep {
+    /// The source element, as written; for a relationship-id step, the
+    /// relationship's source with the id token's span.
+    pub source: Spanned<ElementId>,
+    /// The destination element, as written; for a relationship-id step,
+    /// the relationship's destination with the id token's span.
+    pub destination: Spanned<ElementId>,
+    /// The model relationship the step stands for (P3-201, P3-202): for
+    /// an implied step, the declared relationship it is implied from.
+    pub relationship: RelationshipId,
+    /// The step's own description literal, if written (P3-203).
+    pub description: Option<Literal>,
+    /// The step's own technology literal, if written (P3-203).
+    pub technology: Option<Literal>,
+    /// The sequence number as drawn: the written order, else the counter
+    /// (P3-208..P3-210).
+    pub order: String,
+    /// The written `n:` token, if any (P3-209, P3-221).
+    // APPROVER: new pub item
+    pub written_order: Option<Span>,
+    /// The innermost parallel `{ }` block holding the step, `None` at the
+    /// top of the view body (P3-210, P3-220, P3-221).
+    // APPROVER: new pub item
+    pub parallel: Option<Span>,
+    /// True for a response step (P3-201): its ends match `relationship`
+    /// in reverse, so its line runs from `source` to `destination`, back
+    /// along the relationship, dashed (Structurizr 6.2.4
+    /// `RelationshipView.response`).
+    // APPROVER: new pub item
+    pub response: bool,
+    /// The whole step line, line ending excluded.
+    pub span: Span,
+}
+
 /// The picture of an `image` view. Serves P2-19, P2-320, P2-321.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1397,6 +1441,56 @@ impl ViewSpec {
     /// The `size` line for `element`, if any. Serves DSL-7.
     pub fn size_of(&self, element: ElementId) -> Option<&Size> {
         self.sizes.iter().find(|s| s.element.value == element)
+    }
+
+    /// The view-local key of drawn step `step` (index into `steps`):
+    /// `<relationship key or source->destination>#<number>`, element keys
+    /// canonical (`Model::full_key`), with `~2`, `~3`... added when an
+    /// earlier drawn step has the same key, so keys are unique in the
+    /// view. `None` for a step that is not drawn. Serves P3-212.
+    // APPROVER: new pub item
+    pub fn step_key(&self, model: &Model, step: usize) -> Option<String> {
+        let base = |i: usize| -> Option<String> {
+            let s = self.steps.get(i)?;
+            let r = model.relationship(s.relationship);
+            let key = |e: ElementId| model.full_key(e).unwrap_or_else(|| model.element(e).name.value.clone());
+            let name = if let Some(k) = &r.key {
+                k.value.clone()
+            } else {
+                format!("{}->{}", key(s.source.value), key(s.destination.value))
+            };
+            Some(format!("{name}#{}", s.order))
+        };
+        let drawn = self.drawn_steps();
+        let at = drawn.iter().position(|&i| i == step)?;
+        let own = base(step)?;
+        let earlier = drawn[..at].iter().filter(|&&i| base(i).as_deref() == Some(own.as_str())).count();
+        Some(if earlier == 0 { own } else { format!("{own}~{}", earlier + 1) })
+    }
+
+    /// The steps of a dynamic view that are drawn, as indices into
+    /// `steps`, in plan edge order: edge `i` draws `steps[drawn_steps()[i]]`.
+    /// A step with the same relationship and number as an earlier step
+    /// is drawn once (Structurizr 6.2.4 keeps one line, probed), and a
+    /// step from an element to itself is not drawn. Empty for every other
+    /// kind. Serves P3-212, P3-216, P3-219.
+    // APPROVER: new pub item
+    pub fn drawn_steps(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        for (i, step) in self.steps.iter().enumerate() {
+            // DECISION: a step from an element to itself draws no line, as
+            // a static view drops a line whose ends share a box (CORE-5).
+            if step.source.value == step.destination.value {
+                continue;
+            }
+            let twin = out.iter().any(|&j| {
+                self.steps[j].relationship == step.relationship && self.steps[j].order == step.order
+            });
+            if !twin {
+                out.push(i);
+            }
+        }
+        out
     }
 }
 
@@ -1609,8 +1703,8 @@ pub enum NoticeKind {
     /// import-layout: a JSON view whose key names no view in the file;
     /// it is skipped (P2-505). `subject` is the key.
     ViewNotInFile,
-    /// import-layout: a JSON dynamic, deployment or image view, or a
-    /// file view c4rizer does not draw; it is skipped (P2-510).
+    /// import-layout: a JSON deployment or image view, or a file view
+    /// c4rizer does not draw or position; it is skipped (P2-510).
     ViewNotDrawable,
     /// import-layout: a view matched on a key c4rizer generated, which
     /// the reference says is not stable (P2-505).
@@ -2167,6 +2261,34 @@ impl Model {
         self.resolve_element(element, &self.styles_for_in(element, mode))
     }
 
+    /// The look of a response step's line (P3-201) in `mode`: the
+    /// relationship's styles, then `Relationship/Response` styles, as the
+    /// Structurizr renderer adds that tag for a response; dashed unless one
+    /// of them sets `style`.
+    // DECISION: dashed by default although c4rizer lines are solid
+    // (CORE-10): Structurizr draws every line dashed by default, so its
+    // responses are dashed, and the approver ruled them dashed; the
+    // dash tells a response from a request between the same two boxes.
+    pub(crate) fn response_style_in(&self, relationship: RelationshipId, mode: Mode) -> ResolvedRelationshipStyle {
+        let blocks: Vec<StyleKey<'_>> = self
+            .relationship_styles
+            .iter()
+            .map(|s| StyleKey {
+                tag: &s.tag.value,
+                mode: s.mode,
+                theme: s.theme,
+            })
+            .collect();
+        let mut tags = self.relationship(relationship).tags.clone();
+        tags.push(RESPONSE_TAG.to_owned());
+        let order = apply_order(&tags, &blocks, mode);
+        let mut style = self.resolve_relationship(&order);
+        if order.iter().all(|&i| self.relationship_styles[i].style.is_none()) {
+            style.style = Border::Dashed;
+        }
+        style
+    }
+
     /// `relationship_style_of_in(relationship, Mode::Light)`. Serves
     /// P2-12.
     pub fn relationship_style_of(&self, relationship: RelationshipId) -> ResolvedRelationshipStyle {
@@ -2299,6 +2421,15 @@ impl Model {
     // DECISION: an explicitly included element is kept whatever its kind
     // (docs/workspace.dsl includes containers in component views).
     pub fn included(&self, view: &ViewSpec) -> Vec<ElementId> {
+        if view.kind == ViewKind::Dynamic {
+            // P3-213: a dynamic view draws exactly its step ends.
+            let ends: BTreeSet<ElementId> = view
+                .steps
+                .iter()
+                .flat_map(|s| [s.source.value, s.destination.value])
+                .collect();
+            return ends.into_iter().collect();
+        }
         if view.kind == ViewKind::Deployment {
             return self.included_deployment(view);
         }
@@ -3046,6 +3177,26 @@ pub enum ModelErrorKind {
         /// The id as written.
         id: String,
     },
+    /// A dynamic step `a -> b` with no relationship from `a` to `b` in the
+    /// model, direct or implied, with the written technology if any
+    /// (P3-201).
+    // APPROVER: new pub item
+    NoRelationship {
+        /// The source element's name.
+        source: String,
+        /// The destination element's name.
+        destination: String,
+        /// The step's written technology, if any.
+        technology: Option<String>,
+    },
+    /// A dynamic step end the view's scope does not permit (P3-204..P3-207).
+    // APPROVER: new pub item
+    NotPermittedInView {
+        /// The element's name.
+        name: String,
+        /// Why, as Structurizr 6.2.4 words it.
+        reason: String,
+    },
     /// A relationship in a deployment block that Structurizr does not
     /// permit (between two software system or container instances,
     /// P3-107), or a `-/>` with no copied relationship to remove
@@ -3293,6 +3444,33 @@ fn phase_2_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
             f,
             "`{id}` is not a custom element — a custom view can only include elements declared with `element`"
         ),
+        other => phase_3_message(other, f),
+    }
+}
+
+/// The `Display` text of the phase-3 error kinds (SRS 5.1: what, then
+/// what to change).
+// DECISION: split from `phase_2_message` at the phase-3 kinds to keep each
+// under clippy's line limit.
+fn phase_3_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match kind {
+        ModelErrorKind::NoRelationship {
+            source,
+            destination,
+            technology,
+        } => match technology {
+            Some(t) => write!(
+                f,
+                "a relationship between \"{source}\" and \"{destination}\" with technology \"{t}\" does not exist in the model — declare it in `model` or change the step"
+            ),
+            None => write!(
+                f,
+                "a relationship between \"{source}\" and \"{destination}\" does not exist in the model — declare it in `model` or change the step"
+            ),
+        },
+        ModelErrorKind::NotPermittedInView { name, reason } => {
+            write!(f, "\"{name}\": {reason} — change the step or the view's scope")
+        }
         ModelErrorKind::DeploymentRelationship {
             source,
             destination,
@@ -5927,11 +6105,12 @@ impl Builder<'_> {
         view: &mut ViewSpec,
     ) -> Result<(), ModelError> {
         let mut seen_description = false;
+        let mut counter = SequenceCounter::default();
         // `light` then `dark` image sources (P2-320).
         let mut mode_images: [Option<ViewImage>; 2] = [None, None];
         self.each(self.block(statement, head)?, &mut |this, inner| {
             if view.kind == ViewKind::Dynamic && inner.head.is_empty() {
-                this.dynamic_parallel(inner)?;
+                this.dynamic_parallel(inner, view, &mut counter)?;
                 return Ok(());
             }
             let head = this.head(inner)?;
@@ -5962,7 +6141,9 @@ impl Builder<'_> {
                 return Ok(());
             }
             match kind {
-                ViewKind::Dynamic if this.dynamic_step(&head)? => {
+                ViewKind::Dynamic if !is_dynamic_line(&head) => {
+                    let step = this.dynamic_step(&head, view, &mut counter, None)?;
+                    view.steps.push(step);
                     return this.dynamic_step_block(inner);
                 }
                 ViewKind::Image if this.image_source(&head, view)? => {
@@ -6035,30 +6216,45 @@ impl Builder<'_> {
         Ok(scratch.image)
     }
 
-    /// A `{ }` block of parallel steps in a dynamic view (P2-121).
-    fn dynamic_parallel(&mut self, statement: &Statement) -> Result<(), ModelError> {
+    /// A `{ }` block of parallel steps in a dynamic view (P2-121), numbered
+    /// as Structurizr 6.2.4's `DynamicViewParallelSequenceDslContext`
+    /// does (P3-210): the block starts a parallel sequence and ends it
+    /// with "continue numbering" only when it holds no step of its own.
+    fn dynamic_parallel(
+        &mut self,
+        statement: &Statement,
+        view: &mut ViewSpec,
+        counter: &mut SequenceCounter,
+    ) -> Result<(), ModelError> {
         let Some(block) = &statement.block else {
             return Ok(());
         };
+        counter.start_parallel();
+        let mut has_steps = false;
         for inner in &block.statements {
             if inner.head.is_empty() {
-                self.dynamic_parallel(inner)?;
+                self.dynamic_parallel(inner, view, counter)?;
                 continue;
             }
             let head = self.head(inner)?;
             if self.common(inner, &head)? {
                 continue;
             }
-            if !self.dynamic_step(&head)? {
+            if is_dynamic_line(&head) {
                 return Err(self.reject(&head, 0));
             }
+            let step = self.dynamic_step(&head, view, counter, Some(statement.span))?;
+            view.steps.push(step);
+            has_steps = true;
             self.dynamic_step_block(inner)?;
         }
+        counter.end_parallel(!has_steps);
         Ok(())
     }
 
     /// The optional block of a dynamic step: `url` and `properties` lines
-    /// only, read and kept nowhere (dynamic views draw in phase 3).
+    /// only, checked and kept nowhere (`DynamicStep` holds no url or
+    /// properties).
     // DECISION: Structurizr 6.2.4 probed (corpus test.dsl): a step block
     // takes `url "<url>"` and `properties { }`; any other line is
     // refused ("expected: url").
@@ -6084,42 +6280,205 @@ impl Builder<'_> {
     }
 
     /// `[order:] <src> -> <dst> [desc] [tech]` or `[order:] <relationship
-    /// id> [desc]`, ids checked (P2-121). False when `head` is no step.
+    /// id> [desc]` (P2-121), resolved to the relationship it stands for
+    /// and checked against the view's scope (P3-200..P3-209).
     // DECISION: a word ending in `:` first is the order; a word that is no
     // view keyword starts a relationship-id step.
-    fn dynamic_step(&self, head: &Head<'_>) -> Result<bool, ModelError> {
+    fn dynamic_step(
+        &self,
+        head: &Head<'_>,
+        view: &ViewSpec,
+        counter: &mut SequenceCounter,
+        parallel: Option<Span>,
+    ) -> Result<DynamicStep, ModelError> {
         let o = usize::from(head.kind(0) == Some(TokenKind::Word) && head.text(0).ends_with(':'));
         if head.len() <= o {
             return Err(self.missing(head, "step"));
         }
-        if head.kind(o + 1) == Some(TokenKind::Arrow) {
-            if head.len() < o + 3 {
-                return Err(self.missing(head, "destination"));
-            }
-            self.view_element(head, o)?;
-            self.view_element(head, o + 2)?;
-            self.strings(head, "->", o + 3, 2)?;
-            return Ok(true);
+        let (source, destination, relationship, response, description, technology) =
+            if head.kind(o + 1) == Some(TokenKind::Arrow) {
+                if head.len() < o + 3 {
+                    return Err(self.missing(head, "destination"));
+                }
+                let source = self.view_element(head, o)?;
+                let destination = self.view_element(head, o + 2)?;
+                let mut texts = self.strings(head, "->", o + 3, 2)?.into_iter();
+                let (description, technology) = (texts.next(), texts.next());
+                let tech = technology.as_ref().map(|t| t.value.as_str());
+                let Some((relationship, response)) = self.step_or_response(view, source.value, destination.value, tech)
+                else {
+                    return Err(self.error(
+                        ModelErrorKind::NoRelationship {
+                            source: self.model.element(source.value).name.value.clone(),
+                            destination: self.model.element(destination.value).name.value.clone(),
+                            technology: tech.map(str::to_owned),
+                        },
+                        head.span_of(o, o + 2),
+                    ));
+                };
+                (source, destination, relationship, response, description, technology)
+            } else {
+                if head.kind(o) != Some(TokenKind::Word) {
+                    return Err(self.invalid(head, "dynamic", o));
+                }
+                let Some(&relationship) = self.relationship_keys.get(&head.text(o).to_ascii_lowercase()) else {
+                    return Err(self.error(
+                        ModelErrorKind::UndeclaredId {
+                            id: head.text(o).into(),
+                        },
+                        head.span(o),
+                    ));
+                };
+                let description = self.strings(head, "dynamic", o + 1, 1)?.into_iter().next();
+                let r = self.model.relationship(relationship);
+                let span = head.span(o);
+                (
+                    Spanned { value: r.source.value, span },
+                    Spanned { value: r.destination.value, span },
+                    relationship,
+                    false,
+                    description,
+                    None,
+                )
+            };
+        self.check_step_end(view, source)?;
+        self.check_step_end(view, destination)?;
+        let written = (o == 1).then(|| head.text(0).trim_end_matches(':').to_owned());
+        let order = counter.next(written.as_deref());
+        Ok(DynamicStep {
+            source,
+            destination,
+            relationship,
+            description,
+            technology,
+            order,
+            written_order: (o == 1).then(|| head.span(0)),
+            parallel,
+            response,
+            span: head.span_of(0, head.len() - 1),
+        })
+    }
+
+    /// The relationship a step from `source` to `destination` stands for,
+    /// and whether the step is a response (P3-201), as Structurizr 6.2.4's
+    /// `DynamicView.add` decides: the forward relationship
+    /// (`step_relationship`) if any, else the one from `destination` to
+    /// `source` (with the written technology, if any) when an earlier
+    /// step of the view already stands for it, as a response.
+    // DECISION: the reverse lookup goes through `step_relationship` too, so
+    // an implied reverse relationship counts as 6.2.4's efferent implied
+    // relationships do.
+    fn step_or_response(
+        &self,
+        view: &ViewSpec,
+        source: ElementId,
+        destination: ElementId,
+        technology: Option<&str>,
+    ) -> Option<(RelationshipId, bool)> {
+        if let Some(r) = self.step_relationship(source, destination, technology) {
+            return Some((r, false));
         }
-        if o == 0 && DYNAMIC_LINES.iter().any(|k| head.is_keyword(0, k)) {
-            return Ok(false);
-        }
-        if head.kind(o) != Some(TokenKind::Word) {
-            return Err(self.invalid(head, "dynamic", o));
-        }
-        if !self
-            .relationship_keys
-            .contains_key(&head.text(o).to_ascii_lowercase())
-        {
-            return Err(self.error(
-                ModelErrorKind::UndeclaredId {
-                    id: head.text(o).into(),
+        let r = self.step_relationship(destination, source, technology)?;
+        view.steps.iter().any(|s| s.relationship == r).then_some((r, true))
+    }
+
+    /// The relationship a step from `source` to `destination` stands for
+    /// (P3-201): the first declared from `source` to `destination`, or
+    /// implied between them (a relationship between their descendants,
+    /// P2-7), in declaration order; with a written technology, only one
+    /// with exactly that technology, as Structurizr 6.2.4 selects
+    /// (probed: "a relationship between A and B with technology T does
+    /// not exist").
+    // DECISION: declaration order mixes direct and implied candidates, as
+    // Structurizr creates an implied relationship when the relationship
+    // it comes from is declared and returns the first efferent one.
+    fn step_relationship(
+        &self,
+        source: ElementId,
+        destination: ElementId,
+        technology: Option<&str>,
+    ) -> Option<RelationshipId> {
+        let model = &self.model;
+        let within = |e: ElementId, ancestor: ElementId| e == ancestor || model.is_inside(e, ancestor);
+        let related = source == destination
+            || model.is_inside(source, destination)
+            || model.is_inside(destination, source);
+        model
+            .relationships
+            .iter()
+            .filter(|r| {
+                technology.is_none_or(|t| r.technology.as_ref().is_some_and(|x| x.value == t))
+            })
+            .find(|r| {
+                let (s, d) = (r.source.value, r.destination.value);
+                (s == source && d == destination)
+                    || (!related
+                        && r.implied_relationships != ImpliedRelationships::False
+                        && within(s, source)
+                        && within(d, destination))
+            })
+            .map(|r| r.id)
+    }
+
+    /// The scope rules of Structurizr 6.2.4's `DynamicView` (P3-204..P3-207).
+    // DECISION: a custom element passes every scope, as 6.2.4 returns
+    // early for a `CustomElement`.
+    // DECISION: 6.2.4 also refuses an element whose parent or child is
+    // already in the view (`checkParentAndChildrenHaveNotAlreadyBeenAdded`);
+    // the SRS does not ask for it and c4rizer draws both (a difference).
+    fn check_step_end(&self, view: &ViewSpec, end: Spanned<ElementId>) -> Result<(), ModelError> {
+        let element = self.model.element(end.value);
+        let refuse = |reason: String| {
+            Err(self.error(
+                ModelErrorKind::NotPermittedInView {
+                    name: element.name.value.clone(),
+                    reason,
                 },
-                head.span(o),
+                end.span,
+            ))
+        };
+        if element.kind == ElementKind::Custom {
+            return Ok(());
+        }
+        let Some(scope) = view.scope.element() else {
+            // P3-206: `dynamic *`.
+            if matches!(element.kind, ElementKind::Person | ElementKind::SoftwareSystem) {
+                return Ok(());
+            }
+            return refuse("only people and software systems can be added to this dynamic view".to_owned());
+        };
+        let scope_element = self.model.element(scope);
+        // P3-207, and P3-205's "other than the one holding C".
+        if end.value == scope || (scope_element.kind == ElementKind::Container && scope_element.parent == Some(end.value)) {
+            return refuse("is already the scope of this view and cannot be added to it".to_owned());
+        }
+        match element.kind {
+            ElementKind::Person | ElementKind::SoftwareSystem | ElementKind::Container => return Ok(()),
+            ElementKind::Component => {}
+            // P3-204, P3-205 list the kinds a scoped view takes; deployment
+            // elements (deployment-view) are not among them.
+            // DECISION: the wording is c4rizer's (not probed against 6.2.4),
+            // in the style of the P3-206 sentence.
+            _ => {
+                return refuse(
+                    "only people, software systems, containers and components can be added to a dynamic view"
+                        .to_owned(),
+                );
+            }
+        }
+        if scope_element.kind == ElementKind::SoftwareSystem {
+            // P3-204.
+            return refuse("components can't be added to a dynamic view when the scope is a software system".to_owned());
+        }
+        if element.parent != Some(scope) {
+            // P3-205. DECISION: 6.2.4 lets a component of another container
+            // in; the approved SRS sentence refuses it (a difference).
+            return refuse(format!(
+                "only components of \"{}\" can be added to this dynamic view",
+                scope_element.name.value
             ));
         }
-        self.strings(head, "dynamic", o + 1, 1)?;
-        Ok(true)
+        Ok(())
     }
 
     /// `plantuml|mermaid|kroki|image <source>` in an image view, kept in
@@ -7197,8 +7556,89 @@ impl Builder<'_> {
 type BoxLine = (Spanned<ElementId>, Spanned<i32>, Spanned<i32>);
 
 
-/// The view lines a dynamic view takes besides its steps.
+/// True when `head` is one of `DYNAMIC_LINES`, not a step.
+fn is_dynamic_line(head: &Head<'_>) -> bool {
+    let o = usize::from(head.kind(0) == Some(TokenKind::Word) && head.text(0).ends_with(':'));
+    o == 0
+        && head.kind(1) != Some(TokenKind::Arrow)
+        && DYNAMIC_LINES.iter().any(|k| head.is_keyword(0, k))
+}
+
+/// The sequence counter of a dynamic view: Structurizr 6.2.4's
+/// `SequenceNumber` with its `SequenceCounter` and
+/// `ParallelSequenceCounter` (P3-208..P3-210).
+struct SequenceCounter {
+    /// The counter stack: the view's counter first, one per open parallel
+    /// block after it; each holds its last number and whether it was
+    /// incremented.
+    stack: Vec<(i64, bool)>,
+}
+
+impl Default for SequenceCounter {
+    fn default() -> Self {
+        SequenceCounter {
+            stack: vec![(0, false)],
+        }
+    }
+}
+
+impl SequenceCounter {
+    /// The next step's number: the written order if any, else the
+    /// counter (P3-208, P3-209).
+    // DECISION: P3-209 as approved: an integer written order sets the
+    // counter, so the following plain steps continue from it. Structurizr
+    // 6.2.4 leaves its counter alone (probed `w`: `u->a; 5: a->b; b->t`
+    // numbers 1, 5, 3); listed as a difference.
+    // DECISION: a non-integer written order (`2a:`) still uses up one
+    // count, as 6.2.4 calls `getNext` before `setOrder`; P3-209 is silent.
+    fn next(&mut self, written: Option<&str>) -> String {
+        let top = self.stack.last_mut().expect("the view's counter is never popped");
+        top.0 += 1;
+        top.1 = true;
+        match written {
+            Some(w) => {
+                if let Ok(n) = w.parse::<i64>() {
+                    top.0 = n;
+                }
+                w.to_owned()
+            }
+            None => top.0.to_string(),
+        }
+    }
+
+    /// `startParallelSequence`: a counter starting from the current one.
+    fn start_parallel(&mut self) {
+        let from = self.stack.last().map_or(0, |t| t.0);
+        self.stack.push((from, false));
+    }
+
+    /// `endParallelSequence(continue)`: back to the parent counter; with
+    /// `continue`, the parent takes the block's number, plus one when the
+    /// block itself counted nothing.
+    fn end_parallel(&mut self, continue_numbering: bool) {
+        if self.stack.len() < 2 {
+            return;
+        }
+        let (seq, incremented) = self.stack.pop().expect("checked above");
+        if continue_numbering {
+            let parent = self.stack.last_mut().expect("checked above");
+            parent.0 = seq;
+            if !incremented {
+                parent.0 += 1;
+                parent.1 = true;
+            }
+        }
+    }
+}
+
+/// The view lines a dynamic view takes besides its steps. `at`, `size`,
+/// `paperSize` and `line` are the c4rizer layout lines the editor writes
+/// (DSL-9, P2-701, P2-708).
 const DYNAMIC_LINES: &[&str] = &[
+    "at",
+    "size",
+    "papersize",
+    "line",
     "autolayout",
     "default",
     "description",
@@ -7268,6 +7708,7 @@ fn new_view(
         properties: Vec::new(),
         filter: None,
         image: None,
+        steps: Vec::new(),
         default: None,
         paper_size: None,
         lines: Vec::new(),
@@ -7330,6 +7771,10 @@ struct StyleKey<'m> {
 // DECISION: B styles-themes 10a/10b: for one tag a `light`/`dark` block
 // beats a top-level one wherever each is written; theme styles carry no
 // mode and apply in both.
+/// The tag the Structurizr renderer adds to a response line's
+/// relationship for its style lookup (P3-201).
+const RESPONSE_TAG: &str = "Relationship/Response";
+
 fn apply_order(tags: &[String], blocks: &[StyleKey<'_>], mode: Mode) -> Vec<usize> {
     let mut out = Vec::new();
     for tag in tags {

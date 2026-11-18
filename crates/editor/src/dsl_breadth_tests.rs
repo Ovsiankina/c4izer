@@ -14,7 +14,8 @@ use crate::testutil::TempDir;
 use crate::worker::{self, ExportFormat, ViewRef};
 
 /// A dynamic view first, then a clean context view, then a deployment
-/// view.
+/// view. Every kind is drawn since dynamic-view (P3-200) and
+/// deployment-view (P3-2), so no view of it is unsupported any more.
 const UNSUPPORTED: &str = r#"workspace "Shop" {
     model {
         customer = person "Customer" "Buys things."
@@ -22,6 +23,7 @@ const UNSUPPORTED: &str = r#"workspace "Shop" {
             web = container "Web" "Serves pages." "Rust"
         }
         customer -> shop "Buys from"
+        customer -> web "Browses"
         live = deploymentEnvironment "Live" {
             node = deploymentNode "Node" {
                 containerInstance web
@@ -148,8 +150,9 @@ fn with_include(tag: &str) -> (TempDir, PathBuf, PathBuf) {
     (dir, root, people)
 }
 
-/// The view list shows an unsupported view marked "not yet supported";
-/// selecting it draws nothing and changes no file.
+/// The view list marks no view "not yet supported" now that every kind
+/// is drawn; selecting the dynamic view draws it (formerly P2-123's
+/// unsupported case).
 #[test]
 fn p2_123_view_list_marks_unsupported() {
     let dir = TempDir::new("p2-123-list");
@@ -159,70 +162,44 @@ fn p2_123_view_list_marks_unsupported() {
     let views = shell.s.views();
     let labels: Vec<String> = views.iter().map(crate::app::view_label).collect();
     assert_eq!(views.len(), 3);
-    assert!(labels[0].contains("not yet supported"), "{labels:?}");
-    assert!(!labels[1].contains("not yet supported"), "{labels:?}");
-    // deployment-view draws deployment views (P3-2).
-    assert!(!labels[2].contains("not yet supported"), "{labels:?}");
+    // dynamic-view (P3-200) and deployment-view (P3-2) draw both.
+    assert!(labels.iter().all(|l| !l.contains("not yet supported")), "{labels:?}");
     assert!(labels[0].starts_with("Checkout flow"), "{labels:?}");
-    // Selecting it opens it with nothing drawn and nothing written.
     shell.event(Event::Command(Command::ShowView(declared("flow"))));
     assert_eq!(shell.s.view, Some(declared("flow")));
-    assert!(shell.s.scene().is_none());
-    assert!(shell.s.draw_list().scene.is_none());
-    // A gesture or an export on it writes nothing either.
-    shell.s.selection.insert(Selected::Title);
-    shell.key(Key::Enter);
-    shell.event(Event::Text("Renamed".to_owned()));
-    shell.key(Key::Enter);
-    shell.event(Event::Command(Command::ExportView(ExportFormat::Svg)));
-    assert!(shell.writes.is_empty(), "{:?}", shell.writes);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), UNSUPPORTED);
-    // Back to a drawn view draws again.
-    shell.event(Event::Command(Command::ShowView(declared("ctx"))));
     assert!(shell.s.scene().is_some());
+    shell.event(Event::Command(Command::ShowView(declared("live"))));
+    assert!(shell.s.scene().is_some());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), UNSUPPORTED);
+    assert!(shell.writes.is_empty(), "{:?}", shell.writes);
 }
 
 /// At startup and in the EDIT-27 fallback the editor opens the first
-/// supported view, never an unsupported one.
+/// declared view; every kind is drawn now, so that is the dynamic view.
 #[test]
 fn p2_123_never_opens_unsupported_view_by_itself() {
     let dir = TempDir::new("p2-123-open");
     let path = dir.join("shop.dsl");
     std::fs::write(&path, UNSUPPORTED).unwrap();
     let mut shell = Shell::open(&path);
-    assert_eq!(shell.s.view, Some(declared("ctx")), "startup skips the dynamic view");
+    assert_eq!(shell.s.view, Some(declared("flow")), "startup opens the first view");
     assert!(shell.s.scene().is_some());
     let model = shell.s.doc.as_ref().unwrap().parsed.as_ref().unwrap().model.clone();
-    assert_eq!(initial_view(&model, None), Some(declared("ctx")));
-    // A remembered unsupported view is not reopened by itself.
-    assert_eq!(initial_view(&model, Some(&declared("flow"))), Some(declared("ctx")));
-    // EDIT-27: the open view disappears; the first supported view opens.
-    let without_ctx = UNSUPPORTED.replace(
-        "        systemContext shop \"ctx\" \"Shop context\" {\n            include *\n        }\n",
+    assert_eq!(initial_view(&model, None), Some(declared("flow")));
+    // A remembered view is reopened, whatever its kind.
+    assert_eq!(initial_view(&model, Some(&declared("live"))), Some(declared("live")));
+    // EDIT-27: the open view disappears; the first remaining view opens.
+    let without_flow = UNSUPPORTED.replace(
+        "        dynamic shop \"flow\" \"Checkout flow\" {\n            customer -> web \"Opens the shop\"\n        }\n",
         "",
     );
-    let changed = without_ctx.replace(
-        "        deployment * live \"live\" {\n            include *\n        }\n",
-        "        deployment * live \"live\" {\n            include *\n        }\n        container shop \"c2\" \"Inside\" {\n            include *\n        }\n",
-    );
-    std::fs::write(&path, &changed).unwrap();
+    assert_ne!(without_flow, UNSUPPORTED);
+    std::fs::write(&path, &without_flow).unwrap();
     shell.event(Event::File(FileEvent::Changed {
-        hash: files::hash(changed.as_bytes()),
-        text: changed.clone(),
+        hash: files::hash(without_flow.as_bytes()),
+        text: without_flow.clone(),
     }));
-    // deployment-view draws deployment views (P3-2): `live` is now the
-    // first supported view.
-    assert_eq!(shell.s.view, Some(declared("live")));
-    // With no supported view declared, the system context default view
-    // of the first software system opens (a drawn view).
-    let only_flow = without_ctx.replace("        deployment * live \"live\" {\n            include *\n        }\n", "");
-    std::fs::write(&path, &only_flow).unwrap();
-    shell.event(Event::File(FileEvent::Changed {
-        hash: files::hash(only_flow.as_bytes()),
-        text: only_flow.clone(),
-    }));
-    let view = shell.s.view.clone().expect("a view");
-    assert!(matches!(view, ViewRef::Default { .. }), "{view:?}");
+    assert_eq!(shell.s.view, Some(declared("ctx")));
     assert!(shell.s.scene().is_some());
 }
 
@@ -305,8 +282,8 @@ fn p2_141_own_write_to_included_file_ignored() {
     assert_eq!(shell.name_of("customer"), "Customer");
 }
 
-/// "Export all views" (EDIT-7) skips unsupported views and writes no
-/// file for them.
+/// "Export all views" (EDIT-7) writes every view now that every kind
+/// is drawn (dynamic-view P3-200, deployment-view P3-2).
 #[test]
 fn p2_180_export_all_skips_unsupported() {
     let dir = TempDir::new("p2-180");
@@ -316,10 +293,13 @@ fn p2_180_export_all_skips_unsupported() {
     let folder = dir.join("out");
     std::fs::create_dir_all(&folder).unwrap();
     let targets = crate::app::export_all_targets(&shell.s, &folder, ExportFormat::Svg);
-    // deployment-view draws deployment views (P3-2): `live` is exported.
     assert_eq!(
         targets,
-        [(declared("ctx"), folder.join("ctx.svg")), (declared("live"), folder.join("live.svg"))]
+        [
+            (declared("flow"), folder.join("flow.svg")),
+            (declared("ctx"), folder.join("ctx.svg")),
+            (declared("live"), folder.join("live.svg")),
+        ]
     );
     shell.event(Event::Command(Command::Export {
         targets,
@@ -330,13 +310,7 @@ fn p2_180_export_all_skips_unsupported() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     written.sort();
-    assert_eq!(written, ["ctx.svg", "live.svg"]);
-    // An export naming an unsupported view anyway writes nothing for it.
-    shell.event(Event::Command(Command::Export {
-        targets: vec![(declared("flow"), folder.join("flow.svg"))],
-        format: ExportFormat::Svg,
-    }));
-    assert!(!folder.join("flow.svg").exists());
+    assert_eq!(written, ["ctx.svg", "flow.svg", "live.svg"]);
 }
 
 /// An error in an included file shows that file's path, line and column

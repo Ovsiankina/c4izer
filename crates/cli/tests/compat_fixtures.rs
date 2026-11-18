@@ -177,12 +177,13 @@ fn p2_15_big_bank_import() {
     assert!(!ats.is_empty());
     assert!(ats.iter().all(|(x, y)| x % 10 == 0 && y % 10 == 0), "on the 10px grid: {ats:?}");
     // Keys read from the pinned files: drawn in both, and skipped.
-    for key in ["SystemLandscape", "SystemContext", "Containers", "Components"] {
+    for key in ["SystemLandscape", "SystemContext", "Containers", "Components", "SignIn"] {
         let view = parsed.model.view(key).expect("view in the file");
         assert!(!view.positions.is_empty(), "{key} gains `at` lines");
     }
     let stdout = text(&out.stdout);
-    for key in ["SignIn", "LiveDeployment", "DevelopmentDeployment", "MainframeBankingSystemFacade"] {
+    assert!(stdout.contains("== SignIn\n   wrote 4 positions\n"), "the dynamic view is positioned:\n{stdout}");
+    for key in ["LiveDeployment", "DevelopmentDeployment", "MainframeBankingSystemFacade"] {
         assert!(stdout.contains(&format!("skipped {key}: ")), "{key} reported skipped:\n{stdout}");
     }
 }

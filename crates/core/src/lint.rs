@@ -708,13 +708,50 @@ impl<'a> Lint<'a> {
 
     /// One finding about one line.
     fn push_line(&mut self, rule: Rule, l: &SceneLine, message: String) {
+        // A dynamic step's finding points at the step line (P3-216).
+        let span = self.step_of(l).map_or_else(|| self.rel_span(l.relationship), |s| s.span);
         self.push(
             rule,
             vec![ModelId::Relationship(l.relationship)],
             vec![ItemKey::Line(l.edge)],
-            vec![self.rel_span(l.relationship)],
+            vec![span],
             message,
         );
+    }
+
+    /// The text a label names in a finding: a dynamic step's drawn label
+    /// (`<number>: <description>`, P3-211), else the relationship's
+    /// description.
+    fn label_text(&self, edge: EdgeId, r: RelationshipId) -> String {
+        match self.scene.lines.iter().find(|l| l.edge == edge).and_then(|l| self.step_of(l)) {
+            Some(step) => {
+                let text = step.description.as_ref().map(|d| d.value.as_str()).or_else(|| self.description(r)).unwrap_or("");
+                format!("{}: {text}", step.order).trim_end().to_owned()
+            }
+            None => self.description(r).unwrap_or("").to_owned(),
+        }
+    }
+
+    /// The span a label finding points at: the dynamic step's line, else
+    /// the relationship.
+    fn label_span(&self, edge: EdgeId, r: RelationshipId) -> Span {
+        self.scene
+            .lines
+            .iter()
+            .find(|l| l.edge == edge)
+            .and_then(|l| self.step_of(l))
+            .map_or_else(|| self.rel_span(r), |s| s.span)
+    }
+
+    /// The dynamic step line `l` draws (`ViewSpec::drawn_steps`), `None`
+    /// on any other view.
+    fn step_of(&self, l: &SceneLine) -> Option<&'a crate::model::DynamicStep> {
+        if self.scene.kind != ViewKind::Dynamic {
+            return None;
+        }
+        let view = self.model.view(&self.scene.key)?;
+        let index = *view.drawn_steps().get(l.edge.0 as usize)?;
+        view.steps.get(index)
     }
 
     /// One finding about one box.
@@ -1011,7 +1048,13 @@ impl<'a> Lint<'a> {
     fn line_labels(&mut self) {
         let scene = self.scene;
         for l in &scene.lines {
-            match self.description(l.relationship) {
+            // P3-216: on a dynamic view, the step's own description, else
+            // its relationship's.
+            let described = match self.step_of(l) {
+                Some(step) => step.description.as_ref().map(|d| d.value.as_str()).or_else(|| self.description(l.relationship)),
+                None => self.description(l.relationship),
+            };
+            match described {
                 d if blank(d) => {
                     let msg = format!("{} has no label", self.ends(l));
                     self.push_line(Rule::NoLabel, l, msg);
@@ -1031,6 +1074,11 @@ impl<'a> Lint<'a> {
     /// L14, once per pair of boxes, at the pair's first line.
     fn two_way(&mut self) {
         let scene = self.scene;
+        // P3-216 (ruling Y1): A -> B with B -> A is a request and its
+        // response on a dynamic view.
+        if scene.kind == ViewKind::Dynamic {
+            return;
+        }
         let mut seen: BTreeSet<(BoxId, BoxId)> = BTreeSet::new();
         for l in &scene.lines {
             let Some(back) = scene
@@ -1202,7 +1250,7 @@ impl<'a> Lint<'a> {
                 .iter()
                 .find(|l| l.edge == lab.edge)
                 .map_or_else(String::new, |l| self.ends(l));
-            let desc = self.description(lab.relationship).unwrap_or("");
+            let desc = self.label_text(lab.edge, lab.relationship);
             match &lab.fit {
                 Fit::Clear => {}
                 Fit::OverLines(covered) => {
@@ -1218,7 +1266,7 @@ impl<'a> Lint<'a> {
                         Rule::LabelOverLine,
                         subjects,
                         items,
-                        vec![self.rel_span(lab.relationship)],
+                        vec![self.label_span(lab.edge, lab.relationship)],
                         format!("label \"{desc}\" ({ends}) covers another line"),
                     );
                 }
@@ -1226,7 +1274,7 @@ impl<'a> Lint<'a> {
                     Rule::LabelNoRoom,
                     vec![ModelId::Relationship(lab.relationship)],
                     vec![ItemKey::Label(lab.edge)],
-                    vec![self.rel_span(lab.relationship)],
+                    vec![self.label_span(lab.edge, lab.relationship)],
                     format!("no room for label \"{desc}\" ({ends})"),
                 ),
             }
@@ -1254,7 +1302,7 @@ impl<'a> Lint<'a> {
                 .iter()
                 .find(|l| l.edge == lab.edge)
                 .map_or_else(String::new, |l| self.ends(l));
-            let desc = self.description(lab.relationship).unwrap_or("");
+            let desc = self.label_text(lab.edge, lab.relationship);
             self.push(
                 Rule::TextFit,
                 vec![ModelId::Relationship(lab.relationship)],

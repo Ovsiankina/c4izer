@@ -44,6 +44,9 @@
 //   by `Edit::RemoveDefaultView` when the view was all it held;
 // - string literals of existing statements (DSL-10), including `""`
 //   placeholders for skipped positional arguments;
+// - the order of two neighbouring step lines of a dynamic view, each
+//   moved whole (`Edit::SwapSteps`, P3-220): bytes move, none are added
+//   or removed;
 // - style property lines (`background`, `color`, `shape`) in an
 //   `element "<tag>"` block;
 // - `element "<tag>"` style blocks and the `styles` block, which lives
@@ -250,6 +253,16 @@ pub enum TextTarget {
         view: String,
         /// Which field.
         field: ViewField,
+    },
+    /// The description literal of a dynamic view's step: the step's own
+    /// text, not the relationship's (P3-218). Writes only that step's
+    /// line.
+    // APPROVER: new pub item
+    Step {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// Index into `model::ViewSpec::steps` (file order).
+        step: u32,
     },
 }
 
@@ -472,6 +485,20 @@ pub enum Edit {
         relationship: RelationshipRef,
         /// On or off, `None` to drop the setting.
         jump: Option<bool>,
+    },
+    /// Swap step `first` of dynamic view `view` with the step after it
+    /// in file order: the two step lines trade places, each keeping its
+    /// bytes, and the indentation of each line's position stays. Refused
+    /// (`InvalidValue`) when either step has a written order or the two
+    /// sit in different parallel blocks (P3-221). Its own inverse
+    /// (EDIT-19). Refines the approved `edit::swap_lines` helper. Serves
+    /// P3-220.
+    // APPROVER: new pub item
+    SwapSteps {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// Index into `model::ViewSpec::steps` of the upper step.
+        first: u32,
     },
 }
 
@@ -736,7 +763,61 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             relationship,
             jump,
         } => set_line(current, view, relationship, LineSetting::Jump(*jump)),
+        Edit::SwapSteps { view, first } => swap_steps(current, view, *first),
     }
+}
+
+/// `Edit::SwapSteps`: swaps the lines of steps `first` and `first + 1`.
+// DECISION: each step's statement bytes move whole; what lies outside
+// the two statements (indentation, line endings, comments on their own
+// lines) stays where it is, so each line keeps the indentation of its
+// place (P3-220).
+fn swap_steps(current: &mut Parsed, view: &str, first: u32) -> Res<Vec<Edit>> {
+    let model = &current.model;
+    let refused = |reason| EditErrorKind::InvalidValue {
+        value: format!("{view} step {first}"),
+        reason,
+    };
+    let upper = step_of(model, view, first)?;
+    let lower = step_of(model, view, first.saturating_add(1))?;
+    if upper.written_order.is_some() || lower.written_order.is_some() {
+        return Err(refused("a step with a written order is never renumbered by a move"));
+    }
+    if upper.parallel != lower.parallel {
+        return Err(refused("a step cannot move across a parallel block's border"));
+    }
+    let file = model.view(view).ok_or_else(|| gone(view))?.span.file;
+    let (a, b) = (upper.span, lower.span);
+    run_in(current, file, |cx| {
+        let (Some(x), Some(y)) = (cx.leaf_holding(a), cx.leaf_holding(b)) else {
+            return Err(refused("its statement was not found"));
+        };
+        let text = |st: &Statement| cx.src[st.span.range()].to_owned();
+        Ok(Plan::Patches(vec![
+            Patch {
+                range: x.span.range(),
+                text: text(y),
+            },
+            Patch {
+                range: y.span.range(),
+                text: text(x),
+            },
+        ]))
+    })?;
+    Ok(vec![Edit::SwapSteps {
+        view: view.to_owned(),
+        first,
+    }])
+}
+
+/// Step `step` of dynamic view `view`.
+fn step_of<'m>(model: &'m model::Model, view: &str, step: u32) -> Res<&'m model::DynamicStep> {
+    model
+        .view(view)
+        .ok_or_else(|| gone(view))?
+        .steps
+        .get(step as usize)
+        .ok_or_else(|| gone(&format!("{view} step {step}")))
 }
 
 /// Applies `patches` to the text of `file` and re-parses `current`
@@ -914,6 +995,21 @@ impl<'a> Ctx<'a> {
             .statements
             .iter()
             .find(|s| s.span.start <= span.start && span.end <= s.span.end)
+    }
+
+    /// The innermost statement holding `span`: a step line inside a view
+    /// or a parallel `{ }` block (P3-218, P3-220).
+    fn leaf_holding(&self, span: Span) -> Option<&'a Statement> {
+        fn find(statements: &[Statement], span: Span) -> Option<&Statement> {
+            let s = statements
+                .iter()
+                .find(|s| s.span.start <= span.start && span.end <= s.span.end)?;
+            match &s.block {
+                Some(block) => find(&block.statements, span).or(Some(s)),
+                None => Some(s),
+            }
+        }
+        find(self.tree.statements(), span)
     }
 
     /// Indices of the head's non-trivia tokens.
@@ -1664,6 +1760,7 @@ fn target_file(model: &model::Model, target: &TextTarget) -> Res<FileId> {
                 .file
         }
         TextTarget::View { view, .. } => model.view(view).ok_or_else(|| gone(view))?.span.file,
+        TextTarget::Step { view, .. } => model.view(view).ok_or_else(|| gone(view))?.span.file,
     })
 }
 
@@ -1768,6 +1865,19 @@ impl<'a> TextField<'a> {
                     ViewField::Title => (v.title.clone(), v.span, Place::Line("title")),
                     ViewField::Subtitle => (v.subtitle.clone(), v.span, Place::Line("subtitle")),
                 }
+            }
+            TextTarget::Step { view, step } => {
+                // P3-218: the step's own description, the first string
+                // after `<src> -> <dst>` or after the relationship id.
+                let st = step_of(model, view, *step)?;
+                let owner = cx.leaf_holding(st.span).ok_or_else(|| refused("its statement was not found"))?;
+                let head = cx.head(owner);
+                let base = match head.iter().position(|&i| cx.token(i).kind == TokenKind::Arrow) {
+                    Some(arrow) => arrow + 2,
+                    None => usize::from(st.written_order.is_some()) + 1,
+                };
+                let place = Place::Positional { base, slot: 0, keep: 0 };
+                (st.description.clone(), owner.span, place)
             }
         };
         let owner = cx.statement(span).ok_or_else(|| refused("its statement was not found"))?;
@@ -2246,7 +2356,7 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
         // EDIT-15 default views are context, container and component
         // views only: a landscape, filtered, custom or image view has no
         // scope element to default from, and dynamic and deployment views
-        // are not drawn in phase 2 (P2-2).
+        // (drawn since phase 3) are no EDIT-15 default.
         ViewKind::SystemLandscape
         | ViewKind::Filtered
         | ViewKind::Custom

@@ -121,9 +121,8 @@ pub fn import_layout(parsed: &Parsed, workspace_json: &str) -> Result<Import, Im
                 continue;
             };
             // DECISION: a file view that holds no `at` lines of its own (a
-            // dynamic view, not drawn; a filtered view, P2-9; an image
-            // view, which has no boxes) is skipped like a JSON view c4rizer
-            // does not draw. Deployment views draw since the
+            // filtered view, P2-9; an image view, which has no boxes) is
+            // skipped like a JSON view c4rizer does not draw. Deployment views draw since the
             // deployment-view row but stay skipped here (approver ruling):
             // `deploymentViews` is in UNDRAWN_ARRAYS, with the notice.
             if !spec.kind.drawable() || matches!(spec.kind, ViewKind::Filtered | ViewKind::Image) {
@@ -137,10 +136,10 @@ pub fn import_layout(parsed: &Parsed, workspace_json: &str) -> Result<Import, Im
 }
 
 /// The JSON view arrays `import` skips, each view with a
-/// `ViewNotDrawable` notice (P2-510): dynamic and image views are not
-/// drawn from positions; deployment views draw but their positions are
-/// not imported (approver ruling).
-const UNDRAWN_ARRAYS: [&str; 3] = ["dynamicViews", "deploymentViews", "imageViews"];
+/// `ViewNotDrawable` notice (P2-510): image views are not drawn from
+/// positions; deployment views draw but their positions are not imported
+/// (approver ruling).
+const UNDRAWN_ARRAYS: [&str; 2] = ["deploymentViews", "imageViews"];
 
 /// The layout kinds of one JSON view that c4rizer cannot hold, each
 /// named once, in this order: view `paperSize` and `dimensions`, then
@@ -165,8 +164,17 @@ fn not_imported(json_view: &Value) -> Vec<&'static str> {
 }
 
 /// The JSON view arrays whose views are matched by key (P2-505).
-const MATCHED_ARRAYS: [&str; 5] =
-    ["systemLandscapeViews", "systemContextViews", "containerViews", "componentViews", "customViews"];
+// DECISION: `dynamicViews` are matched since dynamic views draw and take
+// `at` lines (dynamic-view row, P3-200); only box positions are taken,
+// as for the other kinds (the boxes `view::plan` draws: the step ends).
+const MATCHED_ARRAYS: [&str; 6] = [
+    "systemLandscapeViews",
+    "systemContextViews",
+    "containerViews",
+    "componentViews",
+    "customViews",
+    "dynamicViews",
+];
 
 /// What every view of the JSON shares: its model and element styles.
 struct JsonModel {

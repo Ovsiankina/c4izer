@@ -1160,9 +1160,10 @@ and is dropped from P2-7.
   parses without error with `include`, `exclude`, `autoLayout`,
   `default`, `animation`, `title`, `description` and `properties` in its
   body. A scope or environment that is not declared is a DSL-5 error.
-- **P2-2** A view whose kind has no drawer yet (`dynamic`;
-  `systemLandscape`, `filtered`, `custom` and `image` until their rows
-  land; `deployment` is drawn since deployment-view, P3-2) is in `Model::views` with its key and title.
+- **P2-2** A view whose kind has no drawer yet (`systemLandscape`,
+  `filtered`, `custom` and `image` until their rows land; `deployment`
+  is drawn since deployment-view, P3-2, and `dynamic` since
+  dynamic-view, P3-200) is in `Model::views` with its key and title.
   `pipeline::build_all` lists it in `AllViews::unsupported`, and the
   rest of the file builds as before with no error.
 - **P2-122** For an unsupported view, `c4rizer render` and `c4rizer
@@ -1994,7 +1995,8 @@ Anything taken from memory is marked as such.
   to change>` (SRS 5.1).
 - **P2-505** Views are matched by key. A view in the JSON arrays
   `systemLandscapeViews`, `systemContextViews`, `containerViews`,
-  `componentViews` or `customViews` is paired with the c4rizer view
+  `componentViews`, `customViews` or (since dynamic views draw, P3-200)
+  `dynamicViews` is paired with the c4rizer view
   whose `ViewSpec::key` equals its `key`, compared exactly. A JSON view
   with no c4rizer view of that key is reported as skipped. A c4rizer
   view with no JSON view is left untouched. When a match is on a key
@@ -2042,8 +2044,9 @@ Anything taken from memory is marked as such.
   the report names each kind once per view: relationship `vertices`
   (phase 3, P3-4), relationship `routing` and `position` (P2-12
   `TODO(srs)`), and view `paperSize` and `dimensions`. JSON
-  `dynamicViews`, `deploymentViews` and `imageViews` are reported as
-  skipped, not drawable yet. JSON `filteredViews` hold no positions and
+  `deploymentViews` and `imageViews` are reported as skipped, not
+  positioned (a deployment view draws since P3-2, but its positions
+  are not imported). JSON `filteredViews` hold no positions and
   are ignored, because a c4rizer filtered view takes its base view's
   `at` lines (P2-9). The JSON's `views.configuration.themes` are named
   once and not fetched (P2-13).
@@ -2796,9 +2799,17 @@ and `star`.
   written description and technology (if any), its sequence number and
   its span. `ViewKind::Dynamic` becomes drawable.
 - **P3-201** A step `a -> b` stands for the first-declared relationship
-  from `a` to `b`, which may be implied (P2-7). When there is none, it
-  is an error naming both ends: "a relationship between A and B does not
-  exist in the model" *(probed)*.
+  from `a` to `b`, which may be implied (P2-7). When there is none but
+  there is one from `b` to `a` (with the written technology, if any)
+  that an earlier step of the same view already stands for, the step is
+  a response standing for that relationship: it is numbered like any
+  step, and its line runs from `a` to `b` (the arrow points back along
+  the relationship), dashed unless a relationship style for its tags or
+  for `Relationship/Response` sets `style` *(Structurizr 6.2.4
+  `DynamicView.add`, `RelationshipView.response`; renderer
+  `createArrow`)*. When neither exists, it is an error naming both ends:
+  "a relationship between A and B does not exist in the model"
+  *(probed)*.
 - **P3-202** A step `<relationship id> [desc]` stands for that
   relationship. An id naming no relationship is a DSL-5 error.
 - **P3-203** A step with no description takes the relationship's

@@ -416,8 +416,14 @@ impl App {
                 for other in &d.merged {
                     ui.label(format!("Also: {other}"));
                 }
+                if let Some(step) = &d.step {
+                    // P3-218: number, ends and the relationship it stands for.
+                    ui.label(format!("Step {}: {}", step.order, step.ends));
+                    ui.label(format!("Stands for: {}", step.relationship));
+                }
                 ui.separator();
             }
+            steps_panel(ui, &self.state, &mut command);
             if let Some(panel) = self.state.style_panel() {
                 style_panel(ui, &panel, &mut command);
             }
@@ -601,6 +607,30 @@ impl App {
             || self.state.view.is_none()
             || self.state.doc.as_ref().is_none_or(|d| d.parsed.is_none())
     }
+}
+
+/// The Steps list of a dynamic view (P3-219, P3-220): one row per step in
+/// number order; a click selects the step's line, the arrows move it.
+fn steps_panel(ui: &mut egui::Ui, state: &State, command: &mut impl FnMut(Command)) {
+    let rows = state.steps();
+    if rows.is_empty() {
+        return;
+    }
+    ui.strong("Steps");
+    for row in &rows {
+        ui.horizontal(|ui| {
+            if ui.small_button("↑").on_hover_text("Move this step up").clicked() {
+                command(Command::MoveStep { step: row.step, up: true });
+            }
+            if ui.small_button("↓").on_hover_text("Move this step down").clicked() {
+                command(Command::MoveStep { step: row.step, up: false });
+            }
+            if ui.selectable_label(row.selected, &row.label).clicked() {
+                command(Command::SelectStep(row.step));
+            }
+        });
+    }
+    ui.separator();
 }
 
 /// The style panel's widgets (EDIT-17, EDIT-20).

@@ -201,6 +201,9 @@ pub struct PlanEdge {
     // surface has no field for it. Listed in docs/deferred.md in case the
     // owner wants it pub.
     pub(crate) style_tag: Option<String>,
+    /// The sequence number of the dynamic step the line draws (P3-208..
+    /// P3-212); `None` on every other kind.
+    pub order: Option<String>,
 }
 
 impl PlanEdge {
@@ -444,6 +447,9 @@ pub fn plan(model: &Model, view: &ViewSpec) -> ViewPlan {
 ///
 /// As `plan`.
 pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
+    if view.kind == ViewKind::Dynamic {
+        return dynamic_plan(model, view, mode);
+    }
     if view.kind == ViewKind::Filtered {
         return filtered_plan(model, view, mode);
     }
@@ -480,6 +486,127 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         mode,
         image: None,
     }
+}
+
+/// The plan of a `dynamic` view (P3-3, P3-211..P3-215): one box per
+/// step end, in the order the steps first name them (so `place` reads
+/// the step order, P3-215); one edge per drawn step
+/// (`ViewSpec::drawn_steps`), in step order, standing for the step's
+/// relationship with no lifting (P3-213), its description prefixed with
+/// its number (P3-211); the scope's boundaries (P3-214) and the group
+/// boundaries. A response step (P3-201) is drawn from its own source to
+/// its own destination, back along its relationship, in
+/// `Model::response_style_in`.
+// DECISION: a step with no description at all draws `<number>:`, the
+// Structurizr renderer's `order + ": " + ""` with the trailing space
+// dropped.
+// DECISION: the drawn technology is the step's written one, else the
+// relationship's; a written technology always equals the relationship's,
+// since it selects it (P3-201).
+fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
+    let drawn = view.drawn_steps();
+    let mut order: Vec<ElementId> = Vec::new();
+    for &i in &drawn {
+        let step = &view.steps[i];
+        for e in [step.source.value, step.destination.value] {
+            if !order.contains(&e) {
+                order.push(e);
+            }
+        }
+    }
+    let boxes: Vec<PlanBox> = order
+        .iter()
+        .enumerate()
+        .map(|(i, &element)| plan_box(model, view, index_u32(i), element, mode))
+        .collect();
+    let box_of = |e: ElementId| BoxId(index_u32(order.iter().position(|&x| x == e).unwrap_or_default()));
+    let edges: Vec<PlanEdge> = drawn
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let step = &view.steps[s];
+            let r = model.relationship(step.relationship);
+            let text = step
+                .description
+                .as_ref()
+                .or(r.description.as_ref())
+                .map_or("", |d| d.value.as_str());
+            let description = format!("{}: {text}", step.order).trim_end().to_owned();
+            PlanEdge {
+                id: EdgeId(index_u32(i)),
+                source: box_of(step.source.value),
+                destination: box_of(step.destination.value),
+                relationships: vec![r.id],
+                description: Some(description),
+                technology: step
+                    .technology
+                    .as_ref()
+                    .or(r.technology.as_ref())
+                    .map(|t| t.value.clone()),
+                style: if step.response {
+                    fold_line(model.response_style_in(r.id, mode), view, r.id)
+                } else {
+                    fold_line(model.relationship_style_of_in(r.id, mode), view, r.id)
+                },
+                style_tag: style_tag(model, r.id, mode),
+                order: Some(step.order.clone()),
+            }
+        })
+        .collect();
+    let mut boundaries = dynamic_boundaries(model, view, &boxes, mode);
+    boundaries.extend(group_boundaries(model, view, &boxes, mode));
+    ViewPlan {
+        key: view.key.clone(),
+        kind: view.kind,
+        scope: view.scope.clone(),
+        title: view.drawn_title().map(|t| t.value.clone()),
+        subtitle: view.subtitle.as_ref().map(|t| t.value.clone()),
+        options: view.options(),
+        boxes,
+        edges,
+        boundaries,
+        mode,
+        image: None,
+    }
+}
+
+/// P3-214: a system-scoped dynamic view has one dashed boundary, the
+/// system around its drawn containers; a container-scoped one has the
+/// container's system around every drawn box inside it, then the
+/// container around its drawn components. `dynamic *` has none.
+fn dynamic_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode) -> Vec<Boundary> {
+    let Some(scope) = view.scope.element() else {
+        return Vec::new();
+    };
+    let inside = |of: ElementId| -> Vec<BoxId> {
+        boxes
+            .iter()
+            .filter(|b| is_ancestor(model, of, b.element))
+            .map(|b| b.id)
+            .collect()
+    };
+    let boundary = |of: ElementId, kind_tag: &str| {
+        let members = inside(of);
+        (!members.is_empty()).then(|| Boundary {
+            of: BoundaryOf::Element(of),
+            name: model.element(of).name.value.clone(),
+            members,
+            style: model.boundary_style_in(&["Boundary", kind_tag], mode),
+            instances: None,
+            technology: None,
+        })
+    };
+    let scope_element = model.element(scope);
+    let mut out = Vec::new();
+    if scope_element.kind == ElementKind::Container {
+        if let Some(system) = scope_element.parent {
+            out.extend(boundary(system, "Boundary:SoftwareSystem"));
+        }
+        out.extend(boundary(scope, "Boundary:Container"));
+    } else {
+        out.extend(boundary(scope, "Boundary:SoftwareSystem"));
+    }
+    out
 }
 
 /// The plan of an `image` view (P2-320): no box, line or boundary, only
@@ -580,6 +707,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                     None => model.relationship_style_of_in(winner, mode),
                 },
                 style_tag: style_tag(model, winner, mode),
+                order: None,
             })
         })
         .collect();
@@ -1087,6 +1215,7 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         technology: r.technology.as_ref().map(|t| t.value.clone()),
         style: ResolvedRelationshipStyle::DEFAULT,
         style_tag: None,
+        order: None,
     };
     let mut edges: Vec<PlanEdge> = Vec::new();
     // Lifted relationships per ordered box pair, in relationship order.

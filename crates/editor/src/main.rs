@@ -14,6 +14,8 @@ mod deployment_view_tests;
 #[cfg(test)]
 mod dsl_breadth_tests;
 #[cfg(test)]
+mod dynamic_view_tests;
+#[cfg(test)]
 mod editor_breadth_tests;
 mod files;
 mod history;

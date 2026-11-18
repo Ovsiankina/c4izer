@@ -573,6 +573,12 @@ pub(crate) fn tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>) -> Stri
     if matches!(boundary.of, BoundaryOf::DeploymentNode(_)) {
         return boundary_tag_lines(plan, index, words).join(" ");
     }
+    if plan.kind == ViewKind::Dynamic {
+        // P3-214: the scope's software system first, then (container
+        // scope) the container inside it.
+        let kind = if index == 0 { words.software_system } else { words.container };
+        return format!("{} [{kind}]", boundary.name);
+    }
     let kind = match plan.kind {
         ViewKind::Component => words.container,
         // A filtered view keeps its base view's scope boundary (P2-9): a
@@ -771,7 +777,9 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
         };
         let spots = walk(&line.points);
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
-        let mut best: Option<(Point, Vec<EdgeId>)> = None;
+        // Best so far: the spot, the lines it covers, and whether it sits
+        // on a boundary stroke (only ever true on a dynamic view).
+        let mut best: Option<(Point, Vec<EdgeId>, bool)> = None;
         for c in candidates(&spots, line.joins().is_some(), edge.style.position) {
             label.centre = c;
             let rect = label.px_rect();
@@ -779,17 +787,21 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
                 continue;
             }
             let covered = scene.covered(&rect, edge.id);
-            if covered.is_empty() {
-                best = Some((c, covered));
+            let on_stroke = scene.on_stroke(&rect);
+            if covered.is_empty() && !on_stroke {
+                best = Some((c, covered, on_stroke));
                 break;
             }
-            if best.as_ref().is_none_or(|(_, b)| covered.len() < b.len()) {
-                best = Some((c, covered));
+            if best
+                .as_ref()
+                .is_none_or(|(_, b, s)| (covered.len(), on_stroke) < (b.len(), *s))
+            {
+                best = Some((c, covered, on_stroke));
             }
         }
         (label.centre, label.fit) = match best {
-            Some((c, covered)) if covered.is_empty() => (c, Fit::Clear),
-            Some((c, covered)) => (c, Fit::OverLines(covered)),
+            Some((c, covered, _)) if covered.is_empty() => (c, Fit::Clear),
+            Some((c, covered, _)) => (c, Fit::OverLines(covered)),
             None => (middle(&spots), Fit::NoRoom),
         };
         labels.push(Some(label));
@@ -803,6 +815,9 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
 struct Obstacles {
     boxes: Vec<Rect>,
     tags: Vec<Rect>,
+    /// The four sides of every boundary as thin px bands, on a dynamic
+    /// view only; empty on every other kind.
+    strokes: Vec<Rect>,
     /// Per edge, ascending, the segments drawn for it, in px.
     lines: Vec<(EdgeId, Vec<Segment>)>,
 }
@@ -843,7 +858,32 @@ impl Obstacles {
                 (e.id, segs)
             })
             .collect();
-        Self { boxes, tags, lines }
+        // DECISION: on a dynamic view a label keeps off the dashed scope
+        // boundaries where a spot allows (approver finding on the checkout
+        // render): a spot on a stroke is taken only when every other spot
+        // covers more lines, and it never changes the fit. Limited to
+        // dynamic views so the static views' placement (and the goldens)
+        // stays exactly as before.
+        let strokes = if plan.kind == crate::model::ViewKind::Dynamic {
+            (0..plan.boundaries.len())
+                .filter_map(|i| plan.boundary_rect(i, centres))
+                .flat_map(|r| stroke_bands(&rect_px(&r)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            boxes,
+            tags,
+            strokes,
+            lines,
+        }
+    }
+
+    /// True when the px `rect` lies across a boundary stroke (dynamic
+    /// views only).
+    fn on_stroke(&self, rect: &Rect) -> bool {
+        self.strokes.iter().any(|s| s.overlaps(rect))
     }
 
     /// True when the px `rect` overlaps a box or a boundary tag.
@@ -866,6 +906,23 @@ impl Obstacles {
             .map(|(e, _)| *e)
             .collect()
     }
+}
+
+// DECISION: a label keeps 2px off a boundary stroke, so its white
+// rectangle never cuts the dashes.
+const STROKE_CLEAR_PX: i32 = 2;
+
+/// The four sides of the px rectangle `r` as bands `STROKE_CLEAR_PX`
+/// wide on each side of the stroke.
+fn stroke_bands(r: &Rect) -> [Rect; 4] {
+    let c = STROKE_CLEAR_PX;
+    let band = |x0, y0, x1, y1| Rect::from_corners(Point::new(x0, y0), Point::new(x1, y1));
+    [
+        band(r.min.x - c, r.min.y - c, r.max.x + c, r.min.y + c),
+        band(r.min.x - c, r.max.y - c, r.max.x + c, r.max.y + c),
+        band(r.min.x - c, r.min.y - c, r.min.x + c, r.max.y + c),
+        band(r.max.x - c, r.min.y - c, r.max.x + c, r.max.y + c),
+    ]
 }
 
 /// A grid point in px.

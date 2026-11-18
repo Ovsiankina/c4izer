@@ -1191,9 +1191,9 @@ fn p2_142_hierarchical_ids_scope_deployment_children() {
 fn p2_121_dynamic_view_body_parses() {
     let src = in_workspace(
         SHOP,
-        r#"        dynamic * "signup" "Signing up" {
+        r#"        dynamic shop "signup" "Signing up" {
             1: user -> web "Opens the page"
-            2: web -> db "Stores" "SQL"
+            2: web -> db "Stores"
             browses "Browses again"
             {
                 {
@@ -1214,8 +1214,8 @@ fn p2_121_dynamic_view_body_parses() {
         dynamic shop {
             user -> web
         }
-        dynamic web {
-            web -> db
+        dynamic db {
+            user -> web
         }"#,
     );
     let m = model_of(&src);
@@ -1223,11 +1223,14 @@ fn p2_121_dynamic_view_body_parses() {
     assert_eq!(keys, ["signup", "Dynamic-001", "Dynamic-002"]);
     let v = &m.views[0];
     assert_eq!(v.kind, model::ViewKind::Dynamic);
-    assert!(matches!(v.scope, model::ViewScope::Wildcard(_)));
+    // dynamic-view (P3-204, P3-206): a container step end needs a
+    // system scope, so the view is scoped to `shop`; `*` is covered by
+    // p2_124 and the P2-121 undeclared-id test.
+    assert_eq!(v.scope.element(), m.find("shop"));
     assert_eq!(v.title.as_ref().unwrap().value, "Sign-up flow");
     assert_eq!(v.properties.len(), 1);
     assert_eq!(m.views[1].scope.element(), m.find("shop"));
-    assert_eq!(m.views[2].scope.element(), m.find("web"));
+    assert_eq!(m.views[2].scope.element(), m.find("db"));
 }
 
 /// A dynamic step may carry a `{ url ...; properties { } }` block, as in
@@ -1235,15 +1238,17 @@ fn p2_121_dynamic_view_body_parses() {
 /// probed: "expected: url").
 #[test]
 fn p2_121_dynamic_step_block_takes_url_and_properties() {
+    // dynamic-view (P3-206): a container end needs a system scope, so the
+    // views are scoped to `shop`, as in p2_121_dynamic_view_body_parses.
     let src = in_workspace(
         SHOP,
-        "        dynamic * {\n            user -> web \"Opens\" {\n                url \"https://example.org\"\n                properties {\n                    \"Name\" \"Value\"\n                }\n            }\n            1: user -> web {\n            }\n        }",
+        "        dynamic shop {\n            user -> web \"Opens\" {\n                url \"https://example.org\"\n                properties {\n                    \"Name\" \"Value\"\n                }\n            }\n            1: user -> web {\n            }\n        }",
     );
     let m = model_of(&src);
     assert_eq!(m.views[0].kind, model::ViewKind::Dynamic);
     let e = error_of(&in_workspace(
         SHOP,
-        "        dynamic * {\n            user -> web {\n                tag \"x\"\n            }\n        }",
+        "        dynamic shop {\n            user -> web {\n                tag \"x\"\n            }\n        }",
     ));
     assert_eq!(e.kind, ModelErrorKind::UnknownConstruct { construct: "tag".into() }, "{e:?}");
 }
@@ -1342,7 +1347,7 @@ fn p2_124_generated_keys_for_new_view_kinds() {
             include *
         }
         dynamic * {
-            user -> web
+            user -> shop
         }
         deployment * "Live" {
             include *
@@ -1429,7 +1434,8 @@ fn p2_2_unsupported_view_kinds_in_model_views() {
             (Filtered, "people-free", Some("No people"), true),
             (Custom, "board", Some("Whiteboard"), true),
             (Image, "picture", Some("A picture"), true),
-            (Dynamic, "flow", Some("The flow"), false),
+            // dynamic-view draws dynamic views (P3-200).
+            (Dynamic, "flow", Some("The flow"), true),
             // deployment-view draws deployment views (P3-2).
             (Deployment, "live", Some("Live system"), true),
         ]
@@ -3226,19 +3232,14 @@ fn p2_2_build_all_lists_unsupported_views() {
     let never = std::sync::atomic::AtomicBool::new(false);
     let all = c4rizer_core::pipeline::build_all(&m, &never).unwrap();
     let keys: Vec<&str> = all.views.iter().map(|v| v.plan.key.as_str()).collect();
-    // deployment-view draws `Deployment-001` (P3-2).
-    assert_eq!(keys, ["c2", "Deployment-001"]);
+    // dynamic-view (P3-200) and deployment-view (P3-2) draw both.
+    assert_eq!(keys, ["flow", "c2", "Deployment-001"]);
     let listed: Vec<(&str, Option<&str>, ViewKind)> = all
         .unsupported
         .iter()
         .map(|u| (u.key.as_str(), u.title.as_deref(), u.kind))
         .collect();
-    assert_eq!(
-        listed,
-        [
-            ("flow", Some("Checkout flow"), ViewKind::Dynamic),
-        ]
-    );
+    assert!(listed.is_empty(), "{listed:?}");
     // The drawn view is the same as in a file without the unsupported ones.
     let plain = model_of(&in_workspace(
         SHOP,
@@ -3247,16 +3248,26 @@ fn p2_2_build_all_lists_unsupported_views() {
     let alone = c4rizer_core::pipeline::build_all(&plain, &never).unwrap();
     // Spans differ (the views sit elsewhere in the file), the drawing not.
     assert_eq!(
-        c4rizer_core::export::svg(&all.views[0].scene),
+        c4rizer_core::export::svg(&all.view("c2").expect("built").scene),
         c4rizer_core::export::svg(&alone.views[0].scene)
     );
     assert_eq!(all.has_errors(), alone.has_errors());
     assert!(alone.unsupported.is_empty());
-    // The CLI line text (P2-122, B dsl-breadth 24).
-    assert_eq!(
-        all.unsupported[0].to_string(),
-        "not yet supported: dynamic views are not drawn by this version"
-    );
+    // Every view kind is drawable now (dynamic-view, deployment-view), so
+    // no file reaches the CLI line text (P2-122) any more.
+    for kind in [
+        ViewKind::SystemContext,
+        ViewKind::Container,
+        ViewKind::Component,
+        ViewKind::SystemLandscape,
+        ViewKind::Filtered,
+        ViewKind::Custom,
+        ViewKind::Image,
+        ViewKind::Dynamic,
+        ViewKind::Deployment,
+    ] {
+        assert!(kind.drawable(), "{kind:?}");
+    }
 }
 
 /// `build_view` on a non-drawable key is `BuildError::Unsupported`, never a panic; nothing is planned or routed.
@@ -3266,24 +3277,16 @@ fn p2_2_build_view_on_unsupported_key_is_error() {
     let m = model_of(&shop_with_unsupported_views());
     let never = std::sync::atomic::AtomicBool::new(false);
     let keep = c4rizer_core::place::Keep::default();
-    // deployment-view draws `Deployment-001` (P3-2).
+    // dynamic-view (P3-200) and deployment-view (P3-2) draw both, so
+    // no key of this file is unsupported any more.
+    assert!(c4rizer_core::pipeline::build_view(&m, "flow", &keep, &never).is_ok());
     assert!(c4rizer_core::pipeline::build_view(&m, "Deployment-001", &keep, &never).is_ok());
-    for key in ["flow"] {
-        match c4rizer_core::pipeline::build_view(&m, key, &keep, &never) {
-            Err(BuildError::Unsupported(u)) => {
-                assert_eq!(u.key, key);
-                assert!(!u.kind.drawable());
-            }
-            other => panic!("{key}: {other:?}"),
-        }
-    }
-    // Even a stopped request says unsupported: nothing would be routed.
+    assert!(c4rizer_core::pipeline::build_view(&m, "c2", &keep, &never).is_ok());
+    // A stopped request on a formerly unsupported key is `Stopped` now.
     let stopped = std::sync::atomic::AtomicBool::new(true);
     assert!(matches!(
         c4rizer_core::pipeline::build_view(&m, "flow", &keep, &stopped),
-        Err(BuildError::Unsupported(_))
+        Err(BuildError::Stopped(_))
     ));
-    assert!(c4rizer_core::pipeline::build_view(&m, "c2", &keep, &never).is_ok());
-    let e = c4rizer_core::pipeline::build_view(&m, "flow", &keep, &never).unwrap_err();
-    assert!(e.to_string().contains("not yet supported"), "{e}");
+
 }

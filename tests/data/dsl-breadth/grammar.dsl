@@ -184,6 +184,8 @@ workspace extends grammar/base.dsl {
             {
                 web -> api "Places the order"
             }
+        }
+        dynamic * "estate-flow" "Buying" {
             uses "Buys"
         }
         deployment * live "live" "Live" {

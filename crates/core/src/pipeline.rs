@@ -198,10 +198,10 @@ impl fmt::Display for UnknownView {
 
 impl std::error::Error for UnknownView {}
 
-/// A view c4rizer does not draw yet (`ViewKind::drawable` is false):
-/// `dynamic`, `deployment`, and `systemLandscape`, `filtered`, `custom`
-/// and `image` until landscape-filtered lands. Serves P2-2, P2-122,
-/// P2-123, P2-180.
+/// A view c4rizer does not draw yet (`ViewKind::drawable` is false).
+/// Every phase-2 and phase-3 kind is drawn since the dynamic-view and
+/// deployment-view rows landed, so none is listed today. Serves P2-2,
+/// P2-122, P2-123, P2-180.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnsupportedView {
@@ -700,6 +700,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         properties: Vec::new(),
         filter: None,
         image: None,
+        steps: Vec::new(),
         default: None,
         paper_size: None,
         lines: Vec::new(),
