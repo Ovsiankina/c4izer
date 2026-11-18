@@ -54,7 +54,7 @@ use c4rizer_core::text::Span;
 use c4rizer_core::view::{BoxId, ViewPlan};
 use eframe::egui;
 
-use crate::camera::{Camera, Fit, ScreenPoint};
+use crate::camera::{Camera, ScenePoint, ScreenPoint};
 use crate::state::{DrawList, kind_label};
 use crate::worker::ViewRef;
 
@@ -281,7 +281,8 @@ pub struct Explore {
     pub page: Page,
     /// The search text (P3-503).
     pub query: String,
-    /// The table's sort column and direction, ascending when true.
+    /// The table's sort column and direction, descending when true (so
+    /// the default is the id column, ascending).
     pub sort: (Column, bool),
     /// The selected element (P3-504).
     pub selected: Option<ElementId>,
@@ -509,7 +510,7 @@ impl Explore {
                 }
             })
             .collect();
-        let (column, ascending) = self.sort;
+        let (column, descending) = self.sort;
         // A stable sort: equal cells keep model order.
         rows.sort_by(|a, b| {
             let o = if column == Column::Id {
@@ -517,7 +518,7 @@ impl Explore {
             } else {
                 a.cell(column).to_lowercase().cmp(&b.cell(column).to_lowercase())
             };
-            if ascending { o } else { o.reverse() }
+            if descending { o.reverse() } else { o }
         });
         rows
     }
@@ -826,7 +827,6 @@ impl Explore {
     fn model_row(&mut self, ui: &mut egui::Ui, model: &Model, row: &ModelRow, out: &mut Vec<Action>) {
         let style = model.style_of_in(row.element, self.mode);
         let fill = colour(style.background, if row.matched { 255 } else { 110 });
-        let text = colour(style.color, 255);
         let stroke = colour(style.stroke.unwrap_or_else(|| darker(style.background)), 255);
         let selected = self.selected == Some(row.element);
         #[expect(clippy::cast_precision_loss, reason = "nesting depth is tiny")]
@@ -842,53 +842,16 @@ impl Explore {
                 .stroke(egui::Stroke::new(if selected { 3.0 } else { 1.5 }, stroke))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(8, 5));
-            let response = frame
+            // DECISION: no click sense on the whole frame: it would sit
+            // on top of the row's buttons and take their clicks; the name
+            // and "Usages" select the element.
+            frame
                 .show(ui, |ui| {
                     ui.set_width(inner);
-                    ui.horizontal_wrapped(|ui| {
-                        let open = self.expanded.contains(&row.element);
-                        let arrow = if open { "▾" } else { "▸" };
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new(arrow).color(text)).frame(false))
-                            .on_hover_text("Show the relationships")
-                            .clicked()
-                        {
-                            if open {
-                                self.expanded.remove(&row.element);
-                            } else {
-                                self.expanded.insert(row.element);
-                            }
-                        }
-                        badge(ui, &row.id, egui::Color32::from_gray(70), egui::Color32::WHITE);
-                        ui.label(egui::RichText::new(&row.name).color(text).family(bold()).size(14.0));
-                        ui.label(egui::RichText::new(&row.type_line).color(text).size(11.0));
-                        if row.in_no_view {
-                            badge(ui, "in no view", egui::Color32::from_rgb(0xb0, 0x30, 0x30), egui::Color32::WHITE)
-                                .on_hover_text("No view draws this element (inspection model.element.noview)");
-                        }
-                        ui.add_space(12.0);
-                        for tag in &row.tags {
-                            badge(ui, tag, egui::Color32::from_black_alpha(40), text);
-                        }
-                        ui.add_space(12.0);
-                        if ui.small_button("Usages").clicked() {
-                            self.selected = Some(row.element);
-                        }
-                        if ui.small_button("Reveal in file").on_hover_text("Copy path:line:column").clicked()
-                            && let Some(parsed) = self.parsed()
-                        {
-                            out.push(Action::Copy(reveal_text(&parsed, model.element(row.element).span)));
-                        }
-                    });
-                    if !row.description.is_empty() {
-                        ui.label(egui::RichText::new(&row.description).color(text));
-                    }
-                })
-                .response
-                .interact(egui::Sense::click());
-            if response.clicked() {
-                self.selected = Some(row.element);
-            }
+                    // The frame sits in a horizontal row (the indent):
+                    // its content is laid out top to bottom.
+                    ui.vertical(|ui| self.row_content(ui, model, row, out));
+                });
         });
         if self.expanded.contains(&row.element) {
             let lines = self.relationship_lines(model, row.element);
@@ -900,32 +863,81 @@ impl Explore {
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .show(ui, |ui| {
                         ui.set_width((inner - 24.0).max(100.0));
-                        if lines.is_empty() {
-                            ui.weak("No relationships.");
-                        }
-                        for l in &lines {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(if l.outgoing { "→" } else { "←" });
-                                let desc = if l.description.is_empty() { "—" } else { &l.description };
-                                ui.label(desc);
-                                if !l.technology.is_empty() {
-                                    ui.weak(format!("[{}]", l.technology));
-                                }
-                                ui.label(if l.outgoing { "to" } else { "from" });
-                                let other = model.element(l.other);
-                                if ui.link(&other.name.value).clicked() {
-                                    self.selected = Some(l.other);
-                                }
-                                ui.weak(type_line(model, l.other));
-                                if l.implied {
-                                    badge(ui, "implied", egui::Color32::from_gray(120), egui::Color32::WHITE);
-                                }
-                            });
-                        }
+                        ui.vertical(|ui| {
+                            if lines.is_empty() {
+                                ui.weak("No relationships.");
+                            }
+                            for l in &lines {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(if l.outgoing { "→" } else { "←" });
+                                    let desc = if l.description.is_empty() { "—" } else { &l.description };
+                                    ui.label(desc);
+                                    if !l.technology.is_empty() {
+                                        ui.weak(format!("[{}]", l.technology));
+                                    }
+                                    ui.label(if l.outgoing { "to" } else { "from" });
+                                    let other = model.element(l.other);
+                                    if ui.link(&other.name.value).clicked() {
+                                        self.selected = Some(l.other);
+                                    }
+                                    ui.weak(type_line(model, l.other));
+                                    if l.implied {
+                                        badge(ui, "implied", egui::Color32::from_gray(120), egui::Color32::WHITE);
+                                    }
+                                });
+                            }
+                        });
                     });
             });
         }
         ui.add_space(3.0);
+    }
+
+    /// The lines of one element row: id, name, type, marks, tags and
+    /// buttons, then the description.
+    fn row_content(&mut self, ui: &mut egui::Ui, model: &Model, row: &ModelRow, out: &mut Vec<Action>) {
+        let text = colour(model.style_of_in(row.element, self.mode).color, 255);
+        ui.horizontal_wrapped(|ui| {
+            let open = self.expanded.contains(&row.element);
+            let arrow = if open { "▾" } else { "▸" };
+            if ui
+                .add(egui::Button::new(egui::RichText::new(arrow).color(text)).frame(false))
+                .on_hover_text("Show the relationships")
+                .clicked()
+            {
+                if open {
+                    self.expanded.remove(&row.element);
+                } else {
+                    self.expanded.insert(row.element);
+                }
+            }
+            badge(ui, &row.id, egui::Color32::from_gray(70), egui::Color32::WHITE);
+            let name = egui::Button::new(egui::RichText::new(&row.name).color(text).family(bold()).size(14.0)).frame(false);
+            if ui.add(name).on_hover_text("Show its usages").clicked() {
+                self.selected = Some(row.element);
+            }
+            ui.label(egui::RichText::new(&row.type_line).color(text).size(11.0));
+            if row.in_no_view {
+                badge(ui, "in no view", egui::Color32::from_rgb(0xb0, 0x30, 0x30), egui::Color32::WHITE)
+                    .on_hover_text("No view draws this element (inspection model.element.noview)");
+            }
+            ui.add_space(12.0);
+            for tag in &row.tags {
+                badge(ui, tag, egui::Color32::from_black_alpha(40), text);
+            }
+            ui.add_space(12.0);
+            if ui.small_button("Usages").clicked() {
+                self.selected = Some(row.element);
+            }
+            if ui.small_button("Reveal in file").on_hover_text("Copy path:line:column").clicked()
+                && let Some(parsed) = self.parsed()
+            {
+                out.push(Action::Copy(reveal_text(&parsed, model.element(row.element).span)));
+            }
+        });
+        if !row.description.is_empty() {
+            ui.label(egui::RichText::new(&row.description).color(text));
+        }
     }
 
     /// The usages of the selected element (P3-504).
@@ -975,13 +987,13 @@ impl Explore {
         ui.horizontal(|ui| {
             for (column, w) in Column::ALL.into_iter().zip(widths) {
                 let mark = match self.sort {
-                    (c, true) if c == column => " ▲",
-                    (c, false) if c == column => " ▼",
+                    (c, false) if c == column => " ▲",
+                    (c, true) if c == column => " ▼",
                     _ => "",
                 };
                 let button = egui::Button::new(egui::RichText::new(format!("{}{mark}", column.title())).family(bold()));
                 if ui.add_sized([w, 22.0], button).on_hover_text("Sort by this column").clicked() {
-                    self.sort = if self.sort.0 == column { (column, !self.sort.1) } else { (column, true) };
+                    self.sort = if self.sort.0 == column { (column, !self.sort.1) } else { (column, false) };
                 }
             }
         });
@@ -998,7 +1010,14 @@ impl Explore {
                                 text = format!("{text} (implied)");
                             }
                             let label = egui::Label::new(text.clone()).truncate();
-                            ui.add_sized([w, row_height - 4.0], label).on_hover_text(text);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(w, row_height - 4.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_width(w);
+                                    ui.add(label).on_hover_text(text);
+                                },
+                            );
                         }
                         if ui.small_button("Reveal").on_hover_text("Copy path:line:column").clicked()
                             && let Some(parsed) = self.parsed()
@@ -1032,9 +1051,7 @@ impl Explore {
             g.origin = response.rect.min;
             if !g.fitted && canvas.x > 0.0 {
                 let bounds = points_bounds(&g.positions, 60, 160);
-                if let Some(c) = crate::camera::fit(bounds, canvas, Fit::Content) {
-                    g.camera = c;
-                }
+                g.camera = fit_page(bounds, canvas);
                 g.fitted = true;
             }
             pan_zoom(ui, &response, &mut g.camera, rel);
@@ -1123,9 +1140,7 @@ impl Explore {
         if !t.fitted && canvas.x > 0.0 {
             let pts: Vec<Point> = t.spots.iter().map(|s| s.at).collect();
             let bounds = points_bounds(&pts, 40, label_room(&t.spots));
-            if let Some(c) = crate::camera::fit(bounds, canvas, Fit::Content) {
-                t.camera = c;
-            }
+            t.camera = fit_page(bounds, canvas);
             t.fitted = true;
         }
         pan_zoom(ui, &response, &mut t.camera, rel);
@@ -1352,7 +1367,8 @@ impl Explore {
                     .corner_radius(4.0)
                     .inner_margin(8)
                     .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
+                        // The frame's 8px margins come on top.
+                        ui.set_width((ui.available_width() - 16.0).max(40.0));
                         ui.label(egui::RichText::new(code).monospace());
                     });
                 ui.add_space(4.0);
@@ -1367,7 +1383,7 @@ impl Explore {
                         ui.end_row();
                         for row in rows {
                             for cell in row {
-                                inline(ui, cell);
+                                cell_text(ui, cell);
                             }
                             ui.end_row();
                         }
@@ -1539,6 +1555,28 @@ fn points_bounds(points: &[Point], margin: i32, right: i32) -> Rect {
     Rect::from_corners(Point::new(min.x - margin, min.y - margin), Point::new(max.x + margin + right, max.y + margin))
 }
 
+/// The camera showing `bounds` centred in `canvas`, up to 200% zoom:
+/// graphs and trees are small, so unlike the diagram fit (P2-738, at most
+/// 100%) they may be enlarged to fill the page.
+// DECISION: 200% at most and 20% at least; the wheel goes beyond.
+fn fit_page(bounds: Rect, canvas: ScreenPoint) -> Camera {
+    #[expect(clippy::cast_precision_loss, reason = "layout px fit f32")]
+    let (w, h) = (bounds.width().max(1) as f32, bounds.height().max(1) as f32);
+    let zoom = (canvas.x / w).min(canvas.y / h).clamp(0.2, 2.0);
+    #[expect(clippy::cast_precision_loss, reason = "layout px fit f32")]
+    let (cx, cy) = (
+        (bounds.min.x + bounds.max.x) as f32 / 2.0,
+        (bounds.min.y + bounds.max.y) as f32 / 2.0,
+    );
+    Camera {
+        pan: ScenePoint {
+            x: cx - canvas.x / 2.0 / zoom,
+            y: cy - canvas.y / 2.0 / zoom,
+        },
+        zoom,
+    }
+}
+
 /// The EDIT-28 gestures on a graph or tree canvas: the wheel zooms at the
 /// cursor, middle drag or Space+drag pans (P3-512).
 fn pan_zoom(ui: &egui::Ui, response: &egui::Response, camera: &mut Camera, rel: impl Fn(egui::Pos2) -> ScreenPoint) {
@@ -1604,8 +1642,8 @@ fn status_badge(ui: &mut egui::Ui, status: &str) {
 /// The name shown for a docs owner: the workspace or the element.
 fn owner_name(model: &Model, owner: Option<ElementId>) -> String {
     owner.map_or_else(
-        || model.name.as_ref().map_or_else(|| "Workspace".to_owned(), |n| n.value.clone()),
-        |e| model.element(e).name.value.clone(),
+        || "Workspace".to_owned(),
+        |e| format!("{} {}", model.element(e).name.value, type_line(model, e)),
     )
 }
 
@@ -1636,6 +1674,27 @@ fn inline(ui: &mut egui::Ui, spans: &[markdown::Span]) {
     });
 }
 
+/// A table cell's spans on one line, never wrapped (a grid cell has no
+/// width to wrap in).
+fn cell_text(ui: &mut egui::Ui, spans: &[markdown::Span]) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for s in spans {
+            let mut text = egui::RichText::new(&s.text);
+            if s.strong {
+                text = text.family(bold());
+            }
+            if s.emphasis {
+                text = text.italics();
+            }
+            if s.code {
+                text = text.code();
+            }
+            ui.add(egui::Label::new(text).extend());
+        }
+    });
+}
+
 /// An `AsciiDoc` section: its source in a monospace block under a one-line
 /// note (P3-515).
 fn asciidoc(ui: &mut egui::Ui, text: &str) {
@@ -1645,7 +1704,7 @@ fn asciidoc(ui: &mut egui::Ui, text: &str) {
         .corner_radius(4.0)
         .inner_margin(8)
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width((ui.available_width() - 16.0).max(40.0));
             ui.label(egui::RichText::new(text).monospace());
         });
 }
@@ -1720,7 +1779,7 @@ fn embedded_view(ui: &mut egui::Ui, build: &ViewBuild) {
     let clip = painter.clip_rect();
     #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
     let camera = Camera {
-        pan: crate::camera::ScenePoint {
+        pan: ScenePoint {
             x: scene.bounds.min.x as f32 + (clip.min.x - rect.min.x) / zoom,
             y: scene.bounds.min.y as f32 + (clip.min.y - rect.min.y) / zoom,
         },

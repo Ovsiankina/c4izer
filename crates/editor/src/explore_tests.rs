@@ -277,7 +277,7 @@ fn p3_502_table_sorts_by_every_column() {
     }
     for column in Column::ALL {
         for ascending in [true, false] {
-            e.sort = (column, ascending);
+            e.sort = (column, !ascending);
             let rows = e.table(m);
             let cells: Vec<String> = rows
                 .iter()
