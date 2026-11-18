@@ -9,7 +9,77 @@ use std::fmt::{self, Write as _};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::Loader;
+use super::{FsLoader, Loader};
+
+/// True when `text` starts with `https://`, any case.
+pub(super) fn is_https(text: &str) -> bool {
+    text.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+}
+
+/// True when `text` starts with `http://` or `https://`, any case.
+#[allow(dead_code, reason = "used by the include and theme hooks (network-04, -05)")]
+pub(super) fn is_http_url(text: &str) -> bool {
+    is_https(text) || text.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+}
+
+/// `reference` resolved against the absolute URL `base` (RFC 3986 §5.2,
+/// enough of it for file paths): a reference with a scheme stays as it
+/// is; `//host/..` takes `base`'s scheme; `/path` takes `base`'s origin;
+/// anything else replaces `base`'s last path segment, `.` and `..`
+/// folded (P3-606). The result is never a local path.
+pub(super) fn join_url(base: &str, reference: &str) -> String {
+    let has_scheme = reference
+        .find(':')
+        .is_some_and(|i| i > 0 && !reference[..i].contains(['/', '?', '#']));
+    if has_scheme {
+        return reference.to_owned();
+    }
+    let scheme_end = base.find("://").map_or(0, |i| i + 3);
+    if let Some(rest) = reference.strip_prefix("//") {
+        return format!("{}{rest}", &base[..scheme_end]);
+    }
+    let path_start = base[scheme_end..].find('/').map_or(base.len(), |i| scheme_end + i);
+    let origin = &base[..path_start];
+    let base_path = &base[path_start..];
+    let base_path = &base_path[..base_path.find(['?', '#']).unwrap_or(base_path.len())];
+    let joined = if reference.starts_with('/') {
+        reference.to_owned()
+    } else {
+        let folder = &base_path[..base_path.rfind('/').map_or(0, |i| i + 1)];
+        format!("{}{reference}", if folder.is_empty() { "/" } else { folder })
+    };
+    let (path, tail) = match joined.find(['?', '#']) {
+        Some(i) => joined.split_at(i),
+        None => (joined.as_str(), ""),
+    };
+    let mut segments: Vec<&str> = Vec::new();
+    let parts: Vec<&str> = path.split('/').skip(1).collect();
+    for (i, part) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        match *part {
+            "." => {
+                if last {
+                    segments.push("");
+                }
+            }
+            ".." => {
+                segments.pop();
+                if last {
+                    segments.push("");
+                }
+            }
+            other => segments.push(other),
+        }
+    }
+    format!("{origin}/{}{tail}", segments.join("/"))
+}
+
+/// Seconds after the Unix epoch, now.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 /// The most redirects one fetch follows (P3-605).
 pub const MAX_REDIRECTS: usize = 5;
@@ -278,8 +348,17 @@ impl fmt::Display for FetchEvent {
     /// (<reason>) — using the cached copy fetched <date>` (P3-611); `<url>:
     /// fetch failed (<reason>) and no cached copy exists`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        match self {
+            FetchEvent::Fetched { url, bytes } => write!(f, "fetched {url} ({bytes} bytes)"),
+            FetchEvent::FromCache { url, fetched, reason } => write!(
+                f,
+                "{url}: fetch failed ({reason}) — using the cached copy fetched {}",
+                utc_text(*fetched)
+            ),
+            FetchEvent::Failed { url, reason } => {
+                write!(f, "{url}: fetch failed ({reason}) and no cached copy exists")
+            }
+        }
     }
 }
 
@@ -297,8 +376,11 @@ pub struct NetLoader {
 
 impl fmt::Debug for NetLoader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        f.debug_struct("NetLoader")
+            .field("cache", &self.cache)
+            .field("fetched", &self.memo.keys().collect::<Vec<_>>())
+            .field("events", &self.events)
+            .finish_non_exhaustive()
     }
 }
 
@@ -307,50 +389,100 @@ impl NetLoader {
     /// `cache` (none: no cache).
     #[must_use]
     pub fn new(transport: Box<dyn Transport>, cache: Option<NetCache>) -> NetLoader {
-        let _ = (transport, cache);
-        todo!()
+        NetLoader {
+            transport,
+            cache,
+            memo: BTreeMap::new(),
+            events: Vec::new(),
+        }
+    }
+
+    /// The bytes at `url` over the transport: redirects followed up to
+    /// `MAX_REDIRECTS`, each one HTTPS, a 2xx body up to `MAX_BODY`.
+    /// Errors name the URL and the limit.
+    fn download(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        let mut current = url.to_owned();
+        let mut hops = 0;
+        loop {
+            let response = self.transport.get(&current, MAX_BODY).map_err(|e| {
+                if e.kind() == io::ErrorKind::TimedOut {
+                    io::Error::new(e.kind(), format!("`{current}` timed out after {TIMEOUT_SECS} s"))
+                } else {
+                    io::Error::new(e.kind(), format!("`{current}`: {e}"))
+                }
+            })?;
+            match response.status {
+                200..=299 => {
+                    if response.body.len() as u64 > MAX_BODY {
+                        return Err(io::Error::other(format!(
+                            "`{current}` is larger than 10 MiB, the most c4rizer fetches"
+                        )));
+                    }
+                    return Ok(response.body);
+                }
+                301 | 302 | 303 | 307 | 308 => {
+                    let Some(location) = response.location else {
+                        return Err(io::Error::other(format!(
+                            "`{current}` redirects (HTTP {}) without a Location",
+                            response.status
+                        )));
+                    };
+                    let next = join_url(&current, location.trim());
+                    if !is_https(&next) {
+                        return Err(io::Error::other(format!(
+                            "the redirect from `{current}` to `{next}` is refused: only https:// is fetched"
+                        )));
+                    }
+                    if hops == MAX_REDIRECTS {
+                        return Err(io::Error::other(format!(
+                            "`{url}` redirects more than {MAX_REDIRECTS} times, the most c4rizer follows (stopped at `{next}`; limit: {MAX_REDIRECTS} redirects)"
+                        )));
+                    }
+                    hops += 1;
+                    current = next;
+                }
+                status => {
+                    return Err(io::Error::other(format!("`{current}` answered HTTP status {status}")));
+                }
+            }
+        }
     }
 
     /// Serves these bytes for their URLs without a connection: the
     /// editor's rebuild after a save reuses what the open fetched
     /// (P3-610).
-    pub fn reuse(&mut self, fetched: BTreeMap<String, Vec<u8>>) {
-        let _ = fetched;
-        todo!()
+    pub fn reuse(&mut self, fetched: &BTreeMap<String, Vec<u8>>) {
+        self.memo.extend(fetched.iter().map(|(u, b)| (u.clone(), b.clone())));
     }
 
     /// Every URL this loader served, with its bytes.
     #[must_use]
     pub fn fetched(&self) -> &BTreeMap<String, Vec<u8>> {
-        todo!()
+        &self.memo
     }
 
     /// What each fetch did, in order (P3-620).
     #[must_use]
     pub fn events(&self) -> &[FetchEvent] {
-        todo!()
+        &self.events
     }
 }
 
 impl Loader for NetLoader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
-        let _ = path;
-        todo!()
+        FsLoader.read(path)
     }
 
     fn read_dir(&mut self, path: &Path) -> io::Result<Vec<PathBuf>> {
-        let _ = path;
-        todo!()
+        FsLoader.read_dir(path)
     }
 
     fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
-        let _ = path;
-        todo!()
+        FsLoader.canonicalize(path)
     }
 
     fn env(&self, name: &str) -> Option<String> {
-        let _ = name;
-        todo!()
+        FsLoader.env(name)
     }
 
     /// The bytes at `url` (see the type).
@@ -360,9 +492,52 @@ impl Loader for NetLoader {
     /// `ErrorKind::InvalidInput` for a URL that is not `https://`; any
     /// other failure, with the URL and the limit in the message, when no
     /// cached copy exists.
+    // DECISION: a failed fetch of any kind (no connection, timeout,
+    // non-2xx, a limit, a refused redirect) falls back to the cache; only
+    // a non-HTTPS URL itself is refused before anything else.
+    // DECISION: a cache write failure is not a fetch failure: the bytes
+    // are served and the next failed fetch finds no (or an older) copy.
     fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
-        let _ = url;
-        todo!()
+        if !is_https(url) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("`{url}` is not an https:// URL — c4rizer fetches https:// only"),
+            ));
+        }
+        if let Some(bytes) = self.memo.get(url) {
+            return Ok(bytes.clone());
+        }
+        match self.download(url) {
+            Ok(bytes) => {
+                if let Some(cache) = &self.cache {
+                    let _ = cache.put(url, &bytes, now());
+                }
+                self.events.push(FetchEvent::Fetched {
+                    url: url.to_owned(),
+                    bytes: bytes.len(),
+                });
+                self.memo.insert(url.to_owned(), bytes.clone());
+                Ok(bytes)
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                let cached = self.cache.as_ref().and_then(|c| c.get(url).ok().flatten());
+                if let Some((bytes, fetched)) = cached {
+                    self.events.push(FetchEvent::FromCache {
+                        url: url.to_owned(),
+                        fetched,
+                        reason,
+                    });
+                    self.memo.insert(url.to_owned(), bytes.clone());
+                    return Ok(bytes);
+                }
+                self.events.push(FetchEvent::Failed {
+                    url: url.to_owned(),
+                    reason,
+                });
+                Err(e)
+            }
+        }
     }
 }
 
@@ -403,5 +578,26 @@ impl Transport for HttpsTransport {
     fn get(&mut self, url: &str, limit: u64) -> io::Result<Response> {
         let _ = (url, limit);
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_url;
+
+    /// P3-606: relative references resolve against the fetching URL.
+    #[test]
+    fn join_url_resolves_like_a_browser() {
+        let base = "https://h.test/a/b/c.dsl?x=1";
+        assert_eq!(join_url(base, "d.dsl"), "https://h.test/a/b/d.dsl");
+        assert_eq!(join_url(base, "../d.dsl"), "https://h.test/a/d.dsl");
+        assert_eq!(join_url(base, "./e/f.png"), "https://h.test/a/b/e/f.png");
+        assert_eq!(join_url(base, "../../../../up.dsl"), "https://h.test/up.dsl");
+        assert_eq!(join_url(base, "/root.dsl"), "https://h.test/root.dsl");
+        assert_eq!(join_url(base, "//cdn.test/x.png"), "https://cdn.test/x.png");
+        assert_eq!(join_url(base, "https://o.test/y"), "https://o.test/y");
+        assert_eq!(join_url(base, "http://o.test/y"), "http://o.test/y");
+        assert_eq!(join_url("https://h.test", "x.dsl"), "https://h.test/x.dsl");
+        assert_eq!(join_url("https://h.test:8443/t/theme.json", "icons/i.svg"), "https://h.test:8443/t/icons/i.svg");
     }
 }

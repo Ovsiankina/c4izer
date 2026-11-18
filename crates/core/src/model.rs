@@ -1869,7 +1869,7 @@ pub trait Loader {
     /// when the fetch failed.
     fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
         let _ = url;
-        todo!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the network is off"))
     }
 }
 

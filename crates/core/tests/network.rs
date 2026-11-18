@@ -2,10 +2,73 @@
 //! No test opens a network connection (P3-616): fetching goes through a
 //! test `Loader` or a test `Transport` serving in-memory bytes.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use c4rizer_core::model::{CacheEntry, NetCache, fnv1a, utc_text};
+use c4rizer_core::model::{
+    CacheEntry, FetchEvent, FsLoader, Loader, MAX_BODY, NetCache, NetLoader, NoFiles, Response,
+    Transport, fnv1a, utc_text,
+};
+
+/// What the test transport answers for one URL.
+#[derive(Debug, Clone)]
+enum Route {
+    /// 200 with this body.
+    Body(Vec<u8>),
+    /// A redirect (status, `Location`).
+    Redirect(u16, String),
+    /// Another status, no body.
+    Status(u16),
+    /// The request fails with this kind.
+    Fail(io::ErrorKind),
+}
+
+/// A `Transport` serving `routes` from memory and recording each URL
+/// asked for (P3-616: no connection).
+#[derive(Debug, Clone, Default)]
+struct Fake {
+    routes: BTreeMap<String, Route>,
+    calls: Rc<RefCell<Vec<String>>>,
+}
+
+impl Fake {
+    fn with(routes: &[(&str, Route)]) -> Fake {
+        Fake {
+            routes: routes.iter().map(|(u, r)| ((*u).to_owned(), r.clone())).collect(),
+            calls: Rc::default(),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl Transport for Fake {
+    fn get(&mut self, url: &str, limit: u64) -> io::Result<Response> {
+        self.calls.borrow_mut().push(url.to_owned());
+        let response = |status, location, body: Vec<u8>| Response { status, location, body };
+        match self.routes.get(url) {
+            Some(Route::Body(b)) => {
+                let keep = usize::try_from(limit + 1).unwrap_or(usize::MAX).min(b.len());
+                Ok(response(200, None, b[..keep].to_vec()))
+            }
+            Some(Route::Redirect(status, to)) => Ok(response(*status, Some(to.clone()), Vec::new())),
+            Some(Route::Status(status)) => Ok(response(*status, None, Vec::new())),
+            Some(Route::Fail(kind)) => Err(io::Error::new(*kind, "test transport failure")),
+            None => Ok(response(404, None, Vec::new())),
+        }
+    }
+}
+
+/// A `NetLoader` over `fake`, with `cache` if given.
+fn net(fake: &Fake, cache: Option<NetCache>) -> NetLoader {
+    NetLoader::new(Box::new(fake.clone()), cache)
+}
 
 /// A fresh, empty folder under the system temp dir, removed on drop.
 struct Scratch(PathBuf);
@@ -95,32 +158,137 @@ fn p3_612_cache_list_and_clear() {
 
 #[test]
 fn p3_604_only_https_and_https_redirects() {
-    todo!()
+    let fake = Fake::with(&[
+        ("https://a.test/ok.dsl", Route::Body(b"ok".to_vec())),
+        ("https://a.test/hop", Route::Redirect(302, "/ok.dsl".into())),
+        ("https://a.test/down", Route::Redirect(301, "http://b.test/plain.dsl".into())),
+    ]);
+    let mut loader = net(&fake, None);
+    for url in ["http://a.test/ok.dsl", "ftp://a.test/ok.dsl", "file:///etc/hosts"] {
+        let e = loader.fetch(url).expect_err("not https");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains(url), "{e}");
+    }
+    assert!(fake.calls().is_empty(), "nothing asked of the transport for a non-https URL");
+    assert_eq!(loader.fetch("https://a.test/ok.dsl").expect("https"), b"ok");
+    // A relative redirect resolves against the URL and is followed.
+    assert_eq!(loader.fetch("https://a.test/hop").expect("redirect"), b"ok");
+    // A redirect to a non-HTTPS URL is refused, naming both URLs.
+    let e = loader.fetch("https://a.test/down").expect_err("redirect to http");
+    let text = e.to_string();
+    assert!(text.contains("https://a.test/down") && text.contains("http://b.test/plain.dsl"), "{text}");
+    assert!(!fake.calls().iter().any(|c| c.starts_with("http://")), "{:?}", fake.calls());
 }
 
 #[test]
 fn p3_605_redirect_size_and_time_limits() {
-    todo!()
+    let mut routes: Vec<(String, Route)> = (0..6)
+        .map(|i| (format!("https://a.test/r{i}"), Route::Redirect(307, format!("https://a.test/r{}", i + 1))))
+        .collect();
+    routes.push(("https://a.test/r6".into(), Route::Body(b"end".to_vec())));
+    routes.push(("https://a.test/big".into(), Route::Body(vec![b'x'; usize::try_from(MAX_BODY).unwrap() + 1])));
+    routes.push(("https://a.test/full".into(), Route::Body(vec![b'x'; usize::try_from(MAX_BODY).unwrap()])));
+    routes.push(("https://a.test/slow".into(), Route::Fail(io::ErrorKind::TimedOut)));
+    routes.push(("https://a.test/gone".into(), Route::Status(404)));
+    let refs: Vec<(&str, Route)> = routes.iter().map(|(u, r)| (u.as_str(), r.clone())).collect();
+    let fake = Fake::with(&refs);
+    let mut loader = net(&fake, None);
+    // Five redirects are followed; a sixth is refused.
+    assert_eq!(loader.fetch("https://a.test/r1").expect("5 redirects"), b"end");
+    let e = loader.fetch("https://a.test/r0").expect_err("6 redirects");
+    assert!(e.to_string().contains("https://a.test/r0") && e.to_string().contains("5 redirects"), "{e}");
+    // 10 MiB is accepted, one byte more is refused.
+    assert_eq!(loader.fetch("https://a.test/full").expect("10 MiB").len() as u64, MAX_BODY);
+    let e = loader.fetch("https://a.test/big").expect_err("over 10 MiB");
+    assert!(e.to_string().contains("https://a.test/big") && e.to_string().contains("10 MiB"), "{e}");
+    let e = loader.fetch("https://a.test/slow").expect_err("timeout");
+    assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+    assert!(e.to_string().contains("https://a.test/slow") && e.to_string().contains("10 s"), "{e}");
+    let e = loader.fetch("https://a.test/gone").expect_err("404");
+    assert!(e.to_string().contains("https://a.test/gone") && e.to_string().contains("404"), "{e}");
 }
 
 #[test]
 fn p3_610_fetched_again_each_run_memo_reused() {
-    todo!()
+    let url = "https://a.test/theme.json";
+    let fake = Fake::with(&[(url, Route::Body(b"{}".to_vec()))]);
+    let mut first = net(&fake, None);
+    first.fetch(url).expect("fetch");
+    first.fetch(url).expect("same build");
+    assert_eq!(fake.calls().len(), 1, "one connection per URL per build");
+    let mut second = net(&fake, None);
+    second.fetch(url).expect("next build");
+    assert_eq!(fake.calls().len(), 2, "every build fetches again");
+    // The editor's rebuild after a save reuses what the open fetched.
+    let mut rebuild = net(&fake, None);
+    rebuild.reuse(first.fetched());
+    assert_eq!(rebuild.fetch(url).expect("reused"), b"{}");
+    assert_eq!(fake.calls().len(), 2, "no connection for reused bytes");
+    assert_eq!(first.fetched().get(url).map(Vec::as_slice), Some(&b"{}"[..]));
 }
 
 #[test]
 fn p3_611_failed_fetch_uses_cache_with_date() {
-    todo!()
+    let scratch = Scratch::new("611");
+    let cache = NetCache::new(scratch.path().join("net"));
+    let (cached, fresh, missing) = ("https://a.test/c.json", "https://a.test/f.json", "https://a.test/m.json");
+    cache.put(cached, b"old", 1_700_000_000).expect("seed");
+    let fake = Fake::with(&[
+        (cached, Route::Fail(io::ErrorKind::ConnectionRefused)),
+        (fresh, Route::Body(b"new".to_vec())),
+        (missing, Route::Status(500)),
+    ]);
+    let mut loader = net(&fake, Some(cache.clone()));
+    assert_eq!(loader.fetch(cached).expect("served from cache"), b"old");
+    assert_eq!(loader.fetch(fresh).expect("fetched"), b"new");
+    assert!(loader.fetch(missing).is_err(), "no cached copy: the fetch fails");
+    assert_eq!(cache.get(fresh).expect("stored").map(|(b, _)| b), Some(b"new".to_vec()));
+    let events = loader.events();
+    assert!(matches!(&events[0], FetchEvent::FromCache { url, fetched: 1_700_000_000, .. } if url == cached));
+    let line = events[0].to_string();
+    assert!(line.contains(cached) && line.contains("2023-11-14 22:13:20 UTC"), "{line}");
+    assert!(matches!(&events[2], FetchEvent::Failed { url, .. } if url == missing));
+    assert!(events[2].to_string().contains("fetch failed"), "{}", events[2]);
 }
 
 #[test]
 fn p3_616_loader_fetch_default_is_unsupported() {
-    todo!()
+    /// A test loader serving bytes from memory.
+    struct Memory;
+    impl Loader for Memory {
+        fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+            Err(io::ErrorKind::NotFound.into())
+        }
+        fn read_dir(&mut self, _: &Path) -> io::Result<Vec<PathBuf>> {
+            Err(io::ErrorKind::NotFound.into())
+        }
+        fn canonicalize(&mut self, p: &Path) -> io::Result<PathBuf> {
+            Ok(p.to_path_buf())
+        }
+        fn env(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn fetch(&mut self, _: &str) -> io::Result<Vec<u8>> {
+            Ok(b"bytes".to_vec())
+        }
+    }
+    // A loader that does not implement `fetch` is "network off".
+    for e in [NoFiles.fetch("https://a.test/x.dsl"), FsLoader.fetch("https://a.test/x.dsl")] {
+        assert_eq!(e.expect_err("off").kind(), io::ErrorKind::Unsupported);
+    }
+    assert_eq!(Memory.fetch("https://a.test/x").expect("memory"), b"bytes");
 }
 
 #[test]
 fn p3_620_fetch_events_name_url_and_bytes() {
-    todo!()
+    let fake = Fake::with(&[("https://a.test/i.png", Route::Body(b"abc".to_vec()))]);
+    let mut loader = net(&fake, None);
+    loader.fetch("https://a.test/i.png").expect("fetch");
+    assert_eq!(
+        loader.events(),
+        &[FetchEvent::Fetched { url: "https://a.test/i.png".into(), bytes: 3 }]
+    );
+    assert_eq!(loader.events()[0].to_string(), "fetched https://a.test/i.png (3 bytes)");
 }
 
 #[test]
