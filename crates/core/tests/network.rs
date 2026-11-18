@@ -344,7 +344,15 @@ fn p3_621_default_theme_never_fetched() {
 #[cfg(feature = "network")]
 #[test]
 fn p3_617_https_transport_limits_configured() {
-    todo!()
+    use c4rizer_core::model::HttpsTransport;
+    // Refused before any connection: the real fetcher never speaks plain
+    // HTTP, not even to 127.0.0.1.
+    let mut t = HttpsTransport::new();
+    let e = t.get("http://127.0.0.1:9/x.dsl", MAX_BODY).expect_err("not https");
+    assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    // It plugs into `NetLoader`, which refuses the same before asking it.
+    let mut loader = NetLoader::new(Box::new(HttpsTransport::default()), None);
+    assert_eq!(loader.fetch("http://127.0.0.1:9/x.dsl").expect_err("off").kind(), io::ErrorKind::InvalidInput);
 }
 
 /// Real fetcher against a silent 127.0.0.1 listener: no internet, but a
@@ -353,5 +361,22 @@ fn p3_617_https_transport_limits_configured() {
 #[test]
 #[ignore = "real fetcher, 127.0.0.1 only, waits TIMEOUT_SECS"]
 fn net_p3_605_timeout_on_silent_loopback() {
-    todo!()
+    use c4rizer_core::model::{HttpsTransport, TIMEOUT_SECS};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("addr").port();
+    // Accept and say nothing: the TLS handshake never completes.
+    let hold = std::thread::spawn(move || {
+        let conn = listener.accept();
+        std::thread::sleep(std::time::Duration::from_secs(TIMEOUT_SECS + 3));
+        drop(conn);
+    });
+    let started = std::time::Instant::now();
+    let url = format!("https://127.0.0.1:{port}/theme.json");
+    let mut loader = NetLoader::new(Box::new(HttpsTransport::new()), None);
+    let e = loader.fetch(&url).expect_err("silent server");
+    let took = started.elapsed().as_secs();
+    assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+    assert!(e.to_string().contains(&url) && e.to_string().contains("10 s"), "{e}");
+    assert!((TIMEOUT_SECS - 1..=TIMEOUT_SECS + 2).contains(&took), "took {took} s");
+    hold.join().expect("listener thread");
 }

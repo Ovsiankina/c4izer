@@ -552,8 +552,12 @@ pub struct HttpsTransport {
 #[cfg(feature = "network")]
 impl fmt::Debug for HttpsTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (f, &self.agent);
-        todo!()
+        let config = self.agent.config();
+        f.debug_struct("HttpsTransport")
+            .field("https_only", &config.https_only())
+            .field("max_redirects", &config.max_redirects())
+            .field("timeout", &config.timeouts().global)
+            .finish()
     }
 }
 
@@ -561,8 +565,20 @@ impl fmt::Debug for HttpsTransport {
 impl HttpsTransport {
     /// A transport with the P3-605 limits.
     #[must_use]
+    // DECISION: ureq follows no redirect (`max_redirects(0)` returns the
+    // 3xx response), so `NetLoader` checks every hop for https:// and
+    // counts them; non-2xx statuses come back as responses, not errors.
     pub fn new() -> HttpsTransport {
-        todo!()
+        let config = ureq::Agent::config_builder()
+            .https_only(true)
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(TIMEOUT_SECS)))
+            .user_agent(concat!("c4rizer/", env!("CARGO_PKG_VERSION")))
+            .build();
+        HttpsTransport {
+            agent: ureq::Agent::new_with_config(config),
+        }
     }
 }
 
@@ -576,14 +592,60 @@ impl Default for HttpsTransport {
 #[cfg(feature = "network")]
 impl Transport for HttpsTransport {
     fn get(&mut self, url: &str, limit: u64) -> io::Result<Response> {
-        let _ = (url, limit);
-        todo!()
+        use std::io::Read as _;
+        if !is_https(url) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("`{url}` is not an https:// URL"),
+            ));
+        }
+        let mut response = self.agent.get(url).call().map_err(ureq_error)?;
+        let status = response.status().as_u16();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let mut body = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut body)
+            .map_err(|e| match e.get_ref().and_then(|i| i.downcast_ref::<ureq::Error>()) {
+                Some(ureq::Error::Timeout(_)) => io::Error::new(io::ErrorKind::TimedOut, e.to_string()),
+                _ => e,
+            })?;
+        Ok(Response { status, location, body })
+    }
+}
+
+/// A ureq error as an `io::Error`, a timeout as `ErrorKind::TimedOut`.
+#[cfg(feature = "network")]
+fn ureq_error(e: ureq::Error) -> io::Error {
+    match e {
+        ureq::Error::Timeout(_) => io::Error::new(io::ErrorKind::TimedOut, e.to_string()),
+        ureq::Error::Io(io) => io,
+        other => io::Error::other(other.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::join_url;
+
+    /// P3-605, P3-617: the real transport is HTTPS only, follows no
+    /// redirect itself and stops after `TIMEOUT_SECS`.
+    #[cfg(feature = "network")]
+    #[test]
+    fn https_transport_config() {
+        let t = super::HttpsTransport::new();
+        let config = t.agent.config();
+        assert!(config.https_only());
+        assert_eq!(config.max_redirects(), 0);
+        assert!(!config.http_status_as_error());
+        assert_eq!(config.timeouts().global, Some(std::time::Duration::from_secs(super::TIMEOUT_SECS)));
+    }
 
     /// P3-606: relative references resolve against the fetching URL.
     #[test]
