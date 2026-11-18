@@ -28,7 +28,7 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
                 cLint = component "lint" "Checks a scene against the C4 rules and the crossing budget." "Rust module" "Output"
                 cInspect = component "inspect" "Runs Structurizr's workspace inspections on the model." "Rust module" "Output"
                 cExport = component "export" "Writes a scene as SVG or PNG; writes the views as PlantUML, Mermaid, WebSequenceDiagrams, DOT and Ilograph, the workspace as Structurizr JSON and theme, and a static HTML site." "Rust module" "Output"
-                cImport = component "import" "Turns box positions from a Structurizr workspace JSON into at-line edits." "Rust module" "Entry"
+                cImport = component "import" "Turns box positions and line vertices from a Structurizr workspace JSON into at-line and via-line edits." "Rust module" "Entry"
                 cPipeline = component "pipeline" "Entry points: one view's scene and lint report, or every view." "Rust module" "Entry"
                 cExplore = component "explore" "Model exploration without UI: relationship rows with implied ones, search, in no view, usages, graph layout and tree of a view, decision records." "Rust module" "Entry"
             }
@@ -86,6 +86,8 @@ workspace "c4rizer" "c4rizer exists so C4 diagrams can be written as text in one
         cEdit -> cText "Patches source spans from"
         cEdit -> cModel "Finds edit targets in"
         cView -> cModel "Reads view specs and elements from"
+        cModel -> cView "Checks that each via line names a drawn line with plans of"
+        cEdit -> cView "Finds the drawn line a via edit names with plans of"
         cPlace -> cView "Fills positions into plans of"
         cPlace -> cRoute "Compares candidate layouts by routing them with"
         cPlace -> cLabel "Sizes labels to widen gaps with"

@@ -533,31 +533,19 @@ fn p3_414_json_holds_model_views_and_layout() {
             }
         }
     }
-    // Each drawn line's bends are its relationship view's vertices
-    // (P3-318): C2 of the example routes orthogonally.
+    // A relationship view's vertices are the line's hand-added `via`
+    // points (P3-318, vertices row): C2 of the example routes bent lines
+    // but has no `via` line, so no relationship view carries vertices.
     let (m, all) = load("example.dsl");
     let ours = parse_j(&export::json(&m, &all, None));
     let c2 = all.view("C2").unwrap();
-    let bent: usize = c2.scene.lines.iter().filter(|l| l.points.len() > 2).count();
-    assert!(bent > 0, "C2 has bent lines");
+    assert!(c2.scene.lines.iter().any(|l| l.points.len() > 2), "C2 has bent lines");
     let views = ours.get("views").unwrap().get("containerViews").unwrap().items();
     let json_c2 = views.iter().find(|v| v.get("key").map(J::str) == Some("C2")).unwrap();
-    let with_vertices: Vec<&J> = json_c2
-        .get("relationships")
-        .unwrap()
-        .items()
-        .iter()
-        .filter(|r| r.get("vertices").is_some())
-        .collect();
-    assert_eq!(with_vertices.len(), bent, "one vertices list per bent line");
-    for line in c2.scene.lines.iter().filter(|l| l.points.len() > 2) {
-        let inner: Vec<(f64, f64)> =
-            line.points[1..line.points.len() - 1].iter().map(|p| (f64::from(p.x), f64::from(p.y))).collect();
-        assert!(
-            with_vertices.iter().any(|r| r.get("vertices").unwrap().items().iter().map(|v| (v.get("x").unwrap().num(), v.get("y").unwrap().num())).collect::<Vec<_>>() == inner),
-            "the bends of a line are a relationship view's vertices"
-        );
-    }
+    assert!(
+        json_c2.get("relationships").unwrap().items().iter().all(|r| r.get("vertices").is_none()),
+        "router bends are not written as vertices"
+    );
     // Theme references and properties at every level.
     let (m, all) = load("styles/all_styles.dsl");
     let j = parse_j(&export::json(&m, &all, None));

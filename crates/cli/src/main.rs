@@ -1515,7 +1515,7 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 }
 
 /// `merge -w FILE -l LAYOUT.json [-v KEY] -o OUT` (P3-425..P3-427):
-/// the `at` edits `import-layout` would apply to FILE (matched by
+/// the `at` and `via` edits `import-layout` would apply to FILE (matched by
 /// canonical name, `import::import_layout`), applied in memory and
 /// written to OUT. FILE is only read (P3-426). Reports as
 /// `import-layout` does, then the `wrote` line.
@@ -1528,9 +1528,9 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 // workspace JSON is refused too, as c4rizer never writes JSON (P3-420).
 // DECISION: `-v KEY` naming no view of FILE is refused (exit 2), so a
 // typo never gives an unchanged copy that looks merged.
-// DECISION: `via` lines: `import-layout` writes none yet (vertices row,
-// P3-317), so neither does `merge`; the copy gains what `import-layout`
-// would add, as P3-425 defines it.
+// The copy gains what `import-layout` would add, as P3-425 defines it:
+// the `at` lines and the `via` lines of the layout's relationship
+// vertices (P3-317).
 fn run_merge(
     workspace: &Path,
     layout: &Path,
@@ -1569,7 +1569,10 @@ fn run_merge(
         view.is_none_or(|v| v == key)
             && parsed.model.view(key).is_some_and(|s| s.span.file == FileId::ROOT)
     };
-    imported.edits.retain(|e| matches!(e, edit::Edit::Move { view, .. } if keep(view)));
+    imported.edits.retain(|e| match e {
+        edit::Edit::Move { view, .. } | edit::Edit::SetVia { view, .. } => keep(view),
+        _ => false,
+    });
     imported.views.retain(|v| keep(&v.key));
     imported.notices.retain(|n| n.view.as_deref().is_none_or(keep));
     let merged = if imported.edits.is_empty() {

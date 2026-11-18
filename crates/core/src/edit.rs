@@ -500,6 +500,27 @@ pub enum Edit {
         /// Index into `model::ViewSpec::steps` of the upper step.
         first: u32,
     },
+    /// Set the vertices of one drawn line of `view`: rewrite its `via`
+    /// line, add one after the view's last `at` line (DSL-9 placement:
+    /// else its last `size`, `paperSize` or `line` line, else before the
+    /// closing brace), or remove it with `None`, which returns the line
+    /// to the router (P3-5). The inverse is a `SetVia` with the points
+    /// the line had. Serves P3-310..P3-315.
+    SetVia {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The line's source, a canonical element key.
+        source: String,
+        /// The line's destination, a canonical element key.
+        destination: String,
+        /// In a dynamic view, the step's number (`via <n>: ...`);
+        /// `None` names the lowest-numbered step between those ends, and
+        /// is the only form in other views.
+        order: Option<String>,
+        /// The vertices `(x, y)` px, written as given (the editor snaps
+        /// them to the 10 px grid); `None` or empty removes the line.
+        points: Option<Vec<(i32, i32)>>,
+    },
 }
 
 /// The result of `apply`: the new text and the edits that undo it.
@@ -764,6 +785,13 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             jump,
         } => set_line(current, view, relationship, LineSetting::Jump(*jump)),
         Edit::SwapSteps { view, first } => swap_steps(current, view, *first),
+        Edit::SetVia {
+            view,
+            source,
+            destination,
+            order,
+            points,
+        } => set_via(current, view, source, destination, order.as_deref(), points.as_deref()),
     }
 }
 
@@ -788,12 +816,15 @@ fn swap_steps(current: &mut Parsed, view: &str, first: u32) -> Res<Vec<Edit>> {
     }
     let file = model.view(view).ok_or_else(|| gone(view))?.span.file;
     let (a, b) = (upper.span, lower.span);
+    let (upper_order, lower_order) = (upper.order.clone(), lower.order.clone());
+    let upper_ends = (upper.source.value, upper.destination.value);
+    let lower_ends = (lower.source.value, lower.destination.value);
     run_in(current, file, |cx| {
         let (Some(x), Some(y)) = (cx.leaf_holding(a), cx.leaf_holding(b)) else {
             return Err(refused("its statement was not found"));
         };
         let text = |st: &Statement| cx.src[st.span.range()].to_owned();
-        Ok(Plan::Patches(vec![
+        let mut patches = vec![
             Patch {
                 range: x.span.range(),
                 text: text(y),
@@ -802,7 +833,32 @@ fn swap_steps(current: &mut Parsed, view: &str, first: u32) -> Res<Vec<Edit>> {
                 range: y.span.range(),
                 text: text(x),
             },
-        ]))
+        ];
+        // P3-301: each step's `via <n>:` line follows its statement, so
+        // the vertices stay with their line; renumbered in the same edit.
+        // DECISION: a `via <n>:` line belongs to a swapped step when both
+        // its number and its ends are that step's (as `view::via_edge`
+        // resolves it): in a parallel block one number names several
+        // steps, so the number alone would also catch another step's line.
+        if upper_order != lower_order {
+            let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+            for via in &spec.vias {
+                let Some(order) = &via.order else { continue };
+                let ends = (via.source.value, via.destination.value);
+                let new = if order.value == upper_order && ends == upper_ends {
+                    &lower_order
+                } else if order.value == lower_order && ends == lower_ends {
+                    &upper_order
+                } else {
+                    continue;
+                };
+                patches.push(Patch {
+                    range: order.span.range(),
+                    text: format!("{new}:"),
+                });
+            }
+        }
+        Ok(Plan::Patches(patches))
     })?;
     Ok(vec![Edit::SwapSteps {
         view: view.to_owned(),
@@ -1693,6 +1749,88 @@ fn set_line(current: &mut Parsed, view: &str, relationship: &RelationshipRef, se
                     spec.positions.last().map(|a| a.span),
                 ];
                 insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// The `via` points as written after the line's ends: ` x1 y1 x2 y2 ...`.
+fn via_points(points: &[(i32, i32)]) -> String {
+    use std::fmt::Write as _;
+    points.iter().fold(String::new(), |mut out, (x, y)| {
+        let _ = write!(out, " {x} {y}");
+        out
+    })
+}
+
+/// `SetVia` (P3-310..P3-315): the view's `via` line for the drawn line
+/// from `source` to `destination` (step `order` in a dynamic view),
+/// rewritten after its ends, added after the view's last `via` line (else
+/// its last `at`, last `size`, `paperSize` or last `line` line, else
+/// before the closing brace), or removed for no points.
+// DECISION: a new `via` line goes after the last `via` line when there is
+// one, so a view's `via` lines stay together; the first one goes after
+// the last `at` line (DSL-9 placement, P3-310).
+// DECISION: a rewrite keeps the line's ends as written (`via 2: a -> b`)
+// and replaces only the coordinates, so only that line's bytes change.
+#[allow(clippy::too_many_arguments)]
+fn set_via(
+    current: &mut Parsed,
+    view: &str,
+    source: &str,
+    destination: &str,
+    order: Option<&str>,
+    points: Option<&[(i32, i32)]>,
+) -> Res<Vec<Edit>> {
+    let points = points.filter(|p| !p.is_empty());
+    let line = |cx_model: &model::Model| -> Res<(Option<usize>, crate::view::EdgeId)> {
+        let spec = cx_model.view(view).ok_or_else(|| gone(view))?;
+        let s = find_element(cx_model, source)?;
+        let d = find_element(cx_model, destination)?;
+        let plan = crate::view::plan(cx_model, spec);
+        let named = format!("{source} -> {destination}");
+        let edge = crate::view::line_edge(&plan, s, d, order).ok_or_else(|| gone(&named))?;
+        let existing = spec.vias.iter().position(|v| crate::view::via_edge(&plan, v) == Some(edge));
+        Ok((existing, edge))
+    };
+    let (existing, _) = line(&current.model)?;
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let old = existing.map(|i| spec.vias[i].points.iter().map(|p| p.value).collect::<Vec<_>>());
+    let inverse = vec![Edit::SetVia {
+        view: view.to_owned(),
+        source: source.to_owned(),
+        destination: destination.to_owned(),
+        order: order.map(str::to_owned),
+        points: old,
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let (existing, _) = line(cx.model)?;
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        let existing = existing.map(|i| &spec.vias[i]);
+        Ok(match (existing, points) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(via), None) => {
+                let statement = Ctx::child_holding(block, via.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(statement.span)])
+            }
+            (Some(via), Some(points)) => Plan::Patches(vec![Patch {
+                range: via.destination.span.range().end..via.span.range().end,
+                text: via_points(points),
+            }]),
+            (None, Some(points)) => {
+                let step = order.map_or_else(String::new, |n| format!("{n}: "));
+                let text = one_line(format!("via {step}{source} -> {destination}{}", via_points(points)));
+                let anchors = [
+                    spec.vias.last().map(|v| v.span),
+                    spec.positions.last().map(|a| a.span),
+                    spec.sizes.last().map(|s| s.span),
+                    spec.paper_size.map(|p| p.span),
+                    spec.lines.last().map(|l| l.span),
+                ];
+                insert_after_first(cx, owner, block, &anchors, &text)
             }
         })
     })?;

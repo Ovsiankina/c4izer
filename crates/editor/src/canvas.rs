@@ -331,6 +331,23 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     out
 }
 
+/// The vertex handles of the selected line (P3-311), painted over the
+/// marks: one square per vertex at `handles` (screen px,
+/// `State::vertex_handles`), as a selection mark on that line.
+pub(crate) fn vertex_handle_items(list: &DrawList<'_>, handles: &[ScreenPoint]) -> Vec<PaintItem> {
+    let Some(item) = list.marks.iter().map(|m| m.item).find(|i| matches!(i, ItemKey::Line(_))) else {
+        return Vec::new();
+    };
+    handles
+        .iter()
+        .map(|&centre| PaintItem {
+            source: Source::Mark(item, MarkKind::Selected),
+            primitive: square(centre, HANDLE_PX, SELECTION),
+            opacity: 100,
+        })
+        .collect()
+}
+
 // DECISION: mark colours are dark enough for 4.5:1 against the white
 // page (EDIT-31): 2px strokes need more than the 3:1 WCAG floor for
 // graphics to read at a glance. Selection 6.4:1, hover 5.3:1,

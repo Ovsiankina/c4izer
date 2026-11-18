@@ -351,6 +351,14 @@ impl App {
             if ui.button("Centre").on_hover_text("Centre the diagram or the selected boxes").clicked() {
                 command(Command::Centre);
             }
+            // P3-313: the parity row "Remove all relationship vertices".
+            if ui
+                .button("Remove vertices")
+                .on_hover_text("Remove every hand-added line vertex of this view (one undo step)")
+                .clicked()
+            {
+                command(Command::RemoveAllVertices);
+            }
         });
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -564,6 +572,8 @@ impl App {
         // P2-701: the paper of a view with a canvas size, under the page.
         canvas::paint_page(&painter, &list, self.state.paper_rect());
         canvas::paint(&painter, &canvas::paint_items(&list));
+        // P3-311: the selected line's vertex handles.
+        canvas::paint(&painter, &canvas::vertex_handle_items(&list, &self.state.vertex_handles()));
         let mut out: Vec<Event> = canvas::inputs(ui.ctx(), &response).into_iter().map(Event::Input).collect();
         // P2-723: the tooltip overlay, below the item's bottom-right corner.
         if let (Some(tip), Some(scene)) = (&list.tooltip, list.scene)

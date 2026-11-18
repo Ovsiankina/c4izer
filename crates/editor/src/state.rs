@@ -106,6 +106,7 @@ use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
 mod steps;
+mod vertices;
 pub use steps::StepDetails;
 
 /// Pointer travel below which a press and release is a click, in screen
@@ -429,6 +430,10 @@ pub enum Command {
     ToggleKey,
     /// Open or close the diagram navigator (P2-729).
     Navigator,
+    /// "Remove all vertices": delete every `via` line of the open view,
+    /// one undo step (P3-313).
+    // APPROVER: new pub item
+    RemoveAllVertices,
     /// Select step `n` (index into `ViewSpec::steps`) of the open dynamic
     /// view, from the Steps list (P3-219).
     // APPROVER: new pub item
@@ -604,6 +609,17 @@ pub enum Gesture {
         /// Shift held at the start: add to the selection.
         add: bool,
     },
+    /// Left drag on a vertex handle of the selected line (P3-311).
+    // APPROVER: new pub item
+    DraggingVertex {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+        /// Index of the vertex in the line's vertices.
+        index: usize,
+        /// Every vertex of the line, grid units, the dragged one at its
+        /// current snapped position (the last sent to the worker).
+        vertices: Vec<Point>,
+    },
     /// Middle drag or Space+drag (EDIT-9, EDIT-28).
     Panning {
         /// The last pointer position, screen px.
@@ -741,10 +757,40 @@ pub enum Action {
         /// Index into `ViewSpec::steps` of the upper step.
         first: u32,
     },
+    /// Set, move or remove line vertices, with the boxes moved by the
+    /// same gesture, one batch (P3-310..P3-315).
+    // APPROVER: new pub item
+    Vertices {
+        /// The view.
+        view: ViewRef,
+        /// Boxes moved by the gesture, canonical key to centre px; empty
+        /// for a vertex-only edit.
+        boxes: BTreeMap<String, (i32, i32)>,
+        /// The `via` lines to write, each one line's whole vertex list.
+        vias: Vec<ViaChange>,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
     /// Apply a redo step (EDIT-19).
     Redo(Step),
+}
+
+/// One line's new vertex list, as `edit::Edit::SetVia` names it
+/// (P3-310..P3-315).
+// APPROVER: new pub item
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViaChange {
+    /// The line's source, canonical element key.
+    pub source: String,
+    /// The line's destination, canonical element key.
+    pub destination: String,
+    /// The dynamic step number, `None` in other views.
+    pub order: Option<String>,
+    /// The vertices, px, on the 10 px grid; `None` removes the `via`
+    /// line.
+    pub points: Option<Vec<(i32, i32)>>,
 }
 
 /// A write in flight: the action, and the inverse its batch produced,
@@ -2190,6 +2236,30 @@ impl State {
                 out.extend(elements.iter().map(|e| Edit::ResetStyle { element: e.clone() }));
                 out
             }
+            Action::Vertices {
+                view,
+                boxes,
+                vias,
+                layout,
+            } => {
+                let view = &layout_view(model, view);
+                let mut own: Vec<Edit> = boxes
+                    .iter()
+                    .map(|(element, &centre)| Edit::Move {
+                        view: view.key(),
+                        element: element.clone(),
+                        centre: Some(centre),
+                    })
+                    .collect();
+                own.extend(vias.iter().map(|v| Edit::SetVia {
+                    view: view.key(),
+                    source: v.source.clone(),
+                    destination: v.destination.clone(),
+                    order: v.order.clone(),
+                    points: v.points.clone(),
+                }));
+                layout_batch(model, view, layout, Some(boxes), own)
+            }
             Action::Undo(step) | Action::Redo(step) => rebuild_first_write(parsed, &step.edits),
             Action::SwapSteps { view, first } => vec![Edit::SwapSteps {
                 view: view.key(),
@@ -2857,7 +2927,11 @@ impl State {
     fn cancel_gesture(&mut self) {
         if matches!(
             self.gesture,
-            Gesture::Dragging { .. } | Gesture::Resizing { .. } | Gesture::RubberBand { .. } | Gesture::Pressed { .. }
+            Gesture::Dragging { .. }
+                | Gesture::Resizing { .. }
+                | Gesture::RubberBand { .. }
+                | Gesture::Pressed { .. }
+                | Gesture::DraggingVertex { .. }
         ) {
             self.gesture = Gesture::Idle;
         }
@@ -3150,8 +3224,12 @@ impl State {
             .collect()
     }
 
-    /// Moves boxes to `to` (grid centres) as one step (EDIT-3, EDIT-20).
-    fn write_moves(&mut self, to: &BTreeMap<BoxId, Point>) -> Vec<Effect> {
+    /// Moves boxes to `to` (grid centres) as one step (EDIT-3, EDIT-20);
+    /// with `from` (a drag's start centres), the vertices of every line
+    /// whose two ends moved by the same delta move too, in the same write
+    /// (P3-314).
+    fn write_moves(&mut self, to: &BTreeMap<BoxId, Point>, from: Option<&BTreeMap<BoxId, Point>>) -> Vec<Effect> {
+        let carried = from.map(|f| self.carried_vias(f, to)).unwrap_or_default();
         let (Some(view), Some(scene), Some(model)) = (self.view.clone(), self.scene(), self.scene_model()) else {
             return Vec::new();
         };
@@ -3164,6 +3242,9 @@ impl State {
         }
         if boxes.is_empty() {
             return Vec::new();
+        }
+        if !carried.is_empty() {
+            return self.write_vias(carried, boxes);
         }
         let mut layout = self.layout();
         for (k, c) in &boxes {
@@ -3279,6 +3360,7 @@ impl State {
 
     fn pointer_move(&mut self, at: ScreenPoint) -> Vec<Effect> {
         match self.gesture.clone() {
+            Gesture::DraggingVertex { .. } => self.vertex_drag_to(at),
             Gesture::Idle => {
                 self.hover = self.hit(at);
                 Vec::new()
@@ -3329,11 +3411,14 @@ impl State {
     ) -> Vec<Effect> {
         // P3-420: a move or resize on a workspace JSON says why it is
         // refused, and starts nothing else (no rubber band).
-        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some()) && self.refuse_json() {
+        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some() || self.vertex_under(from).is_some()) && self.refuse_json() {
             self.gesture = Gesture::Idle;
             return Vec::new();
         }
         let read_only = self.read_only();
+        if !read_only && let Some((edge, index)) = self.vertex_under(from) {
+            return self.start_vertex_drag(edge, index, at);
+        }
         if let Some((id, handle)) = handle
             && !read_only
             && let Some(b) = self.scene().and_then(|s| s.boxes.get(id.0 as usize))
@@ -3518,6 +3603,7 @@ impl State {
     fn pointer_up(&mut self, at: ScreenPoint, button: Button) -> Vec<Effect> {
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
+            Gesture::DraggingVertex { edge, vertices, .. } => self.finish_vertex_drag(edge, &vertices),
             Gesture::Pressed {
                 at: from,
                 button: b,
@@ -3527,6 +3613,11 @@ impl State {
             } if b == button => {
                 if distance(from, at) >= CLICK_SLOP_PX && b == Button::Left {
                     return Vec::new();
+                }
+                if b == Button::Left
+                    && let Some(effects) = self.vertex_click(at, mods, hit)
+                {
+                    return effects;
                 }
                 self.click(b, mods, hit)
             }
@@ -3538,7 +3629,7 @@ impl State {
                     return Vec::new();
                 }
                 // The preview stays until the saved file's build arrives.
-                self.write_moves(&to)
+                self.write_moves(&to, Some(&boxes))
             }
             Gesture::Resizing { id, size, .. } => {
                 let (Some(view), Some(scene), Some(model)) = (self.view.clone(), self.scene(), self.model()) else {
@@ -3903,6 +3994,21 @@ impl State {
     // other URL, or none, leaves a status notice naming the item. The
     // URLs in `properties` and docs are not offered (no parity row).
     fn double_click(&mut self, at: ScreenPoint, mods: Modifiers) -> Vec<Effect> {
+        // P3-312: a double click on a handle of the selected line removes
+        // that vertex.
+        if !mods.alt
+            && !mods.shift
+            && !mods.ctrl
+            && let Some((edge, index)) = self.vertex_under(at)
+        {
+            // P3-420: refused with the JSON message on a workspace JSON.
+            if self.refuse_json() {
+                return Vec::new();
+            }
+            if !self.read_only() {
+                return self.remove_vertex(edge, index);
+            }
+        }
         if !mods.alt {
             return self.enter_at(at, mods);
         }
@@ -4026,6 +4132,7 @@ impl State {
     #[expect(clippy::too_many_lines, reason = "one flat arm per command reads best")]
     fn command(&mut self, command: Command) -> Vec<Effect> {
         match command {
+            Command::RemoveAllVertices => self.remove_all_vertices(),
             Command::SelectStep(step) => self.select_step(step),
             Command::MoveStep { step, up } => self.move_step(step, up),
             Command::Open(path) => {
@@ -4068,12 +4175,12 @@ impl State {
             Command::Align(how) => {
                 let rects = self.selected_rects();
                 let to = align_to(&rects, how, self.first_selected_box());
-                self.write_moves(&to)
+                self.write_moves(&to, None)
             }
             Command::Distribute(axis) => {
                 let rects = self.selected_rects();
                 let to = distribute(&rects, axis);
-                self.write_moves(&to)
+                self.write_moves(&to, None)
             }
             Command::Undo => {
                 if self.refuse_json() {
@@ -4489,7 +4596,7 @@ impl State {
             let y = if c.y - hh >= canvas.min.y && c.y + hh <= canvas.max.y { at.y } else { y };
             to.insert(b.id, Point::new(x, y));
         }
-        self.write_moves(&to)
+        self.write_moves(&to, None)
     }
 
     /// "Centre" (P2-704): the selected boxes, else every box, moved by
@@ -4520,7 +4627,7 @@ impl State {
                 (id, Point::new(at.x + dx, at.y + dy))
             })
             .collect();
-        self.write_moves(&to)
+        self.write_moves(&to, None)
     }
 
     /// The box of the first selected element still selected and on
@@ -4833,6 +4940,9 @@ impl State {
                 if let Gesture::Dragging { to, .. } = self.gesture.clone() {
                     self.dragged = Some(build);
                     self.refresh_preview(&to);
+                } else if matches!(self.gesture, Gesture::DraggingVertex { .. }) {
+                    self.preview = Some(build.scene.clone());
+                    self.dragged = Some(build);
                 }
                 Vec::new()
             }

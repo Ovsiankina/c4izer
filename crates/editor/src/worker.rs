@@ -47,6 +47,7 @@ use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
 use crate::export_files;
 use c4rizer_core::pipeline::{
     BuildError, PREVIEW_ROUTE, ViewBuild, build_spec_in, build_view_in, default_view, rebuild_after_move,
+    rebuild_with_vertices,
 };
 use c4rizer_core::place::Keep;
 use c4rizer_core::view::BoxId;
@@ -233,6 +234,20 @@ pub enum Job {
         /// Dragged boxes at their snapped centres, grid units.
         moved: BTreeMap<BoxId, Point>,
     },
+    /// A vertex drag preview (`pipeline::rebuild_with_vertices` with
+    /// `pipeline::PREVIEW_ROUTE`), dropped and stopped like `Drag`
+    /// (P3-311, EDIT-25).
+    // APPROVER: new pub item
+    DragVertex {
+        /// The parse `previous` was built from.
+        parsed: Arc<Parsed>,
+        /// The last full build of the view.
+        previous: Arc<ViewBuild>,
+        /// The line.
+        edge: c4rizer_core::view::EdgeId,
+        /// Its vertices, grid units.
+        vertices: Vec<Point>,
+    },
     /// Write SVG or PNG files (EDIT-7); never dropped as stale and never
     /// stopped.
     Export {
@@ -417,7 +432,11 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
     let last_shown = queued
         .iter()
         .rposition(|r| matches!(r.job, Job::Build { shown: true, .. }));
-    let last_drag = queued.iter().rposition(|r| matches!(r.job, Job::Drag { .. }));
+    // DECISION: a vertex drag counts as a drag (P3-311): one preview at a
+    // time, the newest of either kind.
+    let last_drag = queued
+        .iter()
+        .rposition(|r| matches!(r.job, Job::Drag { .. } | Job::DragVertex { .. }));
     let keep_drag = match (last_drag, last_shown) {
         (Some(d), Some(b)) => (d > b).then_some(d),
         (d, _) => d,
@@ -446,7 +465,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
         .filter(|(i, r)| match &r.job {
             Job::Export { .. } => true,
             Job::Build { shown: true, .. } => Some(*i) == last_shown,
-            Job::Drag { .. } => Some(*i) == keep_drag,
+            Job::Drag { .. } | Job::DragVertex { .. } => Some(*i) == keep_drag,
             Job::Build { view, shown: false, .. } => background.get(view) == Some(i),
         })
         .map(|(_, r)| r)
@@ -462,7 +481,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
 /// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
 #[must_use]
 pub fn stops(running: &Job, incoming: &Job) -> bool {
-    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. }) {
+    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. }) {
         return false;
     }
     if matches!(running, Job::Export { .. }) {
@@ -494,6 +513,17 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
 pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
     let generation = request.generation;
     match request.job {
+        Job::DragVertex {
+            parsed,
+            previous,
+            edge,
+            vertices,
+        } => rebuild_with_vertices(&parsed.model, &previous, edge, &vertices, &PREVIEW_ROUTE, stop)
+            .ok()
+            .map(|build| Reply::Dragged {
+                generation,
+                build: Arc::new(build),
+            }),
         Job::Build {
             parsed,
             view,
@@ -964,6 +994,55 @@ mod tests {
         // A stopped drag gives no reply.
         let stopped = AtomicBool::new(true);
         assert!(serve(req(18, drag_job(&parsed, &previous, x + 10)), &stopped).is_none());
+    }
+
+    fn vertex_job(parsed: &Arc<Parsed>, previous: &Arc<ViewBuild>, x: i32) -> Job {
+        Job::DragVertex {
+            parsed: Arc::clone(parsed),
+            previous: Arc::clone(previous),
+            edge: c4rizer_core::view::EdgeId(0),
+            vertices: vec![Point::new(x, -20)],
+        }
+    }
+
+    /// P3-311, EDIT-25: a vertex drag is served off the UI thread like a
+    /// box drag (`rebuild_with_vertices` with `PREVIEW_ROUTE`), stale ones
+    /// dropped and stopped the same way.
+    #[test]
+    fn p3_311_vertex_drag_job_served_and_dropped_like_drag() {
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let x = previous.routes.centres[0].x;
+        let reply = serve(req(9, vertex_job(&parsed, &previous, x)), &AtomicBool::new(false));
+        let Some(Reply::Dragged { generation, build }) = reply else {
+            panic!("expected Dragged, got {reply:?}");
+        };
+        assert_eq!(generation, Generation(9));
+        let expected = c4rizer_core::pipeline::rebuild_with_vertices(
+            &parsed.model,
+            &previous,
+            c4rizer_core::view::EdgeId(0),
+            &[Point::new(x, -20)],
+            &PREVIEW_ROUTE,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(*build, expected);
+        assert!(serve(req(10, vertex_job(&parsed, &previous, x)), &AtomicBool::new(true)).is_none());
+        // Of three vertex drags only the newest; a shown build after them wins.
+        let queue: Vec<Request> = (0..3).map(|i| req(i + 1, vertex_job(&parsed, &previous, x + i32::try_from(i).unwrap()))).collect();
+        assert_eq!(gens(&latest(queue)), vec![3]);
+        let mut queue: Vec<Request> = (0..2).map(|i| req(i + 1, vertex_job(&parsed, &previous, x))).collect();
+        queue.push(req(3, build_job(&parsed, "containers", true)));
+        assert_eq!(gens(&latest(queue)), vec![3]);
+        // A box drag and a vertex drag: the newer one.
+        let queue = vec![req(1, drag_job(&parsed, &previous, 30)), req(2, vertex_job(&parsed, &previous, x))];
+        assert_eq!(gens(&latest(queue)), vec![2]);
+        // Stops: a running vertex drag stops for a newer one or a shown build.
+        let running = vertex_job(&parsed, &previous, x);
+        assert!(stops(&running, &vertex_job(&parsed, &previous, x + 1)));
+        assert!(stops(&running, &build_job(&parsed, "containers", true)));
+        assert!(stops(&build_job(&parsed, "context", false), &vertex_job(&parsed, &previous, x)));
     }
 
     /// EDIT-7: an export job is never dropped by `latest`, whatever

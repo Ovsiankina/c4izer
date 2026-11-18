@@ -86,7 +86,11 @@ pub fn import_layout(parsed: &Parsed, workspace_json: &str) -> Result<Import, Im
         });
     };
     let model = &parsed.model;
-    let json = JsonModel { elements: json_elements(root.get("model")), styles: size_styles(views) };
+    let json = JsonModel {
+        elements: json_elements(root.get("model")),
+        relationships: json_relationships(root.get("model")),
+        styles: size_styles(views),
+    };
     let mut out = Import { edits: Vec::new(), views: Vec::new(), notices: Vec::new() };
     // P2-510 / P2-13: themes are named once and not fetched.
     let themes = views.get("configuration").and_then(|c| c.get("themes")).map(Value::items).unwrap_or_default();
@@ -142,8 +146,10 @@ const UNDRAWN_ARRAYS: [&str; 2] = ["deploymentViews", "imageViews"];
 
 /// The layout kinds of one JSON view that c4rizer cannot hold, each
 /// named once, in this order: view `paperSize` and `dimensions`, then
-/// relationship `vertices`, `routing` and `position` (P2-510).
-fn not_imported(json_view: &Value) -> Vec<&'static str> {
+/// relationship `vertices` (only when some matched no drawn line,
+/// `vertices_left`: the others become `via` lines, P3-317), `routing`
+/// and `position` (P2-510).
+fn not_imported(json_view: &Value, vertices_left: bool) -> Vec<&'static str> {
     let mut out = Vec::new();
     for member in ["paperSize", "dimensions"] {
         if json_view.get(member).is_some_and(|v| *v != Value::Null) {
@@ -151,7 +157,7 @@ fn not_imported(json_view: &Value) -> Vec<&'static str> {
         }
     }
     let relationships = json_view.get("relationships").map(Value::items).unwrap_or_default();
-    if relationships.iter().any(|r| r.get("vertices").is_some_and(|v| !v.items().is_empty())) {
+    if vertices_left {
         out.push("vertices");
     }
     for member in ["routing", "position"] {
@@ -178,7 +184,40 @@ const MATCHED_ARRAYS: [&str; 6] = [
 /// What every view of the JSON shares: its model and element styles.
 struct JsonModel {
     elements: BTreeMap<String, JsonElement>,
+    /// Every relationship of the JSON model: id to (source id,
+    /// destination id).
+    relationships: BTreeMap<String, (String, String)>,
     styles: SizeStyles,
+}
+
+/// Every relationship of the JSON model, wherever it is declared: each
+/// object's `relationships` array, at any depth (people, systems,
+/// containers, components, deployment nodes, custom elements).
+fn json_relationships(model: Option<&Value>) -> BTreeMap<String, (String, String)> {
+    fn walk(value: &Value, out: &mut BTreeMap<String, (String, String)>) {
+        match value {
+            Value::Object(members) => {
+                for (key, member) in members {
+                    if key == "relationships" {
+                        for r in member.items() {
+                            let field = |k: &str| r.get(k).and_then(Value::as_str).map(str::to_owned);
+                            if let (Some(id), Some(s), Some(d)) = (field("id"), field("sourceId"), field("destinationId")) {
+                                out.insert(id, (s, d));
+                            }
+                        }
+                    }
+                    walk(member, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = BTreeMap::new();
+    if let Some(model) = model {
+        walk(model, &mut out);
+    }
+    out
 }
 
 /// One element of the JSON model, as the merge strategy compares it.
@@ -314,7 +353,7 @@ fn import_view(
     json: &JsonModel,
     out: &mut Import,
 ) {
-    let JsonModel { elements, styles } = json;
+    let JsonModel { elements, relationships, styles } = json;
     let key = spec.key.as_str();
     let generated_key = spec.declared_key.is_none();
     if generated_key {
@@ -330,11 +369,16 @@ fn import_view(
     }
     let plan = view::plan(model, spec);
     let mut positions = 0u32;
+    // JSON element id -> the drawn element it positions (P3-317).
+    let mut drawn_of: BTreeMap<&str, ElementId> = BTreeMap::new();
     for drawn in &plan.boxes {
         let Some(element_view) = find_match(model, drawn.element, &candidates) else {
             out.notices.push(notice(NoticeKind::UnmatchedBox, &drawn.name, key));
             continue;
         };
+        if let Some(id) = element_view.get("id").and_then(Value::as_str) {
+            drawn_of.entry(id).or_insert(drawn.element);
+        }
         let Some(element_key) = model.full_key(drawn.element) else {
             out.notices.push(notice(NoticeKind::NoIdentifier, &drawn.name, key));
             continue;
@@ -346,10 +390,69 @@ fn import_view(
         out.edits.push(Edit::Move { view: key.to_owned(), element: element_key, centre: Some((snap(x, w), snap(y, h))) });
         positions += 1;
     }
-    for kind in not_imported(json_view) {
+    let vertices_left = import_vertices(model, spec, &plan, json_view, relationships, &drawn_of, out);
+    for kind in not_imported(json_view, vertices_left) {
         out.notices.push(notice(NoticeKind::NotImported, kind, key));
     }
     out.views.push(ImportedView { key: key.to_owned(), positions, generated_key });
+}
+
+/// Adds one `SetVia` per relationship view of `json_view` with vertices
+/// whose two ends are drawn boxes joined by a line of the view (in a
+/// dynamic view, the step with the JSON `order`), each point rounded to
+/// the nearest multiple of 10 (P3-317). True when some relationship's
+/// vertices matched no drawn line (the P2-510 notice stays for them).
+// DECISION: a half rounds toward positive infinity, as box centres do
+// (`snap`).
+#[allow(clippy::too_many_arguments)]
+fn import_vertices(
+    model: &Model,
+    spec: &ViewSpec,
+    plan: &view::ViewPlan,
+    json_view: &Value,
+    relationships: &BTreeMap<String, (String, String)>,
+    drawn_of: &BTreeMap<&str, ElementId>,
+    out: &mut Import,
+) -> bool {
+    let mut left = false;
+    for r in json_view.get("relationships").map(Value::items).unwrap_or_default() {
+        let raw = r.get("vertices").map(Value::items).unwrap_or_default();
+        // DECISION: as JSON in does (`snapped_vertex`), a vertex that is
+        // not two numbers, or whose snapped point is out of `i32`, drops
+        // the whole line's vertices, counted as unmatched (the P2-510
+        // notice), instead of clamping or defaulting to 0.
+        let Some(points) = raw.iter().map(snapped_vertex).collect::<Option<Vec<(i32, i32)>>>() else {
+            left = true;
+            continue;
+        };
+        if points.is_empty() {
+            continue;
+        }
+        let order = if spec.kind == ViewKind::Dynamic {
+            r.get("order").and_then(Value::as_str).map(str::to_owned)
+        } else {
+            None
+        };
+        let ends = r
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| relationships.get(id))
+            .and_then(|(s, d)| Some((*drawn_of.get(s.as_str())?, *drawn_of.get(d.as_str())?)))
+            .filter(|&(s, d)| view::line_edge(plan, s, d, order.as_deref()).is_some())
+            .and_then(|(s, d)| Some((model.full_key(s)?, model.full_key(d)?)));
+        let Some((source, destination)) = ends else {
+            left = true;
+            continue;
+        };
+        out.edits.push(Edit::SetVia {
+            view: spec.key.clone(),
+            source,
+            destination,
+            order,
+            points: Some(points),
+        });
+    }
+    left
 }
 
 /// Structurizr's element size when no style sets one.
@@ -392,6 +495,16 @@ fn box_size(element: Option<&JsonElement>, styles: &SizeStyles) -> (i32, i32) {
         }
     }
     (w, h)
+}
+
+/// A layout vertex snapped like a box centre; `None` unless `x` and `y`
+/// are numbers within `i32` and so are the snapped values.
+fn snapped_vertex(v: &Value) -> Option<(i32, i32)> {
+    let coordinate = |key: &str| {
+        let n = v.get(key).filter(|n| matches!(n, Value::Number(_))).and_then(Value::as_i32)?;
+        i32::try_from((i64::from(n) * 2 + 10).div_euclid(20) * 10).ok()
+    };
+    Some((coordinate("x")?, coordinate("y")?))
 }
 
 /// The `at` coordinate for a box at top-left `start` with extent

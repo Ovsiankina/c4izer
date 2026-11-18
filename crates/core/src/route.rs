@@ -344,6 +344,9 @@ pub fn route(
     check(stop)?;
     let kept = vec![None; plan.edges.len()];
     let set: Vec<usize> = (0..plan.edges.len()).collect();
+    if pinned_any(plan) {
+        return solve_pinned(plan, centres, *config, stop, kept, &set);
+    }
     solve(plan, centres, *config, stop, kept, &set)
 }
 
@@ -401,8 +404,32 @@ pub fn reroute(
         previous.lines.len() == plan.edges.len() && previous.centres.len() == plan.boxes.len(),
         "reroute: previous routes belong to another plan"
     );
+    reroute_with(plan, centres, previous, &[], *config, stop)
+}
+
+/// `reroute` with the edges of `forced` re-routed too, broken or not:
+/// the vertex drag preview, where one line's vertices changed and no box
+/// moved (P3-311, EDIT-25). An index out of range is ignored.
+///
+/// # Errors
+///
+/// As `reroute`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reroute_with(
+    plan: &ViewPlan,
+    centres: &[Point],
+    previous: &Routes,
+    forced: &[usize],
+    config: RouteConfig,
+    stop: &AtomicBool,
+) -> Result<Routes, Stopped> {
     check(stop)?;
-    let set = broken(plan, centres, previous);
+    let mut set = broken(plan, centres, previous);
+    if !forced.is_empty() {
+        set.extend(forced.iter().copied().filter(|&e| e < plan.edges.len()));
+        set.sort_unstable();
+        set.dedup();
+    }
     if set.is_empty() {
         // DECISION: nothing broke, so the lines and crossings are
         // `previous`'s, but `centres` still takes the new centres: a box
@@ -417,7 +444,10 @@ pub fn reroute(
     for &e in &set {
         kept[e] = None;
     }
-    solve(plan, centres, *config, stop, kept, &set)
+    if pinned_any(plan) {
+        return solve_pinned(plan, centres, config, stop, kept, &set);
+    }
+    solve(plan, centres, config, stop, kept, &set)
 }
 
 // ------------------------------------------------------------ internals
@@ -767,6 +797,9 @@ struct Board {
     fences: Vec<Fence>,
     /// Per edge: its source and destination boxes.
     ends: Vec<(BoxId, BoxId)>,
+    /// Per edge: true when it has hand-added vertices (P3-308: never a
+    /// trunk); all false on a view without `via` lines.
+    pinned: Vec<bool>,
 }
 
 /// One deployment node boundary as routing sees it (P3-123).
@@ -798,15 +831,21 @@ impl Board {
                 }
             }
         }
+        // P3-308: with `bus`, a line with vertices gets a net of its own
+        // (past every box id), so no line ever joins it or it them.
+        let boxes = u32::try_from(plan.boxes.len()).expect("box count fits u32");
         let edge_net = plan
             .edges
             .iter()
             .enumerate()
             .map(|(i, e)| {
-                if bus {
+                let i = u32::try_from(i).expect("edge index fits u32");
+                if bus && e.vertices.is_empty() {
                     e.destination.0
+                } else if bus {
+                    boxes + i
                 } else {
-                    u32::try_from(i).expect("edge index fits u32")
+                    i
                 }
             })
             .collect();
@@ -828,6 +867,7 @@ impl Board {
             arrives: vec![None; plan.edges.len()],
             fences,
             ends: plan.edges.iter().map(|e| (e.source, e.destination)).collect(),
+            pinned: plan.edges.iter().map(|e| !e.vertices.is_empty()).collect(),
         }
     }
 
@@ -913,6 +953,7 @@ impl Board {
             }
         }
         self.arrives[edge] = match end {
+            LineEnd::Arrow(_) if self.pinned[edge] => None,
             LineEnd::Arrow(port) => Some(port.side),
             LineEnd::Join(_) => None,
         };
@@ -2108,6 +2149,386 @@ fn solve(
         centres: centres[..plan.boxes.len()].to_vec(),
         crossings,
     })
+}
+
+// ------------------------------------------------------ hand-added vertices
+//
+// P3-4, P3-303..P3-308. A line with vertices (`PlanEdge::vertices`) is
+// routed before every other line, in edge order, as legs: source port ->
+// v1 -> ... -> vk -> destination port, each leg an A* on the board with
+// the same steps and costs as `astar` (no bus). Only at a vertex may the
+// line turn by more than 45° (never back on itself, P3-305). The lines
+// without vertices are then routed by `solve`, unchanged, with the vertex
+// lines kept as obstacles (P3-307). A view with no vertices never comes
+// here (P3-5).
+
+/// True when some edge of `plan` has hand-added vertices.
+fn pinned_any(plan: &ViewPlan) -> bool {
+    plan.edges.iter().any(|e| !e.vertices.is_empty())
+}
+
+/// `solve` for a view with vertex lines: the vertex lines of `set` first
+/// (P3-307), then the rest of `set` around them and the `kept` lines.
+#[allow(clippy::too_many_arguments)]
+fn solve_pinned(
+    plan: &ViewPlan,
+    centres: &[Point],
+    config: RouteConfig,
+    stop: &AtomicBool,
+    mut kept: Vec<Option<Line>>,
+    set: &[usize],
+) -> Result<Routes, Stopped> {
+    let (pinned, rest): (Vec<usize>, Vec<usize>) = set.iter().copied().partition(|&e| !plan.edges[e].vertices.is_empty());
+    let grid = pinned_grid(plan, centres, &kept);
+    let ctx = Ctx { plan, centres };
+    for &e in &pinned {
+        check(stop)?;
+        kept[e] = route_pinned(&ctx, grid, &kept, e);
+    }
+    solve(plan, centres, config, stop, kept, &rest)
+}
+
+/// `Grid::new` grown to hold every vertex with the board's margin round it.
+fn pinned_grid(plan: &ViewPlan, centres: &[Point], kept: &[Option<Line>]) -> Grid {
+    let g = Grid::new(plan, centres, kept);
+    let mut lo = Point::new(g.x0, g.y0);
+    let mut hi = Point::new(g.x0 + g.w - 1, g.y0 + g.h - 1);
+    for v in plan.edges.iter().flat_map(|e| &e.vertices) {
+        lo = Point::new(lo.x.min(v.x - MARGIN), lo.y.min(v.y - MARGIN));
+        hi = Point::new(hi.x.max(v.x + MARGIN), hi.y.max(v.y + MARGIN));
+    }
+    Grid {
+        x0: lo.x,
+        y0: lo.y,
+        w: hi.x - lo.x + 1,
+        h: hi.y - lo.y + 1,
+    }
+}
+
+/// The vertex line of `edge` on a board holding the `kept` lines.
+// DECISION: when the kept lines wall a vertex in (or sit on it where the
+// line must turn), the line is routed again on a board of boxes only and
+// crosses them: a vertex is the user's explicit request (P3-304), so it
+// wins over CORE-8 neatness; with no way even then the line is
+// unroutable (CORE-13, L1), e.g. for a vertex inside a box (L28).
+fn route_pinned(ctx: &Ctx<'_>, grid: Grid, kept: &[Option<Line>], edge: usize) -> Option<Line> {
+    let mut board = Board::new(ctx.plan, ctx.centres, grid, &[]);
+    let mut any = false;
+    for line in kept.iter().flatten() {
+        board.add(&cells_of(&line.points), line.edge.0 as usize, &line.end);
+        any = true;
+    }
+    pinned_line(ctx, &board, edge).or_else(|| {
+        any.then(|| pinned_line(ctx, &Board::new(ctx.plan, ctx.centres, grid, &[]), edge))
+            .flatten()
+    })
+}
+
+/// True when a port on `side` of `r` faces `v` (P3-306: CORE-9 port
+/// rules applied to the vertex instead of the other box): `v` lies
+/// beyond that side. A vertex inside the box's span faces every side.
+fn faces(r: Rect, v: Point, side: Side) -> bool {
+    let outside = v.y < r.min.y || v.y > r.max.y || v.x < r.min.x || v.x > r.max.x;
+    !outside
+        || match side {
+            Side::N => v.y < r.min.y,
+            Side::S => v.y > r.max.y,
+            Side::W => v.x < r.min.x,
+            Side::E => v.x > r.max.x,
+        }
+}
+
+/// The free ports of `b` at `centre` facing `v`, each with the first free
+/// cell outside it.
+// DECISION: when no facing port is free (a person's single top port
+// taken, say), every free port is offered instead, so the line is still
+// routed through its vertices (P3-304 over P3-306).
+fn facing_ports(board: &Board, b: &PlanBox, centre: Point, v: Point) -> Vec<(Spot, usize)> {
+    let r = b.rect_at(centre);
+    let all: Vec<(Spot, usize)> = spots(b, centre)
+        .into_iter()
+        .filter_map(|s| Some((s, board.port_free(s.port.at, side_dir(s.port.side))?)))
+        .collect();
+    let facing: Vec<(Spot, usize)> = all.iter().copied().filter(|(s, _)| faces(r, v, s.port.side)).collect();
+    if facing.is_empty() { all } else { facing }
+}
+
+/// Routes the vertex line of `edge` on `board` (P3-303..P3-306).
+fn pinned_line(ctx: &Ctx<'_>, board: &Board, edge: usize) -> Option<Line> {
+    let e = &ctx.plan.edges[edge];
+    if e.source == e.destination {
+        return None;
+    }
+    let g = board.grid;
+    let sbox = &ctx.plan.boxes[e.source.0 as usize];
+    let dbox = &ctx.plan.boxes[e.destination.0 as usize];
+    let first = *e.vertices.first()?;
+    let last = *e.vertices.last()?;
+    let starts: Vec<Start> = facing_ports(board, sbox, ctx.centres[e.source.0 as usize], first)
+        .into_iter()
+        .map(|(s, c)| {
+            let d = side_dir(s.port.side);
+            let mut cost = START_OFFSET * u32::try_from(s.off).unwrap_or(0);
+            if board.stub_clash(s.port.at, d, true) {
+                cost += CLASH;
+            }
+            Start {
+                cell: c,
+                dir: d,
+                cost,
+                port: Some(s.port),
+            }
+        })
+        .collect();
+    let mut own = vec![false; g.len()];
+    let mut cells: Vec<Point> = Vec::new();
+    let mut source = None;
+    let mut at = Start {
+        cell: 0,
+        dir: Dir::E,
+        cost: 0,
+        port: None,
+    };
+    for (k, &v) in e.vertices.iter().enumerate() {
+        let goal = Goal::Cell(g.index(v)?);
+        let found = if k == 0 {
+            leg(board, edge, &starts, false, &goal, &own)?
+        } else {
+            leg(board, edge, &[at], true, &goal, &own)?
+        };
+        if k == 0 {
+            let p = found.start?;
+            source = Some(p);
+            cells.push(p.at);
+            cells.push(p.at.step(side_dir(p.side)));
+            cells.extend_from_slice(&found.cells);
+        } else {
+            cells.extend_from_slice(&found.cells[1..]);
+        }
+        for &c in &cells {
+            if let Some(i) = g.index(c) {
+                own[i] = true;
+            }
+        }
+        at = Start {
+            cell: g.index(v)?,
+            dir: found.dir,
+            cost: 0,
+            port: None,
+        };
+    }
+    let mut goals: Vec<(usize, Port)> = facing_ports(board, dbox, ctx.centres[e.destination.0 as usize], last)
+        .into_iter()
+        .map(|(s, c)| (c, s.port))
+        .collect();
+    goals.sort_unstable_by_key(|&(c, _)| c);
+    let found = leg(board, edge, &[at], true, &Goal::Ports(&goals), &own)?;
+    let port = found.end?;
+    cells.extend_from_slice(&found.cells[1..]);
+    cells.push(port.at.step(side_dir(port.side)));
+    cells.push(port.at);
+    Some(Line {
+        edge: edge_id(edge),
+        points: vertices(&cells),
+        source: source?,
+        end: LineEnd::Arrow(port),
+    })
+}
+
+/// Where a leg search starts: a cell, the way the line heads there, the
+/// cost so far and, for the first leg, the source port it leaves.
+#[derive(Clone, Copy)]
+struct Start {
+    cell: usize,
+    dir: Dir,
+    cost: u32,
+    port: Option<Port>,
+}
+
+/// Where a leg ends: on a vertex cell, or outside a destination port
+/// heading into it (cells sorted ascending).
+enum Goal<'a> {
+    Cell(usize),
+    Ports(&'a [(usize, Port)]),
+}
+
+/// One routed leg: its cells from the start cell to the goal cell, the
+/// way it arrives, the source port it left (first leg) and the
+/// destination port it reaches (last leg).
+struct Leg {
+    cells: Vec<Point>,
+    dir: Dir,
+    start: Option<Port>,
+    end: Option<Port>,
+}
+
+/// One leg search state.
+#[derive(Clone, Copy)]
+struct LegRec {
+    cell: u32,
+    dir: Dir,
+    run: u8,
+    cost: u32,
+    parent: u32,
+    start: u32,
+}
+
+/// A* for one leg, with `astar`'s steps and costs (no bus, no history).
+/// With `free`, the first step from a start may turn by up to 135° (the
+/// start is a vertex, P3-305), never back on itself, and never where the
+/// vertex sits on another line (CORE-8: no crossing at a bend). The leg
+/// keeps off the cells in `own` (the line's earlier legs). A vertex goal
+/// is reached on a straight run of 20px or more (CORE-6).
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::too_many_arguments)]
+fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>, own: &[bool]) -> Option<Leg> {
+    let g = board.grid;
+    let net = board.edge_net[edge] + 1;
+    let targets: Vec<Point> = match goal {
+        Goal::Cell(c) => vec![g.point(*c)],
+        Goal::Ports(p) => p.iter().map(|&(c, _)| g.point(c)).collect(),
+    };
+    let first = *targets.first()?;
+    let (mut lo, mut hi) = (first, first);
+    for p in &targets {
+        lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let h = |p: Point| -> u32 {
+        let dx = u32::try_from((lo.x - p.x).max(0).max(p.x - hi.x)).unwrap_or(0);
+        let dy = u32::try_from((lo.y - p.y).max(0).max(p.y - hi.y)).unwrap_or(0);
+        H_MAX * dx.max(dy) + H_MIN * dx.min(dy)
+    };
+    let reached = |r: &LegRec| -> Option<Option<Port>> {
+        match goal {
+            Goal::Cell(c) => (r.cell as usize == *c && r.run == 2).then_some(None),
+            Goal::Ports(p) => {
+                let k = p.binary_search_by_key(&(r.cell as usize), |&(c, _)| c).ok()?;
+                let port = p[k].1;
+                (side_dir(port.side).opposite() == r.dir).then_some(Some(port))
+            }
+        }
+    };
+    let key = |cell: u32, dir: Dir, run: u8| (cell as usize * 8 + dir as usize) * 2 + usize::from(run - 1);
+    let mut best = vec![u32::MAX; g.len() * 16];
+    let mut recs: Vec<LegRec> = Vec::new();
+    // (priority, sequence, arena index): ties pop first in, so the search
+    // order is fixed (CORE-25).
+    let mut heap: std::collections::BinaryHeap<Reverse<(u32, u32, u32)>> = std::collections::BinaryHeap::new();
+    let push = |r: LegRec, best: &mut Vec<u32>, recs: &mut Vec<LegRec>, heap: &mut std::collections::BinaryHeap<Reverse<(u32, u32, u32)>>| {
+        let k = key(r.cell, r.dir, r.run);
+        if best[k] <= r.cost {
+            return;
+        }
+        best[k] = r.cost;
+        let idx = u32::try_from(recs.len()).expect("arena fits u32");
+        recs.push(r);
+        let prio = r.cost.saturating_add(h(g.point(r.cell as usize)));
+        heap.push(Reverse((prio, idx, idx)));
+    };
+    for (k, s) in starts.iter().enumerate() {
+        let r = LegRec {
+            cell: u32::try_from(s.cell).expect("cell fits u32"),
+            dir: s.dir,
+            run: 2,
+            cost: s.cost,
+            parent: u32::MAX,
+            start: u32::try_from(k).expect("start index fits u32"),
+        };
+        push(r, &mut best, &mut recs, &mut heap);
+    }
+    while let Some(Reverse((_, _, idx))) = heap.pop() {
+        let r = recs[idx as usize];
+        if best[key(r.cell, r.dir, r.run)] != r.cost {
+            continue;
+        }
+        if let Some(end) = reached(&r) {
+            let mut rev = Vec::new();
+            let mut i = idx;
+            let start = loop {
+                let q = recs[i as usize];
+                rev.push(g.point(q.cell as usize));
+                if q.parent == u32::MAX {
+                    break starts[q.start as usize].port;
+                }
+                i = q.parent;
+            };
+            rev.reverse();
+            return Some(Leg {
+                cells: rev,
+                dir: r.dir,
+                start,
+                end,
+            });
+        }
+        let ci = r.cell as usize;
+        let c = g.point(ci);
+        let on_other = board.cells[ci].net != 0 && board.cells[ci].net != net;
+        let at_vertex = free && r.parent == u32::MAX;
+        for nd in Dir::ALL {
+            let t = r.dir.turn_steps(nd);
+            let allowed = if at_vertex {
+                t < 4 && (t == 0 || !on_other)
+            } else {
+                t == 0 || (t == 1 && r.run >= 2 && !on_other)
+            };
+            if !allowed {
+                continue;
+            }
+            let n = c.step(nd);
+            let Some(ni) = g.index(n) else { continue };
+            // A vertex on an earlier leg of the same line is still a goal:
+            // the line crosses itself there (the user asked for that point).
+            let goal_cell = matches!(goal, Goal::Cell(c) if *c == ni);
+            if board.cells[ni].blocked > 0 || (own[ni] && !goal_cell) {
+                continue;
+            }
+            let mut step = if nd.is_diagonal() {
+                STEP_DIAGONAL
+            } else {
+                STEP_STRAIGHT
+            };
+            step += BEND * u32::from(t);
+            if board.clash(c, nd) {
+                step += CLASH;
+            }
+            if !board.fences.is_empty() {
+                step += board.fence_cost(edge, c, n);
+            }
+            if nd.is_diagonal() {
+                let (sq, o) = square(c, n);
+                if let Some(si) = g.index(sq) {
+                    let other = board.cells[si].diag[1 - o];
+                    if other != 0 {
+                        if board.edge_net[other as usize - 1] + 1 == net {
+                            continue;
+                        }
+                        step += CROSS;
+                    }
+                }
+            }
+            if board.cells[ni].net != 0 {
+                let ax = board.cells[ni].axes;
+                if board.cells[ni].net == net || on_other || ax.count_ones() != 1 || ax & axis_bit(nd) != 0 {
+                    continue;
+                }
+                step += CROSS;
+            } else if board.near_other(ni, net) {
+                step += NEAR;
+            } else if board.cells[ni].lane & axis_bit(nd) != 0 {
+                step = step * LANE_NUM / LANE_DEN;
+            }
+            let nr = LegRec {
+                cell: u32::try_from(ni).expect("cell fits u32"),
+                dir: nd,
+                run: if t == 0 { 2 } else { 1 },
+                cost: r.cost + step,
+                parent: idx,
+                start: r.start,
+            };
+            push(nr, &mut best, &mut recs, &mut heap);
+        }
+    }
+    None
 }
 
 /// The edges a move from `previous.centres` to `centres` broke, ascending

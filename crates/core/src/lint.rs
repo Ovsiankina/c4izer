@@ -168,6 +168,10 @@ pub enum Rule {
     /// L27, error: a line crosses a deployment node boundary that holds
     /// neither of its ends (P3-123). Serves P3-126.
     ForeignNodeCrossing,
+    /// L28, warning: a vertex lies inside a box rectangle, or two
+    /// consecutive vertices of one line are the same point. Serves
+    /// P3-309.
+    VertexPlacement,
 }
 
 impl Rule {
@@ -202,6 +206,7 @@ impl Rule {
             Rule::TextFit => "L25",
             Rule::BoundaryIntrusion => "L26",
             Rule::ForeignNodeCrossing => "L27",
+            Rule::VertexPlacement => "L28",
         }
     }
 
@@ -216,7 +221,8 @@ impl Rule {
             | Rule::C2NoTechnology
             | Rule::LabelOverLine
             | Rule::LabelNoRoom
-            | Rule::TextFit => Severity::Warning,
+            | Rule::TextFit
+            | Rule::VertexPlacement => Severity::Warning,
             Rule::Unroutable
             | Rule::SegmentAngle
             | Rule::ThroughBox
@@ -413,6 +419,7 @@ pub fn lint(model: &Model, scene: &Scene) -> Report {
     cx.text_fit();
     cx.boundary_intrusion();
     cx.foreign_node_crossing();
+    cx.vertex_placement();
     let mut findings = cx.findings;
     // DECISION: a stable sort by rule after collecting, so the rule order
     // holds even where one pass emits two rules (L9..L11, L12..L13).
@@ -1374,6 +1381,58 @@ impl<'a> Lint<'a> {
                     vec![span_a, span_b],
                     format!("boundaries \"{name_a}\" and \"{name_b}\" overlap but neither holds the other"),
                 );
+            }
+        }
+    }
+
+    /// L28 (P3-309): per `via` line of the view, in file order, one
+    /// finding per vertex inside a box rectangle (the first box in box
+    /// order) and one per vertex equal to the one before it, pointing at
+    /// that vertex.
+    // DECISION: "inside" includes the outline: a vertex on a box edge
+    // still sends the line through the box's border, which no port allows.
+    fn vertex_placement(&mut self) {
+        let Some(view) = self.model.view(&self.scene.key) else {
+            return;
+        };
+        if view.vias.is_empty() {
+            return;
+        }
+        let plan = crate::view::plan(self.model, view);
+        for via in &view.vias {
+            let Some(edge) = crate::view::via_edge(&plan, via) else {
+                continue;
+            };
+            let Some(l) = self.scene.lines.iter().find(|l| l.edge == edge) else {
+                continue;
+            };
+            let ends = self.ends(l);
+            let mut previous: Option<(i32, i32)> = None;
+            for p in &via.points {
+                let (x, y) = p.value;
+                let at = Point::new(x, y);
+                if let Some(b) = self.scene.boxes.iter().find(|b| b.rect.contains(at)) {
+                    let name = self.name(b.element);
+                    let message = format!("{ends}: vertex ({x}, {y}) lies inside \"{name}\"; move it outside the box");
+                    self.push(
+                        Rule::VertexPlacement,
+                        vec![ModelId::Relationship(l.relationship)],
+                        vec![ItemKey::Line(edge)],
+                        vec![p.span],
+                        message,
+                    );
+                }
+                if previous == Some(p.value) {
+                    let message = format!("{ends}: vertex ({x}, {y}) repeats the one before it; remove one");
+                    self.push(
+                        Rule::VertexPlacement,
+                        vec![ModelId::Relationship(l.relationship)],
+                        vec![ItemKey::Line(edge)],
+                        vec![p.span],
+                        message,
+                    );
+                }
+                previous = Some(p.value);
             }
         }
     }

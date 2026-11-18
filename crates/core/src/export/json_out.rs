@@ -590,7 +590,8 @@ fn view_json(ws: &Workspace<'_>, all: &AllViews, spec: &ViewSpec, order: usize) 
     if !spec.properties.is_empty() {
         o.put("properties", props_obj(&spec.properties).sorted());
     }
-    let scene = all.view(&spec.key).map(|b| &b.scene);
+    let build = all.view(&spec.key);
+    let scene = build.map(|b| &b.scene);
     if let Some(view) = ws.view(spec) {
         let elements = view
             .elements
@@ -609,6 +610,7 @@ fn view_json(ws: &Workspace<'_>, all: &AllViews, spec: &ViewSpec, order: usize) 
             })
             .collect();
         o.put("elements", Value::Arr(elements));
+        let mut carried = std::collections::BTreeSet::new();
         let relationships = view
             .relationships
             .iter()
@@ -621,22 +623,48 @@ fn view_json(ws: &Workspace<'_>, all: &AllViews, spec: &ViewSpec, order: usize) 
                     x.put("description", Value::str(&vr.description));
                     x.put("response", Value::Bool(vr.response));
                 }
-                let line = scene.and_then(|s| {
-                    s.lines
-                        .iter()
-                        .find(|l| Some(l.relationship) == r.own && vr.order.is_none())
+                // DECISION: `vertices` are the hand-added points of the
+                // line's `via` line, in order (P3-318, P3-414: "the line's
+                // vertices" are P3-4's hand-added ones), as Structurizr keeps
+                // only the user's points (jointjs vertices) and routes the
+                // rest itself; the router's bends are not written, so JSON
+                // in (P3-416, P3-417) gives back exactly the `via` lines.
+                // DECISION: a line is carried by the relationship whose own
+                // ends are the ends the view draws (`view::line_edge`, the
+                // inverse of JSON in naming the `via` line from the
+                // relationship's ends), so an implied relationship carries
+                // the vertices of a lifted line; a declared relationship
+                // the view lifts away does not appear in the view at all.
+                let vertices = build.and_then(|b| {
+                    let element = |bx: crate::view::BoxId| b.plan.boxes[bx.0 as usize].element;
+                    let (source, destination) = (ws.rels[vr.rel].source, ws.rels[vr.rel].destination);
+                    let edge = if vr.order.is_some() {
+                        b.scene
+                            .lines
+                            .iter()
+                            .filter(|l| Some(l.relationship) == r.own)
+                            .filter_map(|l| b.plan.edges.get(l.edge.0 as usize))
+                            .find(|e| e.order == vr.order)
+                    } else {
+                        crate::view::line_edge(&b.plan, source, destination, None).and_then(|id| b.plan.edges.get(id.0 as usize))
+                    };
+                    // One carrier per line: a second relationship view of
+                    // the same line writes none (JSON in keeps the first).
+                    edge.filter(|e| vr.order.is_some() || (element(e.source), element(e.destination)) == (source, destination))
+                        .filter(|e| carried.insert(e.id.0))
+                        .map(|e| e.vertices.clone())
                 });
-                if let Some(l) = line.filter(|l| l.points.len() > 2) {
-                    let vertices = l.points[1..l.points.len() - 1]
+                if let Some(points) = vertices.filter(|v| !v.is_empty()) {
+                    let list = points
                         .iter()
                         .map(|p| {
                             let mut v = Obj::default();
-                            v.put("x", Value::int(p.x));
-                            v.put("y", Value::int(p.y));
+                            v.put("x", Value::int(p.x * crate::geom::GRID_PX));
+                            v.put("y", Value::int(p.y * crate::geom::GRID_PX));
                             v.sorted()
                         })
                         .collect();
-                    x.put("vertices", Value::Arr(vertices));
+                    x.put("vertices", Value::Arr(list));
                 }
                 x.sorted()
             })

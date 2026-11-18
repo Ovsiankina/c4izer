@@ -42,9 +42,13 @@
 // box is Structurizr's default 450x300; `0, 0` everywhere (a workspace
 // never laid out) writes no `at`.
 // TODO(srs): P3-416, image views, documentation, relationship views a
-// view excludes, theme files and line vertices (`via`, after the
-// vertices row) are not read back. Reading taken: left out (a theme URL
-// is kept).
+// view excludes and theme files are not read back. Reading taken: left
+// out (a theme URL is kept).
+// A relationship view's `vertices` become the view's `via` line for that
+// line (P3-318, P3-417), each point snapped to the 10 px grid; a vertex
+// without two in-range numbers drops that line's vertices, and the first
+// relationship view of a drawn line wins. `model::parse_json` drops any
+// generated `via` line the built view refuses (a line it does not draw).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -174,6 +178,16 @@ struct Writer<'v> {
     error: Option<String>,
     /// Every identifier, lowercased, the JSON gives or the text uses.
     taken: BTreeSet<String>,
+}
+
+/// A JSON vertex `{"x": .., "y": ..}` snapped to the 10 px grid (a half
+/// toward +infinity, as import-layout snaps, P3-317); `None` unless both
+/// are numbers within `i32` and the snapped point is too.
+fn snapped_vertex(v: &Value) -> Option<(i32, i32)> {
+    let snap = |n: i32| -> Option<i32> { i32::try_from((i64::from(n) * 2 + 10).div_euclid(20) * 10).ok() };
+    let x = v.get("x").filter(|n| matches!(n, Value::Number(_))).and_then(Value::as_i32)?;
+    let y = v.get("y").filter(|n| matches!(n, Value::Number(_))).and_then(Value::as_i32)?;
+    Some((snap(x)?, snap(y)?))
 }
 
 fn num(v: Option<&Value>) -> Option<u64> {
@@ -899,6 +913,7 @@ impl<'v> Writer<'v> {
         for e in v.get("elements").map(Value::items).unwrap_or_default() {
             body.extend(self.layout(e));
         }
+        body.extend(self.vias(v, kind == "dynamicViews"));
         let props = Self::properties(v.get("properties"), &[]);
         if !props.is_empty() {
             body.push("properties {".to_owned());
@@ -935,6 +950,50 @@ impl<'v> Writer<'v> {
         let mut out = vec![format!("at {key} {cx} {cy}")];
         if size.is_some() {
             out.push(format!("size {key} {width} {height}"));
+        }
+        out
+    }
+
+    /// The `via` lines of one view: one per relationship view with
+    /// vertices (module comment). In a dynamic view the step's number and
+    /// drawn direction name the line, as `step` writes it.
+    fn vias(&self, view: &Value, dynamic: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut named: BTreeSet<String> = BTreeSet::new();
+        for r in view.get("relationships").map(Value::items).unwrap_or_default() {
+            let Some(&(src, dst, _)) = num(r.get("id")).and_then(|id| self.relationships.get(&id)) else {
+                continue;
+            };
+            let Some(points) = r.get("vertices").and_then(|v| match v {
+                Value::Array(items) => items.iter().map(snapped_vertex).collect::<Option<Vec<(i32, i32)>>>(),
+                _ => None,
+            }) else {
+                continue;
+            };
+            if points.is_empty() {
+                continue;
+            }
+            let name = if dynamic {
+                let order = s(r.get("order"));
+                if !plain(order, |c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+                    continue;
+                }
+                let response = matches!(r.get("response"), Some(Value::Bool(true)));
+                let (from, to) = if response { (dst, src) } else { (src, dst) };
+                format!("{order}: {} -> {}", self.key(from), self.key(to))
+            } else {
+                format!("{} -> {}", self.key(src), self.key(dst))
+            };
+            // DECISION: the first relationship view of a line wins; a
+            // second one for the same line would be a `DuplicateVia`.
+            if !named.insert(name.clone()) {
+                continue;
+            }
+            let mut line = format!("via {name}");
+            for (x, y) in points {
+                let _ = write!(line, " {x} {y}");
+            }
+            out.push(line);
         }
         out
     }

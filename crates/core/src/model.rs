@@ -1073,6 +1073,30 @@ pub struct ViewSpec {
     /// lines (c4rizer extension), in file order, at most one per
     /// relationship. Serves P2-708..P2-710.
     pub lines: Vec<LineLayout>,
+    /// `via <src> -> <dst> <x> <y> ...` lines (`via <n>: ...` in a
+    /// dynamic view), in file order, at most one per drawn line: the
+    /// hand-added vertices of each line. Serves P3-4, P3-300..P3-302.
+    pub vias: Vec<Via>,
+}
+
+/// One `via` line: the drawn line from `source` to `destination` (in a
+/// dynamic view, the step numbered `order`, else the lowest-numbered step
+/// between those ends) passes through `points`, in order. Coordinates
+/// are px, multiples of 10, as written. Serves P3-4, P3-300, P3-301.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Via {
+    /// The line's source element, as written.
+    pub source: Spanned<ElementId>,
+    /// The line's destination element, as written.
+    pub destination: Spanned<ElementId>,
+    /// `<n>:` of a dynamic view's `via <n>: ...`, without the colon.
+    pub order: Option<Spanned<String>>,
+    /// The vertices `(x, y)` in px, in order; each span covers both
+    /// numbers. Never empty.
+    pub points: Vec<Spanned<(i32, i32)>>,
+    /// The whole `via` line, line ending excluded; `edit` rewrites this.
+    pub span: Span,
 }
 
 /// Canvas size of a view (P2-701), Structurizr's `PaperSize` list: the
@@ -2973,11 +2997,96 @@ pub fn parse_json(source: &[u8], loader: &mut dyn Loader) -> Result<Model, Model
         let shown = String::from_utf8_lossy(source);
         json_error("it is not UTF-8 text".into(), at, text::position(&shown, at))
     })?;
-    let dsl = json::to_dsl(text).map_err(|e| {
+    let mut dsl = json::to_dsl(text).map_err(|e| {
         let at = offset_of(text, e.position);
         json_error(e.message, at, e.position)
     })?;
-    load::parse_with(&dsl, None, loader).map(|p| p.model)
+    // P3-318: a generated `via` line the view refuses (a line it does not
+    // draw, from hostile or hand-edited JSON) is dropped and the text read
+    // again, never failing the workspace.
+    // DECISION: at most `JSON_VIA_RETRIES` lines are dropped one by one;
+    // past that every generated `via` line goes at once, so a JSON full of
+    // bad vertices costs a bounded number of parses.
+    // DECISION: the first `JSON_VIA_RETRIES` refused lines are dropped one
+    // by one (the common case: a few bad lines, one parse each); past that
+    // the generated `via` lines are put back in groups (`restore_vias`),
+    // so only the refused ones go, in at most twice as many parses as
+    // there are lines.
+    for _ in 0..JSON_VIA_RETRIES {
+        match load::parse_with(&dsl, None, loader) {
+            Ok(p) => return Ok(p.model),
+            Err(e) => {
+                let start = (e.span.file == FileId::ROOT).then(|| e.span.range().start);
+                let Some(line) = start.and_then(|at| generated_via_line(&dsl, at)) else {
+                    return Err(e);
+                };
+                dsl.replace_range(line, "");
+            }
+        }
+    }
+    match load::parse_with(&dsl, None, loader) {
+        Ok(p) => Ok(p.model),
+        Err(e) if e.span.file == FileId::ROOT && generated_via_line(&dsl, e.span.range().start).is_some() => {
+            restore_vias(&dsl, loader)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `dsl` with only the `via` lines the views accept: every `via` line is
+/// taken out, then put back in halves, a half that is refused being split
+/// again down to single lines, which are dropped.
+fn restore_vias(dsl: &str, loader: &mut dyn Loader) -> Result<Model, ModelError> {
+    let lines: Vec<&str> = dsl.split_inclusive('\n').collect();
+    let vias: Vec<usize> = (0..lines.len()).filter(|&i| is_via_line(lines[i])).collect();
+    let mut keep: Vec<bool> = lines.iter().map(|l| !is_via_line(l)).collect();
+    let text = |keep: &[bool]| -> String { lines.iter().zip(keep).filter(|(_, k)| **k).map(|(l, _)| *l).collect() };
+    let mut pending: Vec<&[usize]> = vec![&vias];
+    while let Some(group) = pending.pop() {
+        if group.is_empty() {
+            continue;
+        }
+        for &i in group {
+            keep[i] = true;
+        }
+        if load::parse_with(&text(&keep), None, loader).is_ok() {
+            continue;
+        }
+        for &i in group {
+            keep[i] = false;
+        }
+        if let [_] = group {
+            continue;
+        }
+        let (first, second) = group.split_at(group.len() / 2);
+        // The first half goes in before the second is tried.
+        pending.push(second);
+        pending.push(first);
+    }
+    load::parse_with(&text(&keep), None, loader).map(|p| p.model)
+}
+
+/// How many refused `via` lines `parse_json` drops one at a time.
+const JSON_VIA_RETRIES: usize = 16;
+
+/// True when `line` of DSL text written from JSON is a `via` line (not an
+/// element declared with the identifier `via`).
+fn is_via_line(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    // DECISION: `via -> db` is a relationship from an element identified
+    // `via`, as `via = ...` is a declaration of one.
+    // DECISION: `via -> db` is a relationship from an element identified
+    // `via`, as `via = ...` is a declaration of one.
+    words.next() == Some("via") && words.next().is_some_and(|w| w != "=" && w != "->")
+}
+
+/// The byte range of the whole line holding byte `at` of `dsl`, its
+/// line ending included, when it is a `via` line.
+fn generated_via_line(dsl: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let at = at.min(dsl.len());
+    let start = dsl[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = dsl[at..].find('\n').map_or(dsl.len(), |i| at + i + 1);
+    is_via_line(&dsl[start..end]).then_some(start..end)
 }
 
 /// The byte offset of `position` (1-based line and character column) in
@@ -3274,6 +3383,16 @@ pub enum ModelErrorKind {
         destination: String,
         /// The step's written technology, if any.
         technology: Option<String>,
+    },
+    /// Two `via` lines for one drawn line in one view (P3-302); the
+    /// error's span is the second line.
+    DuplicateVia {
+        /// The line as written in the second `via` line (`a -> b`).
+        line: String,
+        /// The first `via` line for it.
+        first: Span,
+        /// Line and column of `first`, for `Display`.
+        first_position: Position,
     },
     /// A dynamic step end the view's scope does not permit (P3-204..P3-207).
     // APPROVER: new pub item
@@ -3577,6 +3696,13 @@ fn phase_3_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
         ModelErrorKind::DeploymentNodeLayout { id } => write!(
             f,
             "`{id}` is a deployment node — its boundary follows its contents; place the instances and infrastructure nodes inside it instead"
+        ),
+        ModelErrorKind::DuplicateVia {
+            line, first_position, ..
+        } => write!(
+            f,
+            "`{line}` already has a `via` line at {}:{} — keep one `via` line per line and list every vertex in it",
+            first_position.line, first_position.column
         ),
         _ => f.write_str("the file cannot become a model here"),
     }
@@ -5888,6 +6014,7 @@ impl Builder<'_> {
         view.description = description;
         self.view_body(statement, head, &mut view)?;
         self.check_positions(&view)?;
+        self.check_vias(&view)?;
         self.model.views.push(view);
         Ok(())
     }
@@ -5992,6 +6119,7 @@ impl Builder<'_> {
         }
         if kind.drawable() {
             self.check_positions(&view)?;
+            self.check_vias(&view)?;
         }
         self.model.views.push(view);
         Ok(())
@@ -6772,6 +6900,10 @@ impl Builder<'_> {
                 });
             }
             "papersize" | "line" => self.layout_line(head, view)?,
+            "via" => {
+                let via = self.via_line(head, view.kind == ViewKind::Dynamic)?;
+                view.vias.push(via);
+            }
             "size" => {
                 let (element, width, height) = self.box_line(head, true)?;
                 view.sizes.push(Size {
@@ -7031,6 +7163,103 @@ impl Builder<'_> {
             i += 2;
         }
         Ok(line)
+    }
+
+    /// `via [<n>:] <src> -> <dst> <x1> <y1> [<x2> <y2> ...]` (P3-300,
+    /// P3-301): the ends as written, an even number of px coordinates,
+    /// each a multiple of 10. `<n>:` only in a dynamic view.
+    // DECISION: the ends resolve like `hide`'s (any declared element);
+    // whether the view draws that line is checked once the view is
+    // parsed (`check_vias`), since it needs the whole view.
+    // DECISION: an odd count names the lone last value (P3-302: "an
+    // error naming the value").
+    fn via_line(&self, head: &Head<'_>, dynamic: bool) -> Result<Via, ModelError> {
+        let ordered = head.len() > 1 && head.kind(1) == Some(TokenKind::Word) && head.text(1).ends_with(':');
+        if ordered && !dynamic {
+            return Err(self.invalid(head, "via", 1));
+        }
+        let o = 1 + usize::from(ordered);
+        if head.len() < o + 3 {
+            return Err(self.missing(head, "`<source> -> <destination>`"));
+        }
+        if head.kind(o + 1) != Some(TokenKind::Arrow) {
+            return Err(self.invalid(head, "via", o + 1));
+        }
+        let source = self.view_element(head, o)?;
+        let destination = self.view_element(head, o + 2)?;
+        let first = o + 3;
+        if head.len() <= first {
+            return Err(self.missing(head, "vertex"));
+        }
+        let mut values = Vec::new();
+        for i in first..head.len() {
+            let value = match head.kind(i) {
+                Some(TokenKind::Word) => head.text(i).parse::<i32>().ok(),
+                _ => None,
+            };
+            match value {
+                Some(v) if v % 10 == 0 => values.push(v),
+                _ => return Err(self.invalid(head, "via", i)),
+            }
+        }
+        if values.len() % 2 == 1 {
+            return Err(self.invalid(head, "via", head.len() - 1));
+        }
+        let points = values
+            .chunks(2)
+            .enumerate()
+            .map(|(k, xy)| Spanned {
+                value: (xy[0], xy[1]),
+                span: head.span_of(first + 2 * k, first + 2 * k + 1),
+            })
+            .collect();
+        Ok(Via {
+            source,
+            destination,
+            order: ordered.then(|| Spanned {
+                value: head.text(1).trim_end_matches(':').to_owned(),
+                span: head.span(1),
+            }),
+            points,
+            span: head.span_of(0, head.len() - 1),
+        })
+    }
+
+    /// Every `via` line names a line the view draws, at most one per
+    /// line (P3-302); the first problem in file order is reported.
+    // DECISION: "draws" is read from `view::plan` of the view as parsed so
+    // far (styles do not change which lines are drawn), so the check and
+    // the plan never disagree; `model` reaching into `view` is the price.
+    fn check_vias(&self, view: &ViewSpec) -> Result<(), ModelError> {
+        if view.vias.is_empty() {
+            return Ok(());
+        }
+        let plan = crate::view::plan(&self.model, view);
+        let mut seen: BTreeMap<crate::view::EdgeId, Span> = BTreeMap::new();
+        for via in &view.vias {
+            let line = self.written(Span::new(via.source.span.file, via.source.span.start, via.destination.span.end)).to_owned();
+            let Some(edge) = crate::view::via_edge(&plan, via) else {
+                return Err(self.error(
+                    ModelErrorKind::NotInView {
+                        id: line,
+                        view: view.key.clone(),
+                    },
+                    via.span,
+                ));
+            };
+            if let Some(&first) = seen.get(&edge) {
+                return Err(self.error(
+                    ModelErrorKind::DuplicateVia {
+                        line,
+                        first,
+                        first_position: self.position(first),
+                    },
+                    via.span,
+                ));
+            }
+            seen.insert(edge, via.span);
+        }
+        Ok(())
     }
 
     /// `at <id> <x> <y>` or, with `size`, `size <id> <w> <h>` (both `> 0`).
@@ -7722,6 +7951,7 @@ impl SequenceCounter {
 /// (DSL-9, P2-701, P2-708).
 const DYNAMIC_LINES: &[&str] = &[
     "at",
+    "via",
     "size",
     "papersize",
     "line",
@@ -7798,6 +8028,7 @@ fn new_view(
         default: None,
         paper_size: None,
         lines: Vec::new(),
+        vias: Vec::new(),
     }
 }
 
