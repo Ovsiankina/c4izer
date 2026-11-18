@@ -1,0 +1,173 @@
+resources:
+  - id: "1"
+    name: "User"
+    subtitle: "[Person]"
+    description: "Uses the system."
+    backgroundColor: "#ffffff"
+    color: "#444444"
+
+  - id: "2"
+    name: "System"
+    subtitle: "[Software System]"
+    description: "The system in focus."
+    backgroundColor: "#ffffff"
+    color: "#444444"
+
+    children:
+      - id: "3"
+        name: "App"
+        subtitle: "[Container: Rust]"
+        description: "Handles requests."
+        backgroundColor: "#ffffff"
+        color: "#444444"
+
+        children:
+          - id: "4"
+            name: "Handler"
+            subtitle: "[Component: Rust]"
+            description: "Takes a request."
+            backgroundColor: "#ffffff"
+            color: "#444444"
+
+          - id: "5"
+            name: "Validator"
+            subtitle: "[Component: Rust]"
+            description: "Checks input."
+            backgroundColor: "#ffffff"
+            color: "#444444"
+
+      - id: "6"
+        name: "Store"
+        subtitle: "[Container: SQL]"
+        description: "Keeps records."
+        backgroundColor: "#ffffff"
+        color: "#444444"
+
+  - id: "7"
+    name: "Third Party"
+    subtitle: "[Software System]"
+    description: "Answers lookups."
+    backgroundColor: "#ffffff"
+    color: "#444444"
+
+perspectives:
+  - name: Static Structure
+    relations:
+      - from: "1"
+        to: "2"
+        label: "Sends requests to"
+        description: "HTTPS"
+        color: "#444444"
+
+      - from: "2"
+        to: "7"
+        label: "Looks up data in"
+        description: "HTTPS"
+        color: "#444444"
+
+      - from: "1"
+        to: "3"
+        label: "Sends requests to"
+        description: "HTTPS"
+        color: "#444444"
+
+      - from: "3"
+        to: "6"
+        label: "Reads from and writes to"
+        description: "SQL"
+        color: "#444444"
+
+      - from: "3"
+        to: "7"
+        label: "Looks up data in"
+        description: "HTTPS"
+        color: "#444444"
+
+      - from: "6"
+        to: "3"
+        label: "Notifies of changes"
+        description: "SQL"
+        color: "#444444"
+
+      - from: "1"
+        to: "4"
+        label: "Submits forms to"
+        description: "HTTPS"
+        color: "#444444"
+
+      - from: "4"
+        to: "5"
+        label: "Validates input with"
+        color: "#444444"
+
+      - from: "5"
+        to: "6"
+        label: "Checks records in"
+        description: "SQL"
+        color: "#444444"
+
+  - name: Dynamic: System
+    sequence:
+      start: "1"
+      steps:
+      - to: "3"
+        label: "1. Sends a request"
+        description: "HTTPS"
+        color: "#444444"
+
+      - to: "6"
+        label: "2. Reads the record"
+        description: "SQL"
+        color: "#444444"
+
+      - to: "7"
+        label: "2. Looks up the rate"
+        description: "HTTPS"
+        color: "#444444"
+
+      - to: "6"
+        label: "3. Stores the rate"
+        description: "SQL"
+        color: "#444444"
+
+      - to: "3"
+        label: "3. Notifies of the change"
+        description: "SQL"
+        color: "#444444"
+
+      - to: "7"
+        label: "4. Confirms"
+        description: "HTTPS"
+        color: "#444444"
+
+  - name: Dynamic: System - App
+    sequence:
+      start: "1"
+      steps:
+      - to: "4"
+        label: "1. Submits a form"
+        description: "HTTPS"
+        color: "#444444"
+
+      - to: "5"
+        label: "2. Validates the form"
+        color: "#444444"
+
+      - to: "6"
+        label: "3. Checks the record"
+        description: "SQL"
+        color: "#444444"
+
+  - name: Dynamic: 
+    sequence:
+      start: "1"
+      steps:
+      - to: "2"
+        label: "1. Sends a request"
+        description: "HTTPS"
+        color: "#444444"
+
+      - to: "7"
+        label: "2. Looks up data"
+        description: "HTTPS"
+        color: "#444444"

@@ -1,0 +1,26 @@
+@startuml
+title <size:24>Dynamic View</size>\n<size:24>The system in its estate</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+
+Person(User, "User", $descr="Uses the system.", $tags="", $link="")
+System(System, "System", $descr="The system in focus.", $tags="", $link="")
+System(ThirdParty, "Third Party", $descr="Answers lookups.", $tags="", $link="")
+
+Rel(User, System, "1: Sends a request", $techn="HTTPS", $tags="", $link="")
+Rel(System, ThirdParty, "2: Looks up data", $techn="HTTPS", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

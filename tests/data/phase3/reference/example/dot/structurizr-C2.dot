@@ -1,0 +1,39 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Container View: Atomanja</font><br /><font point-size="24">Container diagram for Atomanja</font>>
+
+  1 [id=1,shape=rect, label=<<font point-size="34">Worker</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">The one person whose tasks are<br />tracked. Sees own tasks and<br />debts, marks debts as sent.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  2 [id=2,shape=rect, label=<<font point-size="34">Witness</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Accountability partner. Sees<br />late tasks, claims debts,<br />marks them received.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  3 [id=3,shape=rect, label=<<font point-size="34">Admin witness</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Maintainer. Troubleshoots the<br />witness view on fake data.</font>>, style=filled, color="#072a4d", fillcolor="#0b3c6f", fontcolor="#ffffff"]
+  4 [id=4,shape=rect, label=<<font point-size="34">Vikunja</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Existing task manager. Source<br />of tasks and deadlines. Never<br />modified.</font>>, style=filled, color="#413e4a", fillcolor="#5d5a6b", fontcolor="#ffffff"]
+  5 [id=5,shape=rect, label=<<font point-size="34">Push services</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Browser vendors' endpoints<br />that deliver notifications to<br />installed apps.</font>>, style=filled, color="#413e4a", fillcolor="#5d5a6b", fontcolor="#ffffff"]
+  6 [id=6,shape=rect, label=<<font point-size="34">Mail server</font><br /><font point-size="19">[Software System]</font><br /><br /><font point-size="24">Delivers invite and<br />password-reset emails.</font>>, style=filled, color="#413e4a", fillcolor="#5d5a6b", fontcolor="#ffffff"]
+
+  subgraph cluster_7 {
+    margin=25
+    label=<<font point-size="24"><br />Atomanja</font><br /><font point-size="19">[Software System]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#444444"
+
+    20 [id=20,shape=cylinder, label=<<font point-size="34">Ledger database</font><br /><font point-size="19">[Container: SQLite file]</font><br /><br /><font point-size="24">Append-only record of<br />deadlines, debts, claims,<br />marks and accounts.</font>>, style=filled, color="#00544a", fillcolor="#00796b", fontcolor="#ffffff"]
+    21 [id=21,shape=cylinder, label=<<font point-size="34">Dev database</font><br /><font point-size="19">[Container: SQLite file]</font><br /><br /><font point-size="24">Fake tasks and debts for the<br />admin witness. Isolated from<br />the real ledger.</font>>, style=filled, color="#00544a", fillcolor="#00796b", fontcolor="#ffffff"]
+    8 [id=8,shape=rect, label=<<font point-size="34">Atomanja server</font><br /><font point-size="19">[Container: Rust, axum, HTML + htmx]</font><br /><br /><font point-size="24">Single binary. Polls Vikunja,<br />keeps the ledger, serves both<br />views, sends notifications and<br />emails.</font>>, style=filled, color="#155fa0", fillcolor="#1e88e5", fontcolor="#ffffff"]
+  }
+
+  1 -> 8 [id=22, label=<<font point-size="24">Views tasks and debts,<br />marks debts sent, invites<br />witnesses</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  2 -> 8 [id=24, label=<<font point-size="24">Views late tasks, claims<br />debts, marks debts<br />received</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  3 -> 8 [id=26, label=<<font point-size="24">Troubleshoots the witness<br />view on fake data</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  8 -> 4 [id=28, label=<<font point-size="24">Polls tasks and deadlines,<br />read-only</font><br /><font point-size="19">[HTTPS/JSON]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  8 -> 20 [id=30, label=<<font point-size="24">Reads and appends ledger<br />entries</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  8 -> 21 [id=31, label=<<font point-size="24">Reads fake data for the<br />admin witness</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  8 -> 5 [id=32, label=<<font point-size="24">Sends notifications<br />through</font><br /><font point-size="19">[Web Push]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  8 -> 6 [id=34, label=<<font point-size="24">Sends invite and reset<br />emails through</font><br /><font point-size="19">[SMTP]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  5 -> 1 [id=36, label=<<font point-size="24">Delivers notifications to</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  5 -> 2 [id=37, label=<<font point-size="24">Delivers notifications to</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

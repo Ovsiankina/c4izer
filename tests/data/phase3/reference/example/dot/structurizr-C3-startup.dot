@@ -1,0 +1,67 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Component View: Atomanja - Atomanja server</font><br /><font point-size="24">Component diagram for the Atomanja server: startup, settings and dev data</font>>
+
+  subgraph cluster_7 {
+    margin=25
+    label=<<font point-size="24"><br />Atomanja</font><br /><font point-size="19">[Software System]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#444444"
+
+    subgraph cluster_8 {
+      margin=25
+      label=<<font point-size="24"><br />Atomanja server</font><br /><font point-size="19">[Container: Rust, axum, HTML + htmx]</font>>
+      labelloc=b
+      color="#444444"
+      fontcolor="#444444"
+      fillcolor="#444444"
+
+      10 [id=10,shape=rect, label=<<font point-size="34">web</font><br /><font point-size="19">[Component: Rust, axum, htmx]</font><br /><br /><font point-size="24">HTTP layer: both views, login<br />flows, debt actions, push<br />subscription.</font>>, style=filled, color="#872d08", fillcolor="#c2410c", fontcolor="#ffffff"]
+      11 [id=11,shape=rect, label=<<font point-size="34">sync</font><br /><font point-size="19">[Component: Rust, tokio]</font><br /><br /><font point-size="24">Poll loop: fetch, apply to<br />ledger, persist, notify.</font>>, style=filled, color="#872d08", fillcolor="#c2410c", fontcolor="#ffffff"]
+      12 [id=12,shape=rect, label=<<font point-size="34">devdata</font><br /><font point-size="19">[Component: Rust module]</font><br /><br /><font point-size="24">Fills the dev database with<br />fake data through the real<br />ledger rules.</font>>, style=filled, color="#872d08", fillcolor="#c2410c", fontcolor="#ffffff"]
+      13 [id=13,shape=rect, label=<<font point-size="34">ledger</font><br /><font point-size="19">[Component: Rust module]</font><br /><br /><font point-size="24">Pure domain rules: deadlines,<br />met or late, debts, claims,<br />marks, amount.</font>>, style=filled, color="#205723", fillcolor="#2e7d32", fontcolor="#ffffff"]
+      14 [id=14,shape=rect, label=<<font point-size="34">auth</font><br /><font point-size="19">[Component: Rust module]</font><br /><br /><font point-size="24">Pure account rules: roles,<br />password hashing, tokens,<br />permission checks.</font>>, style=filled, color="#205723", fillcolor="#2e7d32", fontcolor="#ffffff"]
+      15 [id=15,shape=rect, label=<<font point-size="34">config</font><br /><font point-size="19">[Component: Rust module]</font><br /><br /><font point-size="24">Loads every setting from<br />environment variables at<br />startup.</font>>, style=filled, color="#205723", fillcolor="#2e7d32", fontcolor="#ffffff"]
+      16 [id=16,shape=rect, label=<<font point-size="34">vikunja</font><br /><font point-size="19">[Component: Rust, HTTP client]</font><br /><br /><font point-size="24">Read-only Vikunja client. Maps<br />tasks to snapshot records.</font>>, style=filled, color="#155fa0", fillcolor="#1e88e5", fontcolor="#ffffff"]
+      17 [id=17,shape=rect, label=<<font point-size="34">notify</font><br /><font point-size="19">[Component: Rust, Web Push]</font><br /><br /><font point-size="24">Turns ledger changes into push<br />notifications. Owns the push<br />keys.</font>>, style=filled, color="#155fa0", fillcolor="#1e88e5", fontcolor="#ffffff"]
+      18 [id=18,shape=rect, label=<<font point-size="34">mail</font><br /><font point-size="19">[Component: Rust, SMTP client]</font><br /><br /><font point-size="24">Sends invite and<br />password-reset emails.</font>>, style=filled, color="#155fa0", fillcolor="#1e88e5", fontcolor="#ffffff"]
+      19 [id=19,shape=rect, label=<<font point-size="34">store</font><br /><font point-size="19">[Component: Rust, SQLite]</font><br /><br /><font point-size="24">Persistence for ledger and dev<br />databases. Ledger is<br />insert-only.</font>>, style=filled, color="#155fa0", fillcolor="#1e88e5", fontcolor="#ffffff"]
+      9 [id=9,shape=rect, label=<<font point-size="34">cli</font><br /><font point-size="19">[Component: Rust binary]</font><br /><br /><font point-size="24">Command line: serve, create<br />accounts, generate push keys,<br />seed dev data.</font>>, style=filled, color="#872d08", fillcolor="#c2410c", fontcolor="#ffffff"]
+    }
+
+  }
+
+  9 -> 10 [id=41, label=<<font point-size="24">Starts HTTP server</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  9 -> 11 [id=42, label=<<font point-size="24">Starts poll loop</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  9 -> 12 [id=43, label=<<font point-size="24">Runs seeding</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  9 -> 19 [id=44, label=<<font point-size="24">Opens databases with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  9 -> 14 [id=45, label=<<font point-size="24">Creates accounts with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  9 -> 17 [id=46, label=<<font point-size="24">Generates push keys with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 15 [id=47, label=<<font point-size="24">Reads settings from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 13 [id=48, label=<<font point-size="24">Runs debt actions on</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 14 [id=49, label=<<font point-size="24">Checks sessions and<br />permissions with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 19 [id=50, label=<<font point-size="24">Loads and saves through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 17 [id=51, label=<<font point-size="24">Stores subscriptions,<br />notifies through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  10 -> 18 [id=52, label=<<font point-size="24">Sends invites and resets<br />through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  11 -> 15 [id=53, label=<<font point-size="24">Reads settings from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  11 -> 16 [id=54, label=<<font point-size="24">Fetches snapshot through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  11 -> 13 [id=55, label=<<font point-size="24">Applies snapshot to</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  11 -> 19 [id=56, label=<<font point-size="24">Appends changes through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  11 -> 17 [id=57, label=<<font point-size="24">Hands changes to</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  12 -> 13 [id=58, label=<<font point-size="24">Builds fake debts with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  12 -> 14 [id=59, label=<<font point-size="24">Builds fake accounts with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  12 -> 19 [id=60, label=<<font point-size="24">Writes dev data through</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  16 -> 15 [id=61, label=<<font point-size="24">Reads settings from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  17 -> 15 [id=63, label=<<font point-size="24">Reads settings from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  17 -> 13 [id=64, label=<<font point-size="24">Reads change types from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  17 -> 14 [id=65, label=<<font point-size="24">Picks recipients by role<br />with</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  18 -> 15 [id=67, label=<<font point-size="24">Reads settings from</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  19 -> 13 [id=69, label=<<font point-size="24">Persists state of</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  19 -> 14 [id=70, label=<<font point-size="24">Persists accounts of</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

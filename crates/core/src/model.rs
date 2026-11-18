@@ -2949,6 +2949,34 @@ pub fn parse_with(
     load::parse_with(source, path, loader)
 }
 
+/// Reads `source`, a Structurizr workspace JSON (what `export -f json`
+/// writes, P3-413), into the model the DSL it was exported from gives:
+/// same element names, kinds, parents, tags, relationships, views and
+/// styles (P3-416), each view keeping its element positions as `at` and
+/// `size` lines (P3-417). Unknown keys are ignored (P3-418). `loader`
+/// serves the same file access as `parse_with` (P3-416: callers pass
+/// what they pass there). Spans point into `source` as `FileId::ROOT`.
+/// Serves P3-416, P3-417, P3-418.
+///
+/// # Errors
+///
+/// A `ModelError` with the line and column in `source` when it is not
+/// RFC 8259 JSON (or not UTF-8), or is JSON but not a workspace (no
+/// top-level object with a `model` or `views` object) (P3-418).
+pub fn parse_json(source: &[u8], loader: &mut dyn Loader) -> Result<Model, ModelError> {
+    let _ = (source, loader);
+    todo!()
+}
+
+/// The Structurizr canonical name of element `id`: `<Type>://<names>`,
+/// the names of its ancestors and itself joined with `.`, each with `.`
+/// and `/` removed (`DefaultLayoutMergeStrategy`, P2-506, P3-427).
+/// Serves P3-427, P3-416.
+pub fn canonical_name(model: &Model, id: ElementId) -> String {
+    let _ = (model, id);
+    todo!()
+}
+
 /// `parsed` with the tree of `file` replaced by `source`, the model built
 /// again from the trees in memory with no I/O: the files read, the
 /// includes and the environment values of the first parse are kept.

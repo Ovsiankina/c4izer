@@ -1,0 +1,42 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Container View: Atomanja"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    1["<div style='font-weight: bold'>Worker</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>The one person whose tasks<br />are tracked. Sees own tasks<br />and debts, marks debts as<br />sent.</div>"]
+    style 1 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    2["<div style='font-weight: bold'>Witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Accountability partner. Sees<br />late tasks, claims debts,<br />marks them received.</div>"]
+    style 2 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    3["<div style='font-weight: bold'>Admin witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Maintainer. Troubleshoots the<br />witness view on fake data.</div>"]
+    style 3 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    4["<div style='font-weight: bold'>Vikunja</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Existing task manager. Source<br />of tasks and deadlines. Never<br />modified.</div>"]
+    style 4 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+    5["<div style='font-weight: bold'>Push services</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Browser vendors' endpoints<br />that deliver notifications to<br />installed apps.</div>"]
+    style 5 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+    6["<div style='font-weight: bold'>Mail server</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Delivers invite and<br />password-reset emails.</div>"]
+    style 6 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+
+    subgraph 7 ["Atomanja"]
+      style 7 fill:#ffffff,stroke:#0e4686,color:#0e4686
+
+      20[("<div style='font-weight: bold'>Ledger database</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQLite file]</div><div style='font-size: 80%; margin-top:10px'>Append-only record of<br />deadlines, debts, claims,<br />marks and accounts.</div>")]
+      style 20 fill:#00796b,stroke:#00544a,color:#ffffff
+      21[("<div style='font-weight: bold'>Dev database</div><div style='font-size: 70%; margin-top: 0px'>[Container: SQLite file]</div><div style='font-size: 80%; margin-top:10px'>Fake tasks and debts for the<br />admin witness. Isolated from<br />the real ledger.</div>")]
+      style 21 fill:#00796b,stroke:#00544a,color:#ffffff
+      8["<div style='font-weight: bold'>Atomanja server</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust, axum, HTML + htmx]</div><div style='font-size: 80%; margin-top:10px'>Single binary. Polls Vikunja,<br />keeps the ledger, serves both<br />views, sends notifications<br />and emails.</div>"]
+      style 8 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+    end
+
+    1-. "<div>Views tasks and debts, marks<br />debts sent, invites witnesses</div><div style='font-size: 70%'>[HTTPS]</div>" .->8
+    2-. "<div>Views late tasks, claims<br />debts, marks debts received</div><div style='font-size: 70%'>[HTTPS]</div>" .->8
+    3-. "<div>Troubleshoots the witness<br />view on fake data</div><div style='font-size: 70%'>[HTTPS]</div>" .->8
+    8-. "<div>Polls tasks and deadlines,<br />read-only</div><div style='font-size: 70%'>[HTTPS/JSON]</div>" .->4
+    8-. "<div>Reads and appends ledger<br />entries</div><div style='font-size: 70%'>[SQL]</div>" .->20
+    8-. "<div>Reads fake data for the admin<br />witness</div><div style='font-size: 70%'>[SQL]</div>" .->21
+    8-. "<div>Sends notifications through</div><div style='font-size: 70%'>[Web Push]</div>" .->5
+    8-. "<div>Sends invite and reset emails<br />through</div><div style='font-size: 70%'>[SMTP]</div>" .->6
+    5-. "<div>Delivers notifications to</div><div style='font-size: 70%'></div>" .->1
+    5-. "<div>Delivers notifications to</div><div style='font-size: 70%'></div>" .->2
+
+  end

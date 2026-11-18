@@ -1,0 +1,23 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["System Context View: Atomanja"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    1["<div style='font-weight: bold'>Worker</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>The one person whose tasks<br />are tracked. Sees own tasks<br />and debts, marks debts as<br />sent.</div>"]
+    style 1 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    2["<div style='font-weight: bold'>Witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Accountability partner. Sees<br />late tasks, claims debts,<br />marks them received.</div>"]
+    style 2 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    3["<div style='font-weight: bold'>Admin witness</div><div style='font-size: 70%; margin-top: 0px'>[Person]</div><div style='font-size: 80%; margin-top:10px'>Maintainer. Troubleshoots the<br />witness view on fake data.</div>"]
+    style 3 fill:#0b3c6f,stroke:#072a4d,color:#ffffff
+    4["<div style='font-weight: bold'>Vikunja</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Existing task manager. Source<br />of tasks and deadlines. Never<br />modified.</div>"]
+    style 4 fill:#5d5a6b,stroke:#413e4a,color:#ffffff
+    7["<div style='font-weight: bold'>Atomanja</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Records task deadlines, turns<br />missed ones into debts, and<br />tracks their settlement.</div>"]
+    style 7 fill:#1565c0,stroke:#0e4686,color:#ffffff
+
+    1-. "<div>Views tasks and debts, marks<br />debts sent, invites witnesses</div><div style='font-size: 70%'>[HTTPS]</div>" .->7
+    2-. "<div>Views late tasks, claims<br />debts, marks debts received</div><div style='font-size: 70%'>[HTTPS]</div>" .->7
+    3-. "<div>Troubleshoots the witness<br />view on fake data</div><div style='font-size: 70%'>[HTTPS]</div>" .->7
+    7-. "<div>Polls tasks and deadlines,<br />read-only</div><div style='font-size: 70%'>[HTTPS/JSON]</div>" .->4
+
+  end

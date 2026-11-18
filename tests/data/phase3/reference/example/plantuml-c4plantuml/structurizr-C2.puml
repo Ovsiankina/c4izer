@@ -1,0 +1,44 @@
+@startuml
+title <size:24>Container View: Atomanja</size>\n<size:24>Container diagram for Atomanja</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+
+Person(Worker, "Worker", $descr="The one person whose tasks are tracked. Sees own tasks and debts, marks debts as sent.", $tags="", $link="")
+Person(Witness, "Witness", $descr="Accountability partner. Sees late tasks, claims debts, marks them received.", $tags="", $link="")
+Person(Adminwitness, "Admin witness", $descr="Maintainer. Troubleshoots the witness view on fake data.", $tags="", $link="")
+System(Vikunja, "Vikunja", $descr="Existing task manager. Source of tasks and deadlines. Never modified.", $tags="", $link="")
+System(Pushservices, "Push services", $descr="Browser vendors' endpoints that deliver notifications to installed apps.", $tags="", $link="")
+System(Mailserver, "Mail server", $descr="Delivers invite and password-reset emails.", $tags="", $link="")
+
+System_Boundary("Atomanja_boundary", "Atomanja", $tags="") {
+  ContainerDb(Atomanja.Ledgerdatabase, "Ledger database", $techn="SQLite file", $descr="Append-only record of deadlines, debts, claims, marks and accounts.", $tags="", $link="")
+  ContainerDb(Atomanja.Devdatabase, "Dev database", $techn="SQLite file", $descr="Fake tasks and debts for the admin witness. Isolated from the real ledger.", $tags="", $link="")
+  Container(Atomanja.Atomanjaserver, "Atomanja server", $techn="Rust, axum, HTML + htmx", $descr="Single binary. Polls Vikunja, keeps the ledger, serves both views, sends notifications and emails.", $tags="", $link="")
+}
+
+Rel(Worker, Atomanja.Atomanjaserver, "Views tasks and debts, marks debts sent, invites witnesses", $techn="HTTPS", $tags="", $link="")
+Rel(Witness, Atomanja.Atomanjaserver, "Views late tasks, claims debts, marks debts received", $techn="HTTPS", $tags="", $link="")
+Rel(Adminwitness, Atomanja.Atomanjaserver, "Troubleshoots the witness view on fake data", $techn="HTTPS", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver, Vikunja, "Polls tasks and deadlines, read-only", $techn="HTTPS/JSON", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver, Atomanja.Ledgerdatabase, "Reads and appends ledger entries", $techn="SQL", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver, Atomanja.Devdatabase, "Reads fake data for the admin witness", $techn="SQL", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver, Pushservices, "Sends notifications through", $techn="Web Push", $tags="", $link="")
+Rel(Atomanja.Atomanjaserver, Mailserver, "Sends invite and reset emails through", $techn="SMTP", $tags="", $link="")
+Rel(Pushservices, Worker, "Delivers notifications to", $techn="", $tags="", $link="")
+Rel(Pushservices, Witness, "Delivers notifications to", $techn="", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

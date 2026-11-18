@@ -1,0 +1,8 @@
+title Dynamic View\nThe system in its estate
+
+actor <<Person>>\nUser as User
+participant <<Software System>>\nSystem as System
+participant <<Software System>>\nThird Party as Third Party
+
+User->System: Sends a request
+System->Third Party: Looks up data

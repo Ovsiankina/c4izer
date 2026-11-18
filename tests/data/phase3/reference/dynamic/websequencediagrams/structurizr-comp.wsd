@@ -1,0 +1,10 @@
+title Dynamic View: System - App\nForm submission inside the app
+
+actor <<Person>>\nUser as User
+participant <<Component>>\nHandler as Handler
+participant <<Component>>\nValidator as Validator
+participant <<Container>>\nStore as Store
+
+User->Handler: Submits a form
+Handler->Validator: Validates the form
+Validator->Store: Checks the record

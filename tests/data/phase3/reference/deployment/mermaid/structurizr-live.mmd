@@ -1,0 +1,58 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Shop in production"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph 13 ["Cloud"]
+      style 13 fill:#ffffff,stroke:#444444,color:#444444
+
+      14["<div style='font-weight: bold'>DNS</div><div style='font-size: 70%; margin-top: 0px'>[Infrastructure Node: Route 53]</div><div style='font-size: 80%; margin-top:10px'>Routes requests.</div>"]
+      style 14 fill:#e8f0e0,stroke:#a2a89c,color:#444444
+      15["<div style='font-weight: bold'>Load balancer</div><div style='font-size: 70%; margin-top: 0px'>[Infrastructure Node: ELB]</div><div style='font-size: 80%; margin-top:10px'>Spreads requests.</div>"]
+      style 15 fill:#e8f0e0,stroke:#a2a89c,color:#444444
+      subgraph 16 ["Web host"]
+        style 16 fill:#ffffff,stroke:#444444,color:#444444
+
+        17["<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves the pages.</div>"]
+        style 17 fill:#ffffff,stroke:#444444,color:#444444
+        18["<div style='font-weight: bold'>Web</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Serves the pages.</div>"]
+        style 18 fill:#ffffff,stroke:#444444,color:#444444
+      end
+
+      subgraph 19 ["Api host"]
+        style 19 fill:#ffffff,stroke:#444444,color:#444444
+
+        20["<div style='font-weight: bold'>Api</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Takes orders.</div>"]
+        style 20 fill:#ffffff,stroke:#444444,color:#444444
+        22["<div style='font-weight: bold'>Api</div><div style='font-size: 70%; margin-top: 0px'>[Container: Rust]</div><div style='font-size: 80%; margin-top:10px'>Takes orders.</div>"]
+        style 22 fill:#ffffff,stroke:#444444,color:#444444
+      end
+
+      subgraph 24 ["Database"]
+        style 24 fill:#ffffff,stroke:#444444,color:#444444
+
+        25[("<div style='font-weight: bold'>Db</div><div style='font-size: 70%; margin-top: 0px'>[Container: PostgreSQL]</div><div style='font-size: 80%; margin-top:10px'>Stores orders.</div>")]
+        style 25 fill:#ffffff,stroke:#444444,color:#444444
+      end
+
+    end
+
+    subgraph 29 ["Mail provider"]
+      style 29 fill:#ffffff,stroke:#444444,color:#444444
+
+      30["<div style='font-weight: bold'>Mail</div><div style='font-size: 70%; margin-top: 0px'>[Software System]</div><div style='font-size: 80%; margin-top:10px'>Sends mail.</div>"]
+      style 30 fill:#999999,stroke:#6b6b6b,color:#ffffff
+    end
+
+    17-. "<div>Sends orders to</div><div style='font-size: 70%'>[JSON/HTTPS]</div>" .->20
+    18-. "<div>Sends orders to</div><div style='font-size: 70%'>[JSON/HTTPS]</div>" .->22
+    20-. "<div>Reads and writes</div><div style='font-size: 70%'>[SQL]</div>" .->25
+    22-. "<div>Reads and writes</div><div style='font-size: 70%'>[SQL]</div>" .->25
+    20-. "<div>Sends mail through</div><div style='font-size: 70%'>[SMTP]</div>" .->30
+    22-. "<div>Sends mail through</div><div style='font-size: 70%'>[SMTP]</div>" .->30
+    14-. "<div>Forwards requests to</div><div style='font-size: 70%'>[HTTPS]</div>" .->15
+    15-. "<div>Forwards requests to</div><div style='font-size: 70%'>[HTTPS]</div>" .->17
+    15-. "<div>Forwards requests to</div><div style='font-size: 70%'>[HTTPS]</div>" .->18
+
+  end

@@ -1,0 +1,35 @@
+@startuml
+title <size:24>Dynamic View: System</size>\n<size:24>A request with parallel lookups</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Container>
+
+System_Boundary("System_boundary", "System", $tags="") {
+  Container(System.App, "App", $techn="Rust", $descr="Handles requests.", $tags="", $link="")
+  Container(System.Store, "Store", $techn="SQL", $descr="Keeps records.", $tags="", $link="")
+}
+
+Person(User, "User", $descr="Uses the system.", $tags="", $link="")
+System(ThirdParty, "Third Party", $descr="Answers lookups.", $tags="", $link="")
+
+Rel(User, System.App, "1: Sends a request", $techn="HTTPS", $tags="", $link="")
+Rel(System.App, System.Store, "2: Reads the record", $techn="SQL", $tags="", $link="")
+Rel(System.App, ThirdParty, "2: Looks up the rate", $techn="HTTPS", $tags="", $link="")
+Rel(System.App, System.Store, "3: Stores the rate", $techn="SQL", $tags="", $link="")
+Rel(System.Store, System.App, "3: Notifies of the change", $techn="SQL", $tags="", $link="")
+Rel(System.App, ThirdParty, "4: Confirms", $techn="HTTPS", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

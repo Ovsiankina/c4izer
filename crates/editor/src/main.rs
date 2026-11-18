@@ -17,6 +17,8 @@ mod dsl_breadth_tests;
 mod dynamic_view_tests;
 #[cfg(test)]
 mod editor_breadth_tests;
+#[cfg(test)]
+mod exporters_tests;
 mod files;
 mod history;
 #[cfg(test)]

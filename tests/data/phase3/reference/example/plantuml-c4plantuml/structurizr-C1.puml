@@ -1,0 +1,30 @@
+@startuml
+title <size:24>System Context View: Atomanja</size>\n<size:24>System Context diagram for Atomanja</size>
+
+set separator none
+top to bottom direction
+
+<style>
+  root {
+    BackgroundColor: #ffffff
+    FontColor: #444444
+  }
+</style>
+
+!include <C4/C4>
+!include <C4/C4_Context>
+
+Person(Worker, "Worker", $descr="The one person whose tasks are tracked. Sees own tasks and debts, marks debts as sent.", $tags="", $link="")
+Person(Witness, "Witness", $descr="Accountability partner. Sees late tasks, claims debts, marks them received.", $tags="", $link="")
+Person(Adminwitness, "Admin witness", $descr="Maintainer. Troubleshoots the witness view on fake data.", $tags="", $link="")
+System(Vikunja, "Vikunja", $descr="Existing task manager. Source of tasks and deadlines. Never modified.", $tags="", $link="")
+System(Atomanja, "Atomanja", $descr="Records task deadlines, turns missed ones into debts, and tracks their settlement.", $tags="", $link="")
+
+Rel(Worker, Atomanja, "Views tasks and debts, marks debts sent, invites witnesses", $techn="HTTPS", $tags="", $link="")
+Rel(Witness, Atomanja, "Views late tasks, claims debts, marks debts received", $techn="HTTPS", $tags="", $link="")
+Rel(Adminwitness, Atomanja, "Troubleshoots the witness view on fake data", $techn="HTTPS", $tags="", $link="")
+Rel(Atomanja, Vikunja, "Polls tasks and deadlines, read-only", $techn="HTTPS/JSON", $tags="", $link="")
+
+SHOW_LEGEND(true)
+hide stereotypes
+@enduml

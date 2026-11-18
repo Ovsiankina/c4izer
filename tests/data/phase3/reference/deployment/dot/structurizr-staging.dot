@@ -1,0 +1,24 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Shop in staging</font>>
+
+  subgraph cluster_36 {
+    margin=25
+    label=<<font point-size="24">Test box</font><br /><font point-size="19">[Deployment Node: Docker]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#ffffff"
+
+    37 [id=37,shape=rect, label=<<font point-size="34">Web</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Serves the pages.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    38 [id=38,shape=rect, label=<<font point-size="34">Api</font><br /><font point-size="19">[Container: Rust]</font><br /><br /><font point-size="24">Takes orders.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    40 [id=40,shape=cylinder, label=<<font point-size="34">Db</font><br /><font point-size="19">[Container: PostgreSQL]</font><br /><br /><font point-size="24">Stores orders.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+  37 -> 38 [id=39, label=<<font point-size="24">Sends orders to</font><br /><font point-size="19">[JSON/HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  38 -> 40 [id=41, label=<<font point-size="24">Reads and writes</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

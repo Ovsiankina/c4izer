@@ -1,0 +1,939 @@
+{
+  "configuration" : { },
+  "description" : "Atomanja exists to put financial pressure on your tasks. Be accounted for. Be more productive.",
+  "documentation" : { },
+  "id" : 0,
+  "model" : {
+    "people" : [ {
+      "description" : "The one person whose tasks are tracked. Sees own tasks and debts, marks debts as sent.",
+      "id" : "1",
+      "name" : "Worker",
+      "properties" : {
+        "structurizr.dsl.identifier" : "worker"
+      },
+      "relationships" : [ {
+        "description" : "Views tasks and debts, marks debts sent, invites witnesses",
+        "destinationId" : "8",
+        "id" : "22",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Views tasks and debts, marks debts sent, invites witnesses",
+        "destinationId" : "7",
+        "id" : "23",
+        "linkedRelationshipId" : "22",
+        "sourceId" : "1",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Views tasks, marks debts sent",
+        "destinationId" : "10",
+        "id" : "38",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    }, {
+      "description" : "Accountability partner. Sees late tasks, claims debts, marks them received.",
+      "id" : "2",
+      "name" : "Witness",
+      "properties" : {
+        "structurizr.dsl.identifier" : "witness"
+      },
+      "relationships" : [ {
+        "description" : "Views late tasks, claims debts, marks debts received",
+        "destinationId" : "8",
+        "id" : "24",
+        "sourceId" : "2",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Views late tasks, claims debts, marks debts received",
+        "destinationId" : "7",
+        "id" : "25",
+        "linkedRelationshipId" : "24",
+        "sourceId" : "2",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Claims debts, marks them received",
+        "destinationId" : "10",
+        "id" : "39",
+        "sourceId" : "2",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    }, {
+      "description" : "Maintainer. Troubleshoots the witness view on fake data.",
+      "id" : "3",
+      "name" : "Admin witness",
+      "properties" : {
+        "structurizr.dsl.identifier" : "admin"
+      },
+      "relationships" : [ {
+        "description" : "Troubleshoots the witness view on fake data",
+        "destinationId" : "8",
+        "id" : "26",
+        "sourceId" : "3",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Troubleshoots the witness view on fake data",
+        "destinationId" : "7",
+        "id" : "27",
+        "linkedRelationshipId" : "26",
+        "sourceId" : "3",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Troubleshoots on fake data",
+        "destinationId" : "10",
+        "id" : "40",
+        "sourceId" : "3",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "softwareSystems" : [ {
+      "description" : "Existing task manager. Source of tasks and deadlines. Never modified.",
+      "documentation" : { },
+      "id" : "4",
+      "name" : "Vikunja",
+      "properties" : {
+        "structurizr.dsl.identifier" : "vikunja"
+      },
+      "tags" : "Element,Software System,External"
+    }, {
+      "description" : "Browser vendors' endpoints that deliver notifications to installed apps.",
+      "documentation" : { },
+      "id" : "5",
+      "name" : "Push services",
+      "properties" : {
+        "structurizr.dsl.identifier" : "push"
+      },
+      "relationships" : [ {
+        "description" : "Delivers notifications to",
+        "destinationId" : "1",
+        "id" : "36",
+        "sourceId" : "5",
+        "tags" : "Relationship"
+      }, {
+        "description" : "Delivers notifications to",
+        "destinationId" : "2",
+        "id" : "37",
+        "sourceId" : "5",
+        "tags" : "Relationship"
+      } ],
+      "tags" : "Element,Software System,External"
+    }, {
+      "description" : "Delivers invite and password-reset emails.",
+      "documentation" : { },
+      "id" : "6",
+      "name" : "Mail server",
+      "properties" : {
+        "structurizr.dsl.identifier" : "smtp"
+      },
+      "tags" : "Element,Software System,External"
+    }, {
+      "containers" : [ {
+        "components" : [ {
+          "description" : "Command line: serve, create accounts, generate push keys, seed dev data.",
+          "documentation" : { },
+          "id" : "9",
+          "name" : "cli",
+          "properties" : {
+            "structurizr.dsl.identifier" : "cli"
+          },
+          "relationships" : [ {
+            "description" : "Starts HTTP server",
+            "destinationId" : "10",
+            "id" : "41",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Starts poll loop",
+            "destinationId" : "11",
+            "id" : "42",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Runs seeding",
+            "destinationId" : "12",
+            "id" : "43",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Opens databases with",
+            "destinationId" : "19",
+            "id" : "44",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Creates accounts with",
+            "destinationId" : "14",
+            "id" : "45",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Generates push keys with",
+            "destinationId" : "17",
+            "id" : "46",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component,Entry",
+          "technology" : "Rust binary"
+        }, {
+          "description" : "HTTP layer: both views, login flows, debt actions, push subscription.",
+          "documentation" : { },
+          "id" : "10",
+          "name" : "web",
+          "properties" : {
+            "structurizr.dsl.identifier" : "web"
+          },
+          "relationships" : [ {
+            "description" : "Reads settings from",
+            "destinationId" : "15",
+            "id" : "47",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Runs debt actions on",
+            "destinationId" : "13",
+            "id" : "48",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Checks sessions and permissions with",
+            "destinationId" : "14",
+            "id" : "49",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads and saves through",
+            "destinationId" : "19",
+            "id" : "50",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Stores subscriptions, notifies through",
+            "destinationId" : "17",
+            "id" : "51",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Sends invites and resets through",
+            "destinationId" : "18",
+            "id" : "52",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component,Entry",
+          "technology" : "Rust, axum, htmx"
+        }, {
+          "description" : "Poll loop: fetch, apply to ledger, persist, notify.",
+          "documentation" : { },
+          "id" : "11",
+          "name" : "sync",
+          "properties" : {
+            "structurizr.dsl.identifier" : "sync"
+          },
+          "relationships" : [ {
+            "description" : "Reads settings from",
+            "destinationId" : "15",
+            "id" : "53",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Fetches snapshot through",
+            "destinationId" : "16",
+            "id" : "54",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Applies snapshot to",
+            "destinationId" : "13",
+            "id" : "55",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Appends changes through",
+            "destinationId" : "19",
+            "id" : "56",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Hands changes to",
+            "destinationId" : "17",
+            "id" : "57",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component,Entry",
+          "technology" : "Rust, tokio"
+        }, {
+          "description" : "Fills the dev database with fake data through the real ledger rules.",
+          "documentation" : { },
+          "id" : "12",
+          "name" : "devdata",
+          "properties" : {
+            "structurizr.dsl.identifier" : "devdata"
+          },
+          "relationships" : [ {
+            "description" : "Builds fake debts with",
+            "destinationId" : "13",
+            "id" : "58",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Builds fake accounts with",
+            "destinationId" : "14",
+            "id" : "59",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Writes dev data through",
+            "destinationId" : "19",
+            "id" : "60",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component,Entry",
+          "technology" : "Rust module"
+        }, {
+          "description" : "Pure domain rules: deadlines, met or late, debts, claims, marks, amount.",
+          "documentation" : { },
+          "id" : "13",
+          "name" : "ledger",
+          "properties" : {
+            "structurizr.dsl.identifier" : "ledger"
+          },
+          "tags" : "Element,Component,Core",
+          "technology" : "Rust module"
+        }, {
+          "description" : "Pure account rules: roles, password hashing, tokens, permission checks.",
+          "documentation" : { },
+          "id" : "14",
+          "name" : "auth",
+          "properties" : {
+            "structurizr.dsl.identifier" : "auth"
+          },
+          "tags" : "Element,Component,Core",
+          "technology" : "Rust module"
+        }, {
+          "description" : "Loads every setting from environment variables at startup.",
+          "documentation" : { },
+          "id" : "15",
+          "name" : "config",
+          "properties" : {
+            "structurizr.dsl.identifier" : "config"
+          },
+          "tags" : "Element,Component,Core",
+          "technology" : "Rust module"
+        }, {
+          "description" : "Read-only Vikunja client. Maps tasks to snapshot records.",
+          "documentation" : { },
+          "id" : "16",
+          "name" : "vikunja",
+          "properties" : {
+            "structurizr.dsl.identifier" : "vikunjaClient"
+          },
+          "relationships" : [ {
+            "description" : "Reads settings from",
+            "destinationId" : "15",
+            "id" : "61",
+            "sourceId" : "16",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Fetches tasks from",
+            "destinationId" : "4",
+            "id" : "62",
+            "sourceId" : "16",
+            "tags" : "Relationship",
+            "technology" : "HTTPS/JSON"
+          } ],
+          "tags" : "Element,Component,Adapter",
+          "technology" : "Rust, HTTP client"
+        }, {
+          "description" : "Turns ledger changes into push notifications. Owns the push keys.",
+          "documentation" : { },
+          "id" : "17",
+          "name" : "notify",
+          "properties" : {
+            "structurizr.dsl.identifier" : "notify"
+          },
+          "relationships" : [ {
+            "description" : "Reads settings from",
+            "destinationId" : "15",
+            "id" : "63",
+            "sourceId" : "17",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Reads change types from",
+            "destinationId" : "13",
+            "id" : "64",
+            "sourceId" : "17",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Picks recipients by role with",
+            "destinationId" : "14",
+            "id" : "65",
+            "sourceId" : "17",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Sends notifications through",
+            "destinationId" : "5",
+            "id" : "66",
+            "sourceId" : "17",
+            "tags" : "Relationship",
+            "technology" : "Web Push"
+          } ],
+          "tags" : "Element,Component,Adapter",
+          "technology" : "Rust, Web Push"
+        }, {
+          "description" : "Sends invite and password-reset emails.",
+          "documentation" : { },
+          "id" : "18",
+          "name" : "mail",
+          "properties" : {
+            "structurizr.dsl.identifier" : "mail"
+          },
+          "relationships" : [ {
+            "description" : "Reads settings from",
+            "destinationId" : "15",
+            "id" : "67",
+            "sourceId" : "18",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Sends emails through",
+            "destinationId" : "6",
+            "id" : "68",
+            "sourceId" : "18",
+            "tags" : "Relationship",
+            "technology" : "SMTP"
+          } ],
+          "tags" : "Element,Component,Adapter",
+          "technology" : "Rust, SMTP client"
+        }, {
+          "description" : "Persistence for ledger and dev databases. Ledger is insert-only.",
+          "documentation" : { },
+          "id" : "19",
+          "name" : "store",
+          "properties" : {
+            "structurizr.dsl.identifier" : "store"
+          },
+          "relationships" : [ {
+            "description" : "Persists state of",
+            "destinationId" : "13",
+            "id" : "69",
+            "sourceId" : "19",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Persists accounts of",
+            "destinationId" : "14",
+            "id" : "70",
+            "sourceId" : "19",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Reads and appends",
+            "destinationId" : "20",
+            "id" : "71",
+            "sourceId" : "19",
+            "tags" : "Relationship",
+            "technology" : "SQL"
+          }, {
+            "description" : "Reads and writes",
+            "destinationId" : "21",
+            "id" : "72",
+            "sourceId" : "19",
+            "tags" : "Relationship",
+            "technology" : "SQL"
+          } ],
+          "tags" : "Element,Component,Adapter",
+          "technology" : "Rust, SQLite"
+        } ],
+        "description" : "Single binary. Polls Vikunja, keeps the ledger, serves both views, sends notifications and emails.",
+        "documentation" : { },
+        "id" : "8",
+        "name" : "Atomanja server",
+        "properties" : {
+          "structurizr.dsl.identifier" : "app"
+        },
+        "relationships" : [ {
+          "description" : "Polls tasks and deadlines, read-only",
+          "destinationId" : "4",
+          "id" : "28",
+          "sourceId" : "8",
+          "tags" : "Relationship",
+          "technology" : "HTTPS/JSON"
+        }, {
+          "description" : "Reads and appends ledger entries",
+          "destinationId" : "20",
+          "id" : "30",
+          "sourceId" : "8",
+          "tags" : "Relationship",
+          "technology" : "SQL"
+        }, {
+          "description" : "Reads fake data for the admin witness",
+          "destinationId" : "21",
+          "id" : "31",
+          "sourceId" : "8",
+          "tags" : "Relationship",
+          "technology" : "SQL"
+        }, {
+          "description" : "Sends notifications through",
+          "destinationId" : "5",
+          "id" : "32",
+          "sourceId" : "8",
+          "tags" : "Relationship",
+          "technology" : "Web Push"
+        }, {
+          "description" : "Sends invite and reset emails through",
+          "destinationId" : "6",
+          "id" : "34",
+          "sourceId" : "8",
+          "tags" : "Relationship",
+          "technology" : "SMTP"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Rust, axum, HTML + htmx"
+      }, {
+        "description" : "Append-only record of deadlines, debts, claims, marks and accounts.",
+        "documentation" : { },
+        "id" : "20",
+        "name" : "Ledger database",
+        "properties" : {
+          "structurizr.dsl.identifier" : "db"
+        },
+        "tags" : "Element,Container,Database",
+        "technology" : "SQLite file"
+      }, {
+        "description" : "Fake tasks and debts for the admin witness. Isolated from the real ledger.",
+        "documentation" : { },
+        "id" : "21",
+        "name" : "Dev database",
+        "properties" : {
+          "structurizr.dsl.identifier" : "devdb"
+        },
+        "tags" : "Element,Container,Database",
+        "technology" : "SQLite file"
+      } ],
+      "description" : "Records task deadlines, turns missed ones into debts, and tracks their settlement.",
+      "documentation" : { },
+      "id" : "7",
+      "name" : "Atomanja",
+      "properties" : {
+        "structurizr.dsl.identifier" : "system"
+      },
+      "relationships" : [ {
+        "description" : "Polls tasks and deadlines, read-only",
+        "destinationId" : "4",
+        "id" : "29",
+        "linkedRelationshipId" : "28",
+        "sourceId" : "7",
+        "technology" : "HTTPS/JSON"
+      }, {
+        "description" : "Sends notifications through",
+        "destinationId" : "5",
+        "id" : "33",
+        "linkedRelationshipId" : "32",
+        "sourceId" : "7",
+        "technology" : "Web Push"
+      }, {
+        "description" : "Sends invite and reset emails through",
+        "destinationId" : "6",
+        "id" : "35",
+        "linkedRelationshipId" : "34",
+        "sourceId" : "7",
+        "technology" : "SMTP"
+      } ],
+      "tags" : "Element,Software System"
+    } ]
+  },
+  "name" : "Atomanja",
+  "properties" : {
+    "structurizr.inspection.error" : "32",
+    "structurizr.dsl" : "Ly8gYzRyaXplciBkaWFncmFtIGZpbGU6IHRoZSBwcm90b3R5cGUgZXhhbXBsZSAodGVzdHMvZGF0YS9leGFtcGxlL3dvcmtzcGFjZS5kc2wKLy8gcGx1cyBsYXlvdXQuanNvbikgY29udmVydGVkIG9uY2UgYnkgaGFuZCAoRFNMLTEyKS4gTW9kZWwgYW5kIHN0eWxlcyBhcmUKLy8gdW5jaGFuZ2VkOyBlYWNoIHZpZXcgY2FycmllcyBpdHMgbGF5b3V0IGFzIGM0cml6ZXIgbGluZXM6IHN1YnRpdGxlLCBvcHRpb25zLAovLyBgYXRgIChib3ggY2VudHJlKSBhbmQgYHNpemVgLiBWaWV3IGtleXMgYXMgaW4gdGhlIHByb3RvdHlwZS4KCndvcmtzcGFjZSAiQXRvbWFuamEiICJBdG9tYW5qYSBleGlzdHMgdG8gcHV0IGZpbmFuY2lhbCBwcmVzc3VyZSBvbiB5b3VyIHRhc2tzLiBCZSBhY2NvdW50ZWQgZm9yLiBCZSBtb3JlIHByb2R1Y3RpdmUuIiB7CgogICAgbW9kZWwgewogICAgICAgIC8vIFBlb3BsZSBhcmUgcm9sZXMsIG5ldmVyIG5hbWVkIGluZGl2aWR1YWxzLgogICAgICAgIHdvcmtlciA9IHBlcnNvbiAiV29ya2VyIiAiVGhlIG9uZSBwZXJzb24gd2hvc2UgdGFza3MgYXJlIHRyYWNrZWQuIFNlZXMgb3duIHRhc2tzIGFuZCBkZWJ0cywgbWFya3MgZGVidHMgYXMgc2VudC4iCiAgICAgICAgd2l0bmVzcyA9IHBlcnNvbiAiV2l0bmVzcyIgIkFjY291bnRhYmlsaXR5IHBhcnRuZXIuIFNlZXMgbGF0ZSB0YXNrcywgY2xhaW1zIGRlYnRzLCBtYXJrcyB0aGVtIHJlY2VpdmVkLiIKICAgICAgICBhZG1pbiA9IHBlcnNvbiAiQWRtaW4gd2l0bmVzcyIgIk1haW50YWluZXIuIFRyb3VibGVzaG9vdHMgdGhlIHdpdG5lc3MgdmlldyBvbiBmYWtlIGRhdGEuIgoKICAgICAgICB2aWt1bmphID0gc29mdHdhcmVTeXN0ZW0gIlZpa3VuamEiICJFeGlzdGluZyB0YXNrIG1hbmFnZXIuIFNvdXJjZSBvZiB0YXNrcyBhbmQgZGVhZGxpbmVzLiBOZXZlciBtb2RpZmllZC4iICJFeHRlcm5hbCIKICAgICAgICBwdXNoID0gc29mdHdhcmVTeXN0ZW0gIlB1c2ggc2VydmljZXMiICJCcm93c2VyIHZlbmRvcnMnIGVuZHBvaW50cyB0aGF0IGRlbGl2ZXIgbm90aWZpY2F0aW9ucyB0byBpbnN0YWxsZWQgYXBwcy4iICJFeHRlcm5hbCIKICAgICAgICBzbXRwID0gc29mdHdhcmVTeXN0ZW0gIk1haWwgc2VydmVyIiAiRGVsaXZlcnMgaW52aXRlIGFuZCBwYXNzd29yZC1yZXNldCBlbWFpbHMuIiAiRXh0ZXJuYWwiCgogICAgICAgIHN5c3RlbSA9IHNvZnR3YXJlU3lzdGVtICJBdG9tYW5qYSIgIlJlY29yZHMgdGFzayBkZWFkbGluZXMsIHR1cm5zIG1pc3NlZCBvbmVzIGludG8gZGVidHMsIGFuZCB0cmFja3MgdGhlaXIgc2V0dGxlbWVudC4iIHsKICAgICAgICAgICAgYXBwID0gY29udGFpbmVyICJBdG9tYW5qYSBzZXJ2ZXIiICJTaW5nbGUgYmluYXJ5LiBQb2xscyBWaWt1bmphLCBrZWVwcyB0aGUgbGVkZ2VyLCBzZXJ2ZXMgYm90aCB2aWV3cywgc2VuZHMgbm90aWZpY2F0aW9ucyBhbmQgZW1haWxzLiIgIlJ1c3QsIGF4dW0sIEhUTUwgKyBodG14IiB7CiAgICAgICAgICAgICAgICAvLyBDMzogb25lIGNvbXBvbmVudCBwZXIgbW9kdWxlIChzdGVwIDMsIDIwMjYtMTEtMTUpLgogICAgICAgICAgICAgICAgLy8gVGFncyBncm91cCByZWxhdGVkIGNvbXBvbmVudHM7IGVhY2ggdGFnIGhhcyBvbmUgY29sb3VyLgogICAgICAgICAgICAgICAgY2xpID0gY29tcG9uZW50ICJjbGkiICJDb21tYW5kIGxpbmU6IHNlcnZlLCBjcmVhdGUgYWNjb3VudHMsIGdlbmVyYXRlIHB1c2gga2V5cywgc2VlZCBkZXYgZGF0YS4iICJSdXN0IGJpbmFyeSIgIkVudHJ5IgogICAgICAgICAgICAgICAgd2ViID0gY29tcG9uZW50ICJ3ZWIiICJIVFRQIGxheWVyOiBib3RoIHZpZXdzLCBsb2dpbiBmbG93cywgZGVidCBhY3Rpb25zLCBwdXNoIHN1YnNjcmlwdGlvbi4iICJSdXN0LCBheHVtLCBodG14IiAiRW50cnkiCiAgICAgICAgICAgICAgICBzeW5jID0gY29tcG9uZW50ICJzeW5jIiAiUG9sbCBsb29wOiBmZXRjaCwgYXBwbHkgdG8gbGVkZ2VyLCBwZXJzaXN0LCBub3RpZnkuIiAiUnVzdCwgdG9raW8iICJFbnRyeSIKICAgICAgICAgICAgICAgIGRldmRhdGEgPSBjb21wb25lbnQgImRldmRhdGEiICJGaWxscyB0aGUgZGV2IGRhdGFiYXNlIHdpdGggZmFrZSBkYXRhIHRocm91Z2ggdGhlIHJlYWwgbGVkZ2VyIHJ1bGVzLiIgIlJ1c3QgbW9kdWxlIiAiRW50cnkiCgogICAgICAgICAgICAgICAgbGVkZ2VyID0gY29tcG9uZW50ICJsZWRnZXIiICJQdXJlIGRvbWFpbiBydWxlczogZGVhZGxpbmVzLCBtZXQgb3IgbGF0ZSwgZGVidHMsIGNsYWltcywgbWFya3MsIGFtb3VudC4iICJSdXN0IG1vZHVsZSIgIkNvcmUiCiAgICAgICAgICAgICAgICBhdXRoID0gY29tcG9uZW50ICJhdXRoIiAiUHVyZSBhY2NvdW50IHJ1bGVzOiByb2xlcywgcGFzc3dvcmQgaGFzaGluZywgdG9rZW5zLCBwZXJtaXNzaW9uIGNoZWNrcy4iICJSdXN0IG1vZHVsZSIgIkNvcmUiCiAgICAgICAgICAgICAgICBjb25maWcgPSBjb21wb25lbnQgImNvbmZpZyIgIkxvYWRzIGV2ZXJ5IHNldHRpbmcgZnJvbSBlbnZpcm9ubWVudCB2YXJpYWJsZXMgYXQgc3RhcnR1cC4iICJSdXN0IG1vZHVsZSIgIkNvcmUiCgogICAgICAgICAgICAgICAgdmlrdW5qYUNsaWVudCA9IGNvbXBvbmVudCAidmlrdW5qYSIgIlJlYWQtb25seSBWaWt1bmphIGNsaWVudC4gTWFwcyB0YXNrcyB0byBzbmFwc2hvdCByZWNvcmRzLiIgIlJ1c3QsIEhUVFAgY2xpZW50IiAiQWRhcHRlciIKICAgICAgICAgICAgICAgIG5vdGlmeSA9IGNvbXBvbmVudCAibm90aWZ5IiAiVHVybnMgbGVkZ2VyIGNoYW5nZXMgaW50byBwdXNoIG5vdGlmaWNhdGlvbnMuIE93bnMgdGhlIHB1c2gga2V5cy4iICJSdXN0LCBXZWIgUHVzaCIgIkFkYXB0ZXIiCiAgICAgICAgICAgICAgICBtYWlsID0gY29tcG9uZW50ICJtYWlsIiAiU2VuZHMgaW52aXRlIGFuZCBwYXNzd29yZC1yZXNldCBlbWFpbHMuIiAiUnVzdCwgU01UUCBjbGllbnQiICJBZGFwdGVyIgogICAgICAgICAgICAgICAgc3RvcmUgPSBjb21wb25lbnQgInN0b3JlIiAiUGVyc2lzdGVuY2UgZm9yIGxlZGdlciBhbmQgZGV2IGRhdGFiYXNlcy4gTGVkZ2VyIGlzIGluc2VydC1vbmx5LiIgIlJ1c3QsIFNRTGl0ZSIgIkFkYXB0ZXIiCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZGIgPSBjb250YWluZXIgIkxlZGdlciBkYXRhYmFzZSIgIkFwcGVuZC1vbmx5IHJlY29yZCBvZiBkZWFkbGluZXMsIGRlYnRzLCBjbGFpbXMsIG1hcmtzIGFuZCBhY2NvdW50cy4iICJTUUxpdGUgZmlsZSIgIkRhdGFiYXNlIgogICAgICAgICAgICBkZXZkYiA9IGNvbnRhaW5lciAiRGV2IGRhdGFiYXNlIiAiRmFrZSB0YXNrcyBhbmQgZGVidHMgZm9yIHRoZSBhZG1pbiB3aXRuZXNzLiBJc29sYXRlZCBmcm9tIHRoZSByZWFsIGxlZGdlci4iICJTUUxpdGUgZmlsZSIgIkRhdGFiYXNlIgogICAgICAgIH0KCiAgICAgICAgLy8gQzEgLyBDMiByZWxhdGlvbnNoaXBzLiBFYWNoIGxpbmUgaXMgb25lIGRpcmVjdGlvbiBhbmQgc2F5cyBpdHMgaW50ZW50LgogICAgICAgIHdvcmtlciAtPiBhcHAgIlZpZXdzIHRhc2tzIGFuZCBkZWJ0cywgbWFya3MgZGVidHMgc2VudCwgaW52aXRlcyB3aXRuZXNzZXMiICJIVFRQUyIKICAgICAgICB3aXRuZXNzIC0+IGFwcCAiVmlld3MgbGF0ZSB0YXNrcywgY2xhaW1zIGRlYnRzLCBtYXJrcyBkZWJ0cyByZWNlaXZlZCIgIkhUVFBTIgogICAgICAgIGFkbWluIC0+IGFwcCAiVHJvdWJsZXNob290cyB0aGUgd2l0bmVzcyB2aWV3IG9uIGZha2UgZGF0YSIgIkhUVFBTIgoKICAgICAgICBhcHAgLT4gdmlrdW5qYSAiUG9sbHMgdGFza3MgYW5kIGRlYWRsaW5lcywgcmVhZC1vbmx5IiAiSFRUUFMvSlNPTiIKICAgICAgICBhcHAgLT4gZGIgIlJlYWRzIGFuZCBhcHBlbmRzIGxlZGdlciBlbnRyaWVzIiAiU1FMIgogICAgICAgIGFwcCAtPiBkZXZkYiAiUmVhZHMgZmFrZSBkYXRhIGZvciB0aGUgYWRtaW4gd2l0bmVzcyIgIlNRTCIKICAgICAgICBhcHAgLT4gcHVzaCAiU2VuZHMgbm90aWZpY2F0aW9ucyB0aHJvdWdoIiAiV2ViIFB1c2giCiAgICAgICAgYXBwIC0+IHNtdHAgIlNlbmRzIGludml0ZSBhbmQgcmVzZXQgZW1haWxzIHRocm91Z2giICJTTVRQIgoKICAgICAgICBwdXNoIC0+IHdvcmtlciAiRGVsaXZlcnMgbm90aWZpY2F0aW9ucyB0byIKICAgICAgICBwdXNoIC0+IHdpdG5lc3MgIkRlbGl2ZXJzIG5vdGlmaWNhdGlvbnMgdG8iCgogICAgICAgIC8vIEMzIHJlbGF0aW9uc2hpcHMgKG1hdGNoIHRoZSBgVXNlczpgIGxpbmVzIGluIHNyYy8qLnJzKS4KICAgICAgICB3b3JrZXIgLT4gd2ViICJWaWV3cyB0YXNrcywgbWFya3MgZGVidHMgc2VudCIgIkhUVFBTIgogICAgICAgIHdpdG5lc3MgLT4gd2ViICJDbGFpbXMgZGVidHMsIG1hcmtzIHRoZW0gcmVjZWl2ZWQiICJIVFRQUyIKICAgICAgICBhZG1pbiAtPiB3ZWIgIlRyb3VibGVzaG9vdHMgb24gZmFrZSBkYXRhIiAiSFRUUFMiCgogICAgICAgIGNsaSAtPiB3ZWIgIlN0YXJ0cyBIVFRQIHNlcnZlciIKICAgICAgICBjbGkgLT4gc3luYyAiU3RhcnRzIHBvbGwgbG9vcCIKICAgICAgICBjbGkgLT4gZGV2ZGF0YSAiUnVucyBzZWVkaW5nIgogICAgICAgIGNsaSAtPiBzdG9yZSAiT3BlbnMgZGF0YWJhc2VzIHdpdGgiCiAgICAgICAgY2xpIC0+IGF1dGggIkNyZWF0ZXMgYWNjb3VudHMgd2l0aCIKICAgICAgICBjbGkgLT4gbm90aWZ5ICJHZW5lcmF0ZXMgcHVzaCBrZXlzIHdpdGgiCgogICAgICAgIHdlYiAtPiBjb25maWcgIlJlYWRzIHNldHRpbmdzIGZyb20iCiAgICAgICAgd2ViIC0+IGxlZGdlciAiUnVucyBkZWJ0IGFjdGlvbnMgb24iCiAgICAgICAgd2ViIC0+IGF1dGggIkNoZWNrcyBzZXNzaW9ucyBhbmQgcGVybWlzc2lvbnMgd2l0aCIKICAgICAgICB3ZWIgLT4gc3RvcmUgIkxvYWRzIGFuZCBzYXZlcyB0aHJvdWdoIgogICAgICAgIHdlYiAtPiBub3RpZnkgIlN0b3JlcyBzdWJzY3JpcHRpb25zLCBub3RpZmllcyB0aHJvdWdoIgogICAgICAgIHdlYiAtPiBtYWlsICJTZW5kcyBpbnZpdGVzIGFuZCByZXNldHMgdGhyb3VnaCIKCiAgICAgICAgc3luYyAtPiBjb25maWcgIlJlYWRzIHNldHRpbmdzIGZyb20iCiAgICAgICAgc3luYyAtPiB2aWt1bmphQ2xpZW50ICJGZXRjaGVzIHNuYXBzaG90IHRocm91Z2giCiAgICAgICAgc3luYyAtPiBsZWRnZXIgIkFwcGxpZXMgc25hcHNob3QgdG8iCiAgICAgICAgc3luYyAtPiBzdG9yZSAiQXBwZW5kcyBjaGFuZ2VzIHRocm91Z2giCiAgICAgICAgc3luYyAtPiBub3RpZnkgIkhhbmRzIGNoYW5nZXMgdG8iCgogICAgICAgIGRldmRhdGEgLT4gbGVkZ2VyICJCdWlsZHMgZmFrZSBkZWJ0cyB3aXRoIgogICAgICAgIGRldmRhdGEgLT4gYXV0aCAiQnVpbGRzIGZha2UgYWNjb3VudHMgd2l0aCIKICAgICAgICBkZXZkYXRhIC0+IHN0b3JlICJXcml0ZXMgZGV2IGRhdGEgdGhyb3VnaCIKCiAgICAgICAgdmlrdW5qYUNsaWVudCAtPiBjb25maWcgIlJlYWRzIHNldHRpbmdzIGZyb20iCiAgICAgICAgdmlrdW5qYUNsaWVudCAtPiB2aWt1bmphICJGZXRjaGVzIHRhc2tzIGZyb20iICJIVFRQUy9KU09OIgogICAgICAgIG5vdGlmeSAtPiBjb25maWcgIlJlYWRzIHNldHRpbmdzIGZyb20iCiAgICAgICAgbm90aWZ5IC0+IGxlZGdlciAiUmVhZHMgY2hhbmdlIHR5cGVzIGZyb20iCiAgICAgICAgbm90aWZ5IC0+IGF1dGggIlBpY2tzIHJlY2lwaWVudHMgYnkgcm9sZSB3aXRoIgogICAgICAgIG5vdGlmeSAtPiBwdXNoICJTZW5kcyBub3RpZmljYXRpb25zIHRocm91Z2giICJXZWIgUHVzaCIKICAgICAgICBtYWlsIC0+IGNvbmZpZyAiUmVhZHMgc2V0dGluZ3MgZnJvbSIKICAgICAgICBtYWlsIC0+IHNtdHAgIlNlbmRzIGVtYWlscyB0aHJvdWdoIiAiU01UUCIKICAgICAgICBzdG9yZSAtPiBsZWRnZXIgIlBlcnNpc3RzIHN0YXRlIG9mIgogICAgICAgIHN0b3JlIC0+IGF1dGggIlBlcnNpc3RzIGFjY291bnRzIG9mIgogICAgICAgIHN0b3JlIC0+IGRiICJSZWFkcyBhbmQgYXBwZW5kcyIgIlNRTCIKICAgICAgICBzdG9yZSAtPiBkZXZkYiAiUmVhZHMgYW5kIHdyaXRlcyIgIlNRTCIKICAgIH0KCiAgICB2aWV3cyB7CiAgICAgICAgLy8gQzE6IHBlb3BsZSBhbmQgbmVpZ2hib3VyaW5nIHN5c3RlbXMgb25seS4gTm8gcHJvdG9jb2xzLCBubwogICAgICAgIC8vIGRlbGl2ZXJ5IGluZnJhc3RydWN0dXJlIChwdXNoLCBtYWlsKTogdGhvc2UgYXBwZWFyIGZyb20gQzIgZG93bi4KICAgICAgICBzeXN0ZW1Db250ZXh0IHN5c3RlbSAiQzEiICJTeXN0ZW0gQ29udGV4dCBkaWFncmFtIGZvciBBdG9tYW5qYSIgewogICAgICAgICAgICBpbmNsdWRlICoKICAgICAgICAgICAgZXhjbHVkZSBwdXNoIHNtdHAKICAgICAgICB9CgogICAgICAgIGNvbnRhaW5lciBzeXN0ZW0gIkMyIiAiQ29udGFpbmVyIGRpYWdyYW0gZm9yIEF0b21hbmphIiB7CiAgICAgICAgICAgIGluY2x1ZGUgKgogICAgICAgIH0KCiAgICAgICAgLy8gQzMgaXMgc3BsaXQgaW4gdHdvIHNvIHRoYXQgbmVpdGhlciB2aWV3IGlzIGEgdGFuZ2xlLiBUb2dldGhlcgogICAgICAgIC8vIHRoZXkgc2hvdyBldmVyeSBjb21wb25lbnQgYW5kIGV2ZXJ5IHJlbGF0aW9uc2hpcC4KICAgICAgICBjb21wb25lbnQgYXBwICJDMy1zZXJ2aW5nIiAiQ29tcG9uZW50IGRpYWdyYW0gZm9yIHRoZSBBdG9tYW5qYSBzZXJ2ZXI6IHNlcnZpbmcgYW5kIHBvbGxpbmciIHsKICAgICAgICAgICAgaW5jbHVkZSAqCiAgICAgICAgICAgIGV4Y2x1ZGUgY2xpIGNvbmZpZyBkZXZkYXRhCiAgICAgICAgfQoKICAgICAgICBjb21wb25lbnQgYXBwICJDMy1zdGFydHVwIiAiQ29tcG9uZW50IGRpYWdyYW0gZm9yIHRoZSBBdG9tYW5qYSBzZXJ2ZXI6IHN0YXJ0dXAsIHNldHRpbmdzIGFuZCBkZXYgZGF0YSIgewogICAgICAgICAgICBpbmNsdWRlIGNsaSBjb25maWcgZGV2ZGF0YSBzeW5jIG5vdGlmeSB3ZWIgYXV0aCBzdG9yZSB2aWt1bmphQ2xpZW50IG1haWwgbGVkZ2VyCiAgICAgICAgfQoKICAgICAgICAvLyBPbmUgY29sb3VyIGZhbWlseSBwZXIga2luZCBvZiB0aGluZzsgcmVsYXRlZCBib3hlcyBzaGFyZSBhIGNvbG91ci4KICAgICAgICBzdHlsZXMgewogICAgICAgICAgICBlbGVtZW50ICJQZXJzb24iIHsKICAgICAgICAgICAgICAgIHNoYXBlIFBlcnNvbgogICAgICAgICAgICAgICAgYmFja2dyb3VuZCAjMGIzYzZmCiAgICAgICAgICAgICAgICBjb2xvciAjZmZmZmZmCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiU29mdHdhcmUgU3lzdGVtIiB7CiAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kICMxNTY1YzAKICAgICAgICAgICAgICAgIGNvbG9yICNmZmZmZmYKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJFeHRlcm5hbCIgewogICAgICAgICAgICAgICAgYmFja2dyb3VuZCAjNWQ1YTZiCiAgICAgICAgICAgICAgICBjb2xvciAjZmZmZmZmCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiQ29udGFpbmVyIiB7CiAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kICMxZTg4ZTUKICAgICAgICAgICAgICAgIGNvbG9yICNmZmZmZmYKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJEYXRhYmFzZSIgewogICAgICAgICAgICAgICAgc2hhcGUgQ3lsaW5kZXIKICAgICAgICAgICAgICAgIGJhY2tncm91bmQgIzAwNzk2YgogICAgICAgICAgICAgICAgY29sb3IgI2ZmZmZmZgogICAgICAgICAgICB9CiAgICAgICAgICAgIGVsZW1lbnQgIkVudHJ5IiB7CiAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kICNjMjQxMGMKICAgICAgICAgICAgICAgIGNvbG9yICNmZmZmZmYKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJDb3JlIiB7CiAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kICMyZTdkMzIKICAgICAgICAgICAgICAgIGNvbG9yICNmZmZmZmYKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJBZGFwdGVyIiB7CiAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kICMxZTg4ZTUKICAgICAgICAgICAgICAgIGNvbG9yICNmZmZmZmYKICAgICAgICAgICAgfQogICAgICAgICAgICByZWxhdGlvbnNoaXAgIlJlbGF0aW9uc2hpcCIgewogICAgICAgICAgICAgICAgcm91dGluZyBPcnRob2dvbmFsCiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9Cn0=",
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "componentViews" : [ {
+      "containerId" : "8",
+      "description" : "Component diagram for the Atomanja server: serving and polling",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "4",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "5",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "10",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "11",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "13",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "14",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "16",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "17",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "18",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "19",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "20",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "21",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalContainerBoundariesVisible" : false,
+      "key" : "C3-serving",
+      "name" : "Component View: Atomanja - Atomanja server",
+      "order" : 3,
+      "relationships" : [ {
+        "id" : "36"
+      }, {
+        "id" : "37"
+      }, {
+        "id" : "38"
+      }, {
+        "id" : "39"
+      }, {
+        "id" : "40"
+      }, {
+        "id" : "48"
+      }, {
+        "id" : "49"
+      }, {
+        "id" : "50"
+      }, {
+        "id" : "51"
+      }, {
+        "id" : "52"
+      }, {
+        "id" : "54"
+      }, {
+        "id" : "55"
+      }, {
+        "id" : "56"
+      }, {
+        "id" : "57"
+      }, {
+        "id" : "62"
+      }, {
+        "id" : "64"
+      }, {
+        "id" : "65"
+      }, {
+        "id" : "66"
+      }, {
+        "id" : "68"
+      }, {
+        "id" : "69"
+      }, {
+        "id" : "70"
+      }, {
+        "id" : "71"
+      }, {
+        "id" : "72"
+      } ]
+    }, {
+      "containerId" : "8",
+      "description" : "Component diagram for the Atomanja server: startup, settings and dev data",
+      "elements" : [ {
+        "id" : "9",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "10",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "11",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "12",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "13",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "14",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "15",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "16",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "17",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "18",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "19",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalContainerBoundariesVisible" : false,
+      "key" : "C3-startup",
+      "name" : "Component View: Atomanja - Atomanja server",
+      "order" : 4,
+      "relationships" : [ {
+        "id" : "41"
+      }, {
+        "id" : "42"
+      }, {
+        "id" : "43"
+      }, {
+        "id" : "44"
+      }, {
+        "id" : "45"
+      }, {
+        "id" : "46"
+      }, {
+        "id" : "47"
+      }, {
+        "id" : "48"
+      }, {
+        "id" : "49"
+      }, {
+        "id" : "50"
+      }, {
+        "id" : "51"
+      }, {
+        "id" : "52"
+      }, {
+        "id" : "53"
+      }, {
+        "id" : "54"
+      }, {
+        "id" : "55"
+      }, {
+        "id" : "56"
+      }, {
+        "id" : "57"
+      }, {
+        "id" : "58"
+      }, {
+        "id" : "59"
+      }, {
+        "id" : "60"
+      }, {
+        "id" : "61"
+      }, {
+        "id" : "63"
+      }, {
+        "id" : "64"
+      }, {
+        "id" : "65"
+      }, {
+        "id" : "67"
+      }, {
+        "id" : "69"
+      }, {
+        "id" : "70"
+      } ]
+    } ],
+    "configuration" : {
+      "styles" : {
+        "elements" : [ {
+          "background" : "#1e88e5",
+          "color" : "#ffffff",
+          "tag" : "Adapter"
+        }, {
+          "background" : "#1e88e5",
+          "color" : "#ffffff",
+          "tag" : "Container"
+        }, {
+          "background" : "#2e7d32",
+          "color" : "#ffffff",
+          "tag" : "Core"
+        }, {
+          "background" : "#00796b",
+          "color" : "#ffffff",
+          "shape" : "Cylinder",
+          "tag" : "Database"
+        }, {
+          "background" : "#c2410c",
+          "color" : "#ffffff",
+          "tag" : "Entry"
+        }, {
+          "background" : "#5d5a6b",
+          "color" : "#ffffff",
+          "tag" : "External"
+        }, {
+          "background" : "#0b3c6f",
+          "color" : "#ffffff",
+          "shape" : "Person",
+          "tag" : "Person"
+        }, {
+          "background" : "#1565c0",
+          "color" : "#ffffff",
+          "tag" : "Software System"
+        } ],
+        "relationships" : [ {
+          "routing" : "Orthogonal",
+          "tag" : "Relationship"
+        } ]
+      },
+      "terminology" : { }
+    },
+    "containerViews" : [ {
+      "description" : "Container diagram for Atomanja",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "4",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "5",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "6",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "8",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "20",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "21",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalSoftwareSystemBoundariesVisible" : false,
+      "key" : "C2",
+      "name" : "Container View: Atomanja",
+      "order" : 2,
+      "relationships" : [ {
+        "id" : "22"
+      }, {
+        "id" : "24"
+      }, {
+        "id" : "26"
+      }, {
+        "id" : "28"
+      }, {
+        "id" : "30"
+      }, {
+        "id" : "31"
+      }, {
+        "id" : "32"
+      }, {
+        "id" : "34"
+      }, {
+        "id" : "36"
+      }, {
+        "id" : "37"
+      } ],
+      "softwareSystemId" : "7"
+    } ],
+    "systemContextViews" : [ {
+      "description" : "System Context diagram for Atomanja",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "4",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "7",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "enterpriseBoundaryVisible" : true,
+      "key" : "C1",
+      "name" : "System Context View: Atomanja",
+      "order" : 1,
+      "relationships" : [ {
+        "id" : "23"
+      }, {
+        "id" : "25"
+      }, {
+        "id" : "27"
+      }, {
+        "id" : "29"
+      } ],
+      "softwareSystemId" : "7"
+    } ]
+  }
+}

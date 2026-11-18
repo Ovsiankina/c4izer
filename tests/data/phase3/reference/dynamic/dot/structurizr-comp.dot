@@ -1,0 +1,40 @@
+digraph {
+  compound=true
+  graph [fontname="Arial", rankdir=TB, ranksep=1.0, nodesep=1.0]
+  node [fontname="Arial", shape=box, margin="0.4,0.3"]
+  edge [fontname="Arial"]
+  label=<<br /><font point-size="34">Dynamic View: System - App</font><br /><font point-size="24">Form submission inside the app</font>>
+
+  1 [id=1,shape=rect, label=<<font point-size="34">User</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Uses the system.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+
+  subgraph cluster_2 {
+    margin=25
+    label=<<font point-size="24"><br />System</font><br /><font point-size="19">[Software System]</font>>
+    labelloc=b
+    color="#444444"
+    fontcolor="#444444"
+    fillcolor="#444444"
+
+    subgraph cluster_3 {
+      margin=25
+      label=<<font point-size="24"><br />App</font><br /><font point-size="19">[Container: Rust]</font>>
+      labelloc=b
+      color="#444444"
+      fontcolor="#444444"
+      fillcolor="#444444"
+
+      4 [id=4,shape=rect, label=<<font point-size="34">Handler</font><br /><font point-size="19">[Component: Rust]</font><br /><br /><font point-size="24">Takes a request.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+      5 [id=5,shape=rect, label=<<font point-size="34">Validator</font><br /><font point-size="19">[Component: Rust]</font><br /><br /><font point-size="24">Checks input.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+    }
+
+    6 [id=6,shape=rect, label=<<font point-size="34">Store</font><br /><font point-size="19">[Container: SQL]</font><br /><br /><font point-size="24">Keeps records.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  }
+
+  1 [id=1,shape=rect, label=<<font point-size="34">User</font><br /><font point-size="19">[Person]</font><br /><br /><font point-size="24">Uses the system.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+  6 [id=6,shape=rect, label=<<font point-size="34">Store</font><br /><font point-size="19">[Container: SQL]</font><br /><br /><font point-size="24">Keeps records.</font>>, style=filled, color="#444444", fillcolor="#ffffff", fontcolor="#444444"]
+
+  1 -> 4 [id=14, label=<<font point-size="24">1. Submits a form</font><br /><font point-size="19">[HTTPS]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  4 -> 5 [id=15, label=<<font point-size="24">2. Validates the form</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+  5 -> 6 [id=16, label=<<font point-size="24">3. Checks the record</font><br /><font point-size="19">[SQL]</font>>, style="dashed", color="#444444", fontcolor="#444444"]
+
+}

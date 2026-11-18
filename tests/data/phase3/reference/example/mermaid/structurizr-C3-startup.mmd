@@ -1,0 +1,67 @@
+graph TB
+  linkStyle default fill:#ffffff
+
+  subgraph diagram ["Component View: Atomanja - Atomanja server"]
+    style diagram fill:#ffffff,stroke:#ffffff
+
+    subgraph 7 ["Atomanja"]
+      style 7 fill:#ffffff,stroke:#0e4686,color:#0e4686
+
+      subgraph 8 ["Atomanja server"]
+        style 8 fill:#ffffff,stroke:#155fa0,color:#155fa0
+
+        10["<div style='font-weight: bold'>web</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, axum, htmx]</div><div style='font-size: 80%; margin-top:10px'>HTTP layer: both views, login<br />flows, debt actions, push<br />subscription.</div>"]
+        style 10 fill:#c2410c,stroke:#872d08,color:#ffffff
+        11["<div style='font-weight: bold'>sync</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, tokio]</div><div style='font-size: 80%; margin-top:10px'>Poll loop: fetch, apply to<br />ledger, persist, notify.</div>"]
+        style 11 fill:#c2410c,stroke:#872d08,color:#ffffff
+        12["<div style='font-weight: bold'>devdata</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Fills the dev database with<br />fake data through the real<br />ledger rules.</div>"]
+        style 12 fill:#c2410c,stroke:#872d08,color:#ffffff
+        13["<div style='font-weight: bold'>ledger</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Pure domain rules: deadlines,<br />met or late, debts, claims,<br />marks, amount.</div>"]
+        style 13 fill:#2e7d32,stroke:#205723,color:#ffffff
+        14["<div style='font-weight: bold'>auth</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Pure account rules: roles,<br />password hashing, tokens,<br />permission checks.</div>"]
+        style 14 fill:#2e7d32,stroke:#205723,color:#ffffff
+        15["<div style='font-weight: bold'>config</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust module]</div><div style='font-size: 80%; margin-top:10px'>Loads every setting from<br />environment variables at<br />startup.</div>"]
+        style 15 fill:#2e7d32,stroke:#205723,color:#ffffff
+        16["<div style='font-weight: bold'>vikunja</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, HTTP client]</div><div style='font-size: 80%; margin-top:10px'>Read-only Vikunja client.<br />Maps tasks to snapshot<br />records.</div>"]
+        style 16 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        17["<div style='font-weight: bold'>notify</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, Web Push]</div><div style='font-size: 80%; margin-top:10px'>Turns ledger changes into<br />push notifications. Owns the<br />push keys.</div>"]
+        style 17 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        18["<div style='font-weight: bold'>mail</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, SMTP client]</div><div style='font-size: 80%; margin-top:10px'>Sends invite and<br />password-reset emails.</div>"]
+        style 18 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        19["<div style='font-weight: bold'>store</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust, SQLite]</div><div style='font-size: 80%; margin-top:10px'>Persistence for ledger and<br />dev databases. Ledger is<br />insert-only.</div>"]
+        style 19 fill:#1e88e5,stroke:#155fa0,color:#ffffff
+        9["<div style='font-weight: bold'>cli</div><div style='font-size: 70%; margin-top: 0px'>[Component: Rust binary]</div><div style='font-size: 80%; margin-top:10px'>Command line: serve, create<br />accounts, generate push keys,<br />seed dev data.</div>"]
+        style 9 fill:#c2410c,stroke:#872d08,color:#ffffff
+      end
+
+    end
+
+    9-. "<div>Starts HTTP server</div><div style='font-size: 70%'></div>" .->10
+    9-. "<div>Starts poll loop</div><div style='font-size: 70%'></div>" .->11
+    9-. "<div>Runs seeding</div><div style='font-size: 70%'></div>" .->12
+    9-. "<div>Opens databases with</div><div style='font-size: 70%'></div>" .->19
+    9-. "<div>Creates accounts with</div><div style='font-size: 70%'></div>" .->14
+    9-. "<div>Generates push keys with</div><div style='font-size: 70%'></div>" .->17
+    10-. "<div>Reads settings from</div><div style='font-size: 70%'></div>" .->15
+    10-. "<div>Runs debt actions on</div><div style='font-size: 70%'></div>" .->13
+    10-. "<div>Checks sessions and<br />permissions with</div><div style='font-size: 70%'></div>" .->14
+    10-. "<div>Loads and saves through</div><div style='font-size: 70%'></div>" .->19
+    10-. "<div>Stores subscriptions,<br />notifies through</div><div style='font-size: 70%'></div>" .->17
+    10-. "<div>Sends invites and resets<br />through</div><div style='font-size: 70%'></div>" .->18
+    11-. "<div>Reads settings from</div><div style='font-size: 70%'></div>" .->15
+    11-. "<div>Fetches snapshot through</div><div style='font-size: 70%'></div>" .->16
+    11-. "<div>Applies snapshot to</div><div style='font-size: 70%'></div>" .->13
+    11-. "<div>Appends changes through</div><div style='font-size: 70%'></div>" .->19
+    11-. "<div>Hands changes to</div><div style='font-size: 70%'></div>" .->17
+    12-. "<div>Builds fake debts with</div><div style='font-size: 70%'></div>" .->13
+    12-. "<div>Builds fake accounts with</div><div style='font-size: 70%'></div>" .->14
+    12-. "<div>Writes dev data through</div><div style='font-size: 70%'></div>" .->19
+    16-. "<div>Reads settings from</div><div style='font-size: 70%'></div>" .->15
+    17-. "<div>Reads settings from</div><div style='font-size: 70%'></div>" .->15
+    17-. "<div>Reads change types from</div><div style='font-size: 70%'></div>" .->13
+    17-. "<div>Picks recipients by role with</div><div style='font-size: 70%'></div>" .->14
+    18-. "<div>Reads settings from</div><div style='font-size: 70%'></div>" .->15
+    19-. "<div>Persists state of</div><div style='font-size: 70%'></div>" .->13
+    19-. "<div>Persists accounts of</div><div style='font-size: 70%'></div>" .->14
+
+  end

@@ -1,0 +1,533 @@
+{
+  "configuration" : { },
+  "description" : "Phase-3 fixture of the exporters row (SRS 4.7): the deployment-view fixture without its `-/>` line, which Structurizr 6.2.4 refuses.",
+  "documentation" : { },
+  "id" : 0,
+  "model" : {
+    "deploymentNodes" : [ {
+      "children" : [ {
+        "containerInstances" : [ {
+          "containerId" : "3",
+          "deploymentGroups" : [ "Blue" ],
+          "environment" : "Live",
+          "id" : "17",
+          "instanceId" : 1,
+          "properties" : {
+            "structurizr.dsl.identifier" : "webBlue"
+          },
+          "relationships" : [ {
+            "description" : "Sends orders to",
+            "destinationId" : "20",
+            "id" : "21",
+            "linkedRelationshipId" : "9",
+            "sourceId" : "17",
+            "technology" : "JSON/HTTPS"
+          } ],
+          "tags" : "Container Instance"
+        }, {
+          "containerId" : "3",
+          "deploymentGroups" : [ "Green" ],
+          "environment" : "Live",
+          "id" : "18",
+          "instanceId" : 2,
+          "properties" : {
+            "structurizr.dsl.identifier" : "webGreen"
+          },
+          "relationships" : [ {
+            "description" : "Sends orders to",
+            "destinationId" : "22",
+            "id" : "23",
+            "linkedRelationshipId" : "9",
+            "sourceId" : "18",
+            "technology" : "JSON/HTTPS"
+          } ],
+          "tags" : "Container Instance"
+        } ],
+        "description" : "Runs the web tier.",
+        "environment" : "Live",
+        "id" : "16",
+        "instances" : "2",
+        "name" : "Web host",
+        "properties" : {
+          "structurizr.dsl.identifier" : "webHost"
+        },
+        "tags" : "Element,Deployment Node",
+        "technology" : "EC2"
+      }, {
+        "containerInstances" : [ {
+          "containerId" : "4",
+          "deploymentGroups" : [ "Blue" ],
+          "environment" : "Live",
+          "id" : "20",
+          "instanceId" : 1,
+          "properties" : {
+            "structurizr.dsl.identifier" : "apiBlue"
+          },
+          "relationships" : [ {
+            "description" : "Reads and writes",
+            "destinationId" : "25",
+            "id" : "26",
+            "linkedRelationshipId" : "10",
+            "sourceId" : "20",
+            "technology" : "SQL"
+          }, {
+            "description" : "Sends mail through",
+            "destinationId" : "30",
+            "id" : "31",
+            "linkedRelationshipId" : "11",
+            "sourceId" : "20",
+            "technology" : "SMTP"
+          } ],
+          "tags" : "Container Instance"
+        }, {
+          "containerId" : "4",
+          "deploymentGroups" : [ "Green" ],
+          "environment" : "Live",
+          "id" : "22",
+          "instanceId" : 2,
+          "properties" : {
+            "structurizr.dsl.identifier" : "apiGreen"
+          },
+          "relationships" : [ {
+            "description" : "Reads and writes",
+            "destinationId" : "25",
+            "id" : "27",
+            "linkedRelationshipId" : "10",
+            "sourceId" : "22",
+            "technology" : "SQL"
+          }, {
+            "description" : "Sends mail through",
+            "destinationId" : "30",
+            "id" : "32",
+            "linkedRelationshipId" : "11",
+            "sourceId" : "22",
+            "technology" : "SMTP"
+          } ],
+          "tags" : "Container Instance"
+        } ],
+        "description" : "Runs the api.",
+        "environment" : "Live",
+        "id" : "19",
+        "instances" : "2..4",
+        "name" : "Api host",
+        "properties" : {
+          "structurizr.dsl.identifier" : "apiHost"
+        },
+        "tags" : "Element,Deployment Node",
+        "technology" : "EC2"
+      }, {
+        "containerInstances" : [ {
+          "containerId" : "5",
+          "deploymentGroups" : [ "Blue", "Green" ],
+          "environment" : "Live",
+          "id" : "25",
+          "instanceId" : 1,
+          "properties" : {
+            "structurizr.dsl.identifier" : "dbPrimary"
+          },
+          "tags" : "Container Instance"
+        } ],
+        "description" : "Managed database.",
+        "environment" : "Live",
+        "id" : "24",
+        "instances" : "1",
+        "name" : "Database",
+        "properties" : {
+          "structurizr.dsl.identifier" : "database"
+        },
+        "tags" : "Element,Deployment Node",
+        "technology" : "RDS"
+      }, {
+        "description" : "Holds nothing yet.",
+        "environment" : "Live",
+        "id" : "28",
+        "instances" : "1",
+        "name" : "Spare",
+        "properties" : {
+          "structurizr.dsl.identifier" : "spare"
+        },
+        "tags" : "Element,Deployment Node",
+        "technology" : "EC2"
+      } ],
+      "description" : "The cloud account.",
+      "environment" : "Live",
+      "id" : "13",
+      "infrastructureNodes" : [ {
+        "description" : "Routes requests.",
+        "environment" : "Live",
+        "id" : "14",
+        "name" : "DNS",
+        "properties" : {
+          "structurizr.dsl.identifier" : "dns"
+        },
+        "relationships" : [ {
+          "description" : "Forwards requests to",
+          "destinationId" : "15",
+          "id" : "33",
+          "sourceId" : "14",
+          "tags" : "Relationship",
+          "technology" : "HTTPS"
+        } ],
+        "tags" : "Element,Infrastructure Node",
+        "technology" : "Route 53"
+      }, {
+        "description" : "Spreads requests.",
+        "environment" : "Live",
+        "id" : "15",
+        "name" : "Load balancer",
+        "properties" : {
+          "structurizr.dsl.identifier" : "lb"
+        },
+        "relationships" : [ {
+          "description" : "Forwards requests to",
+          "destinationId" : "17",
+          "id" : "34",
+          "sourceId" : "15",
+          "tags" : "Relationship",
+          "technology" : "HTTPS"
+        }, {
+          "description" : "Forwards requests to",
+          "destinationId" : "18",
+          "id" : "35",
+          "sourceId" : "15",
+          "tags" : "Relationship",
+          "technology" : "HTTPS"
+        } ],
+        "tags" : "Element,Infrastructure Node",
+        "technology" : "ELB"
+      } ],
+      "instances" : "1",
+      "name" : "Cloud",
+      "properties" : {
+        "structurizr.dsl.identifier" : "cloud"
+      },
+      "tags" : "Element,Deployment Node",
+      "technology" : "AWS"
+    }, {
+      "description" : "A third party.",
+      "environment" : "Live",
+      "id" : "29",
+      "instances" : "1",
+      "name" : "Mail provider",
+      "properties" : {
+        "structurizr.dsl.identifier" : "provider"
+      },
+      "softwareSystemInstances" : [ {
+        "deploymentGroups" : [ "Blue", "Green" ],
+        "environment" : "Live",
+        "id" : "30",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "mailInstance"
+        },
+        "softwareSystemId" : "6",
+        "tags" : "Software System Instance"
+      } ],
+      "tags" : "Element,Deployment Node",
+      "technology" : "SaaS"
+    }, {
+      "containerInstances" : [ {
+        "containerId" : "3",
+        "environment" : "Staging",
+        "id" : "37",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "1a7f2e3c-00fc-4106-bdaa-7c9007d73d4a"
+        },
+        "relationships" : [ {
+          "description" : "Sends orders to",
+          "destinationId" : "38",
+          "id" : "39",
+          "linkedRelationshipId" : "9",
+          "sourceId" : "37",
+          "technology" : "JSON/HTTPS"
+        } ],
+        "tags" : "Container Instance"
+      }, {
+        "containerId" : "4",
+        "environment" : "Staging",
+        "id" : "38",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "57658466-e7f4-485d-9f72-3da3bc504794"
+        },
+        "relationships" : [ {
+          "description" : "Reads and writes",
+          "destinationId" : "40",
+          "id" : "41",
+          "linkedRelationshipId" : "10",
+          "sourceId" : "38",
+          "technology" : "SQL"
+        } ],
+        "tags" : "Container Instance"
+      }, {
+        "containerId" : "5",
+        "environment" : "Staging",
+        "id" : "40",
+        "instanceId" : 1,
+        "properties" : {
+          "structurizr.dsl.identifier" : "84804a0a-4605-47a6-8351-f045a58042db"
+        },
+        "tags" : "Container Instance"
+      } ],
+      "description" : "One machine.",
+      "environment" : "Staging",
+      "id" : "36",
+      "instances" : "1",
+      "name" : "Test box",
+      "properties" : {
+        "structurizr.dsl.identifier" : "box"
+      },
+      "tags" : "Element,Deployment Node",
+      "technology" : "Docker"
+    } ],
+    "people" : [ {
+      "description" : "Buys goods.",
+      "id" : "1",
+      "name" : "Customer",
+      "properties" : {
+        "structurizr.dsl.identifier" : "customer"
+      },
+      "relationships" : [ {
+        "description" : "Browses",
+        "destinationId" : "3",
+        "id" : "7",
+        "sourceId" : "1",
+        "tags" : "Relationship",
+        "technology" : "HTTPS"
+      }, {
+        "description" : "Browses",
+        "destinationId" : "2",
+        "id" : "8",
+        "linkedRelationshipId" : "7",
+        "sourceId" : "1",
+        "technology" : "HTTPS"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "softwareSystems" : [ {
+      "containers" : [ {
+        "description" : "Serves the pages.",
+        "documentation" : { },
+        "id" : "3",
+        "name" : "Web",
+        "properties" : {
+          "structurizr.dsl.identifier" : "web"
+        },
+        "relationships" : [ {
+          "description" : "Sends orders to",
+          "destinationId" : "4",
+          "id" : "9",
+          "sourceId" : "3",
+          "tags" : "Relationship",
+          "technology" : "JSON/HTTPS"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Rust"
+      }, {
+        "description" : "Takes orders.",
+        "documentation" : { },
+        "id" : "4",
+        "name" : "Api",
+        "properties" : {
+          "structurizr.dsl.identifier" : "api"
+        },
+        "relationships" : [ {
+          "description" : "Reads and writes",
+          "destinationId" : "5",
+          "id" : "10",
+          "sourceId" : "4",
+          "tags" : "Relationship",
+          "technology" : "SQL"
+        }, {
+          "description" : "Sends mail through",
+          "destinationId" : "6",
+          "id" : "11",
+          "sourceId" : "4",
+          "tags" : "Relationship",
+          "technology" : "SMTP"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Rust"
+      }, {
+        "description" : "Stores orders.",
+        "documentation" : { },
+        "id" : "5",
+        "name" : "Db",
+        "properties" : {
+          "structurizr.dsl.identifier" : "db"
+        },
+        "tags" : "Element,Container,Database",
+        "technology" : "PostgreSQL"
+      } ],
+      "description" : "Sells goods.",
+      "documentation" : { },
+      "id" : "2",
+      "name" : "Shop",
+      "properties" : {
+        "structurizr.dsl.identifier" : "shop"
+      },
+      "relationships" : [ {
+        "description" : "Sends mail through",
+        "destinationId" : "6",
+        "id" : "12",
+        "linkedRelationshipId" : "11",
+        "sourceId" : "2",
+        "technology" : "SMTP"
+      } ],
+      "tags" : "Element,Software System"
+    }, {
+      "description" : "Sends mail.",
+      "documentation" : { },
+      "id" : "6",
+      "name" : "Mail",
+      "properties" : {
+        "structurizr.dsl.identifier" : "mail"
+      },
+      "tags" : "Element,Software System,External"
+    } ]
+  },
+  "name" : "Online shop",
+  "properties" : {
+    "structurizr.inspection.error" : "11",
+    "structurizr.dsl" : "d29ya3NwYWNlICJPbmxpbmUgc2hvcCIgIlBoYXNlLTMgZml4dHVyZSBvZiB0aGUgZXhwb3J0ZXJzIHJvdyAoU1JTIDQuNyk6IHRoZSBkZXBsb3ltZW50LXZpZXcgZml4dHVyZSB3aXRob3V0IGl0cyBgLS8+YCBsaW5lLCB3aGljaCBTdHJ1Y3R1cml6ciA2LjIuNCByZWZ1c2VzLiIgewoKICAgIG1vZGVsIHsKICAgICAgICBjdXN0b21lciA9IHBlcnNvbiAiQ3VzdG9tZXIiICJCdXlzIGdvb2RzLiIKICAgICAgICBzaG9wID0gc29mdHdhcmVTeXN0ZW0gIlNob3AiICJTZWxscyBnb29kcy4iIHsKICAgICAgICAgICAgd2ViID0gY29udGFpbmVyICJXZWIiICJTZXJ2ZXMgdGhlIHBhZ2VzLiIgIlJ1c3QiCiAgICAgICAgICAgIGFwaSA9IGNvbnRhaW5lciAiQXBpIiAiVGFrZXMgb3JkZXJzLiIgIlJ1c3QiCiAgICAgICAgICAgIGRiID0gY29udGFpbmVyICJEYiIgIlN0b3JlcyBvcmRlcnMuIiAiUG9zdGdyZVNRTCIgIkRhdGFiYXNlIgogICAgICAgIH0KICAgICAgICBtYWlsID0gc29mdHdhcmVTeXN0ZW0gIk1haWwiICJTZW5kcyBtYWlsLiIgIkV4dGVybmFsIgoKICAgICAgICBjdXN0b21lciAtPiB3ZWIgIkJyb3dzZXMiICJIVFRQUyIKICAgICAgICB3ZWIgLT4gYXBpICJTZW5kcyBvcmRlcnMgdG8iICJKU09OL0hUVFBTIgogICAgICAgIGFwaSAtPiBkYiAiUmVhZHMgYW5kIHdyaXRlcyIgIlNRTCIKICAgICAgICBhcGkgLT4gbWFpbCAiU2VuZHMgbWFpbCB0aHJvdWdoIiAiU01UUCIKCiAgICAgICAgbGl2ZSA9IGRlcGxveW1lbnRFbnZpcm9ubWVudCAiTGl2ZSIgewogICAgICAgICAgICBibHVlID0gZGVwbG95bWVudEdyb3VwICJCbHVlIgogICAgICAgICAgICBncmVlbiA9IGRlcGxveW1lbnRHcm91cCAiR3JlZW4iCiAgICAgICAgICAgIGNsb3VkID0gZGVwbG95bWVudE5vZGUgIkNsb3VkIiAiVGhlIGNsb3VkIGFjY291bnQuIiAiQVdTIiB7CiAgICAgICAgICAgICAgICBkbnMgPSBpbmZyYXN0cnVjdHVyZU5vZGUgIkROUyIgIlJvdXRlcyByZXF1ZXN0cy4iICJSb3V0ZSA1MyIKICAgICAgICAgICAgICAgIGxiID0gaW5mcmFzdHJ1Y3R1cmVOb2RlICJMb2FkIGJhbGFuY2VyIiAiU3ByZWFkcyByZXF1ZXN0cy4iICJFTEIiCiAgICAgICAgICAgICAgICB3ZWJIb3N0ID0gZGVwbG95bWVudE5vZGUgIldlYiBob3N0IiAiUnVucyB0aGUgd2ViIHRpZXIuIiAiRUMyIiB7CiAgICAgICAgICAgICAgICAgICAgaW5zdGFuY2VzIDIKICAgICAgICAgICAgICAgICAgICB3ZWJCbHVlID0gY29udGFpbmVySW5zdGFuY2Ugd2ViICJibHVlIgogICAgICAgICAgICAgICAgICAgIHdlYkdyZWVuID0gY29udGFpbmVySW5zdGFuY2Ugd2ViICJncmVlbiIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIGFwaUhvc3QgPSBkZXBsb3ltZW50Tm9kZSAiQXBpIGhvc3QiICJSdW5zIHRoZSBhcGkuIiAiRUMyIiB7CiAgICAgICAgICAgICAgICAgICAgaW5zdGFuY2VzIDIuLjQKICAgICAgICAgICAgICAgICAgICBhcGlCbHVlID0gY29udGFpbmVySW5zdGFuY2UgYXBpICJibHVlIgogICAgICAgICAgICAgICAgICAgIGFwaUdyZWVuID0gY29udGFpbmVySW5zdGFuY2UgYXBpICJncmVlbiIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIGRhdGFiYXNlID0gZGVwbG95bWVudE5vZGUgIkRhdGFiYXNlIiAiTWFuYWdlZCBkYXRhYmFzZS4iICJSRFMiIHsKICAgICAgICAgICAgICAgICAgICBkYlByaW1hcnkgPSBjb250YWluZXJJbnN0YW5jZSBkYiAiYmx1ZSxncmVlbiIKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIHNwYXJlID0gZGVwbG95bWVudE5vZGUgIlNwYXJlIiAiSG9sZHMgbm90aGluZyB5ZXQuIiAiRUMyIgogICAgICAgICAgICB9CiAgICAgICAgICAgIHByb3ZpZGVyID0gZGVwbG95bWVudE5vZGUgIk1haWwgcHJvdmlkZXIiICJBIHRoaXJkIHBhcnR5LiIgIlNhYVMiIHsKICAgICAgICAgICAgICAgIG1haWxJbnN0YW5jZSA9IHNvZnR3YXJlU3lzdGVtSW5zdGFuY2UgbWFpbCAiYmx1ZSxncmVlbiIKICAgICAgICAgICAgfQogICAgICAgICAgICBkbnMgLT4gbGIgIkZvcndhcmRzIHJlcXVlc3RzIHRvIiAiSFRUUFMiCiAgICAgICAgICAgIGxiIC0+IHdlYkJsdWUgIkZvcndhcmRzIHJlcXVlc3RzIHRvIiAiSFRUUFMiCiAgICAgICAgICAgIGxiIC0+IHdlYkdyZWVuICJGb3J3YXJkcyByZXF1ZXN0cyB0byIgIkhUVFBTIgogICAgICAgIH0KCiAgICAgICAgc3RhZ2luZyA9IGRlcGxveW1lbnRFbnZpcm9ubWVudCAiU3RhZ2luZyIgewogICAgICAgICAgICBib3ggPSBkZXBsb3ltZW50Tm9kZSAiVGVzdCBib3giICJPbmUgbWFjaGluZS4iICJEb2NrZXIiIHsKICAgICAgICAgICAgICAgIGNvbnRhaW5lckluc3RhbmNlIHdlYgogICAgICAgICAgICAgICAgY29udGFpbmVySW5zdGFuY2UgYXBpCiAgICAgICAgICAgICAgICBjb250YWluZXJJbnN0YW5jZSBkYgogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQoKICAgIHZpZXdzIHsKICAgICAgICBkZXBsb3ltZW50IHNob3AgIkxpdmUiICJsaXZlIiB7CiAgICAgICAgICAgIGluY2x1ZGUgKgogICAgICAgICAgICB0aXRsZSAiU2hvcCBpbiBwcm9kdWN0aW9uIgogICAgICAgIH0KICAgICAgICBkZXBsb3ltZW50ICogIlN0YWdpbmciICJzdGFnaW5nIiB7CiAgICAgICAgICAgIGluY2x1ZGUgKgogICAgICAgICAgICB0aXRsZSAiU2hvcCBpbiBzdGFnaW5nIgogICAgICAgIH0KICAgICAgICBmaWx0ZXJlZCAibGl2ZSIgZXhjbHVkZSAiSW5mcmFzdHJ1Y3R1cmUgTm9kZSIgImxpdmUtYXBwcyIgIlByb2R1Y3Rpb24gd2l0aG91dCBpbmZyYXN0cnVjdHVyZSIKICAgICAgICBzdHlsZXMgewogICAgICAgICAgICBlbGVtZW50ICJEYXRhYmFzZSIgewogICAgICAgICAgICAgICAgc2hhcGUgY3lsaW5kZXIKICAgICAgICAgICAgfQogICAgICAgICAgICBlbGVtZW50ICJFeHRlcm5hbCIgewogICAgICAgICAgICAgICAgYmFja2dyb3VuZCAjOTk5OTk5CiAgICAgICAgICAgICAgICBjb2xvciAjZmZmZmZmCiAgICAgICAgICAgIH0KICAgICAgICAgICAgZWxlbWVudCAiSW5mcmFzdHJ1Y3R1cmUgTm9kZSIgewogICAgICAgICAgICAgICAgYmFja2dyb3VuZCAjZThmMGUwCiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9Cn0=",
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "configuration" : {
+      "styles" : {
+        "elements" : [ {
+          "shape" : "Cylinder",
+          "tag" : "Database"
+        }, {
+          "background" : "#999999",
+          "color" : "#ffffff",
+          "tag" : "External"
+        }, {
+          "background" : "#e8f0e0",
+          "tag" : "Infrastructure Node"
+        } ]
+      },
+      "terminology" : { }
+    },
+    "deploymentViews" : [ {
+      "elements" : [ {
+        "id" : "13",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "14",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "15",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "16",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "17",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "18",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "19",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "20",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "22",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "24",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "25",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "29",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "30",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "environment" : "Live",
+      "key" : "live",
+      "name" : "Deployment View: Shop - Live",
+      "order" : 1,
+      "relationships" : [ {
+        "id" : "21"
+      }, {
+        "id" : "23"
+      }, {
+        "id" : "26"
+      }, {
+        "id" : "27"
+      }, {
+        "id" : "31"
+      }, {
+        "id" : "32"
+      }, {
+        "id" : "33"
+      }, {
+        "id" : "34"
+      }, {
+        "id" : "35"
+      } ],
+      "softwareSystemId" : "2",
+      "title" : "Shop in production"
+    }, {
+      "elements" : [ {
+        "id" : "36",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "37",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "38",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "40",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "environment" : "Staging",
+      "key" : "staging",
+      "name" : "Deployment View: Staging",
+      "order" : 2,
+      "relationships" : [ {
+        "id" : "39"
+      }, {
+        "id" : "41"
+      } ],
+      "title" : "Shop in staging"
+    } ],
+    "filteredViews" : [ {
+      "baseViewKey" : "live",
+      "description" : "Production without infrastructure",
+      "key" : "live-apps",
+      "mode" : "Exclude",
+      "name" : "Filtered: Deployment View: Shop - Live",
+      "order" : 3,
+      "tags" : [ "Infrastructure Node" ]
+    } ]
+  }
+}

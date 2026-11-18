@@ -238,6 +238,18 @@ pub(crate) enum Command {
         /// FILE, rewritten in place.
         file: PathBuf,
     },
+    /// `c4rizer export -f <format> [-o DIR] [-w] FILE [--positions]`:
+    /// the format's files into DIR (P3-400..P3-405).
+    Export {
+        /// FILE (`-w`/`-workspace` may stand before it).
+        input: Input,
+        /// `-f`/`--format`.
+        format: ExportFormat,
+        /// `-o`/`--output`; FILE's folder when not given (P3-400).
+        out_dir: Option<PathBuf>,
+        /// `--positions`: DOT nodes carry `pos` (P3-411).
+        positions: bool,
+    },
     /// `c4rizer version` (P2-645).
     Version,
     /// `c4rizer help [COMMAND]`, `-h`, `--help` (P2-647).
@@ -245,6 +257,32 @@ pub(crate) enum Command {
         /// The subcommand asked about, `None` for all of them.
         command: Option<&'static str>,
     },
+}
+
+/// A format of `export -f` (P3-400), as Structurizr spells it plus
+/// c4rizer's `dot`, `ilograph`, `svg` and `png`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ExportFormat {
+    /// `plantuml`, `plantuml/structurizr`, `plantuml/c4plantuml`.
+    PlantUml(export::Flavour),
+    /// `mermaid`.
+    Mermaid,
+    /// `websequencediagrams`.
+    WebSequenceDiagrams,
+    /// `dot`.
+    Dot,
+    /// `ilograph`.
+    Ilograph,
+    /// `json`.
+    Json,
+    /// `theme`.
+    Theme,
+    /// `static` (part 2 of the row, P3-423).
+    Static,
+    /// `svg`, as `render` writes it (P3-402).
+    Svg,
+    /// `png`, as `render --png` writes it (P3-402).
+    Png,
 }
 
 /// A command line that is not one of the `USAGE` forms. `Display` is one
@@ -290,6 +328,11 @@ pub(crate) enum UsageError {
     UnknownSvgText(String),
     /// `import-layout` without both JSON and FILE (P2-504).
     MissingImportFiles,
+    /// `export` without `-f` (P3-401).
+    MissingFormat,
+    /// `export -f` with a format c4rizer does not write, `fqcn` or a Java
+    /// class name included, as given (P3-401).
+    UnknownFormat(String),
 }
 
 impl fmt::Display for UsageError {
@@ -339,6 +382,7 @@ impl fmt::Display for UsageError {
             UsageError::MissingImportFiles => f.write_str(
                 "`import-layout` needs the workspace JSON and the diagram file — give `import-layout JSON FILE`",
             ),
+            UsageError::MissingFormat | UsageError::UnknownFormat(_) => todo!(),
         }
     }
 }
@@ -558,6 +602,7 @@ where
             return parse_workspace_command(name, args);
         }
         Some("import-layout") => return parse_import_layout(args),
+        Some("export") => return parse_export(args),
         _ => return Err(UsageError::UnknownCommand(lossy(&first))),
     };
     let mut file: Option<OsString> = None;
@@ -745,6 +790,12 @@ fn parse_severities(value: &OsString) -> Result<Vec<inspect::Severity>, UsageErr
 }
 
 /// `import-layout JSON FILE`: exactly two paths, no flags (P2-504).
+/// `export` arguments (P3-400, P3-401).
+fn parse_export(args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let _ = args;
+    todo!()
+}
+
 fn parse_import_layout(args: impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
     let mut paths = Vec::new();
     for arg in args {
@@ -1034,6 +1085,7 @@ pub(crate) fn run(
             return run_model_command(command, input, stdin, stdout);
         }
         Command::ImportLayout { json, file } => return run_import_layout(json, file, stdout),
+        Command::Export { .. } => return run_export(command, stdin, stdout),
     };
     let mode = match command {
         Command::Render { mode, .. } => *mode,
@@ -1184,6 +1236,18 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// `export -f <format>` (P3-400..P3-405): reads and builds FILE, writes
+/// the format's files into the output folder, prints one `wrote` line
+/// per file and one skip line per view the format cannot express.
+fn run_export(
+    command: &Command,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+) -> Result<Exit, CliError> {
+    let _ = (command, stdin, stdout);
+    todo!()
 }
 
 /// `validate`, `inspect` or `list`: read and parse the workspace, never
