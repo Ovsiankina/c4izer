@@ -1367,6 +1367,14 @@ impl State {
         }
     }
 
+    /// Opens `view` with the box of `element` (its canonical key)
+    /// selected: a usage click or a graph or tree double click on the
+    /// explore pages (P3-504, P3-512).
+    pub(crate) fn reveal(&mut self, view: ViewRef, element: String) -> Vec<Effect> {
+        let _ = (view, element);
+        todo!()
+    }
+
     /// The light/dark mode the canvas shows and exports in (P2-433).
     pub(crate) fn mode(&self) -> Mode {
         self.mode

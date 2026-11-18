@@ -1,0 +1,6 @@
+= Operations
+
+The shop runs in one *cloud account*.
+
+* Backups nightly
+* Restores tested monthly
