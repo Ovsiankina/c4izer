@@ -639,6 +639,22 @@ impl App {
                 out.push(Event::Text(buffer));
             }
         }
+        // editor-ux-02: the right-click menu, at the pointer.
+        if let Some(Overlay::ContextMenu { entries }) = &self.state.overlay {
+            let at = response.rect.min + egui::vec2(self.state.menu_at.x, self.state.menu_at.y);
+            egui::Area::new(egui::Id::unique("c4rizer-context-menu"))
+                .fixed_pos(at)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        for entry in entries {
+                            if ui.button(&entry.label).clicked() {
+                                out.push(Event::Command(Command::ContextAction(entry.action.clone())));
+                            }
+                        }
+                    });
+                });
+        }
         out
     }
 
@@ -1335,6 +1351,8 @@ impl App {
                         }
                     });
             }
+            // Drawn over the canvas at the pointer (`App::canvas`).
+            Overlay::ContextMenu { .. } => {}
             Overlay::TagFilter => {
                 egui::Window::new("Filter by tag")
                     .collapsible(false)

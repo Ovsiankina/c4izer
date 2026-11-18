@@ -10,7 +10,7 @@ use c4rizer_core::scene::Scene;
 
 use crate::camera::ScreenPoint;
 use crate::files::{self, FileEvent, UiState};
-use crate::state::{Button, Command, Effect, Event, Input, Modifiers, State, initial_view};
+use crate::state::{Button, Command, Effect, Event, Input, Modifiers, Overlay, State, initial_view};
 use crate::testutil::TempDir;
 use crate::worker::{self, ViewRef};
 
@@ -129,16 +129,20 @@ impl Shell {
         self.event(Event::Input(Input::PointerUp { at, button: Button::Left }));
     }
 
-    /// A plain double click on `key`'s box: two clicks, then the
-    /// shell's double-click event (EDIT-15 as amended: it enters).
+    /// Enters `key`'s box: a right click opens the context menu, its
+    /// first entry is picked (editor-ux-02).
     fn enter(&mut self, key: &str) {
         let at = self.screen(key);
-        self.click(key);
-        self.click(key);
-        self.event(Event::Input(Input::DoubleClick {
+        self.event(Event::Input(Input::PointerDown {
             at,
+            button: Button::Right,
             mods: Modifiers::default(),
         }));
+        self.event(Event::Input(Input::PointerUp { at, button: Button::Right }));
+        let Some(Overlay::ContextMenu { entries }) = self.s.overlay.clone() else {
+            panic!("no context menu on {key}");
+        };
+        self.event(Event::Command(Command::ContextAction(entries[0].action.clone())));
     }
 
     fn drag(&mut self, key: &str, dx: f32, dy: f32) {
@@ -185,7 +189,7 @@ fn at_line(text: &str, view: &str, element: &str) -> Option<(i32, i32)> {
     v.position_of(id).map(|a| (a.x.value, a.y.value))
 }
 
-/// In a landscape view a double click on an enterable box opens its view as
+/// In a landscape view the context menu of an enterable box opens its view as
 /// EDIT-15 says, and the breadcrumb is the workspace crumb alone.
 // TODO(srs): P2-305, the workspace crumb. Reading taken (B
 // landscape-filtered 8): it opens the first `systemLandscape` view when
@@ -198,7 +202,7 @@ fn p2_305_landscape_click_enters_breadcrumb_is_workspace() {
     let crumbs = sh.s.breadcrumb();
     assert_eq!(crumbs.len(), 1, "{crumbs:?}");
     assert_eq!(crumbs[0].scope, None);
-    // A double click on the shop (it has containers) opens its container
+    // The context menu on the shop (it has containers) opens its container
     // view (EDIT-15 as amended).
     sh.enter("shop");
     assert_eq!(sh.s.view, Some(declared("containers")));
@@ -256,7 +260,7 @@ fn p2_314_base_view_hidden_from_view_list() {
     assert_eq!(sh.model().filtered_bases(), ["containers"]);
     let listed: Vec<String> = sh.s.views().iter().map(|v| v.view.key()).collect();
     assert_eq!(listed, ["context", "estate", "front", "estate2"]);
-    // EDIT-15 may open it: a double click on the shop in the context view.
+    // EDIT-15 may open it: the context menu on the shop in the context view.
     sh.show("context");
     sh.enter("shop");
     assert_eq!(sh.s.view, Some(declared("containers")));

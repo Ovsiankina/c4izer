@@ -726,59 +726,58 @@ pub fn paint(painter: &eframe::egui::Painter, items: &[PaintItem]) {
     }
 }
 
-/// The page under the scene: `scene.bounds` filled with
+/// The scene's bounds and, on a view with a canvas size, its paper
+/// (`State::paper_rect`) as the one rectangle that is the page.
+// DECISION (editor-ux-01): the page is always ONE rectangle, the
+// bounding rectangle of the paper (when the view has a `paperSize`) and
+// the scene bounds (the drawing, legend and title included). It equals
+// the paper while the drawing sits inside it, and grows only on the
+// sides a box sticks out of, by exactly that overhang; on auto it is the
+// scene bounds, as before. Before, the paper and the bounds were two
+// overlapping rectangles that each moved on their own during a drag.
+pub(crate) fn page_rect(scene_bounds: Rect, paper: Option<Rect>) -> Rect {
+    let Some(p) = paper else { return scene_bounds };
+    Rect::from_corners(
+        Point::new(p.min.x.min(scene_bounds.min.x), p.min.y.min(scene_bounds.min.y)),
+        Point::new(p.max.x.max(scene_bounds.max.x), p.max.y.max(scene_bounds.max.y)),
+    )
+}
+
+/// The page under the scene: `page_rect` filled with
 /// `scene.background`, the export's background (EDIT-31), so the canvas
-/// looks like the exported SVG/PNG whatever the window theme. `None`
-/// without a scene.
+/// looks like the exported SVG/PNG whatever the window theme; on a view
+/// with a canvas size (P2-701) a thin grey dashed outline follows the
+/// same rectangle, so the size shows on screen. Empty without a scene.
 // DECISION: core exposes the export background as `Scene::background`
 // (the SVG fills `bounds` with it), so the page takes it from there and
 // no white is hard-coded here. Kept out of `paint_items` so its
-// EDIT-12 contract (scene items and marks only, `Source` unchanged)
-// holds; the shell paints it first.
-pub(crate) fn page(list: &DrawList<'_>) -> Option<Primitive> {
-    let scene = list.scene?;
-    Some(polygon(
-        rect_points(&list.camera, scene.bounds, 0),
-        Some(rgb(scene.background)),
-        None,
-        &list.camera,
-    ))
-}
-
-/// The paper of a view with a canvas size (`State::paper_rect`, scene
-/// px): filled with the export background and outlined in grey, so the
-/// canvas size shows on screen (P2-701). Empty without a scene.
-// DECISION: painted under the page (the scene bounds), so a drawing that
-// spills over the paper still has its page; the outline is a thin grey
-// dash, which reads as an edge and not as a diagram boundary.
-pub(crate) fn paper(list: &DrawList<'_>, paper: Rect) -> Vec<Primitive> {
+// EDIT-31 contract (scene items and marks only, `Source` unchanged)
+// holds; the shell paints it first. The outline is a thin grey dash,
+// which reads as an edge and not as a diagram boundary.
+pub(crate) fn page(list: &DrawList<'_>, paper: Option<Rect>) -> Vec<Primitive> {
     let Some(scene) = list.scene else { return Vec::new() };
-    let points = rect_points(&list.camera, paper, 0);
-    vec![
-        Primitive::Polygon {
-            points: points.clone(),
-            fill: Some(rgb(scene.background)),
-            stroke: None,
-            dash: None,
-        },
-        Primitive::Polygon {
+    let points = rect_points(&list.camera, page_rect(scene.bounds, paper), 0);
+    let mut out = vec![Primitive::Polygon {
+        points: points.clone(),
+        fill: Some(rgb(scene.background)),
+        stroke: None,
+        dash: None,
+    }];
+    if paper.is_some() {
+        out.push(Primitive::Polygon {
             points,
             fill: None,
             stroke: Some(([0x99, 0x99, 0x99], 1.0)),
             dash: Some([6.0, 4.0]),
-        },
-    ]
+        });
+    }
+    out
 }
 
-/// Paints the paper (`paper`, when the view has a canvas size) and the
-/// page of `list` (`page`), if any (P2-701, EDIT-31).
+/// Paints the page of `list` (`page`; `paper` is the view's canvas, if
+/// it has a size) (P2-701, EDIT-31).
 pub(crate) fn paint_page(painter: &eframe::egui::Painter, list: &DrawList<'_>, paper_rect: Option<Rect>) {
-    if let Some(r) = paper_rect {
-        for p in paper(list, r) {
-            paint_primitive(painter, &p, 100);
-        }
-    }
-    if let Some(p) = page(list) {
+    for p in page(list, paper_rect) {
         paint_primitive(painter, &p, 100);
     }
 }
@@ -1469,7 +1468,9 @@ mod tests {
         let mut l = list(&scene);
         l.camera.zoom = 0.5;
         l.camera.pan = crate::camera::ScenePoint { x: -40.0, y: 10.0 };
-        let page = super::page(&l).expect("a page");
+        let prims = super::page(&l, None);
+        assert_eq!(prims.len(), 1, "no paper: one filled rectangle, no outline");
+        let page = prims.into_iter().next().expect("a page");
         let b = scene.bounds;
         let (a, z) = (l.camera.to_screen(b.min), l.camera.to_screen(b.max));
         let bg = scene.background;
@@ -1492,7 +1493,7 @@ mod tests {
             other => panic!("not a polygon: {other:?}"),
         }
         l.scene = None;
-        assert!(super::page(&l).is_none());
+        assert!(super::page(&l, None).is_empty());
     }
 
     /// WCAG relative luminance of an sRGB colour.

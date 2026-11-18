@@ -177,7 +177,7 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
     assert_eq!(d.technology.as_deref(), Some("EC2"));
     assert_eq!(d.instances.as_deref(), Some("2"));
     assert_eq!(d.environment.as_deref(), Some("Live"));
-    // Never enterable (EDIT-15): a double click on it opens no view.
+    // Never enterable (EDIT-15): a double click on it opens no view (it edits in place).
     let web_host = sh.model().find("webHost").expect("node");
     assert!(!enterable(sh.model(), web_host));
     sh.click_at(tag);

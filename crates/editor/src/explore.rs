@@ -1826,10 +1826,13 @@ fn fit_page(bounds: Rect, canvas: ScreenPoint) -> Camera {
 }
 
 /// The EDIT-28 gestures on a graph or tree canvas: the wheel zooms at the
-/// cursor, middle drag or Space+drag pans (P3-512).
+/// cursor, middle drag, right drag or Space+drag pans (P3-512).
 fn pan_zoom(ui: &egui::Ui, response: &egui::Response, camera: &mut Camera, rel: impl Fn(egui::Pos2) -> ScreenPoint) {
     let space = ui.input(|i| i.key_down(egui::Key::Space)) && !ui.ctx().text_edit_focused();
-    if response.dragged_by(egui::PointerButton::Middle) || (space && response.dragged_by(egui::PointerButton::Primary)) {
+    if response.dragged_by(egui::PointerButton::Middle)
+        || response.dragged_by(egui::PointerButton::Secondary)
+        || (space && response.dragged_by(egui::PointerButton::Primary))
+    {
         let d = response.drag_delta();
         camera.pan_by(ScreenPoint { x: d.x, y: d.y });
     }

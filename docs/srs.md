@@ -226,7 +226,7 @@ Every Structurizr feature has a phase; nothing is left unplaced. Built from the 
 | UI feature | Move a relationship label with Up/Down | 2 | Writes `position` |
 | UI feature | Cycle routing with `r`, toggle jumps with `j` | 2 | |
 | UI feature | Diagram navigator / view list | 1 | EDIT-8 |
-| UI feature | Open the next level of detail from an element | 1 | EDIT-15 (double-click enters one level; a single click selects) |
+| UI feature | Open the next level of detail from an element | 1 | EDIT-15 (the right-click menu enters one level; a single click selects) |
 | UI feature | Keyboard prev/next/back/quick navigation between diagrams | 2 | Phase 1 has breadcrumb back only (EDIT-16) |
 | UI feature | Open an element/relationship URL (Alt+double-click) | 2 | Needs `url` |
 | UI feature | Zoom in/out | 1 | EDIT-9 |
@@ -778,8 +778,10 @@ owner, 2026-11-15); the bundled font of CORE-30.
   technology; subtitle); confirming writes it to the diagram file
   (DSL-10), Escape cancels; editing a lifted line edits the
   relationship it was lifted from, and the details panel names that
-  relationship and lists any others merged into the line. Gestures per
-  EDIT-28.
+  relationship and lists any others merged into the line. A left
+  double-click on a box, a line or its label, or the view title does
+  the same as Enter on that item (owner's ruling of editor-ux-02).
+  Gestures per EDIT-28.
 - **EDIT-6** Lint findings are shown next to the view and update with
   each render.
 - **EDIT-7** "Export view" and "Export all views" write SVG or PNG
@@ -825,13 +827,19 @@ C4 levels
 - **EDIT-15** A box is enterable when its element has at least one
   child in the model (opens the default view when no view is scoped to
   it), or a container view scoped to it (for a system) or a component
-  view scoped to it (for a container); a left double-click on an
-  enterable box opens its view (container view of a system, component
-  view of a container), exactly one level down and never twice for one
-  double-click; a single left click selects any box, enterable or not
-  (owner's ruling: "double click to enter next C4 level"); enterable
+  view scoped to it (for a container); a right-click on an
+  enterable box opens a context menu with an entry "Enter <view name>"
+  per view reachable from it, the first being the view that opens
+  (container view of a system, component view of a container), exactly
+  one level down; picking an entry opens that view and closes the menu;
+  a left double-click never enters (it edits the item's text in place,
+  EDIT-5); a single left click selects any box, enterable or not
+  (owner's ruling of editor-ux-02, replacing "double click to enter
+  next C4 level"); the keyboard ways in (quick navigation P2-715, the
+  navigator P2-729, the view list EDIT-8) stay; enterable
   boxes show a hover mark; when several views are scoped to it, the
-  first declared opens and the view list (EDIT-8) shows the others;
+  first declared is the first menu entry and the view list (EDIT-8)
+  shows the others;
   when none exists, a default view (`include *`, every box auto-placed)
   opens, and it is written to the file on the first write made in it
   (move, resize, style, or a title or subtitle edit), appended as the last view in `views` with key
@@ -878,11 +886,15 @@ Editing
   line for every box of that view at its current position, as one undo
   step; after that a move changes only the moved box's line (DSL-9).
 - **EDIT-28** Input gestures: a left click (pointer travel under 4
-  screen px) selects; a left double-click enters an enterable box
-  (EDIT-15); left drag on a box
-  moves it; left drag on empty canvas draws a rubber band; middle drag
-  or Space+drag pans; the wheel zooms at the cursor; Ctrl-click or
-  right-click selects without entering; Shift-click toggles selection
+  screen px) selects; a left double-click edits the item's text in
+  place (EDIT-5); a right button press and release with under 4 screen
+  px of travel selects the item and, on a box with views to enter or a
+  box or line with a `url`, opens its context menu (EDIT-15); a right
+  button drag (4 screen px or more) pans exactly as a middle drag does
+  and never opens the menu (owner's ruling of editor-ux-03); left drag
+  on a box moves it; left drag on empty canvas draws a rubber band;
+  middle drag, right drag or Space+drag pans; the wheel zooms at the
+  cursor; Ctrl-click selects without entering; Shift-click toggles selection
   and never enters; a click on empty canvas or Escape deselects; Enter
   or F2 edits (EDIT-5); Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z
   and Ctrl+Y redo (EDIT-19).
@@ -1457,8 +1469,8 @@ is marked "(memory)" and stays TODO(srs).
 - **P2-304** TODO(srs): which of the C1 rules L15..L18 apply to a system
   landscape view. The P2-8 stub said "same lint rules as C1", but L17
   (more than 8 boxes) works against the purpose of a landscape.
-- **P2-305** In a system landscape view, a double-click on an enterable box
-  opens its view exactly as EDIT-15 says, and the breadcrumb is the
+- **P2-305** In a system landscape view, the context menu of an
+  enterable box (right-click) opens its view exactly as EDIT-15 says, and the breadcrumb is the
   workspace crumb alone, since a landscape has no scope (EDIT-16).
   TODO(srs): whether the workspace crumb (EDIT-16) should open the first
   declared system landscape view before the first system context view.
@@ -2344,7 +2356,10 @@ Note after it is not part of the sentence.
 - **P2-701** "Decrease canvas size", "Auto canvas size" and "Increase
   canvas size" set the open view's canvas to the previous size in an
   ordered size list, the smallest size that holds the scene, or the next
-  size, and write it to the diagram file (P2-733) as one undo step.
+  size, and write it to the diagram file (P2-733) as one undo step. On
+  screen the page is always one rectangle: the paper, grown only on the
+  sides where the drawing sticks out of it, during a drag and after
+  (owner's report, editor-ux-01).
   TODO(srs): (a) the size list (from memory: A6..A0 portrait and
   landscape, Letter, Legal, slide formats; no fetched page lists it);
   (b) the syntax (Structurizr DSL has none and keeps paper size in
@@ -2477,7 +2492,8 @@ Note after it is not part of the sentence.
   multi-select", and the parity row reads "Multi-select
   (Shift/Alt-click, lasso)". Note: this fills a gap in EDIT-28, whose
   table names only Shift.
-- **P2-719** An Alt+double-click on a box whose element has a `url`
+- **P2-719** An Alt+double-click, or the "Open URL" entry of the
+  box's context menu (EDIT-15), on a box whose element has a `url`
   emits an effect that opens that URL in the system browser; on a box
   with no `url`, nothing opens and the status bar says so. The reference
   says: "Double-clicking with the `Alt` key pressed will open the URL".
@@ -2486,7 +2502,8 @@ Note after it is not part of the sentence.
   `properties` (name=label, value=url) and its docs and decisions (docs
   and decisions belong to phase-3 `explore`; property URLs have no
   parity row).
-- **P2-720** An Alt+double-click on a line or its label opens the `url`
+- **P2-720** An Alt+double-click, or the "Open URL" entry of its context
+  menu (EDIT-15), on a line or its label opens the `url`
   of the relationship it draws; for a lifted or merged line this is the
   relationship EDIT-5 edits (`PlanEdge::winner`), and with no `url`
   nothing opens and the status bar says so. The reference says:

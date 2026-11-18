@@ -212,12 +212,20 @@ impl Shell {
     }
 
     fn click_at(&mut self, at: ScreenPoint, mods: Modifiers) {
-        self.input(Input::PointerDown {
-            at,
-            button: Button::Left,
-            mods,
-        });
-        self.input(Input::PointerUp { at, button: Button::Left });
+        self.click_button(at, Button::Left, mods);
+    }
+
+    fn click_button(&mut self, at: ScreenPoint, button: Button, mods: Modifiers) {
+        self.input(Input::PointerDown { at, button, mods });
+        self.input(Input::PointerUp { at, button });
+    }
+
+    /// The entries of the open context menu.
+    fn menu(&self) -> Vec<crate::state::MenuEntry> {
+        match &self.s.overlay {
+            Some(Overlay::ContextMenu { entries }) => entries.clone(),
+            other => panic!("no context menu: {other:?}"),
+        }
     }
 
     fn click(&mut self, key: &str, mods: Modifiers) {
@@ -929,11 +937,70 @@ fn p2_701_canvas_shows_paper_extent() {
     let paper = sh.s.paper_rect().expect("paper");
     assert_eq!(paper, Rect::from_corners(Point::new(0, 0), Point::new(w, h)));
     let list = sh.s.draw_list();
-    let prims = crate::canvas::paper(&list, paper);
+    let prims = crate::canvas::page(&list, Some(paper));
     let corner = list.camera.to_screen(paper.max);
     assert!(prims.iter().any(|p| matches!(p, Primitive::Polygon { fill: Some(_), points, .. }
         if points.iter().any(|q| (q.x - corner.x).abs() < 1e-3 && (q.y - corner.y).abs() < 1e-3))));
     assert!(prims.iter().any(|p| matches!(p, Primitive::Polygon { fill: None, stroke: Some(_), .. })), "outlined");
+}
+
+/// editor-ux-01 (OR-1): on a view with a canvas size the page is ONE
+/// rectangle, during and after a drag of a box out of the paper: a
+/// single fill and a single outline over the same corners, spanning the
+/// paper and the scene bounds, never two stacked rectangles.
+#[test]
+fn p2_701_page_is_one_rectangle_while_a_box_leaves_the_paper() {
+    use crate::canvas::Primitive;
+    let mut sh = Shell::with(SHOP);
+    sh.cmd(Command::Canvas {
+        step: CanvasStep::Increase,
+        keep_positions: false,
+    });
+    let paper = sh.s.paper_rect().expect("paper");
+    let check = |sh: &Shell, when: &str| {
+        let list = sh.s.draw_list();
+        let prims = crate::canvas::page(&list, Some(paper));
+        let polys: Vec<&Vec<ScreenPoint>> = prims
+            .iter()
+            .map(|p| match p {
+                Primitive::Polygon { points, .. } => points,
+                other => panic!("{when}: not a polygon: {other:?}"),
+            })
+            .collect();
+        assert_eq!(polys.len(), 2, "{when}: one fill and one outline");
+        assert_eq!(polys[0], polys[1], "{when}: same rectangle");
+        let b = sh.scene().bounds;
+        let want = Rect::from_corners(
+            Point::new(paper.min.x.min(b.min.x), paper.min.y.min(b.min.y)),
+            Point::new(paper.max.x.max(b.max.x), paper.max.y.max(b.max.y)),
+        );
+        let (a, z) = (list.camera.to_screen(want.min), list.camera.to_screen(want.max));
+        let xs = polys[0].iter().map(|p| p.x);
+        let ys = polys[0].iter().map(|p| p.y);
+        assert!((xs.clone().fold(f32::INFINITY, f32::min) - a.x).abs() < 1e-3, "{when}");
+        assert!((xs.fold(f32::NEG_INFINITY, f32::max) - z.x).abs() < 1e-3, "{when}");
+        assert!((ys.clone().fold(f32::INFINITY, f32::min) - a.y).abs() < 1e-3, "{when}");
+        assert!((ys.fold(f32::NEG_INFINITY, f32::max) - z.y).abs() < 1e-3, "{when}");
+        want
+    };
+    let inside = check(&sh, "at rest");
+    assert_eq!(inside, paper, "drawing inside: the page is the paper");
+    let from = sh.screen("shop");
+    sh.input(Input::PointerDown {
+        at: from,
+        button: Button::Left,
+        mods: NONE,
+    });
+    let to = ScreenPoint {
+        x: from.x + (f32::from(i16::try_from(paper.width()).unwrap_or(0)) + 600.0) * sh.s.camera.zoom,
+        y: from.y,
+    };
+    sh.input(Input::PointerMove { at: to });
+    let mid = check(&sh, "mid drag");
+    assert!(mid.max.x > paper.max.x, "the page grew to hold the box");
+    assert_eq!(mid.min, paper.min, "and only on the side the box left by");
+    sh.input(Input::PointerUp { at: to, button: Button::Left });
+    check(&sh, "after the drop");
 }
 
 /// A canvas size step that re-centres the boxes keeps the drawing where
@@ -1422,20 +1489,168 @@ fn edit_15_single_click_selects_enterable_box() {
     assert_eq!(sh.selection(), [el("shop")]);
 }
 
-/// Owner must-have (EDIT-15 as amended): a double click on an enterable
-/// box enters exactly one level: C1 to C2, C2 to the container's C3,
+/// Owner ruling (editor-ux-02, EDIT-15): entering moves to the context
+/// menu. A right click on an enterable box lists "Enter <view>"; picking
+/// it opens exactly one level down: C1 to C2, C2 to the container's C3,
 /// never C1 to C3.
 #[test]
-fn edit_15_double_click_enters_one_level() {
+fn edit_15_context_menu_enters_one_level() {
     let mut ex = Shell::with(include_str!("../../../tests/data/example.dsl"));
     ex.show("C1");
     let at = ex.screen("system");
-    ex.double_click_at(at, NONE);
+    ex.click_button(at, Button::Right, NONE);
+    assert_eq!(ex.s.view, Some(declared("C1")), "the menu alone enters nothing");
+    let entries = ex.menu();
+    assert!(entries[0].label.starts_with("Enter "), "{entries:?}");
+    ex.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(ex.s.view, Some(declared("C2")), "one level down, not two");
+    assert!(ex.s.overlay.is_none(), "picking closes the menu");
     let at = ex.screen("app");
-    ex.double_click_at(at, NONE);
+    ex.click_button(at, Button::Right, NONE);
+    let entries = ex.menu();
+    ex.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(ex.s.view, Some(declared("C3-serving")), "the first declared component view");
     assert!(ex.writes.is_empty());
+}
+
+/// A double click no longer enters a level: on an enterable box it
+/// edits the name in place, as Enter does (EDIT-5), and the view stays.
+#[test]
+fn edit_15_double_click_edits_in_place_and_never_enters() {
+    let mut sh = Shell::with(SHOP);
+    let at = sh.screen("shop");
+    sh.double_click_at(at, NONE);
+    assert_eq!(sh.s.view, Some(declared("context")), "no level entered");
+    let edit = sh.s.text_edit.as_ref().expect("the in-place editor opened");
+    assert_eq!(edit.item, el("shop"));
+    assert_eq!(edit.fields[0].buffer, "Shop");
+}
+
+/// Editor-ux-02: a double click edits whatever has editable text: a
+/// line label (the relationship's description) and the view title.
+#[test]
+fn edit_5_double_click_edits_label_and_title() {
+    use c4rizer_core::scene::ItemKey;
+    let mut sh = Shell::with(SHOP);
+    let model = sh.model();
+    let (from, to) = (model.find("customer").expect("customer"), model.find("shop").expect("shop"));
+    let rel = model.find_relationship(from, to)[0];
+    let edge = sh.scene().lines.iter().find(|l| l.relationships.contains(&rel)).expect("line").edge;
+    let at = sh.s.camera.to_screen(sh.scene().item_bounds(ItemKey::Label(edge)).expect("label").centre());
+    sh.double_click_at(at, NONE);
+    let edit = sh.s.text_edit.as_ref().expect("label edit");
+    assert!(matches!(edit.item, Selected::Relationship(_)), "{:?}", edit.item);
+    assert_eq!(edit.fields[0].buffer, "Visits");
+    sh.key(Key::Escape, NONE);
+    assert!(sh.s.text_edit.is_none());
+    let at = sh.s.camera.to_screen(sh.scene().item_bounds(ItemKey::Title).expect("title").centre());
+    sh.double_click_at(at, NONE);
+    let edit = sh.s.text_edit.as_ref().expect("title edit");
+    assert_eq!(edit.item, Selected::Title);
+    assert_eq!(sh.s.view, Some(declared("context")));
+}
+
+/// Several views scoped to one element: the menu has one "Enter" entry
+/// per view, the first declared first; a box with a `url` also offers
+/// the URL, which opens through the same http/https check as
+/// Alt+double-click did (P2-719).
+#[test]
+fn p2_305_context_menu_lists_every_reachable_view_and_url() {
+    let text = SHOP.replacen(
+        "        systemLandscape \"estate\"",
+        "        container shop \"more\" \"More of the shop\" {\n            include *\n        }\n        systemLandscape \"estate\"",
+        1,
+    );
+    let mut sh = Shell::with(&text);
+    let at = sh.screen("shop");
+    sh.click_button(at, Button::Right, NONE);
+    let labels: Vec<String> = sh.menu().into_iter().map(|e| e.label).collect();
+    assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop"]);
+    // A box with neither views nor URL has no menu.
+    let at = sh.screen("clerk");
+    sh.click_button(at, Button::Right, NONE);
+    assert!(sh.s.overlay.is_none());
+    // URL entries on a box and on a line.
+    let at = sh.screen("customer");
+    sh.click_button(at, Button::Right, NONE);
+    let entries = sh.menu();
+    assert_eq!(entries.len(), 1);
+    sh.cmd(Command::ContextAction(entries[0].action.clone()));
+    assert_eq!(sh.urls, ["https://example.com/customer"]);
+    let at = sh.line_point("customer", "shop");
+    sh.click_button(at, Button::Right, NONE);
+    let entries = sh.menu();
+    sh.cmd(Command::ContextAction(entries[0].action.clone()));
+    assert_eq!(sh.urls.len(), 2);
+    assert_eq!(sh.urls[1], "https://example.com/visits");
+    let at = sh.screen("bank");
+    sh.click_button(at, Button::Right, NONE);
+    let entries = sh.menu();
+    sh.cmd(Command::ContextAction(entries[0].action.clone()));
+    assert_eq!(sh.urls.len(), 2, "ftp is not opened");
+    assert!(sh.s.status().notice.expect("a notice").contains("ftp://bank.example/"));
+}
+
+/// editor-ux-03 (OR-4): holding the right button and dragging pans the
+/// canvas as the middle button does, by the same amount, and a right
+/// drag never opens the context menu, even when it ends on a box.
+#[test]
+fn edit_28_right_drag_pans_like_middle_and_opens_no_menu() {
+    let drag = |button: Button, from: ScreenPoint, to: ScreenPoint| {
+        let mut sh = Shell::with(SHOP);
+        let pan = sh.s.camera.pan;
+        sh.input(Input::PointerDown { at: from, button, mods: NONE });
+        sh.input(Input::PointerMove { at: ScreenPoint { x: from.x + 3.0, y: from.y } });
+        sh.input(Input::PointerMove { at: to });
+        sh.input(Input::PointerUp { at: to, button });
+        assert_ne!(sh.s.camera.pan, pan, "{button:?} drag pans");
+        assert!(sh.s.overlay.is_none(), "{button:?} drag opens no menu");
+        assert!(sh.selection().is_empty(), "{button:?} drag selects nothing");
+        (sh.s.camera.pan.x - pan.x, sh.s.camera.pan.y - pan.y)
+    };
+    let probe = Shell::with(SHOP);
+    let on_box = probe.screen("shop");
+    let to = ScreenPoint { x: on_box.x + 60.0, y: on_box.y + 25.0 };
+    let by_middle = drag(Button::Middle, on_box, to);
+    let by_right = drag(Button::Right, on_box, to);
+    assert_eq!(by_right, by_middle, "the same pan as the middle button");
+    // Back on a box the release is far from the press: still no menu.
+    let mut sh = Shell::with(SHOP);
+    let from = ScreenPoint { x: on_box.x + 200.0, y: on_box.y };
+    sh.input(Input::PointerDown { at: from, button: Button::Right, mods: NONE });
+    sh.input(Input::PointerMove { at: on_box });
+    sh.input(Input::PointerUp { at: on_box, button: Button::Right });
+    assert!(sh.s.overlay.is_none());
+}
+
+/// A right press and release under the click distance opens the menu
+/// (EDIT-28); a travel of 3 screen px is still a click.
+#[test]
+fn edit_28_right_click_under_slop_opens_menu() {
+    let mut sh = Shell::with(SHOP);
+    let at = sh.screen("shop");
+    let pan = sh.s.camera.pan;
+    sh.input(Input::PointerDown { at, button: Button::Right, mods: NONE });
+    let near = ScreenPoint { x: at.x + 3.0, y: at.y };
+    sh.input(Input::PointerMove { at: near });
+    sh.input(Input::PointerUp { at: near, button: Button::Right });
+    assert_eq!(sh.menu().len(), 1);
+    assert_eq!(sh.s.camera.pan, pan, "no pan");
+    assert_eq!(sh.selection(), vec![el("shop")]);
+}
+
+/// A left click elsewhere or Escape closes the menu.
+#[test]
+fn p2_305_context_menu_closes_on_click_and_escape() {
+    let mut sh = Shell::with(SHOP);
+    let at = sh.screen("shop");
+    sh.click_button(at, Button::Right, NONE);
+    assert!(sh.s.overlay.is_some());
+    sh.key(Key::Escape, NONE);
+    assert!(sh.s.overlay.is_none());
+    sh.click_button(at, Button::Right, NONE);
+    sh.click_button(ScreenPoint { x: 5.0, y: 5.0 }, Button::Left, NONE);
+    assert!(sh.s.overlay.is_none());
 }
 
 // ------------------------------------------------------------ task 12

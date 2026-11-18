@@ -342,6 +342,8 @@ pub enum Command {
     ShowOpenDialog,
     /// Show a view from the view list (EDIT-8).
     ShowView(ViewRef),
+    /// Pick an entry of the context menu (editor-ux-02).
+    ContextAction(MenuAction),
     /// Open the `n`-th crumb of `State::breadcrumb` (EDIT-16): the
     /// first declared view scoped to the crumb's element (container view
     /// of a system, component view of a container), else its default
@@ -967,6 +969,37 @@ pub enum Overlay {
     Perspectives,
     /// The diagram navigator (P2-729).
     Navigator,
+    /// The right-click menu of a box, line or label (editor-ux-02):
+    /// its entries; `State::menu_at` is where it opens.
+    ContextMenu {
+        /// The entries, in the order shown.
+        entries: Vec<MenuEntry>,
+    },
+}
+
+/// What a context menu entry does (editor-ux-02).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuAction {
+    /// Open a deeper view of the box's element (was EDIT-15's double
+    /// click).
+    Show(ViewRef),
+    /// Open the `url` of the item named `name` (was P2-719, P2-720's
+    /// Alt+double-click), through the same http/https check.
+    OpenUrl {
+        /// The item's name, for the status notice.
+        name: String,
+        /// The URL as written.
+        url: String,
+    },
+}
+
+/// One entry of the context menu (editor-ux-02).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuEntry {
+    /// The text shown.
+    pub label: String,
+    /// What picking it does.
+    pub action: MenuAction,
 }
 
 /// Where a navigator entry sits relative to the open view (P2-729).
@@ -1170,6 +1203,8 @@ pub struct State {
     pub aids: ViewAids,
     /// The list open over the canvas (P2-715, P2-725, P2-726, P2-729).
     pub overlay: Option<Overlay>,
+    /// Where the context menu opens, canvas px (editor-ux-02).
+    pub menu_at: ScreenPoint,
     /// The views shown this session, oldest first, the open one last
     /// (P2-714).
     visited: Vec<ViewRef>,
@@ -1226,6 +1261,7 @@ impl State {
             queued: VecDeque::new(),
             aids: ViewAids::default(),
             overlay: None,
+            menu_at: ScreenPoint::default(),
             visited: Vec::new(),
             selection_order: Vec::new(),
             sticky: None,
@@ -2710,7 +2746,7 @@ fn paper_sizes() -> Vec<PaperSize> {
 /// The first image view scoped to `element` (P2-322 f).
 // TODO(srs): P2-322 (f). DECISION: reading taken (B landscape-filtered
 // 10f): an element-scoped image view makes its element enterable, and a
-// double click opens it when no container or component view of the element is
+// right-click menu offers it when no container or component view of the element is
 // declared (the cookbook's "level 4" zoom-in).
 fn image_view_of(model: &Model, element: ElementId) -> Option<&str> {
     model
@@ -3326,6 +3362,10 @@ impl State {
     fn pointer_down(&mut self, at: ScreenPoint, button: Button, mods: Modifiers) -> Vec<Effect> {
         // P2-715: a press while Space is held starts a pan, not a tap.
         self.space_tap = false;
+        // editor-ux-02: a press on the canvas closes the context menu.
+        if matches!(self.overlay, Some(Overlay::ContextMenu { .. })) {
+            self.overlay = None;
+        }
         if button == Button::Middle || (button == Button::Left && self.space) {
             self.gesture = Gesture::Panning { last: at };
             return Vec::new();
@@ -3380,7 +3420,17 @@ impl State {
                 handle,
             } => {
                 self.hover = self.hit(at);
-                if button != Button::Left || distance(from, at) < CLICK_SLOP_PX {
+                if distance(from, at) < CLICK_SLOP_PX {
+                    return Vec::new();
+                }
+                // editor-ux-03: a right drag pans like a middle drag,
+                // from where the button went down, and never opens the
+                // context menu.
+                if button == Button::Right {
+                    self.gesture = Gesture::Panning { last: from };
+                    return self.pointer_move(at);
+                }
+                if button != Button::Left {
                     return Vec::new();
                 }
                 self.start_drag(from, at, mods, hit, handle)
@@ -3626,7 +3676,11 @@ impl State {
                 {
                     return effects;
                 }
-                self.click(b, mods, hit)
+                let effects = self.click(b, mods, hit);
+                if b == Button::Right {
+                    self.open_context_menu(at, hit);
+                }
+                effects
             }
             Gesture::Dragging { boxes, to, .. } => {
                 self.dragged = None;
@@ -3690,8 +3744,8 @@ impl State {
             return Vec::new();
         }
         // EDIT-15 as amended by the owner: a single click selects an
-        // enterable box like any other; a double click enters it
-        // (`enter_at`). Every button selects.
+        // enterable box like any other; the right-click menu enters it
+        // (`open_context_menu`). Every button selects.
         self.selection.clear();
         if let Some(s) = selected {
             self.selection.insert(s);
@@ -4017,7 +4071,7 @@ impl State {
             }
         }
         if !mods.alt {
-            return self.enter_at(at, mods);
+            return self.edit_at(at, mods);
         }
         let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else { return Vec::new() };
         let Some(hit) = self.hit(at) else { return Vec::new() };
@@ -4037,6 +4091,12 @@ impl State {
             }
             _ => return Vec::new(),
         };
+        self.open_url(&name, url)
+    }
+
+    /// Opens `url` of the item `name` when it is a web URL, else says
+    /// why not in the status notice (P2-719, P2-720).
+    fn open_url(&mut self, name: &str, url: Option<String>) -> Vec<Effect> {
         match url {
             Some(url) if is_web_url(&url) => vec![Effect::OpenUrl(url)],
             Some(url) => {
@@ -4050,26 +4110,85 @@ impl State {
         }
     }
 
-    /// A plain double click on an enterable box opens its view, one
-    /// level down (EDIT-15 as amended by the owner). The double click
-    /// arrives once, after both clicks have only selected, so it enters
-    /// exactly once.
-    // DECISION: Shift or Ctrl held keeps the double click a selection
-    // gesture (its two clicks toggled or selected), matching EDIT-28's
-    // "selects without entering" for those modifiers.
-    fn enter_at(&mut self, at: ScreenPoint, mods: Modifiers) -> Vec<Effect> {
+    /// A plain double click on an item with editable text edits that
+    /// text in place, as Enter does (EDIT-5, EDIT-15 as amended by the
+    /// owner in editor-ux-02: it no longer enters a level). The double
+    /// click arrives after both clicks have selected the item.
+    // DECISION: the item under the pointer becomes the selection first,
+    // so the edit never depends on the two clicks having landed; Shift
+    // or Ctrl held keeps the double click a selection gesture, as
+    // EDIT-28 says for those modifiers.
+    fn edit_at(&mut self, at: ScreenPoint, mods: Modifiers) -> Vec<Effect> {
         if mods.shift || mods.ctrl || self.text_edit.is_some() {
             return Vec::new();
         }
         let (Some(scene), Some(model)) = (self.scene(), self.model()) else { return Vec::new() };
-        if let Some(ItemKey::Box(id)) = self.hit(at)
-            && let Some(b) = scene.boxes.get(id.0 as usize)
-            && enterable(model, b.element)
-            && let Some(view) = view_into(model, b.element)
-        {
-            return self.show(view);
-        }
+        let Some(item) = self.hit(at).and_then(|h| selected_of(scene, model, h)) else { return Vec::new() };
+        self.selection.clear();
+        self.selection.insert(item);
+        self.open_text_edit();
         Vec::new()
+    }
+
+    /// The views a box of `element` opens, the first being the one
+    /// EDIT-15 opened by double click (`view_into`), then every other
+    /// declared view scoped to it (a landscape's system also its
+    /// context views).
+    fn views_into(&self, model: &Model, element: ElementId) -> Vec<ViewRef> {
+        let mut out: Vec<ViewRef> = Vec::new();
+        if !enterable(model, element) {
+            return out;
+        }
+        out.extend(view_into(model, element));
+        let e = model.element(element);
+        let landscape = self.view.as_ref().and_then(|v| view_kind(model, v)) == Some(ViewKind::SystemLandscape);
+        let kinds = [counting_kind(e.kind), (landscape && e.kind == ElementKind::SoftwareSystem).then_some(ViewKind::SystemContext)];
+        for v in model.views.iter().filter(|v| v.kind.drawable() && v.scope.element() == Some(element)) {
+            let r = ViewRef::Declared(v.key.clone());
+            if kinds.contains(&Some(v.kind)) && !out.contains(&r) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    /// Opens the context menu at `at` over `hit` (editor-ux-02): "Enter
+    /// <view>" for each view a box opens, and "Open URL" for an item
+    /// with a `url`. Nothing opens when the item has no entry.
+    fn open_context_menu(&mut self, at: ScreenPoint, hit: Option<ItemKey>) {
+        let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else { return };
+        let Some(hit) = hit else { return };
+        let mut entries = Vec::new();
+        let name_url = match (hit, scene.model_id(hit)) {
+            (ItemKey::Box(_), Some(ModelId::Element(e))) => {
+                for view in self.views_into(model, e) {
+                    let label = format!("Enter {}", self.entry_of(model, view.clone()).label);
+                    entries.push(MenuEntry { label, action: MenuAction::Show(view) });
+                }
+                let el = model.element(e);
+                el.url.as_ref().map(|u| (el.name.value.clone(), u.value.clone()))
+            }
+            (ItemKey::Line(_) | ItemKey::Label(_), Some(ModelId::Relationship(r))) => {
+                let rel = model.relationship(r);
+                let name = format!(
+                    "{} -> {}",
+                    model.element(rel.source.value).name.value,
+                    model.element(rel.destination.value).name.value
+                );
+                rel.url.as_ref().map(|u| (name, u.value.clone()))
+            }
+            _ => None,
+        };
+        if let Some((name, url)) = name_url {
+            entries.push(MenuEntry {
+                label: format!("Open URL {url}"),
+                action: MenuAction::OpenUrl { name, url },
+            });
+        }
+        if !entries.is_empty() {
+            self.menu_at = at;
+            self.overlay = Some(Overlay::ContextMenu { entries });
+        }
     }
 
     /// Opens the in-place editor on the single selected item (EDIT-5).
@@ -4149,6 +4268,13 @@ impl State {
             Command::ShowOpenDialog => vec![Effect::Dialog(Dialog::Open {
                 dir: self.doc.as_ref().map(|d| export_dir(&d.path)),
             })],
+            Command::ContextAction(action) => {
+                self.overlay = None;
+                match action {
+                    MenuAction::Show(view) => self.show(view),
+                    MenuAction::OpenUrl { name, url } => self.open_url(&name, Some(url)),
+                }
+            }
             Command::ShowView(view) => {
                 // P2-715, P2-729: picking a view in quick navigation or the
                 // navigator closes it.
@@ -5615,13 +5741,16 @@ mod tests {
             self.click_at(at, button, mods);
         }
 
-        /// A plain left double click on `key`'s box: two clicks, then the
-        /// shell's double-click event (EDIT-15 as amended).
+        /// Enters `key`'s box the way the owner's ruling says
+        /// (editor-ux-02): a right click opens the context menu and its
+        /// first entry is picked.
         fn enter(&mut self, key: &str) {
             let at = self.screen(key);
-            self.click_at(at, Button::Left, NONE);
-            self.click_at(at, Button::Left, NONE);
-            self.input(Input::DoubleClick { at, mods: NONE });
+            self.click_at(at, Button::Right, NONE);
+            let Some(super::Overlay::ContextMenu { entries }) = self.s.overlay.clone() else {
+                panic!("no context menu on {key}");
+            };
+            self.cmd(Command::ContextAction(entries[0].action.clone()));
         }
 
         /// A left drag from `from` by `(dx, dy)` screen px, in steps.
@@ -6199,8 +6328,8 @@ mod tests {
         assert_eq!(h.scene().key, "containers");
     }
 
-    /// EDIT-15 (plan editor-03, as amended): a double click on an
-    /// enterable system opens its container view; a single click on any
+    /// EDIT-15 (plan editor-03, as amended by editor-ux-02): the context
+    /// menu of an enterable system opens its container view; a single click on any
     /// box selects it; hover marks enterable boxes.
     #[test]
     fn edit_15_click_system_opens_container_view() {
@@ -6224,7 +6353,7 @@ mod tests {
         assert_eq!(h.s.view, Some(declared("context")));
         assert_eq!(h.selection(), vec![el("bank")]);
 
-        // EDIT-15 as amended: a single click selects, a double click
+        // EDIT-15 as amended: a single click selects, the context menu
         // enters.
         h.click("shop", Button::Left, NONE);
         assert_eq!(h.s.view, Some(declared("context")));
@@ -6234,7 +6363,7 @@ mod tests {
         assert_eq!(h.scene().key, "containers");
     }
 
-    /// Polish (merge review): entering a view, by a double click or by
+    /// Polish (merge review): entering a view, by the context menu or by
     /// picking it in the view list, starts it with nothing selected, so
     /// the details panel never shows an item of the previous view.
     #[test]
@@ -6242,7 +6371,7 @@ mod tests {
         let mut h = H::with_file(SHOP);
         h.enter("shop");
         assert_eq!(h.s.view, Some(declared("containers")));
-        assert_eq!(h.selection(), Vec::<Selected>::new(), "double click into a level");
+        assert_eq!(h.selection(), Vec::<Selected>::new(), "context menu into a level");
         assert!(h.s.details().is_none());
 
         h.cmd(Command::ShowView(declared("context")));
