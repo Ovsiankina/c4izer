@@ -562,6 +562,19 @@ const SEED: u64 = 0x5EED_C4C4_0000_0001;
 const SWEEPS: usize = 4;
 /// Gap between two boundaries that do not nest, in grid units (20px).
 const APART_UNITS: i32 = 2;
+/// Gap between two sibling deployment node boundaries (P3-121, L6 applied
+/// to boundaries): 60px.
+const NODE_APART_UNITS: i32 = 6;
+
+/// The gap boundaries `k` and `j` of `plan` keep when they do not nest.
+fn apart_units(plan: &ViewPlan, k: usize, j: usize) -> i32 {
+    let node = |i: usize| {
+        plan.boundaries
+            .get(i)
+            .is_some_and(|b| matches!(b.of, crate::view::BoundaryOf::DeploymentNode(_)))
+    };
+    if node(k) && node(j) { NODE_APART_UNITS } else { APART_UNITS }
+}
 /// Most gap widenings `finish_layered` makes to clear the boundaries.
 const PUSH_ROUNDS: usize = 4000;
 /// Window growths tried with every constraint before the seed falls back
@@ -768,7 +781,7 @@ impl<'a> Layout<'a> {
             .filter(|&(k, j)| !plan.nests(k, j) && !plan.nests(j, k))
             .filter(|&(k, j)| {
                 !matches!((layout.boundary_rect(k), layout.boundary_rect(j)),
-                    (Some(a), Some(b)) if a.inflate(APART_UNITS).overlaps(&b))
+                    (Some(a), Some(b)) if a.inflate(apart_units(plan, k, j)).overlaps(&b))
             })
             .collect();
         layout
@@ -852,7 +865,7 @@ impl<'a> Layout<'a> {
     fn boundaries_ok(&self) -> bool {
         let apart = self.apart.iter().all(|&(k, j)| {
             !matches!((self.boundary_rect(k), self.boundary_rect(j)),
-                (Some(a), Some(b)) if a.inflate(APART_UNITS).overlaps(&b))
+                (Some(a), Some(b)) if a.inflate(apart_units(self.plan, k, j)).overlaps(&b))
         });
         apart && (0..self.member.len()).all(|k| {
             let Some(r) = self.boundary_rect(k) else {
@@ -1631,7 +1644,7 @@ impl<'a> Layout<'a> {
                 };
                 // DECISION: two boundaries that do not nest keep 20px apart
                 // (2 grid units), so their dashed edges never touch.
-                if !a.inflate(APART_UNITS).overlaps(&b) {
+                if !a.inflate(apart_units(self.plan, k, j)).overlaps(&b) {
                     continue;
                 }
                 let (kc0, kc1, kr0, kr1) = span(k);

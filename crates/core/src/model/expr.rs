@@ -107,7 +107,15 @@ impl Model {
             Expression::ElementTechnology { technology, negated } => all()
                 .filter(|&e| {
                     let element = self.element(e);
-                    if !matches!(element.kind, ElementKind::Container | ElementKind::Component) {
+                    // P3-112: deployment and infrastructure nodes have a
+                    // technology too.
+                    if !matches!(
+                        element.kind,
+                        ElementKind::Container
+                            | ElementKind::Component
+                            | ElementKind::DeploymentNode
+                            | ElementKind::InfrastructureNode
+                    ) {
                         return false;
                     }
                     let tech = element.technology.as_ref().map_or("", |t| t.value.as_str());
@@ -211,6 +219,11 @@ fn type_kind(name: &str) -> Option<ElementKind> {
         ("container", ElementKind::Container),
         ("component", ElementKind::Component),
         ("custom", ElementKind::Custom),
+        // P3-112: the deployment types.
+        ("deploymentnode", ElementKind::DeploymentNode),
+        ("infrastructurenode", ElementKind::InfrastructureNode),
+        ("softwaresysteminstance", ElementKind::SoftwareSystemInstance),
+        ("containerinstance", ElementKind::ContainerInstance),
     ]
     .into_iter()
     .find(|(n, _)| n.eq_ignore_ascii_case(name))

@@ -1160,9 +1160,9 @@ and is dropped from P2-7.
   parses without error with `include`, `exclude`, `autoLayout`,
   `default`, `animation`, `title`, `description` and `properties` in its
   body. A scope or environment that is not declared is a DSL-5 error.
-- **P2-2** A view whose kind has no drawer yet (`dynamic` and
-  `deployment`; `systemLandscape`, `filtered`, `custom` and `image`
-  until their rows land) is in `Model::views` with its key and title.
+- **P2-2** A view whose kind has no drawer yet (`dynamic`;
+  `systemLandscape`, `filtered`, `custom` and `image` until their rows
+  land; `deployment` is drawn since deployment-view, P3-2) is in `Model::views` with its key and title.
   `pipeline::build_all` lists it in `AllViews::unsupported`, and the
   rest of the file builds as before with no error.
 - **P2-122** For an unsupported view, `c4rizer render` and `c4rizer

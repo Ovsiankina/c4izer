@@ -397,6 +397,13 @@ impl App {
                 if let Some(t) = &d.technology {
                     field(ui, "technology", format!("Technology: {t}").into());
                 }
+                // P3-131: a deployment node's instances and environment.
+                if let Some(n) = &d.instances {
+                    ui.label(format!("Instances: {n}"));
+                }
+                if let Some(env) = &d.environment {
+                    ui.label(format!("Environment: {env}"));
+                }
                 if let Some(text) = &d.description {
                     field(ui, "description", text.into());
                 }

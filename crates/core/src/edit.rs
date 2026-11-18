@@ -1339,8 +1339,18 @@ impl LineKind {
 /// is in it (EDIT-24).
 fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m ViewSpec, ElementId)> {
     let spec = model.view(view).ok_or_else(|| gone(view))?;
-    let id = find_element(model, element)?;
-    let drawn = model.included(spec).contains(&id)
+    // P3-117: an instance without an id is `<element key>_<n>` in its
+    // view's environment; another environment may use the same key.
+    let included = model.included(spec);
+    let local = included
+        .iter()
+        .copied()
+        .find(|&e| model.element(e).key.is_none() && model.full_key(e).is_some_and(|k| k.eq_ignore_ascii_case(element)));
+    let id = match local {
+        Some(id) => id,
+        None => find_element(model, element)?,
+    };
+    let drawn = included.contains(&id)
         || spec.position_of(id).is_some()
         || spec.size_of(id).is_some();
     if drawn { Ok((spec, id)) } else { Err(gone(element)) }

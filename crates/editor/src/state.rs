@@ -98,7 +98,7 @@ use c4rizer_core::model::{
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
 use c4rizer_core::place::Keep;
 use c4rizer_core::scene::{ItemKey, ModelId, Scene, texts_fit};
-use c4rizer_core::view::{BoxId, PlanBox};
+use c4rizer_core::view::{BoundaryOf, BoxId, PlanBox};
 
 use crate::camera::{Camera, Fit, ScenePoint, ScreenPoint, ZOOM_STEP};
 use crate::files::{self, ContentHash, FileEvent, FileMemory, UiState, WriteRequest, export_dir, export_name};
@@ -951,6 +951,10 @@ pub struct Details {
     /// The other relationships merged into the line, one per entry, same
     /// form (EDIT-5, CORE-5).
     pub merged: Vec<String>,
+    /// A deployment node's `instances` value as written (P3-131).
+    pub instances: Option<String>,
+    /// The deployment environment's name of a deployment element (P3-131).
+    pub environment: Option<String>,
 }
 
 /// The style panel for the selected boxes (EDIT-17).
@@ -1728,14 +1732,26 @@ impl State {
         match &subject {
             Selected::Element(key) => {
                 let e = model.element(model.find(key)?);
+                // P3-116, P3-131: an instance shows its element's texts.
+                let of = e.instance_of.map(|x| model.element(x));
                 Some(Details {
                     name: e.name.value.clone(),
                     kind: kind_label(e.kind, e.is_external()).to_owned(),
-                    description: e.description.as_ref().map(|d| d.value.clone()),
-                    technology: e.technology.as_ref().map(|t| t.value.clone()),
+                    description: e
+                        .description
+                        .as_ref()
+                        .or_else(|| of.and_then(|o| o.description.as_ref()))
+                        .map(|d| d.value.clone()),
+                    technology: of.map_or(e, |o| o).technology.as_ref().map(|t| t.value.clone()),
                     tags: e.tags.clone(),
                     lifted_from: None,
                     merged: Vec::new(),
+                    instances: (e.kind == ElementKind::DeploymentNode)
+                        .then(|| e.instances.as_ref().map_or_else(|| "1".to_owned(), |i| i.value.clone())),
+                    environment: e
+                        .environment
+                        .and_then(|env| model.environments.get(env.0 as usize))
+                        .map(|env| env.name.value.clone()),
                     subject,
                 })
             }
@@ -1777,6 +1793,8 @@ impl State {
                     tags: rel.tags.clone(),
                     lifted_from,
                     merged,
+                    instances: None,
+                    environment: None,
                     subject,
                 })
             }
@@ -1800,6 +1818,8 @@ impl State {
                     tags: Vec::new(),
                     lifted_from: None,
                     merged: Vec::new(),
+                    instances: None,
+                    environment: None,
                     subject,
                 })
             }
@@ -2672,6 +2692,10 @@ pub fn kind_label(kind: ElementKind, external: bool) -> &'static str {
         ElementKind::SoftwareSystem => "Software System",
         ElementKind::Container => "Container",
         ElementKind::Component => "Component",
+        ElementKind::DeploymentNode => "Deployment Node",
+        ElementKind::InfrastructureNode => "Infrastructure Node",
+        ElementKind::SoftwareSystemInstance => "Software System Instance",
+        ElementKind::ContainerInstance => "Container Instance",
         _ => "Element",
     }
 }
@@ -4713,7 +4737,19 @@ fn items_of(scene: &Scene, model: &Model, selected: &Selected) -> Vec<ItemKey> {
     match selected {
         Selected::Element(key) => model
             .find(key)
-            .map(|id| scene.boxes_of(id).into_iter().map(ItemKey::Box).collect())
+            .map(|id| {
+                let mut items: Vec<ItemKey> = scene.boxes_of(id).into_iter().map(ItemKey::Box).collect();
+                // P3-131: a selected deployment node is its boundary.
+                items.extend(
+                    scene
+                        .boundaries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| b.of == BoundaryOf::DeploymentNode(id))
+                        .map(|(i, _)| ItemKey::Boundary(u32::try_from(i).unwrap_or(u32::MAX))),
+                );
+                items
+            })
             .unwrap_or_default(),
         Selected::Relationship(r) => resolve_relationship(model, r)
             .map(|id| {
@@ -4745,6 +4781,11 @@ fn selected_of(scene: &Scene, model: &Model, item: ItemKey) -> Option<Selected> 
             _ => None,
         },
         ItemKey::Title | ItemKey::Subtitle => Some(Selected::Title),
+        // P3-131: a click on a deployment node's boundary selects the node.
+        ItemKey::Boundary(i) => match scene.boundaries.get(i as usize)?.of {
+            BoundaryOf::DeploymentNode(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),
+            _ => None,
+        },
         _ => None,
     }
 }

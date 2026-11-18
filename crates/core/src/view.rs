@@ -240,6 +240,11 @@ pub enum BoundaryOf {
     // colour: the phase-1 boundary look (B dsl-breadth 14c). Whether
     // `structurizr.groups false` hides it: yes (B dsl-breadth 14d).
     Group(GroupId),
+    /// A drawn deployment node (P3-113): solid, its tag at the top left
+    /// (name, then `[Deployment Node: <technology>]`), nested inside its
+    /// parent node's boundary; members are every box under it at any
+    /// depth. Serves P3-2, P3-113, P3-114.
+    DeploymentNode(ElementId),
 }
 
 /// A dashed boundary around drawn boxes (CORE-1). Its rectangle is the
@@ -260,6 +265,16 @@ pub struct Boundary {
     /// Its look from the `Boundary*` or `Group*` element styles in the
     /// plan's mode (`Model::boundary_style_in`). Serves P2-411, P2-412.
     pub style: ResolvedBoundaryStyle,
+    /// The instance-count text of a deployment node whose `instances` is
+    /// not `1`: `x2`, `x1..3`; `None` otherwise and for every other
+    /// boundary. Serves P3-115.
+    pub instances: Option<String>,
+    /// A deployment node's technology, for its tag's type line (P3-114);
+    /// `None` for every other boundary.
+    // DECISION: crate-private like `PlanBox::style_tag`: `label` and
+    // `scene` read the tag from the plan alone (HLD §4), and the approved
+    // pub surface names only the kind and the instance count.
+    pub(crate) technology: Option<String>,
 }
 
 /// Everything one view draws, before placement and routing: boxes,
@@ -451,6 +466,7 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
     }
     let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes, mode).into_iter().collect();
     boundaries.extend(group_boundaries(model, view, &boxes, mode));
+    boundaries.extend(deployment_boundaries(model, view, &boxes, mode));
     ViewPlan {
         key: view.key.clone(),
         kind: view.kind,
@@ -762,6 +778,54 @@ fn group_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mod
                 // P2-412: `Group`, then `Group:<full name>` (B dsl-breadth
                 // 14c), styled as any boundary.
                 style: model.boundary_style_in(&["Group", &format!("Group:{}", g.full_name)], mode),
+                instances: None,
+                technology: None,
+            })
+        })
+        .collect()
+}
+
+/// One boundary per drawn deployment node of a deployment view (P3-113,
+/// P3-114): every node holding a box at any depth, in model order (a
+/// parent is declared before its children, so outer before inner); its
+/// members are every box under it. Styled by the node's own tags
+/// (`Element`, `Deployment Node`, declared), as Structurizr styles a
+/// node; `instances` other than `1` gives `x<value>` (P3-115).
+// TODO(srs): P3-118, a written relationship with a deployment node at
+// one end (`n1 -> n2`, `lb -> n`). Reading taken: not drawn, as a node is
+// a boundary and lines join boxes; Structurizr 6.2.4 (probed) draws it
+// between the boundaries (docs/deferred.md).
+fn deployment_boundaries(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode) -> Vec<Boundary> {
+    if view.kind != ViewKind::Deployment {
+        return Vec::new();
+    }
+    model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::DeploymentNode)
+        .filter_map(|node| {
+            let members: Vec<BoxId> = boxes
+                .iter()
+                .filter(|b| is_ancestor(model, node.id, b.element))
+                .map(|b| b.id)
+                .collect();
+            if members.is_empty() {
+                return None;
+            }
+            let tags: Vec<&str> = node.tags.iter().map(String::as_str).collect();
+            let instances = node
+                .instances
+                .as_ref()
+                .map(|i| i.value.as_str())
+                .filter(|v| *v != "1")
+                .map(|v| format!("x{v}"));
+            Some(Boundary {
+                of: BoundaryOf::DeploymentNode(node.id),
+                name: node.name.value.clone(),
+                members,
+                style: model.boundary_style_in(&tags, mode),
+                instances,
+                technology: node.technology.as_ref().map(|t| t.value.clone()),
             })
         })
         .collect()
@@ -804,6 +868,8 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode)
         name: model.element(scope).name.value.clone(),
         members,
         style: model.boundary_style_in(&["Boundary", kind_tag], mode),
+        instances: None,
+        technology: None,
     })
 }
 
@@ -850,7 +916,17 @@ const fn default_half_size(kind: ElementKind) -> (i32, i32) {
         ElementKind::Person => (10, 9),
         // 240x140 px. DECISION: a custom element (P2-170) takes the
         // software system size: Structurizr gives every box one default.
-        ElementKind::SoftwareSystem | ElementKind::Container | ElementKind::Custom => (12, 7),
+        // P3-116: an instance is drawn at its element's size (Structurizr
+        // draws instances as the element's box); an infrastructure node
+        // takes the shared 240x140 default. A deployment node is a
+        // boundary, never a box; the size is a fallback only.
+        ElementKind::SoftwareSystem
+        | ElementKind::Container
+        | ElementKind::Custom
+        | ElementKind::SoftwareSystemInstance
+        | ElementKind::ContainerInstance
+        | ElementKind::InfrastructureNode
+        | ElementKind::DeploymentNode => (12, 7),
         // 200x120 px
         ElementKind::Component => (10, 6),
     }
@@ -910,11 +986,19 @@ fn plan_box(
         tags: e.tags.clone(),
         style,
         name: e.name.value.clone(),
-        description: e.description.as_ref().map(|d| d.value.clone()),
+        // P3-116: an instance shows its own description when written,
+        // else its element's.
+        description: e
+            .description
+            .as_ref()
+            .or_else(|| e.instance_of.and_then(|of| model.element(of).description.as_ref()))
+            .map(|d| d.value.clone()),
         // DECISION: a custom element shows its metadata where other boxes
         // show their technology (P2-170; Structurizr draws `[metadata]`).
-        technology: match e.kind {
-            ElementKind::Custom => e.metadata.as_ref().map(|m| m.value.clone()),
+        // P3-116: an instance shows its element's technology.
+        technology: match (e.kind, e.instance_of) {
+            (ElementKind::Custom, _) => e.metadata.as_ref().map(|m| m.value.clone()),
+            (_, Some(of)) => model.element(of).technology.as_ref().map(|t| t.value.clone()),
             _ => e.technology.as_ref().map(|t| t.value.clone()),
         },
         centre,

@@ -167,7 +167,7 @@ const LIVE: &str = r#"        live = deploymentEnvironment "Live" {
                                 Ops "Run by ops"
                             }
                         }
-                        dbInstance = instanceOf db
+                        dbInstance = instanceOf db "Edge"
                     }
                 }
             }
@@ -1085,7 +1085,9 @@ fn p2_3_no_effect_constructs_yield_notices() {
 
 // ---- Deployment, dynamic and new view kinds (dsl-breadth-05)
 
-/// Every P2-120 deployment construct parses; no element they declare is drawn or selected by `include *`.
+/// Every P2-120 deployment construct parses; no element they declare is drawn or selected by a static `include *`.
+// Phase 3 (P3-1, D2): deployment nodes, infrastructure nodes and instances
+// are model elements now; a static view still selects none of them.
 #[test]
 fn p2_120_deployment_constructs_parse_and_are_not_drawn() {
     let src = in_workspace(
@@ -1095,14 +1097,18 @@ fn p2_120_deployment_constructs_parse_and_are_not_drawn() {
     let p = parsed(&src);
     assert_eq!(p.trees[0].print(), src);
     let m = &p.model;
-    // Nothing a deployment environment declares is a model element.
-    assert_eq!(m.elements.len(), 4);
-    assert_eq!(m.relationships.len(), 2);
+    // P3-1: what a deployment environment declares are elements of the
+    // deployment kinds (2 nodes, 1 infrastructure node, 3 instances).
+    assert_eq!(m.elements.len(), 10);
+    assert!(m.elements[4..].iter().all(|e| e.environment.is_some()));
+    // The written `lb -> webInstance` is kept; `reads` is copied to
+    // `webInstance -> dbInstance` and removed again by `-/>`.
+    assert_eq!(m.relationships.len(), 3);
     assert_eq!(
         m.included(&m.views[0]),
         vec![m.find("user").unwrap(), m.find("web").unwrap(), m.find("db").unwrap()]
     );
-    assert_eq!(m.find("lb"), None);
+    assert_eq!(m.element(m.find("lb").unwrap()).kind, model::ElementKind::InfrastructureNode);
 }
 
 /// An undeclared id is `UndeclaredId` (DSL-5); an id already used is `DuplicateId`.
@@ -1354,7 +1360,8 @@ fn p2_2_unsupported_view_kinds_in_model_views() {
             (Custom, "board", Some("Whiteboard"), true),
             (Image, "picture", Some("A picture"), true),
             (Dynamic, "flow", Some("The flow"), false),
-            (Deployment, "live", Some("Live system"), false),
+            // deployment-view draws deployment views (P3-2).
+            (Deployment, "live", Some("Live system"), true),
         ]
     );
     // The drawable view is built as before.
@@ -3034,7 +3041,8 @@ fn p2_2_build_all_lists_unsupported_views() {
     let never = std::sync::atomic::AtomicBool::new(false);
     let all = c4rizer_core::pipeline::build_all(&m, &never).unwrap();
     let keys: Vec<&str> = all.views.iter().map(|v| v.plan.key.as_str()).collect();
-    assert_eq!(keys, ["c2"]);
+    // deployment-view draws `Deployment-001` (P3-2).
+    assert_eq!(keys, ["c2", "Deployment-001"]);
     let listed: Vec<(&str, Option<&str>, ViewKind)> = all
         .unsupported
         .iter()
@@ -3044,7 +3052,6 @@ fn p2_2_build_all_lists_unsupported_views() {
         listed,
         [
             ("flow", Some("Checkout flow"), ViewKind::Dynamic),
-            ("Deployment-001", None, ViewKind::Deployment),
         ]
     );
     // The drawn view is the same as in a file without the unsupported ones.
@@ -3074,7 +3081,9 @@ fn p2_2_build_view_on_unsupported_key_is_error() {
     let m = model_of(&shop_with_unsupported_views());
     let never = std::sync::atomic::AtomicBool::new(false);
     let keep = c4rizer_core::place::Keep::default();
-    for key in ["flow", "Deployment-001"] {
+    // deployment-view draws `Deployment-001` (P3-2).
+    assert!(c4rizer_core::pipeline::build_view(&m, "Deployment-001", &keep, &never).is_ok());
+    for key in ["flow"] {
         match c4rizer_core::pipeline::build_view(&m, key, &keep, &never) {
             Err(BuildError::Unsupported(u)) => {
                 assert_eq!(u.key, key);

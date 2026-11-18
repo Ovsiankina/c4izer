@@ -111,6 +111,19 @@ pub enum ElementKind {
     /// declared in `model` (P2-170). Keyword `element`, default tag
     /// `Element` only. Serves P2-170, P2-155, P2-181.
     Custom,
+    /// `deploymentNode`, in a deployment environment or another
+    /// deployment node (P3-101). Drawn as a boundary (P3-114). Serves
+    /// P3-1, P3-101.
+    DeploymentNode,
+    /// `infrastructureNode`, in a deployment node (P3-103). Serves P3-1,
+    /// P3-103.
+    InfrastructureNode,
+    /// `softwareSystemInstance <system>` (or `instanceOf` a system), in a
+    /// deployment node (P3-104). Serves P3-1, P3-104.
+    SoftwareSystemInstance,
+    /// `containerInstance <container>` (or `instanceOf` a container), in
+    /// a deployment node (P3-104). Serves P3-1, P3-104.
+    ContainerInstance,
 }
 
 impl ElementKind {
@@ -123,6 +136,10 @@ impl ElementKind {
             ElementKind::Container => "container",
             ElementKind::Component => "component",
             ElementKind::Custom => "element",
+            ElementKind::DeploymentNode => "deploymentNode",
+            ElementKind::InfrastructureNode => "infrastructureNode",
+            ElementKind::SoftwareSystemInstance => "softwareSystemInstance",
+            ElementKind::ContainerInstance => "containerInstance",
         }
     }
 
@@ -139,6 +156,10 @@ impl ElementKind {
             // (A.2: default_tag "Element"); P2-170 keeps only the implicit
             // tag `Element`, so the builder must not add it twice.
             ElementKind::Custom => "Element",
+            ElementKind::DeploymentNode => "Deployment Node",
+            ElementKind::InfrastructureNode => "Infrastructure Node",
+            ElementKind::SoftwareSystemInstance => "Software System Instance",
+            ElementKind::ContainerInstance => "Container Instance",
         }
     }
 }
@@ -191,6 +212,25 @@ pub struct Element {
     /// `!docs` / `!adrs` / `!decisions` on this element, in file order
     /// (P2-159, P2-160).
     pub docs: Vec<Attachment>,
+    /// The deployment environment of a deployment node, infrastructure
+    /// node or instance; `None` for every other kind. Serves P3-1,
+    /// P3-101, P3-103, P3-104.
+    pub environment: Option<EnvironmentId>,
+    /// The element an instance is an instance of (a software system or a
+    /// container); `None` for every other kind. Serves P3-104.
+    pub instance_of: Option<ElementId>,
+    /// An instance's number among the instances of the same element in
+    /// the same environment, from 1 in declaration order; `None` for
+    /// every other kind. Serves P3-104, P3-117.
+    pub instance_number: Option<u32>,
+    /// A deployment node's `instances` value as written (`2`, `1..3`);
+    /// `None` when not written (it then counts as `1`). Serves P3-102,
+    /// P3-115.
+    pub instances: Option<Literal>,
+    /// The names of an instance's deployment groups, in the order
+    /// written; empty for an instance in the default group and for every
+    /// other kind. Serves P3-104, P3-106.
+    pub deployment_groups: Vec<String>,
 }
 
 impl Element {
@@ -250,6 +290,30 @@ pub struct Relationship {
     /// and `include *` read it per relationship. Approved pub addition
     /// (2026-11-17). Serves P2-7, P2-153, P2-154.
     pub implied_relationships: ImpliedRelationships,
+    /// For a relationship copied between two instances (P3-106), the
+    /// model relationship it copies; `None` for a written one. Serves
+    /// P3-106, P3-118.
+    pub copied_from: Option<RelationshipId>,
+}
+
+/// Index of a deployment environment in `Model::environments`. Stable
+/// for one parse. Serves P3-1, P3-100.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EnvironmentId(pub u32);
+
+/// One `deploymentEnvironment`. Serves P3-1, P3-100.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Environment {
+    /// Its own index in `Model::environments`.
+    pub id: EnvironmentId,
+    /// The identifier written before `=`, if any.
+    pub key: Option<Spanned<String>>,
+    /// Its name literal.
+    pub name: Literal,
+    /// The whole statement, block included.
+    pub span: Span,
 }
 
 /// A box shape: the 19 shapes of Structurizr's notation page, parsed
@@ -766,8 +830,8 @@ impl ViewKind {
 
     /// True for the kinds c4rizer draws: the phase-1 kinds after
     /// dsl-breadth, plus `SystemLandscape`, `Filtered`, `Custom` and
-    /// `Image` once landscape-filtered lands. Never `Dynamic` or
-    /// `Deployment` in phase 2. A view whose kind is not drawable is
+    /// `Image` once landscape-filtered lands, and `Deployment` once
+    /// deployment-view lands (P3-2). Never `Dynamic` yet. A view whose kind is not drawable is
     /// listed in `pipeline::AllViews::unsupported`. Serves P2-2, P2-122,
     /// P2-123, P2-180.
     pub const fn drawable(self) -> bool {
@@ -780,6 +844,7 @@ impl ViewKind {
                 | ViewKind::Filtered
                 | ViewKind::Custom
                 | ViewKind::Image
+                | ViewKind::Deployment
         )
     }
 }
@@ -1836,6 +1901,9 @@ pub struct Model {
     /// Every file read at parse time (icons, image-view files), in load
     /// order, de-duplicated by path (P2-409, P2-428, O3).
     pub assets: Vec<Asset>,
+    /// Every `deploymentEnvironment` in declaration order;
+    /// `environments[i].id == EnvironmentId(i)`. Serves P3-1, P3-100.
+    pub environments: Vec<Environment>,
 }
 
 impl Model {
@@ -1895,6 +1963,20 @@ impl Model {
                 .find(|e| e.key.as_ref().is_some_and(|key| key.value.eq_ignore_ascii_case(k)))
                 .map(|e| e.id)
         })
+        .or_else(|| self.find_instance(key))
+    }
+
+    /// The first instance without an id whose view-local key
+    /// `<element key>_<n>` is `key`, ignoring case (P3-117).
+    // DECISION: the same key may name an instance in each environment; the
+    // first in model order wins here, and a view resolves it within its own
+    // environment (`at` lines, `edit`).
+    fn find_instance(&self, key: &str) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .filter(|e| e.key.is_none() && e.instance_of.is_some())
+            .find(|e| self.full_key(e.id).is_some_and(|k| k.eq_ignore_ascii_case(key)))
+            .map(|e| e.id)
     }
 
     /// Every relationship from `source` to `destination`, in source
@@ -2160,6 +2242,9 @@ impl Model {
     // DECISION: an explicitly included element is kept whatever its kind
     // (docs/workspace.dsl includes containers in component views).
     pub fn included(&self, view: &ViewSpec) -> Vec<ElementId> {
+        if view.kind == ViewKind::Deployment {
+            return self.included_deployment(view);
+        }
         if view.kind == ViewKind::Filtered {
             // P2-9, P2-308: the base view's elements that pass the filter.
             let (Some(base), Some(filter)) = (self.base_view(view), view.filter.as_ref()) else {
@@ -2214,6 +2299,139 @@ impl Model {
             }
         }
         set.into_iter().collect()
+    }
+
+    /// The environment a deployment view names (its name exactly, or its
+    /// id ignoring case); `None` for any other view.
+    fn view_environment(&self, view: &ViewSpec) -> Option<EnvironmentId> {
+        let ViewScope::Deployment { environment, .. } = &view.scope else {
+            return None;
+        };
+        self.environments
+            .iter()
+            .find(|e| e.name.value == environment.value)
+            .or_else(|| {
+                self.environments.iter().find(|e| {
+                    e.key
+                        .as_ref()
+                        .is_some_and(|k| k.value.eq_ignore_ascii_case(&environment.value))
+                })
+            })
+            .map(|e| e.id)
+    }
+
+    /// `included` for a deployment view (P3-110..P3-112): boxes are the
+    /// instances and infrastructure nodes of the view's environment.
+    // DECISION: an element of a static kind named in a deployment view's
+    // `include` adds nothing (Structurizr draws only deployment elements
+    // there).
+    fn included_deployment(&self, view: &ViewSpec) -> Vec<ElementId> {
+        let Some(env) = self.view_environment(view) else {
+            return Vec::new();
+        };
+        let boxed = |e: &Element| {
+            e.environment == Some(env)
+                && matches!(
+                    e.kind,
+                    ElementKind::InfrastructureNode
+                        | ElementKind::SoftwareSystemInstance
+                        | ElementKind::ContainerInstance
+                )
+        };
+        // The boxes a selected element stands for: itself, or every box
+        // under a deployment node (P3-112).
+        let expand = |id: ElementId| -> Vec<ElementId> {
+            let e = self.element(id);
+            if e.environment != Some(env) {
+                return Vec::new();
+            }
+            if e.kind == ElementKind::DeploymentNode {
+                return self
+                    .elements
+                    .iter()
+                    .filter(|x| boxed(x) && self.is_inside(x.id, id))
+                    .map(|x| x.id)
+                    .collect();
+            }
+            if boxed(e) { vec![id] } else { Vec::new() }
+        };
+        let mut set = BTreeSet::new();
+        for selector in &view.include {
+            match &selector.value {
+                Selector::All | Selector::AllReluctant => {
+                    set.extend(self.deployment_all(view, env));
+                }
+                Selector::Element(id) => set.extend(expand(*id)),
+                Selector::Relationship(_) => {}
+                Selector::Expression(e) if is_relationship_expression(e) => {}
+                Selector::Expression(e) => {
+                    for x in self.select_elements(e) {
+                        set.extend(expand(x));
+                    }
+                }
+            }
+        }
+        for selector in &view.exclude {
+            match &selector.value {
+                Selector::All | Selector::AllReluctant => set.clear(),
+                Selector::Element(id) => {
+                    for x in expand(*id) {
+                        set.remove(&x);
+                    }
+                }
+                Selector::Relationship(_) => {}
+                Selector::Expression(e) if is_relationship_expression(e) => {}
+                Selector::Expression(e) => {
+                    for x in self.select_elements(e) {
+                        for y in expand(x) {
+                            set.remove(&y);
+                        }
+                    }
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// What `include *` selects on a deployment view of `env`: scoped to
+    /// `S`, the container instances of `S`, every software system
+    /// instance and every infrastructure node (P3-110); `*`, every
+    /// container instance and infrastructure node, and every software
+    /// system instance of a system with no container instance in the
+    /// view (P3-111). Structurizr 6.2.4 (probed).
+    fn deployment_all(&self, view: &ViewSpec, env: EnvironmentId) -> Vec<ElementId> {
+        let ViewScope::Deployment { software_system, .. } = &view.scope else {
+            return Vec::new();
+        };
+        let system = software_system.map(|s| s.value);
+        let in_env = |e: &&Element| e.environment == Some(env);
+        let containers: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter(in_env)
+            .filter(|e| e.kind == ElementKind::ContainerInstance)
+            .filter(|e| {
+                system.is_none_or(|s| e.instance_of.is_some_and(|c| self.element(c).parent == Some(s)))
+            })
+            .map(|e| e.id)
+            .collect();
+        let shown_systems: Vec<ElementId> = containers
+            .iter()
+            .filter_map(|&c| self.element(c).instance_of.and_then(|x| self.element(x).parent))
+            .collect();
+        self.elements
+            .iter()
+            .filter(in_env)
+            .filter(|e| match e.kind {
+                ElementKind::InfrastructureNode => true,
+                ElementKind::ContainerInstance => containers.contains(&e.id),
+                ElementKind::SoftwareSystemInstance => {
+                    system.is_some() || e.instance_of.is_none_or(|s| !shown_systems.contains(&s))
+                }
+                _ => false,
+            })
+            .map(|e| e.id)
+            .collect()
     }
 
     /// The element a view of `view`'s kind draws for `element` when an
@@ -2430,7 +2648,15 @@ impl Model {
     // edits on it, never adding an identifier (EDIT-21).
     pub fn full_key(&self, id: ElementId) -> Option<String> {
         let element = self.element(id);
-        let key = element.key.as_ref()?;
+        let Some(key) = element.key.as_ref() else {
+            // P3-117: an instance without an id is `<element key>_<n>`.
+            // TODO(srs): P3-117, the key of a deployment or infrastructure
+            // node without an id. Reading taken: none, as for any element
+            // without an id (P2-145): the editor cannot select or move it
+            // (docs/deferred.md).
+            let of = element.instance_of?;
+            return Some(format!("{}_{}", self.full_key(of)?, element.instance_number?));
+        };
         if self.identifiers == Identifiers::Flat {
             return Some(key.value.clone());
         }
@@ -2443,6 +2669,13 @@ impl Model {
                 parts.push(&k.value);
             }
             current = parent.parent;
+        }
+        // P3-109: a deployment id starts with its environment's id.
+        let top = self.ancestor_under(id, None);
+        if let Some(env) = self.element(top).environment
+            && let Some(k) = self.environments.get(env.0 as usize).and_then(|e| e.key.as_ref())
+        {
+            parts.push(&k.value);
         }
         parts.reverse();
         Some(parts.join("."))
@@ -2756,6 +2989,26 @@ pub enum ModelErrorKind {
         /// The id as written.
         id: String,
     },
+    /// A relationship in a deployment block that Structurizr does not
+    /// permit (between two software system or container instances,
+    /// P3-107), or a `-/>` with no copied relationship to remove
+    /// (P3-108). Serves P3-107, P3-108.
+    // APPROVER: new pub item
+    DeploymentRelationship {
+        /// The source as written.
+        source: String,
+        /// The destination as written.
+        destination: String,
+        /// Why: `"not permitted"` or `"no copied relationship"`.
+        reason: &'static str,
+    },
+    /// An `at` or `size` line naming a deployment node, whose boundary
+    /// follows its contents (P3-122). Serves P3-122.
+    // APPROVER: new pub item
+    DeploymentNodeLayout {
+        /// The id as written.
+        id: String,
+    },
 }
 
 /// A model error: what, where, and its line and column (DSL-4, DSL-5).
@@ -2812,6 +3065,10 @@ impl fmt::Display for ModelError {
                     ElementKind::Container => "into a software system block",
                     ElementKind::Component => "into a container block",
                     ElementKind::Custom => "directly into `model` or a group there",
+                    ElementKind::DeploymentNode => "into a deployment environment or node",
+                    ElementKind::InfrastructureNode
+                    | ElementKind::SoftwareSystemInstance
+                    | ElementKind::ContainerInstance => "into a deployment node",
                 };
                 match parent {
                     Some(p) => write!(
@@ -2979,6 +3236,27 @@ fn phase_2_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
             f,
             "`{id}` is not a custom element — a custom view can only include elements declared with `element`"
         ),
+        ModelErrorKind::DeploymentRelationship {
+            source,
+            destination,
+            reason,
+        } => {
+            if *reason == "not permitted" {
+                write!(
+                    f,
+                    "a relationship between `{source}` and `{destination}` is not permitted — instances get their relationships from the model; write it between the elements"
+                )
+            } else {
+                write!(
+                    f,
+                    "there is no relationship between instances `{source}` and `{destination}` to remove — check both ends"
+                )
+            }
+        }
+        ModelErrorKind::DeploymentNodeLayout { id } => write!(
+            f,
+            "`{id}` is a deployment node — its boundary follows its contents; place the instances and infrastructure nodes inside it instead"
+        ),
         _ => f.write_str("the file cannot become a model here"),
     }
 }
@@ -3007,6 +3285,10 @@ const fn kind_name(kind: ElementKind) -> &'static str {
         ElementKind::Container => "container",
         ElementKind::Component => "component",
         ElementKind::Custom => "custom element",
+        ElementKind::DeploymentNode => "deployment node",
+        ElementKind::InfrastructureNode => "infrastructure node",
+        ElementKind::SoftwareSystemInstance => "software system instance",
+        ElementKind::ContainerInstance => "container instance",
     }
 }
 
@@ -3236,6 +3518,11 @@ struct Builder<'t> {
     group_stack: Vec<GroupId>,
     /// Deployment environments: name and lowercased id (P2-179).
     environments: Vec<(String, Option<String>)>,
+    /// The deployment walk (P3-1, P3-106..P3-108).
+    deploy: deploy::DeployState,
+    /// The environment of the deployment view being read: its lines also
+    /// name an instance without an id by `<element key>_<n>` (P3-117).
+    view_environment: Option<EnvironmentId>,
     /// Every element id declared anywhere in the `model` block, found
     /// before the walk so a failed walk can tell a forward reference from
     /// an undeclared id.
@@ -3286,6 +3573,7 @@ impl<'t> Builder<'t> {
                 relationship_styles: Vec::new(),
                 themes: Vec::new(),
                 assets: Vec::new(),
+                environments: Vec::new(),
             },
             keys: BTreeMap::new(),
             relationship_keys: BTreeMap::new(),
@@ -3296,6 +3584,8 @@ impl<'t> Builder<'t> {
             relationship_archetype_tags: BTreeMap::new(),
             group_stack: Vec::new(),
             environments: Vec::new(),
+            deploy: deploy::DeployState::default(),
+            view_environment: None,
             declared: BTreeSet::new(),
             seen_workspace: false,
             seen_model: false,
@@ -3998,7 +4288,8 @@ impl<'t> Builder<'t> {
         if let Err(e) = walked {
             return Err(self.undeclared_before(e));
         }
-        self.resolve_pending()
+        self.resolve_pending()?;
+        self.finish_deployment()
     }
 
     /// Collects every `<id> = ...` id in `statements`, nested blocks
@@ -4435,6 +4726,10 @@ impl<'t> Builder<'t> {
             ElementKind::Container => "Container",
             ElementKind::Component => "Component",
             ElementKind::Custom => "Custom",
+            ElementKind::DeploymentNode => "DeploymentNode",
+            ElementKind::InfrastructureNode => "InfrastructureNode",
+            ElementKind::SoftwareSystemInstance => "SoftwareSystemInstance",
+            ElementKind::ContainerInstance => "ContainerInstance",
         };
         let mut names = vec![element.name.value.as_str()];
         let mut current = element.parent;
@@ -4524,6 +4819,9 @@ impl<'t> Builder<'t> {
 
     /// `[<id> =] <kind> <name> ...`. An element without an id parses and
     /// has no key (P2-145).
+    // DECISION: the five deployment fields (P3-1) pushed it past 100 lines;
+    // kept whole so the declaration reads in one place.
+    #[allow(clippy::too_many_lines)]
     fn element(
         &mut self,
         statement: &Statement,
@@ -4553,6 +4851,11 @@ impl<'t> Builder<'t> {
             ElementKind::Component => parent_kind == Some(ElementKind::Container),
             // P2-170: in `model` only (and its groups, B dsl-breadth 14a).
             ElementKind::Custom => parent.is_none(),
+            // P3-1: deployment elements are built by `deploy`, never here.
+            ElementKind::DeploymentNode
+            | ElementKind::InfrastructureNode
+            | ElementKind::SoftwareSystemInstance
+            | ElementKind::ContainerInstance => false,
         };
         if !allowed {
             return Err(self.error(
@@ -4624,6 +4927,11 @@ impl<'t> Builder<'t> {
             perspectives: a.perspectives,
             metadata,
             docs: Vec::new(),
+            environment: None,
+            instance_of: None,
+            instance_number: None,
+            instances: None,
+            deployment_groups: Vec::new(),
         });
         self.element_block(statement, id)?;
         self.retag_element(id);
@@ -4866,6 +5174,7 @@ impl<'t> Builder<'t> {
             properties: a.properties,
             perspectives: a.perspectives,
             implied_relationships: self.model.implied_relationships.clone(),
+            copied_from: None,
         });
         if let Some(block) = &statement.block {
             for inner in &block.statements {
@@ -5443,6 +5752,19 @@ impl Builder<'_> {
         head: &Head<'_>,
         view: &mut ViewSpec,
     ) -> Result<(), ModelError> {
+        self.view_environment = self.model.view_environment(view);
+        let result = self.view_body_lines(statement, head, view);
+        self.view_environment = None;
+        result
+    }
+
+    /// The lines of `view_body`.
+    fn view_body_lines(
+        &mut self,
+        statement: &Statement,
+        head: &Head<'_>,
+        view: &mut ViewSpec,
+    ) -> Result<(), ModelError> {
         let mut seen_description = false;
         self.each(self.block(statement, head)?, &mut |this, inner| {
             if view.kind == ViewKind::Dynamic && inner.head.is_empty() {
@@ -5487,13 +5809,6 @@ impl Builder<'_> {
                         .any(|k| head.is_keyword(0, k)) =>
                 {
                     return Err(this.reject(&head, 0));
-                }
-                ViewKind::Deployment
-                    if head.is_keyword(0, "include") || head.is_keyword(0, "exclude") =>
-                {
-                    this.deployment_selectors(&head)?;
-                    this.no_block(inner, &head)?;
-                    return Ok(());
                 }
                 _ => {}
             }
@@ -5623,25 +5938,19 @@ impl Builder<'_> {
         Ok(true)
     }
 
-    /// `include`/`exclude` in a deployment view: `*`, element and
-    /// deployment ids (checked, P2-179) and expressions (P2-178); nothing
-    /// is stored until phase 3 draws deployment views.
-    fn deployment_selectors(&self, head: &Head<'_>) -> Result<(), ModelError> {
-        if head.len() < 2 {
-            return Err(self.missing(head, "element"));
-        }
-        for i in 1..head.len() {
-            let t = head.text(i);
-            if t == "*" || head.kind(i) != Some(TokenKind::Word) || is_expression(t) {
-                continue;
-            }
-            let known = self.resolve(t, None).is_some()
-                || self.other_ids.contains_key(&t.to_ascii_lowercase());
-            if !known {
-                return Err(self.error(ModelErrorKind::UndeclaredId { id: t.into() }, head.span(i)));
-            }
-        }
-        Ok(())
+    /// An id in a view line: `resolve`, else, in a deployment view, an
+    /// instance without an id of that view's environment named
+    /// `<element key>_<n>` (P3-117).
+    fn resolve_in_view(&self, t: &str) -> Option<ElementId> {
+        self.resolve(t, None).or_else(|| {
+            let env = self.view_environment?;
+            self.model
+                .elements
+                .iter()
+                .filter(|e| e.environment == Some(env) && e.key.is_none() && e.instance_of.is_some())
+                .find(|e| self.model.full_key(e.id).is_some_and(|k| k.eq_ignore_ascii_case(t)))
+                .map(|e| e.id)
+        })
     }
 
     /// A written view key: a file-name-safe word, not used before.
@@ -5828,7 +6137,7 @@ impl Builder<'_> {
                 Selector::AllReluctant
             } else if is_expression(&t) {
                 Selector::Expression(self.view_expression(&t, span)?)
-            } else if let Some(id) = self.resolve(&t, None) {
+            } else if let Some(id) = self.resolve_in_view(&t) {
                 Selector::Element(id)
             } else if let Some(&r) = self.relationship_keys.get(&t.to_ascii_lowercase()) {
                 Selector::Relationship(r)
@@ -6074,7 +6383,13 @@ impl Builder<'_> {
                 _ => Err(self.invalid(head, head.text(0), i)),
             }
         };
-        let element = self.view_element(head, 1)?;
+        let element = match self.resolve_in_view(head.text(1)).filter(|_| head.kind(1) == Some(TokenKind::Word)) {
+            Some(value) => Spanned {
+                value,
+                span: head.span(1),
+            },
+            None => self.view_element(head, 1)?,
+        };
         Ok((element, number(2)?, number(3)?))
     }
 
@@ -6092,6 +6407,10 @@ impl Builder<'_> {
         let mut seen = BTreeSet::new();
         for (construct, element, span) in lines {
             let id = self.written(element.span).to_owned();
+            // P3-122: a node's boundary follows its contents.
+            if self.model.element(element.value).kind == ElementKind::DeploymentNode {
+                return Err(self.error(ModelErrorKind::DeploymentNodeLayout { id }, span));
+            }
             if !included.contains(&element.value) {
                 return Err(self.error(
                     ModelErrorKind::NotInView {

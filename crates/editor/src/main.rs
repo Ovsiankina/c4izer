@@ -10,6 +10,8 @@ mod app;
 mod camera;
 mod canvas;
 #[cfg(test)]
+mod deployment_view_tests;
+#[cfg(test)]
 mod dsl_breadth_tests;
 #[cfg(test)]
 mod editor_breadth_tests;

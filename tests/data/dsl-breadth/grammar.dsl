@@ -119,11 +119,12 @@ workspace extends grammar/base.dsl {
                     webInstance = containerInstance web edge {
                         healthCheck "Web up" https://example.com/health 60 1000
                     }
-                    softwareSystemInstance bank
+                    apiInstance = containerInstance api edge
+                    bankInstance = softwareSystemInstance bank edge
                 }
             }
             lb -> webInstance "Forwards to"
-            lb -/> webInstance "Never calls"
+            apiInstance -/> bankInstance "Charges cards with"
         }
         !element shop {
             tag "Elemented"

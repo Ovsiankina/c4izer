@@ -69,7 +69,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::geom::Segment;
+use crate::geom::{Point, Rect, Segment};
 use crate::label::Fit;
 use crate::model::{ElementId, ElementKind, Model, RelationshipId, ViewKind};
 use crate::scene::{ItemKey, ModelId, Scene, SceneBox, SceneBoundary, SceneLine};
@@ -165,6 +165,9 @@ pub enum Rule {
     /// L26, error: a box that is not a child of the scope overlaps the
     /// boundary rectangle.
     BoundaryIntrusion,
+    /// L27, error: a line crosses a deployment node boundary that holds
+    /// neither of its ends (P3-123). Serves P3-126.
+    ForeignNodeCrossing,
 }
 
 impl Rule {
@@ -198,6 +201,7 @@ impl Rule {
             Rule::LabelNoRoom => "L24",
             Rule::TextFit => "L25",
             Rule::BoundaryIntrusion => "L26",
+            Rule::ForeignNodeCrossing => "L27",
         }
     }
 
@@ -230,7 +234,8 @@ impl Rule {
             | Rule::C2Component
             | Rule::C3NoScopeComponent
             | Rule::Coverage
-            | Rule::BoundaryIntrusion => Severity::Error,
+            | Rule::BoundaryIntrusion
+            | Rule::ForeignNodeCrossing => Severity::Error,
         }
     }
 }
@@ -407,6 +412,7 @@ pub fn lint(model: &Model, scene: &Scene) -> Report {
     cx.label_fit();
     cx.text_fit();
     cx.boundary_intrusion();
+    cx.foreign_node_crossing();
     let mut findings = cx.findings;
     // DECISION: a stable sort by rule after collecting, so the rule order
     // holds even where one pass emits two rules (L9..L11, L12..L13).
@@ -667,7 +673,9 @@ impl<'a> Lint<'a> {
     // a group finding names the group in its message and span only.
     fn boundary_subject(&self, of: BoundaryOf) -> (Vec<ModelId>, Span, &'a str) {
         match of {
-            BoundaryOf::Element(e) => (vec![ModelId::Element(e)], self.el_span(e), self.name(e)),
+            BoundaryOf::Element(e) | BoundaryOf::DeploymentNode(e) => {
+                (vec![ModelId::Element(e)], self.el_span(e), self.name(e))
+            }
             BoundaryOf::Group(g) => {
                 let group = &self.model.groups[g.0 as usize];
                 (Vec::new(), group.span, group.name.value.as_str())
@@ -968,13 +976,27 @@ impl<'a> Lint<'a> {
         for b in &scene.boxes {
             let e = model.element(b.element);
             let name = e.name.value.as_str();
-            let description = e.description.as_ref().map(|d| d.value.as_str());
+            // P3-116, P3-127: an instance reads its element's description
+            // (unless it writes its own) and technology.
+            let of = e.instance_of.map(|x| model.element(x));
+            let description = e
+                .description
+                .as_ref()
+                .or_else(|| of.and_then(|o| o.description.as_ref()))
+                .map(|d| d.value.as_str());
             if blank(Some(name)) || blank(description) {
                 let msg = format!("\"{name}\" needs a name and a description");
                 self.push_box(Rule::NameOrDescription, b, msg);
             }
-            let technical = matches!(e.kind, ElementKind::Container | ElementKind::Component);
-            if technical && blank(e.technology.as_ref().map(|t| t.value.as_str())) {
+            // DECISION: L10 covers containers, components and container
+            // instances (P3-127); deployment and infrastructure nodes have
+            // their own inspections (P3-128), not L10.
+            let technical = matches!(
+                e.kind,
+                ElementKind::Container | ElementKind::Component | ElementKind::ContainerInstance
+            );
+            let technology = of.map_or(e, |o| o).technology.as_ref().map(|t| t.value.as_str());
+            if technical && blank(technology) {
                 let msg = format!("\"{name}\" needs a technology");
                 self.push_box(Rule::NoTechnology, b, msg);
             }
@@ -1280,6 +1302,10 @@ impl<'a> Lint<'a> {
                 );
             }
         }
+        // P3-125: on a deployment view a box is always inside its own
+        // nodes (their rectangles are computed from their members), so the
+        // overlap test above is the whole of "inside the boundary of a node
+        // that is not one of its ancestors".
         // DECISION: L26 also covers two boundaries that do not nest (neither
         // holds all the other's members) and whose rectangles overlap
         // (P2-130, B dsl-breadth 14e); the 20px gap `place` keeps is not
@@ -1303,6 +1329,48 @@ impl<'a> Lint<'a> {
             }
         }
     }
+}
+
+impl Lint<'_> {
+    /// L27 (P3-126): a line crossing a deployment node boundary that holds
+    /// neither of its ends (P3-123), once per line and boundary.
+    // DECISION: the line's polyline is sampled every 5px against the open
+    // rectangle; touching the outline is no crossing.
+    fn foreign_node_crossing(&mut self) {
+        let scene = self.scene;
+        for l in &scene.lines {
+            for (i, bd) in scene.boundaries.iter().enumerate() {
+                if !matches!(bd.of, BoundaryOf::DeploymentNode(_))
+                    || bd.members.contains(&l.source)
+                    || bd.members.contains(&l.destination)
+                    || !enters(&l.points, &bd.rect)
+                {
+                    continue;
+                }
+                let (owner, span, name) = self.boundary_subject(bd.of);
+                let msg = format!("{} crosses deployment node \"{name}\", which holds neither end", self.ends(l));
+                let mut subjects = vec![ModelId::Relationship(l.relationship)];
+                subjects.extend(owner);
+                self.push(
+                    Rule::ForeignNodeCrossing,
+                    subjects,
+                    vec![ItemKey::Line(l.edge), ItemKey::Boundary(count(i))],
+                    vec![self.rel_span(l.relationship), span],
+                    msg,
+                );
+            }
+        }
+    }
+}
+
+/// True when the polyline `points` (px) has a point strictly inside `r`.
+fn enters(points: &[Point], r: &Rect) -> bool {
+    let inside = |x: i32, y: i32| x > r.min.x && x < r.max.x && y > r.min.y && y < r.max.y;
+    points.windows(2).any(|w| {
+        let (a, b) = (w[0], w[1]);
+        let n = ((b.x - a.x).abs().max((b.y - a.y).abs()) / 5).max(1);
+        (0..=n).any(|i| inside(a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n))
+    })
 }
 
 #[cfg(test)]

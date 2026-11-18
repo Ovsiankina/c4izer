@@ -104,6 +104,17 @@ pub enum Inspection {
     ViewEmpty,
     /// `views.styles.element.metadata` (P2-630).
     StyleMetadata,
+    /// `model.deploymentnode.description` (P3-128).
+    DeploymentNodeDescription,
+    /// `model.deploymentnode.technology` (P3-128).
+    DeploymentNodeTechnology,
+    /// `model.deploymentnode.empty`: no child node, infrastructure node
+    /// or instance (P3-128).
+    DeploymentNodeEmpty,
+    /// `model.infrastructurenode.description` (P3-128).
+    InfrastructureNodeDescription,
+    /// `model.infrastructurenode.technology` (P3-128).
+    InfrastructureNodeTechnology,
 }
 
 impl Inspection {
@@ -127,6 +138,11 @@ impl Inspection {
             Inspection::ViewsEmpty => "views.empty",
             Inspection::ViewEmpty => "views.view.empty",
             Inspection::StyleMetadata => "views.styles.element.metadata",
+            Inspection::DeploymentNodeDescription => "model.deploymentnode.description",
+            Inspection::DeploymentNodeTechnology => "model.deploymentnode.technology",
+            Inspection::DeploymentNodeEmpty => "model.deploymentnode.empty",
+            Inspection::InfrastructureNodeDescription => "model.infrastructurenode.description",
+            Inspection::InfrastructureNodeTechnology => "model.infrastructurenode.technology",
         }
     }
 }
@@ -190,6 +206,12 @@ pub fn inspect(model: &Model) -> Vec<Violation> {
         }
     }
     for r in &model.relationships {
+        // DECISION: a relationship copied between instances (P3-106) is
+        // not inspected again; the relationship it copies is, with the
+        // same description and technology.
+        if r.copied_from.is_some() {
+            continue;
+        }
         let source = model.element(r.source.value);
         let mut holders = vec![r.properties.as_slice(), source.properties.as_slice()];
         if let Some(parent) = source.parent {
@@ -339,6 +361,10 @@ fn type_name(kind: ElementKind) -> &'static str {
         ElementKind::SoftwareSystem => "softwaresystem",
         ElementKind::Container => "container",
         ElementKind::Component => "component",
+        ElementKind::DeploymentNode => "deploymentnode",
+        ElementKind::InfrastructureNode => "infrastructurenode",
+        ElementKind::SoftwareSystemInstance => "softwaresysteminstance",
+        ElementKind::ContainerInstance => "containerinstance",
         _ => "customelement",
     }
 }
@@ -416,9 +442,32 @@ fn element_failures(
                 out.push(Inspection::ComponentTechnology);
             }
         }
+        // P3-128 (Structurizr 6.2.4, probed).
+        ElementKind::DeploymentNode => {
+            if description {
+                out.push(Inspection::DeploymentNodeDescription);
+            }
+            if technology {
+                out.push(Inspection::DeploymentNodeTechnology);
+            }
+            if model.children(element.id).is_empty() {
+                out.push(Inspection::DeploymentNodeEmpty);
+            }
+        }
+        ElementKind::InfrastructureNode => {
+            if description {
+                out.push(Inspection::InfrastructureNodeDescription);
+            }
+            if technology {
+                out.push(Inspection::InfrastructureNodeTechnology);
+            }
+        }
         _ => {}
     }
-    if !connected.contains(&element.id) {
+    // Structurizr 6.2.4 (probed): `model.element.disconnected` is never
+    // reported for a deployment element.
+    let deployment = element.environment.is_some();
+    if !deployment && !connected.contains(&element.id) {
         out.push(Inspection::ElementDisconnected);
     }
     if !shown.contains(&element.id) {
@@ -477,20 +526,32 @@ fn is_model_view(kind: ViewKind) -> bool {
 /// views the editor offers and has not written (EDIT-15) are not views of
 /// the model, so they never count.
 fn shown(model: &Model) -> BTreeSet<ElementId> {
-    model
+    let mut set: BTreeSet<ElementId> = model
         .views
         .iter()
         .filter(|v| is_model_view(v.kind))
         .flat_map(|v| view_elements(model, v))
-        .collect()
+        .collect();
+    // P3-113: a deployment view draws every node above a shown box
+    // (Structurizr 6.2.4 reports only the empty node as not in a view).
+    let boxes: Vec<ElementId> = set.iter().copied().filter(|&e| model.element(e).environment.is_some()).collect();
+    for e in boxes {
+        let mut parent = model.element(e).parent;
+        while let Some(p) = parent {
+            set.insert(p);
+            parent = model.element(p).parent;
+        }
+    }
+    set
 }
 
 /// The elements `view` includes: `Model::included`, plus what `include *`
 /// selects in a landscape (every person and software system) or custom
 /// view (every custom element), which `included` leaves to their row.
-// TODO(srs): P2-623, P2-627 for dynamic and deployment views: only their
-// explicit `include` lines count until those views are modelled (phase
-// 3), so `include *` alone leaves them empty.
+// TODO(srs): P2-623, P2-627 for dynamic views: only their explicit
+// `include` lines count until they are modelled, so `include *` alone
+// leaves them empty. A deployment view counts what its `include *`
+// selects (P3-129).
 fn view_elements(model: &Model, view: &ViewSpec) -> BTreeSet<ElementId> {
     let mut set: BTreeSet<ElementId> = model.included(view).into_iter().collect();
     let star = |list: &[crate::model::Spanned<Selector>]| {

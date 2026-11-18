@@ -126,6 +126,7 @@ pub fn svg(scene: &Scene) -> String {
         w.open_with("boundary", boundary.opacity);
         w.rect(boundary.rect, 0, boundary.fill, Some(&boundary.stroke));
         w.text(&boundary.tag);
+        boundary.instances.iter().for_each(|count| w.text(count)); // P3-115
         w.close();
     }
     for line in &scene.lines {
@@ -245,6 +246,7 @@ pub fn svg_embedded(scene: &Scene) -> String {
 /// Whether the scene draws any regular and any bold text line (P2-655).
 fn faces_used(scene: &Scene) -> (bool, bool) {
     let mut blocks: Vec<&TextBlock> = scene.boundaries.iter().map(|b| &b.tag).collect();
+    blocks.extend(scene.boundaries.iter().filter_map(|b| b.instances.as_ref()));
     for b in &scene.boxes {
         blocks.extend([&b.name, &b.type_line]);
         blocks.extend(b.description.iter());

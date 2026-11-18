@@ -161,7 +161,8 @@ fn p2_123_view_list_marks_unsupported() {
     assert_eq!(views.len(), 3);
     assert!(labels[0].contains("not yet supported"), "{labels:?}");
     assert!(!labels[1].contains("not yet supported"), "{labels:?}");
-    assert!(labels[2].contains("not yet supported"), "{labels:?}");
+    // deployment-view draws deployment views (P3-2).
+    assert!(!labels[2].contains("not yet supported"), "{labels:?}");
     assert!(labels[0].starts_with("Checkout flow"), "{labels:?}");
     // Selecting it opens it with nothing drawn and nothing written.
     shell.event(Event::Command(Command::ShowView(declared("flow"))));
@@ -209,13 +210,16 @@ fn p2_123_never_opens_unsupported_view_by_itself() {
         hash: files::hash(changed.as_bytes()),
         text: changed.clone(),
     }));
-    assert_eq!(shell.s.view, Some(declared("c2")));
+    // deployment-view draws deployment views (P3-2): `live` is now the
+    // first supported view.
+    assert_eq!(shell.s.view, Some(declared("live")));
     // With no supported view declared, the system context default view
     // of the first software system opens (a drawn view).
-    std::fs::write(&path, &without_ctx).unwrap();
+    let only_flow = without_ctx.replace("        deployment * live \"live\" {\n            include *\n        }\n", "");
+    std::fs::write(&path, &only_flow).unwrap();
     shell.event(Event::File(FileEvent::Changed {
-        hash: files::hash(without_ctx.as_bytes()),
-        text: without_ctx.clone(),
+        hash: files::hash(only_flow.as_bytes()),
+        text: only_flow.clone(),
     }));
     let view = shell.s.view.clone().expect("a view");
     assert!(matches!(view, ViewRef::Default { .. }), "{view:?}");
@@ -312,7 +316,11 @@ fn p2_180_export_all_skips_unsupported() {
     let folder = dir.join("out");
     std::fs::create_dir_all(&folder).unwrap();
     let targets = crate::app::export_all_targets(&shell.s, &folder, ExportFormat::Svg);
-    assert_eq!(targets, [(declared("ctx"), folder.join("ctx.svg"))]);
+    // deployment-view draws deployment views (P3-2): `live` is exported.
+    assert_eq!(
+        targets,
+        [(declared("ctx"), folder.join("ctx.svg")), (declared("live"), folder.join("live.svg"))]
+    );
     shell.event(Event::Command(Command::Export {
         targets,
         format: ExportFormat::Svg,
@@ -322,7 +330,7 @@ fn p2_180_export_all_skips_unsupported() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     written.sort();
-    assert_eq!(written, ["ctx.svg"]);
+    assert_eq!(written, ["ctx.svg", "live.svg"]);
     // An export naming an unsupported view anyway writes nothing for it.
     shell.event(Event::Command(Command::Export {
         targets: vec![(declared("flow"), folder.join("flow.svg"))],

@@ -33,6 +33,7 @@ const WITH_UNSUPPORTED: &str = r#"workspace {
     }
     deployment * live "live" {
       include *
+      title "Live"
     }
   }
 }
@@ -110,12 +111,9 @@ fn p2_122_cli_prints_not_yet_supported() {
             ),
             "{text}"
         );
-        assert!(
-            text.contains(
-                "== live: \n   not yet supported: deployment views are not drawn by this version\n"
-            ),
-            "{text}"
-        );
+        // deployment-view draws deployment views (P3-2).
+        assert!(text.contains("== live: Live\n"), "{text}");
+        assert!(!text.contains("deployment views are not drawn"), "{text}");
         // Views in declaration order: flow, ctx, live.
         let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s}\n{text}"));
         assert!(at("== flow:") < at("== ctx:") && at("== ctx:") < at("== live:"), "{text}");
@@ -125,7 +123,7 @@ fn p2_122_cli_prints_not_yet_supported() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     written.sort();
-    assert_eq!(written, ["ctx.svg"]);
+    assert_eq!(written, ["ctx.svg", "live.svg"]);
 }
 
 /// `render` and `lint` print every notice before the first view, one

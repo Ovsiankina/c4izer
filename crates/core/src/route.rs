@@ -65,7 +65,7 @@ use crate::geom::{CLEARANCE_UNITS, Dir, Point, Rect, Segment, crossings};
 // already a `model::ResolvedStyle`, so route reads model data either way,
 // and a re-export from `view` would change view's frozen pub surface.
 use crate::model::Shape;
-use crate::view::{EdgeId, PlanBox, ViewPlan};
+use crate::view::{BoxId, EdgeId, PlanBox, ViewPlan};
 
 /// A side of a box: where a port sits and which way the line leaves it,
 /// square to the side (CORE-9). Discriminants are fixed so a port can be
@@ -472,6 +472,17 @@ const MARGIN: i32 = 6;
 // steps per round and stops an order after a round without a better
 // score; with the iteration cap that bounds the work (CORE-32, CORE-24).
 const HISTORY: u32 = 3_000;
+/// P3-123: crossing a deployment node boundary that holds neither or both
+/// ends of the line. Above `CROSS`, so a foreign node is skirted whenever
+/// a way round exists; a charge, not a wall, so no line becomes
+/// unroutable (L27 reports what is left).
+const FENCE: u32 = 40_000;
+/// P3-123: crossing a node boundary that holds one end (needed once);
+/// each extra crossing pays it again.
+const FENCE_NEEDED: u32 = BEND;
+/// Each step on a deployment node's name tag, so lines keep off the
+/// text (fixture review).
+const ON_TAG: u32 = 3_000;
 const STALL_ROUNDS: u32 = 1;
 /// A view with more edges than this routes as a large view: each search
 /// runs once, with the cost bound, inside its two boxes' window.
@@ -656,6 +667,16 @@ impl Grid {
                 grow(p);
             }
         }
+        // P3-123: room to skirt a deployment node boundary.
+        for k in 0..plan.boundaries.len() {
+            if matches!(plan.boundaries[k].of, crate::view::BoundaryOf::DeploymentNode(_))
+                && let Some(r) = plan.boundary_rect(k, centres)
+            {
+                let r = r.inflate(MARGIN / 2);
+                grow(r.min);
+                grow(r.max);
+            }
+        }
         if lo.x > hi.x {
             return Grid {
                 x0: 0,
@@ -741,6 +762,18 @@ struct Board {
     /// Per edge: the side its arrowhead arrives on; `None` when it is
     /// not routed or ends in a join (so it cannot be a trunk).
     arrives: Vec<Option<Side>>,
+    /// Deployment node boundaries (P3-123); empty on every other view, so
+    /// their routes are unchanged.
+    fences: Vec<Fence>,
+    /// Per edge: its source and destination boxes.
+    ends: Vec<(BoxId, BoxId)>,
+}
+
+/// One deployment node boundary as routing sees it (P3-123).
+struct Fence {
+    rect: Rect,
+    tag: Option<Rect>,
+    members: Vec<BoxId>,
 }
 
 impl Board {
@@ -777,13 +810,48 @@ impl Board {
                 }
             })
             .collect();
+        let fences = (0..plan.boundaries.len())
+            .filter(|&k| matches!(plan.boundaries[k].of, crate::view::BoundaryOf::DeploymentNode(_)))
+            .filter_map(|k| {
+                Some(Fence {
+                    rect: plan.boundary_rect(k, centres)?,
+                    tag: crate::label::boundary_tag(plan, k, centres),
+                    members: plan.boundaries[k].members.clone(),
+                })
+            })
+            .collect();
         Board {
             grid,
             bus,
             cells,
             edge_net,
             arrives: vec![None; plan.edges.len()],
+            fences,
+            ends: plan.edges.iter().map(|e| (e.source, e.destination)).collect(),
         }
+    }
+
+    /// The deployment-node charge of `edge` stepping from `c` to `n`
+    /// (P3-123): `FENCE` per boundary crossed that holds neither or both
+    /// ends, `FENCE_NEEDED` per one holding one end, `ON_TAG` on a tag.
+    fn fence_cost(&self, edge: usize, c: Point, n: Point) -> u32 {
+        let mut cost = 0;
+        let Some(&(s, d)) = self.ends.get(edge) else {
+            return 0;
+        };
+        for f in &self.fences {
+            // The outline counts as inside, so a line never runs along it
+            // or cuts a corner between two grid points.
+            let inside = |p: Point| p.x >= f.rect.min.x && p.x <= f.rect.max.x && p.y >= f.rect.min.y && p.y <= f.rect.max.y;
+            if inside(c) != inside(n) {
+                let held = usize::from(f.members.contains(&s)) + usize::from(f.members.contains(&d));
+                cost += if held == 1 { FENCE_NEEDED } else { FENCE };
+            }
+            if f.tag.is_some_and(|t| t.contains(n)) {
+                cost += ON_TAG;
+            }
+        }
+        cost
     }
 
     /// Lays a line's cells (source port first) on the board.
@@ -1540,6 +1608,9 @@ fn astar(
             }
             if board.clash(c, nd) {
                 step += CLASH;
+            }
+            if !board.fences.is_empty() {
+                step += board.fence_cost(edge, c, n);
             }
             if nd.is_diagonal() {
                 let (sq, o) = square(c, n);

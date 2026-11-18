@@ -474,6 +474,22 @@ pub(crate) fn boundary_tag_with(
     let outer = plan.boundary_rect(index, centres)?;
     let boundary = &plan.boundaries[index];
     let font_px = boundary_tag_font_px(boundary);
+    if matches!(boundary.of, BoundaryOf::DeploymentNode(_)) {
+        // P3-114: name over type line at the top left.
+        let lines = boundary_tag_lines(plan, index, words);
+        let text_px = lines
+            .iter()
+            .map(|l| (text_advance(l, Weight::Bold) * font_px + EM - 1) / EM)
+            .max()
+            .unwrap_or(0);
+        let right_px = grid_to_px(outer.min.x) + TAG_TEXT_INSET_PX + text_px + TAG_PAD_RIGHT_PX;
+        let n = i32::try_from(lines.len()).unwrap_or(1);
+        let height = ceil_grid(NODE_TAG_TOP_PX + n * (font_px + 3) + 2);
+        return Some(Rect::from_corners(
+            Point::new(outer.min.x, outer.min.y),
+            Point::new(ceil_grid(right_px).min(outer.max.x).max(outer.min.x + 1), outer.min.y + height),
+        ));
+    }
     let text = boundary_tag_text(plan, index, words);
     let text_px = (text_advance(&text, Weight::Bold) * font_px + EM - 1) / EM;
     let right_px = grid_to_px(outer.min.x) + TAG_TEXT_INSET_PX + text_px + TAG_PAD_RIGHT_PX;
@@ -484,6 +500,29 @@ pub(crate) fn boundary_tag_with(
         Point::new(outer.min.x, outer.max.y - height),
         Point::new(ceil_grid(right_px), outer.max.y),
     ))
+}
+
+/// The top of a deployment node tag's first line below the boundary's
+/// top edge, in px (P3-114).
+pub(crate) const NODE_TAG_TOP_PX: i32 = 6;
+
+/// The lines of boundary `index`'s tag: one (`boundary_tag_text`), or
+/// for a deployment node its name then `[Deployment Node: <technology>]`
+/// (`[Deployment Node]` without one), the type line left out under
+/// `metadata false` (P3-114, P2-411).
+pub(crate) fn boundary_tag_lines(plan: &ViewPlan, index: usize, words: &Words<'_>) -> Vec<String> {
+    let boundary = &plan.boundaries[index];
+    if !matches!(boundary.of, BoundaryOf::DeploymentNode(_)) {
+        return vec![boundary_tag_text(plan, index, words)];
+    }
+    let mut lines = vec![boundary.name.clone()];
+    if boundary.style.metadata {
+        lines.push(match boundary.technology.as_deref().map(str::trim) {
+            Some(t) if !t.is_empty() => format!("[{}: {t}]", words.deployment_node),
+            _ => format!("[{}]", words.deployment_node),
+        });
+    }
+    lines
 }
 
 /// The name-tag size in px of `boundary`: its style's `fontSize`, else
@@ -531,6 +570,9 @@ pub(crate) fn tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>) -> Stri
     if matches!(boundary.of, BoundaryOf::Group(_)) {
         return boundary.name.clone();
     }
+    if matches!(boundary.of, BoundaryOf::DeploymentNode(_)) {
+        return boundary_tag_lines(plan, index, words).join(" ");
+    }
     let kind = match plan.kind {
         ViewKind::Component => words.container,
         // A filtered view keeps its base view's scope boundary (P2-9): a
@@ -576,6 +618,10 @@ pub(crate) struct Words<'a> {
     pub(crate) software_system: &'a str,
     pub(crate) container: &'a str,
     pub(crate) component: &'a str,
+    /// `deploymentNode` (P2-161, P3-114).
+    pub(crate) deployment_node: &'a str,
+    /// `infrastructureNode` (P2-161, P3-116).
+    pub(crate) infrastructure_node: &'a str,
     /// The word of every key line entry (P2-162).
     pub(crate) relationship: &'a str,
     /// The box type line's brackets (P2-163).
@@ -590,6 +636,8 @@ impl<'a> Words<'a> {
         software_system: "Software System",
         container: "Container",
         component: "Component",
+        deployment_node: "Deployment Node",
+        infrastructure_node: "Infrastructure Node",
         relationship: "Relationship",
         metadata: MetadataSymbols::Square,
     };
@@ -605,6 +653,8 @@ impl<'a> Words<'a> {
             software_system: word(&t.software_system, d.software_system),
             container: word(&t.container, d.container),
             component: word(&t.component, d.component),
+            deployment_node: word(&t.deployment_node, d.deployment_node),
+            infrastructure_node: word(&t.infrastructure_node, d.infrastructure_node),
             relationship: word(&t.relationship, d.relationship),
             metadata: t.metadata.as_ref().map_or(d.metadata, |m| m.value),
         }
@@ -615,10 +665,17 @@ impl<'a> Words<'a> {
     pub(crate) fn kind(&self, kind: ElementKind, external: bool) -> Option<String> {
         Some(match kind {
             ElementKind::Person => self.person.to_owned(),
-            ElementKind::SoftwareSystem if external => format!("External {}", self.software_system),
-            ElementKind::SoftwareSystem => self.software_system.to_owned(),
-            ElementKind::Container => self.container.to_owned(),
+            // P3-116: an instance is typed as its element (Structurizr
+            // 6.2.4 PlantUML: `[Container: Java]`), an infrastructure node
+            // as itself.
+            ElementKind::SoftwareSystem | ElementKind::SoftwareSystemInstance if external => {
+                format!("External {}", self.software_system)
+            }
+            ElementKind::SoftwareSystem | ElementKind::SoftwareSystemInstance => self.software_system.to_owned(),
+            ElementKind::Container | ElementKind::ContainerInstance => self.container.to_owned(),
             ElementKind::Component => self.component.to_owned(),
+            ElementKind::InfrastructureNode => self.infrastructure_node.to_owned(),
+            ElementKind::DeploymentNode => self.deployment_node.to_owned(),
             _ => return None,
         })
     }
@@ -1275,6 +1332,8 @@ mod tests {
         p.kind = ViewKind::Container;
         p.boundaries = vec![Boundary {
             of: BoundaryOf::Element(p.boxes[0].element),
+            instances: None,
+            technology: None,
             name: "Shop".into(),
             members: vec![BoxId(0)],
             style: crate::model::ResolvedBoundaryStyle::DEFAULT,
@@ -1452,6 +1511,8 @@ mod tests {
         p.kind = ViewKind::Container;
         p.boundaries = vec![Boundary {
             of: BoundaryOf::Element(p.boxes[0].element),
+            instances: None,
+            technology: None,
             name: "Shop".into(),
             members: vec![BoxId(0), BoxId(1)],
             style: crate::model::ResolvedBoundaryStyle::DEFAULT,
@@ -1602,6 +1663,8 @@ mod tests {
         p.kind = ViewKind::Container;
         p.boundaries = vec![Boundary {
             of: BoundaryOf::Element(p.boxes[0].element),
+            instances: None,
+            technology: None,
             name: "Shop".into(),
             members: vec![BoxId(0)],
             style: crate::model::ResolvedBoundaryStyle::DEFAULT,

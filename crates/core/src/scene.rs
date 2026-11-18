@@ -546,6 +546,11 @@ pub struct SceneBoundary {
     pub opacity: u8,
     /// A boundary icon (P2-411; TODO(srs) on `ResolvedBoundaryStyle`).
     pub icon: Option<SceneIcon>,
+    /// A deployment node's instance count (`x2`, `x1..3`) at the bottom
+    /// right inside `rect`, in the tag's colour; `None` for every other
+    /// boundary. Serves P3-115.
+    // APPROVER: new pub item
+    pub instances: Option<TextBlock>,
 }
 
 /// The sample drawn beside a key entry. `#[non_exhaustive]` so phase 2
@@ -700,7 +705,7 @@ impl Scene {
             // element or a relationship, and `ModelId` gains no variant in
             // phase 2 (pub surface frozen); the editor selects nothing.
             ItemKey::Boundary(i) => self.boundaries.get(i as usize).and_then(|b| match b.of {
-                BoundaryOf::Element(e) => Some(ModelId::Element(e)),
+                BoundaryOf::Element(e) | BoundaryOf::DeploymentNode(e) => Some(ModelId::Element(e)),
                 BoundaryOf::Group(_) => None,
             }),
             ItemKey::Title | ItemKey::Subtitle | ItemKey::Legend => None,
@@ -2320,13 +2325,48 @@ fn scene_boundary(
         line_px: size_px + TAG_FONT.line_px - TAG_FONT.size_px,
         weight: Weight::Bold,
     };
-    let tag = text_block(
-        vec![boundary_tag_text(plan, index, words)],
-        font,
-        style.color.unwrap_or(pal.boundary),
-        start(rect.min.x + TAG_INSET_PX, baseline - font.baseline_px()),
-        &tag_rect,
-    );
+    let node = matches!(boundary.of, BoundaryOf::DeploymentNode(_));
+    let colour = style.color.unwrap_or(pal.boundary);
+    let tag = if node {
+        // P3-114: name over type line, at the top left.
+        text_block(
+            crate::label::boundary_tag_lines(plan, index, words),
+            Font {
+                line_px: size_px + 3,
+                ..font
+            },
+            colour,
+            start(rect.min.x + TAG_INSET_PX, rect.min.y + crate::label::NODE_TAG_TOP_PX),
+            &tag_rect,
+        )
+    } else {
+        text_block(
+            vec![boundary_tag_text(plan, index, words)],
+            font,
+            colour,
+            start(rect.min.x + TAG_INSET_PX, baseline - font.baseline_px()),
+            &tag_rect,
+        )
+    };
+    // P3-115: `x<n>` at the bottom right, in the tag's colour.
+    let instances = boundary.instances.as_ref().map(|text| {
+        let count_font = Font {
+            size_px,
+            line_px: size_px + 3,
+            weight: Weight::Bold,
+        };
+        let width = text_px(text, count_font.size_px, count_font.weight);
+        text_block(
+            vec![text.clone()],
+            count_font,
+            colour,
+            start(
+                rect.max.x - TAG_INSET_PX - width,
+                rect.max.y - crate::label::NODE_TAG_TOP_PX - count_font.line_px,
+            ),
+            &rect,
+        )
+    });
     Some(SceneBoundary {
         of: boundary.of,
         members: boundary.members.clone(),
@@ -2334,13 +2374,17 @@ fn scene_boundary(
         stroke: Stroke {
             colour: style.stroke.unwrap_or(pal.boundary),
             width_px: style.stroke_width.map_or(OUTLINE_PX, i32::from),
-            dash_px: style.border.map_or(Some(BOUNDARY_DASH_PX), dash_of),
+            // P3-114: a deployment node is solid unless styled.
+            dash_px: style
+                .border
+                .map_or(if node { None } else { Some(BOUNDARY_DASH_PX) }, dash_of),
         },
         tag_rect,
         tag,
         fill: style.background,
         opacity: style.opacity.min(100),
         icon: None,
+        instances,
     })
 }
 

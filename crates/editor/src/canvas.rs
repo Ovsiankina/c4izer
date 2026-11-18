@@ -179,6 +179,10 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         for t in text_items(&b.tag, cam) {
             push(source, t);
         }
+        // P3-115: a deployment node's instance count.
+        for t in b.instances.iter().flat_map(|c| text_items(c, cam)) {
+            push(source, t);
+        }
     }
     for l in &scene.lines {
         let source = Source::Scene(ItemKey::Line(l.edge));
