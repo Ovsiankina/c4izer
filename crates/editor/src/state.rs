@@ -3059,6 +3059,13 @@ impl State {
         self.cancel_gesture();
         self.gesture = Gesture::Idle;
         self.hover = None;
+        // DECISION: a view switch clears the selection rather than keeping
+        // the items also drawn in the new view: EDIT-28 makes the selection
+        // what was clicked on the shown view, `Title` and `Step(n)` name
+        // items of one view only, and the new scene may not be built yet
+        // to check against. `reveal` sets its own selection after this.
+        self.selection.clear();
+        self.selection_order.clear();
         self.text_edit = None;
         self.remember();
         let mut effects = vec![Effect::SaveUiState(self.ui.clone())];
@@ -6225,6 +6232,31 @@ mod tests {
         h.enter("shop");
         assert_eq!(h.s.view, Some(declared("containers")));
         assert_eq!(h.scene().key, "containers");
+    }
+
+    /// Polish (merge review): entering a view, by a double click or by
+    /// picking it in the view list, starts it with nothing selected, so
+    /// the details panel never shows an item of the previous view.
+    #[test]
+    fn view_switch_clears_selection() {
+        let mut h = H::with_file(SHOP);
+        h.enter("shop");
+        assert_eq!(h.s.view, Some(declared("containers")));
+        assert_eq!(h.selection(), Vec::<Selected>::new(), "double click into a level");
+        assert!(h.s.details().is_none());
+
+        h.cmd(Command::ShowView(declared("context")));
+        h.click("bank", Button::Left, NONE);
+        assert_eq!(h.selection(), vec![el("bank")]);
+        h.cmd(Command::ShowView(declared("containers")));
+        assert_eq!(h.selection(), Vec::<Selected>::new(), "picked in the view list");
+        assert!(h.s.details().is_none());
+
+        // Re-picking the open view is no switch: the selection stays.
+        h.cmd(Command::ShowView(declared("context")));
+        h.click("bank", Button::Left, NONE);
+        h.cmd(Command::ShowView(declared("context")));
+        assert_eq!(h.selection(), vec![el("bank")]);
     }
 
     /// EDIT-15 (plan editor-03): with no view scoped to the box, its

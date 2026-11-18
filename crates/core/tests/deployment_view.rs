@@ -1002,3 +1002,17 @@ fn perf_p3_124() {
     assert_eq!(b.plan.boxes.len(), 8);
     assert!(took.as_millis() < 1000, "{took:?}");
 }
+
+/// A relationship written between components is lifted to their containers
+/// (implied relationship, P2-127) and copied between the containers'
+/// instances; a container pair that already has a relationship of its own
+/// is not given a second copy (Structurizr 6.2.4, default implied strategy).
+#[test]
+fn polish_04_component_relationships_are_copied_to_container_instances() {
+    let src = ws(
+        "        s = softwareSystem \"S\" {\n            c1 = container \"C1\" {\n                k1 = component \"K1\"\n                k3 = component \"K3\"\n            }\n            c2 = container \"C2\" {\n                k2 = component \"K2\"\n            }\n            c3 = container \"C3\"\n        }\n        k1 -> k2 \"Calls\"\n        k3 -> k2 \"Also calls\"\n        c1 -> c3 \"Direct\"\n        k1 -> c3 \"Component to container\"\n        live = deploymentEnvironment \"Live\" {\n            n = deploymentNode \"N\" {\n                containerInstance c1\n                containerInstance c2\n                containerInstance c3\n            }\n        }",
+        "",
+    );
+    let m = parse(&src);
+    assert_eq!(copied(&m), ["c1_1->c2_1", "c1_1->c3_1"]);
+}

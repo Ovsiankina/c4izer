@@ -921,7 +921,14 @@ pub(crate) const BOLD_FAMILY: &str = "Inter Bold";
 pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) -> Vec<Input> {
     use eframe::egui::{Event as E, Key as K, MouseWheelUnit, PointerButton};
     let rect = response.rect;
-    let text_focus = ctx.egui_wants_keyboard_input();
+    // DECISION: only a focused text field holds the keys (as the shell's
+    // F and Backspace rules read it, `app::fit_key_pressed`): egui's
+    // "wants keyboard input" is true for any focused widget, so a button
+    // focused in a side panel kept the canvas's arrows from it.
+    let mut text_focus = ctx.text_edit_focused();
+    // A press on the canvas ends any panel focus at once, so the keys of
+    // the same frame and the next go to the canvas.
+    let mut pressed_on_canvas = false;
     let rel = |p: eframe::egui::Pos2| ScreenPoint {
         x: p.x - rect.min.x,
         y: p.y - rect.min.y,
@@ -960,6 +967,8 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
                     };
                     if *pressed {
                         if rect.contains(*pos) && hovered {
+                            pressed_on_canvas = true;
+                            text_focus = false;
                             out.push(Input::PointerDown {
                                 at: rel(*pos),
                                 button,
@@ -1040,6 +1049,9 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
             }
         }
     });
+    if pressed_on_canvas {
+        ctx.memory_mut(eframe::egui::Memory::stop_text_input);
+    }
     // P2-724: egui sends no key event for a modifier, so Alt turning on
     // or off between frames is reported as `Key::Alt`. Read outside
     // `ctx.input`: the context's lock is not re-entrant.
@@ -1322,6 +1334,95 @@ mod tests {
         }
         assert!(over.contains(&crate::state::Input::PointerLeft), "{over:?}");
         assert!(!over.iter().any(|i| matches!(i, crate::state::Input::PointerMove { .. })), "{over:?}");
+    }
+
+    /// One frame of a side panel (a button at (20, 20), a text field at
+    /// (20, 60)) beside a 400x300 canvas at (100, 100); the canvas inputs.
+    /// `tab` gives the button keyboard focus, as Tab in the panel does.
+    fn panel_frame(ctx: &eframe::egui::Context, events: Vec<eframe::egui::Event>, tab: bool) -> Vec<crate::state::Input> {
+        use eframe::egui::{self, Pos2, RawInput, Rect as ERect, Sense, vec2};
+        let input = RawInput {
+            screen_rect: Some(ERect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut got = Vec::new();
+        let mut text = String::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            let button = ui.put(ERect::from_min_size(Pos2::new(20.0, 20.0), vec2(60.0, 20.0)), egui::Button::new("b"));
+            if tab {
+                button.request_focus();
+            }
+            let _ = ui.put(
+                ERect::from_min_size(Pos2::new(20.0, 60.0), vec2(60.0, 20.0)),
+                egui::TextEdit::singleline(&mut text),
+            );
+            let canvas = ERect::from_min_size(Pos2::new(100.0, 100.0), vec2(400.0, 300.0));
+            let response = ui.allocate_rect(canvas, Sense::click_and_drag());
+            got = super::inputs(ui.ctx(), &response);
+        });
+        output.textures_delta.clear();
+        got
+    }
+
+    /// The `text_focus` of the arrow key presses among `inputs`.
+    fn arrow_focus(inputs: &[crate::state::Input]) -> Vec<bool> {
+        inputs
+            .iter()
+            .filter_map(|i| match i {
+                crate::state::Input::KeyDown {
+                    key: crate::state::Key::ArrowRight,
+                    text_focus,
+                    ..
+                } => Some(*text_focus),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Polish (merge review, P2-712): the first arrow key after a panel
+    /// click that leaves no text field focused (a focused button), or
+    /// after a click back on the canvas (a text field was focused), acts
+    /// on the canvas as later ones do; a focused text field keeps its
+    /// arrows.
+    #[test]
+    fn p2_712_first_arrow_after_panel_click_reaches_canvas() {
+        use eframe::egui::{Event as E, Key as K, Modifiers as M, PointerButton as P, Pos2};
+        let click = |at: Pos2| {
+            vec![
+                E::PointerMoved(at),
+                E::PointerButton { pos: at, button: P::Primary, pressed: true, modifiers: M::NONE },
+                E::PointerButton { pos: at, button: P::Primary, pressed: false, modifiers: M::NONE },
+            ]
+        };
+        let arrow = || {
+            vec![
+                E::Key { key: K::ArrowRight, physical_key: None, pressed: true, repeat: false, modifiers: M::NONE },
+                E::Key { key: K::ArrowRight, physical_key: None, pressed: false, repeat: false, modifiers: M::NONE },
+            ]
+        };
+        let ctx = eframe::egui::Context::default();
+        let run = |events: Vec<E>, tab: bool| {
+            let got = panel_frame(&ctx, events, tab);
+            let _ = panel_frame(&ctx, Vec::new(), false);
+            got
+        };
+        let _ = run(Vec::new(), false);
+
+        // A button with keyboard focus is no text field.
+        let _ = run(click(Pos2::new(40.0, 30.0)), true);
+        for n in ["first", "second"] {
+            assert_eq!(arrow_focus(&run(arrow(), false)), [false], "{n} arrow, a button focused");
+        }
+
+        // A focused text field keeps the arrows; a click back on the
+        // canvas gives them to the canvas from the first one on.
+        let _ = run(click(Pos2::new(40.0, 70.0)), false);
+        assert_eq!(arrow_focus(&run(arrow(), false)), [true], "the text field's arrow");
+        let _ = run(click(Pos2::new(300.0, 250.0)), false);
+        for n in ["first", "second"] {
+            assert_eq!(arrow_focus(&run(arrow(), false)), [false], "{n} arrow after a canvas click");
+        }
     }
 
     /// Every screen point of a primitive, plus its sizes.

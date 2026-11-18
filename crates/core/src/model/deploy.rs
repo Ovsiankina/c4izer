@@ -882,14 +882,31 @@ impl Builder<'_> {
 
     /// Every (model relationship, source instance, destination instance)
     /// to copy (P3-106), in relationship order then instance order.
-    // DECISION: only relationships written between the instantiated
-    // elements themselves are copied (P3-106 "every model relationship
-    // `a -> b` whose two ends each have an instance"); a relationship of a
-    // component is not lifted to its container's instances.
+    // DECISION: a relationship end that is a component is lifted to its
+    // container (Structurizr's default implied-relationships strategy)
+    // before its instances are looked up; a lifted pair that has a
+    // relationship of its own, or was lifted before, is copied once (the
+    // direct relationship wins, else the first declared). Only components
+    // are lifted, never containers to their system.
     fn copies(&self) -> Vec<(super::RelationshipId, ElementId, ElementId)> {
         let instances_of = |e: ElementId| -> Vec<&Element> {
             self.model.elements.iter().filter(|x| x.instance_of == Some(e)).collect()
         };
+        let lift = |e: ElementId| -> ElementId {
+            let element = self.model.element(e);
+            match (element.kind, element.parent) {
+                (ElementKind::Component, Some(parent)) if instances_of(e).is_empty() => parent,
+                _ => e,
+            }
+        };
+        let mut seen: Vec<(ElementId, ElementId)> = self
+            .model
+            .relationships
+            .iter()
+            .filter(|r| r.copied_from.is_none() && !self.deploy.written.contains(&(r.id.0 as usize)))
+            .filter(|r| lift(r.source.value) == r.source.value && lift(r.destination.value) == r.destination.value)
+            .map(|r| (r.source.value, r.destination.value))
+            .collect();
         let shares_group = |a: &Element, b: &Element| {
             if a.deployment_groups.is_empty() || b.deployment_groups.is_empty() {
                 return a.deployment_groups.is_empty() && b.deployment_groups.is_empty();
@@ -901,11 +918,19 @@ impl Builder<'_> {
             if r.copied_from.is_some() || self.deploy.written.contains(&(r.id.0 as usize)) {
                 continue;
             }
-            let sources = instances_of(r.source.value);
+            let (source, destination) = (lift(r.source.value), lift(r.destination.value));
+            let lifted = (source, destination) != (r.source.value, r.destination.value);
+            if lifted {
+                if source == destination || seen.contains(&(source, destination)) {
+                    continue;
+                }
+                seen.push((source, destination));
+            }
+            let sources = instances_of(source);
             if sources.is_empty() {
                 continue;
             }
-            let destinations = instances_of(r.destination.value);
+            let destinations = instances_of(destination);
             for s in &sources {
                 for d in &destinations {
                     if s.id != d.id && s.environment == d.environment && shares_group(s, d) {

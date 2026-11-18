@@ -1757,22 +1757,21 @@ fn p2_407_font_size_name() {
     let b = scene_box(&m, &s, "sys");
     assert_eq!(b.name.size_px, 24);
     assert_eq!(scene_box(&m, &s, "peer").name.size_px, 14);
-    // Wrapping and the fit test use it: a long name at 40px wraps and no
-    // longer fits the default box, and EDIT-18's minimum grows.
+    // Wrapping uses it: a long name at 40px wraps. A name that overflows
+    // the box with a larger size steps down to fit (polish-02), so the
+    // fit test and EDIT-18's minimum are checked with one unbreakable word
+    // that fits no size.
+    let styles = format!("        styles {{\n{}\n        }}", tagged("                fontSize 40"));
+    let ctx = "        systemContext sys \"ctx\" {\n            include *\n        }";
     let long = "        sys = softwareSystem \"Inventory Store Service\" \"\" \"Tagged\"";
-    let small = parse(&ws(long, "        systemContext sys \"ctx\" {\n            include *\n        }"));
-    let big = parse(&ws(
-        long,
-        &format!("        systemContext sys \"ctx\" {{\n            include *\n        }}\n        styles {{\n{}\n        }}", tagged("                fontSize 40")),
-    ));
+    let big = parse(&ws(long, &format!("{ctx}\n{styles}")));
     let sb = build_in(&big, "ctx", Mode::Light);
-    let b = &sb.scene.boxes[0];
-    assert!(b.name.lines.len() > 1, "{:?}", b.name.lines);
-    assert!(!b.name.fits);
-    let ss = build_in(&small, "ctx", Mode::Light);
-    assert!(ss.scene.boxes[0].name.fits);
-    let (pb_small, pb_big) = (&ss.plan.boxes[0], &sb.plan.boxes[0]);
-    assert!(scene::texts_fit(pb_small, pb_small.half_width, pb_small.half_height));
+    assert!(sb.scene.boxes[0].name.lines.len() > 1, "{:?}", sb.scene.boxes[0].name.lines);
+    let word = "        sys = softwareSystem \"Supercalifragilisticexpialidocious_Inventory_Store\" \"\" \"Tagged\"";
+    let big = parse(&ws(word, &format!("{ctx}\n{styles}")));
+    let sb = build_in(&big, "ctx", Mode::Light);
+    assert!(!sb.scene.boxes[0].name.fits);
+    let pb_big = &sb.plan.boxes[0];
     assert!(!scene::texts_fit(pb_big, pb_big.half_width, pb_big.half_height));
     assert!(scene::texts_fit(pb_big, pb_big.half_width * 3, pb_big.half_height * 3));
 }

@@ -38,8 +38,8 @@ const MIN_TEXT_ON_SCREEN_PX: f32 = 9.0;
 /// Smallest zoom a fit goes to: below it the smallest text would be under
 /// `MIN_TEXT_ON_SCREEN_PX`; the fit stops there and the rest of the view
 /// is reached by panning (P2-738).
-// DECISION: the fitted scene stays centred at the floor (as EDIT-30
-// centres it), so panning reaches every side equally; the floor counts
+// DECISION: at the floor the fitted scene starts at its left/top edge
+// on an axis it overflows (`fit_pan`); the floor counts
 // the default 11px text only, a style's smaller `fontSize` is not
 // looked up (fit takes bounds, not the scene).
 const MIN_FIT_ZOOM: f32 = MIN_TEXT_ON_SCREEN_PX / SMALLEST_TEXT_PX;
@@ -152,16 +152,8 @@ impl Camera {
             zoom = zoom.min(room(canvas.y) / h);
         }
         let zoom = zoom.clamp(MIN_FIT_ZOOM, MAX_ZOOM);
-        #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
-        let (cx, cy) = (
-            (bounds.min.x + bounds.max.x) as f32 / 2.0,
-            (bounds.min.y + bounds.max.y) as f32 / 2.0,
-        );
         Camera {
-            pan: ScenePoint {
-                x: cx - canvas.x / 2.0 / zoom,
-                y: cy - canvas.y / 2.0 / zoom,
-            },
+            pan: fit_pan(bounds, canvas, zoom),
             zoom,
         }
     }
@@ -205,19 +197,55 @@ pub fn fit(bounds: Rect, canvas: ScreenPoint, how: Fit) -> Option<Camera> {
     if h > 0.0 && how != Fit::Width {
         zoom = zoom.min(room(canvas.y) / h);
     }
+    let floored = zoom < MIN_FIT_ZOOM;
     let zoom = zoom.clamp(MIN_FIT_ZOOM, MAX_ZOOM);
+    let mut pan = fit_pan(bounds, canvas, zoom);
+    if !floored {
+        // P2-705: `w` and `h` centre the other axis even when it overflows.
+        pan = centred_pan(bounds, canvas, zoom);
+    }
+    Some(Camera { pan, zoom })
+}
+
+/// The pan centring `bounds` in `canvas` at `zoom` (EDIT-30).
+fn centred_pan(bounds: Rect, canvas: ScreenPoint, zoom: f32) -> ScenePoint {
     #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
     let (cx, cy) = (
         (bounds.min.x + bounds.max.x) as f32 / 2.0,
         (bounds.min.y + bounds.max.y) as f32 / 2.0,
     );
-    Some(Camera {
-        pan: ScenePoint {
-            x: cx - canvas.x / 2.0 / zoom,
-            y: cy - canvas.y / 2.0 / zoom,
-        },
-        zoom,
-    })
+    ScenePoint {
+        x: cx - canvas.x / 2.0 / zoom,
+        y: cy - canvas.y / 2.0 / zoom,
+    }
+}
+
+/// The pan of a fit at `zoom`: centred on each axis where `bounds` fits
+/// the canvas less the margin (EDIT-30); on an axis where it does not
+/// (the P2-738 floor), the scene's left or top edge sits at the margin,
+/// so the view opens on the start of the drawing and the rest is reached
+/// by panning.
+// DECISION: start edge (left, top) rather than centre at the floor: the
+// centre of a view too wide for the canvas is often the gap between box
+// columns, and the left/top is where reading starts; panning reaches the
+// rest either way (P2-738 "the view can be panned").
+fn fit_pan(bounds: Rect, canvas: ScreenPoint, zoom: f32) -> ScenePoint {
+    let mut pan = centred_pan(bounds, canvas, zoom);
+    #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
+    let (w, h, x0, y0) = (
+        bounds.width() as f32,
+        bounds.height() as f32,
+        bounds.min.x as f32,
+        bounds.min.y as f32,
+    );
+    // A small tolerance, so a scene that just fits stays centred.
+    if w * zoom > canvas.x - 2.0 * FIT_MARGIN_PX + 0.5 {
+        pan.x = x0 - FIT_MARGIN_PX / zoom;
+    }
+    if h * zoom > canvas.y - 2.0 * FIT_MARGIN_PX + 0.5 {
+        pan.y = y0 - FIT_MARGIN_PX / zoom;
+    }
+    pan
 }
 
 #[cfg(test)]
@@ -321,6 +349,33 @@ mod tests {
         assert!(close(camera.zoom, 1.0), "{camera:?}");
         let c = camera.to_screen(bounds.centre());
         assert!(close(c.x, 800.0) && close(c.y, 450.0), "{c:?}");
+    }
+
+    /// P2-738 (polish): a view too wide for the canvas at the 9px floor
+    /// opens on its left edge, at the fit margin, not on its centre; the
+    /// axis that fits stays centred; panning reaches the right edge.
+    #[test]
+    fn p2_738_floored_fit_starts_at_left_edge() {
+        let bounds = Rect::from_corners(Point::new(-200, 40), Point::new(3800, 340));
+        let canvas = ScreenPoint { x: 420.0, y: 600.0 };
+        for camera in [
+            Camera::fit(bounds, canvas),
+            super::fit(bounds, canvas, super::Fit::Content).expect("fits"),
+            super::fit(bounds, canvas, super::Fit::Width).expect("fits"),
+        ] {
+            assert!(close(camera.zoom, super::MIN_FIT_ZOOM), "{camera:?}");
+            let a = camera.to_screen(bounds.min);
+            let b = camera.to_screen(bounds.max);
+            assert!(close(a.x, 20.0), "left edge at the margin: {a:?}");
+            assert!(close(a.y + b.y, canvas.y), "centred vertically: {a:?} {b:?}");
+            let mut panned = camera;
+            panned.pan_by(ScreenPoint {
+                x: canvas.x - 20.0 - b.x,
+                y: 0.0,
+            });
+            let right = panned.to_screen(bounds.max).x;
+            assert!((right - (canvas.x - 20.0)).abs() < 0.05, "right edge reached: {right}");
+        }
     }
 
     /// EDIT-30: a canvas too small for the margin still gives a finite

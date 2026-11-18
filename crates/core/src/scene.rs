@@ -1781,7 +1781,31 @@ fn box_fonts(font_size: Option<u32>) -> (Font, Font) {
 // DECISION: a hidden type line is a `TextBlock` with no lines and zero
 // height (the field is not an `Option`); painters draw nothing for it and
 // it always fits.
+// DECISION: a styled `fontSize` that overflows the text area steps down
+// one px at a time until the stack fits (floor: the phase-1 14px), so the
+// description never clips under the box edge and box sizes (data layout,
+// placement) stay as they were.
 fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
+    let Some(n) = b.style.font_size else {
+        return box_texts_at(b, rect, words, None).0;
+    };
+    let mut size = n;
+    loop {
+        let (texts, fits) = box_texts_at(b, rect, words, Some(size));
+        if fits || size <= 14 {
+            return texts;
+        }
+        size -= 1;
+    }
+}
+
+/// `box_texts` at `font_size`, and whether the stack fits the text area.
+fn box_texts_at(
+    b: &PlanBox,
+    rect: &Rect,
+    words: &Words<'_>,
+    font_size: Option<u32>,
+) -> (BoxTexts, bool) {
     let mut area = text_area(b.style.shape, *rect);
     if b.style.icon.is_some() {
         // The texts stay above the icon (P2-409).
@@ -1789,7 +1813,7 @@ fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
         area.max.y = (icon.min.y - ICON_GAP_PX).max(area.min.y);
     }
     let width = area.width();
-    let (name_font, small_font) = box_fonts(b.style.font_size);
+    let (name_font, small_font) = box_fonts(font_size);
     let name = wrap(&b.name, name_font.size_px, Weight::Bold, width);
     let text = type_text(b, words);
     let type_line = if b.style.metadata && !text.is_empty() {
@@ -1822,14 +1846,19 @@ fn box_texts(b: &PlanBox, rect: &Rect, words: &Words<'_>) -> BoxTexts {
     if type_block.lines.is_empty() {
         type_block.fits = true;
     }
-    BoxTexts {
+    let texts = BoxTexts {
         name: text_block(name, name_font, colour, middle(x, top), &area),
         type_line: type_block,
         description: description.map(|d| {
             let top = top + name_h + type_h + DESC_GAP_PX;
             text_block(d, small_font, colour, middle(x, top), &area)
         }),
-    }
+    };
+    let fits = block <= area.height()
+        && texts.name.fits
+        && texts.type_line.fits
+        && texts.description.as_ref().is_none_or(|d| d.fits);
+    (texts, fits)
 }
 
 /// Space between an icon and the texts above it.
@@ -2084,7 +2113,10 @@ fn scene_line(
         // chevrons and the tip solid with the same colour and width, so a
         // dashed line still shows whole direction marks (P2-420).
         stroke: Stroke {
-            colour: style.color.or(pal.line).unwrap_or(destination.fill),
+            colour: style
+                .color
+                .or(pal.line)
+                .unwrap_or_else(|| line_base(destination.fill, pal.page)),
             width_px: thickness,
             dash_px: dash_of(style.style),
         },
@@ -2220,7 +2252,10 @@ fn scene_label(
             None => under,
         });
     let mut colour = edge.style.color.or(pal.line).unwrap_or_else(|| {
-        darker(boxes[edge.destination.0 as usize].fill, LABEL_TEXT_DARKEN)
+        darker(
+            line_base(boxes[edge.destination.0 as usize].fill, pal.page),
+            LABEL_TEXT_DARKEN,
+        )
     });
     // Approver ruling 2026-11-17: in dark mode the text keeps the line's
     // colour only at a contrast of 3:1 or more against its backing.
@@ -2252,6 +2287,29 @@ fn scene_label(
 }
 
 const LABEL_TEXT_DARKEN: u16 = 62;
+
+/// Structurizr's default line colour, `#707070`.
+const DEFAULT_LINE: Colour = Colour {
+    r: 0x70,
+    g: 0x70,
+    b: 0x70,
+};
+
+/// The least contrast a destination fill keeps against the page to colour
+/// a line (CORE-3).
+const MIN_LINE_CONTRAST: f64 = 1.3;
+
+/// The colour CORE-3 gives a line into a box filled `fill`.
+// DECISION: a fill within 1.3:1 of the page colour (white boxes on a
+// white page) would hide the line, so the line takes Structurizr's
+// default `#707070` instead; a relationship style still wins.
+fn line_base(fill: Colour, page: Colour) -> Colour {
+    if contrast(fill, page) < MIN_LINE_CONTRAST {
+        DEFAULT_LINE
+    } else {
+        fill
+    }
+}
 
 /// `top` at `opacity`/100 over `under`, each channel rounded to nearest.
 fn over(top: Colour, opacity: u8, under: Colour) -> Colour {
@@ -3264,6 +3322,70 @@ mod tests {
         // `boxes[i].id == BoxId(i)`.
         for (i, b) in scene.boxes.iter().enumerate() {
             assert_eq!(b.id.0 as usize, i);
+        }
+    }
+
+    #[test]
+    fn polish_03_mobile_device_names_stay_inside_the_screen() {
+        for shape in ["MobileDevicePortrait", "MobileDeviceLandscape"] {
+            let src = SHOP.replace(
+                "element \"Database\" {\n        shape Cylinder\n      }",
+                &format!(
+                    "element \"Element\" {{\n        fontSize 35\n      }}\n      element \"Container\" {{\n        shape {shape}\n      }}"
+                ),
+            );
+            let src = src.replace("container \"Worker\"", "container \"Mobile Device Portrait\"");
+            let (plan, routes, labels) = staged(&src, "c2");
+            let scene = build(&plan, &routes, &labels);
+            let b = scene_box(&scene, &plan, "Mobile Device Portrait");
+            let screen = text_area(b.shape, b.rect);
+            assert!(b.name.fits, "{shape}: {:?} in {:?}", b.name.bounds, screen);
+        }
+    }
+
+    #[test]
+    fn polish_02_large_font_person_text_fits_the_box() {
+        let src = SHOP
+            .replace("Runs the shop day to day.", "A customer of the shop, with personal orders and accounts.")
+            .replace(
+                "element \"Person\" {",
+                "element \"Person\" {\n        fontSize 22",
+            );
+        let (plan, routes, labels) = staged(&src, "c2");
+        let scene = build(&plan, &routes, &labels);
+        let b = scene_box(&scene, &plan, "Operator");
+        let d = b.description.as_ref().expect("description");
+        assert!(b.name.fits, "name {:?}", b.name.bounds);
+        assert!(b.type_line.fits, "type {:?}", b.type_line.bounds);
+        assert!(d.fits, "description {:?} in {:?}", d.bounds, b.rect);
+    }
+
+    #[test]
+    fn polish_01_white_boxes_keep_visible_lines() {
+        let src = SHOP.replace(
+            "styles {",
+            "styles {\n      element \"Element\" {\n        background #ffffff\n      }",
+        );
+        // Every box white: the line may not take the destination fill.
+        let src = src
+            .replace("background #08427b", "")
+            .replace("background #438dd5", "")
+            .replace("background #999999", "");
+        let (plan, routes, labels) = staged(&src, "c2");
+        let scene = build(&plan, &routes, &labels);
+        assert!(!scene.lines.is_empty());
+        let page = scene.background;
+        for line in &scene.lines {
+            assert!(
+                contrast(line.stroke.colour, page) >= 3.0,
+                "line {:?} is {:?} on {:?}",
+                line.edge,
+                line.stroke.colour,
+                page
+            );
+        }
+        for label in &scene.labels {
+            assert!(contrast(label.text.colour, page) >= 3.0, "label {:?}", label.edge);
         }
     }
 
