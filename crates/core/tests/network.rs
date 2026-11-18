@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use c4rizer_core::model::{self, ModelErrorKind};
 use c4rizer_core::model::{
     CacheEntry, FetchEvent, FsLoader, Loader, MAX_BODY, NetCache, NetLoader, NoFiles, Response,
     Transport, fnv1a, utc_text,
@@ -63,6 +64,82 @@ impl Transport for Fake {
             None => Ok(response(404, None, Vec::new())),
         }
     }
+}
+
+/// A test `Loader`: local files and URLs in memory, network on or off,
+/// every read and fetch recorded (P3-616).
+#[derive(Debug, Clone, Default)]
+struct Mem {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    urls: BTreeMap<String, Vec<u8>>,
+    network: bool,
+    fetched: Rc<RefCell<Vec<String>>>,
+    read: Rc<RefCell<Vec<PathBuf>>>,
+}
+
+impl Mem {
+    fn new(network: bool) -> Mem {
+        Mem {
+            network,
+            ..Mem::default()
+        }
+    }
+
+    fn file(mut self, path: &str, text: &str) -> Mem {
+        self.files.insert(PathBuf::from(path), text.as_bytes().to_vec());
+        self
+    }
+
+    fn url(mut self, url: &str, bytes: &[u8]) -> Mem {
+        self.urls.insert(url.to_owned(), bytes.to_vec());
+        self
+    }
+
+    fn fetches(&self) -> Vec<String> {
+        self.fetched.borrow().clone()
+    }
+
+    fn reads(&self) -> Vec<PathBuf> {
+        self.read.borrow().clone()
+    }
+}
+
+impl Loader for Mem {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        self.read.borrow_mut().push(path.to_path_buf());
+        self.files.get(path).cloned().ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+
+    fn read_dir(&mut self, _: &Path) -> io::Result<Vec<PathBuf>> {
+        Err(io::Error::other("not a directory"))
+    }
+
+    fn canonicalize(&mut self, path: &Path) -> io::Result<PathBuf> {
+        let known = self.files.contains_key(path) || self.files.keys().any(|f| f.starts_with(path));
+        if known { Ok(path.to_path_buf()) } else { Err(io::ErrorKind::NotFound.into()) }
+    }
+
+    fn env(&self, _: &str) -> Option<String> {
+        None
+    }
+
+    fn fetch(&mut self, url: &str) -> io::Result<Vec<u8>> {
+        if !self.network {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        self.fetched.borrow_mut().push(url.to_owned());
+        self.urls.get(url).cloned().ok_or_else(|| io::Error::other("connection refused"))
+    }
+}
+
+/// `text` parsed as `/w/ws.dsl` through `loader`.
+fn parse(text: &str, loader: &mut Mem) -> Result<model::Parsed, model::ModelError> {
+    model::parse_with(text, Some(Path::new("/w/ws.dsl")), loader)
+}
+
+/// The element names of `parsed`, in model order.
+fn names(parsed: &model::Parsed) -> Vec<String> {
+    parsed.model.elements.iter().map(|e| e.name.value.clone()).collect()
 }
 
 /// A `NetLoader` over `fake`, with `cache` if given.
@@ -293,22 +370,87 @@ fn p3_620_fetch_events_name_url_and_bytes() {
 
 #[test]
 fn p3_601_network_off_keeps_phase_2() {
-    todo!()
+    // Network off: an HTTPS `!include` or `workspace extends` is still
+    // `UrlNotSupported`, and nothing is fetched.
+    let include = "workspace {\n  model {\n    !include https://h.test/people.dsl\n  }\n}\n";
+    let extends = "workspace extends https://h.test/base.dsl {\n}\n";
+    for text in [include, extends] {
+        let mut off = Mem::new(false).url("https://h.test/people.dsl", b"").url("https://h.test/base.dsl", b"");
+        let e = parse(text, &mut off).expect_err("network off");
+        assert!(matches!(e.kind, ModelErrorKind::UrlNotSupported { .. }), "{e:?}");
+        assert!(off.fetches().is_empty());
+        let e = model::parse_with(text, None, &mut FsLoader).expect_err("FsLoader never fetches");
+        assert!(matches!(e.kind, ModelErrorKind::UrlNotSupported { .. }), "{e:?}");
+        let e = model::parse(text).expect_err("parse never fetches");
+        assert!(matches!(e.kind, ModelErrorKind::UrlNotSupported { .. }), "{e:?}");
+    }
 }
 
 #[test]
 fn p3_603_include_and_extends_fetched() {
-    todo!()
+    let people = "https://h.test/people.dsl";
+    let text = format!("workspace {{\n  model {{\n    !include {people}\n  }}\n}}\n");
+    let mut on = Mem::new(true).url(people, b"operator = person \"Operator\"\n");
+    let parsed = parse(&text, &mut on).expect("fetched include");
+    assert_eq!(names(&parsed), vec!["Operator"]);
+    assert_eq!(parsed.paths.get(1), Some(&PathBuf::from(people)), "a fetched file is named by its URL");
+    assert_eq!(on.fetches(), vec![people.to_owned()]);
+    // The same text needs no file path: an absolute URL resolves alone.
+    let parsed = model::parse_with(&text, None, &mut on.clone()).expect("stdin text");
+    assert_eq!(names(&parsed), vec!["Operator"]);
+    // `workspace extends <https url>`.
+    let base = "https://h.test/base.dsl";
+    let text = format!("workspace extends {base} {{\n  model {{\n    shop = softwareSystem \"Shop\"\n  }}\n}}\n");
+    let mut on = Mem::new(true).url(base, b"workspace {\n  model {\n    bank = softwareSystem \"Bank\"\n  }\n}\n");
+    let parsed = parse(&text, &mut on).expect("fetched base");
+    assert_eq!(names(&parsed), vec!["Bank", "Shop"]);
+    // A failed fetch with no cached copy names the URL.
+    let mut failing = Mem::new(true);
+    let e = parse(&text, &mut failing).expect_err("fetch fails");
+    match &e.kind {
+        ModelErrorKind::FetchFailed { url, reason } => {
+            assert_eq!(url, base);
+            assert!(reason.contains("connection refused"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(e.to_string().contains(base), "{e}");
 }
 
 #[test]
 fn p3_606_relative_paths_resolve_against_url() {
-    todo!()
+    let text = "workspace {\n  model {\n    !include https://h.test/lib/a.dsl\n  }\n}\n";
+    let mut on = Mem::new(true)
+        .file("/w/b.dsl", "local = person \"Local\"\n")
+        .url("https://h.test/lib/a.dsl", b"!include b.dsl\n!include ../c.dsl\n")
+        .url("https://h.test/lib/b.dsl", b"first = person \"First\"\n")
+        .url("https://h.test/c.dsl", b"second = person \"Second\"\n");
+    let parsed = parse(text, &mut on).expect("relative includes");
+    assert_eq!(names(&parsed), vec!["First", "Second"]);
+    assert_eq!(
+        on.fetches(),
+        vec!["https://h.test/lib/a.dsl", "https://h.test/lib/b.dsl", "https://h.test/c.dsl"]
+    );
+    assert!(on.reads().is_empty(), "never a local read: {:?}", on.reads());
 }
 
 #[test]
 fn p3_607_fetched_include_cycle_names_url() {
-    todo!()
+    let text = "workspace {\n  model {\n    !include https://h.test/a.dsl\n  }\n}\n";
+    let mut on = Mem::new(true)
+        .url("https://h.test/a.dsl", b"!include b.dsl\n")
+        .url("https://h.test/b.dsl", b"!include https://h.test/a.dsl\n");
+    let e = parse(text, &mut on).expect_err("cycle");
+    assert!(
+        matches!(&e.kind, ModelErrorKind::IncludeCycle { path } if path == "https://h.test/a.dsl"),
+        "{e:?}"
+    );
+    let mut own = Mem::new(true).url("https://h.test/a.dsl", b"!include a.dsl\n");
+    let e = parse(text, &mut own).expect_err("self include");
+    assert!(
+        matches!(&e.kind, ModelErrorKind::IncludeCycle { path } if path == "https://h.test/a.dsl"),
+        "{e:?}"
+    );
 }
 
 #[test]

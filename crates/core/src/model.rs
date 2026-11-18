@@ -3288,7 +3288,10 @@ fn phase_2_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
             f,
             "`{url}` is a URL and this version reads local files only — download the file and include it by path"
         ),
-        ModelErrorKind::FetchFailed { .. } => todo!(),
+        ModelErrorKind::FetchFailed { url, reason } => write!(
+            f,
+            "`{url}` could not be fetched ({reason}) and no cached copy exists — check the URL and the connection, or download the file and use it by path"
+        ),
         ModelErrorKind::NeedsFile { construct } => write!(
             f,
             "`{construct}` reads a file relative to this one, and this text has no file — open it from a file"

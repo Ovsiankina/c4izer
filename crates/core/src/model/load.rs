@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{Builder, Loader, ModelError, ModelErrorKind, Parsed, Span, theme};
+use super::{Builder, Loader, ModelError, ModelErrorKind, Parsed, Span, net, theme};
 use crate::text::{self, FileId, Statement, SyntaxTree, TokenKind};
 
 /// What a parse read from outside its trees, kept in `Parsed` for
@@ -197,14 +197,16 @@ impl Reader<'_> {
         if lower.starts_with("http://") {
             return Err(self.error(ModelErrorKind::InsecureUrl { url: written }, span));
         }
-        if lower.starts_with("https://") {
-            // TODO(srs): P2-16, URL bases. Reading taken (B dsl-breadth 6;
-            // Part C: phase-3 row `network`): refused.
-            return Err(self.error(ModelErrorKind::UrlNotSupported { url: written }, span));
-        }
-        let json = Path::new(&written)
+        let json = Path::new(written.split(['?', '#']).next().unwrap_or_default())
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        // P3-603: an HTTPS base (or any base of a fetched file) is fetched
+        // when the network is on; `UrlNotSupported` when it is off (P3-601).
+        // TODO(srs): P3-603/P3-419, a JSON base (URL or file) waits for
+        // JSON input (row exporters): still `LaterPhase` below.
+        if !json && let Some(url) = self.url_of(&written, span) {
+            return self.fetch_file(&url, &written, span);
+        }
         if json {
             // TODO(srs): P2-16, JSON bases. Reading taken (B dsl-breadth 6):
             // phase 3.
@@ -263,10 +265,11 @@ impl Reader<'_> {
         if lower.starts_with("http://") {
             return Err(self.error(ModelErrorKind::InsecureUrl { url: written.into() }, span));
         }
-        if lower.starts_with("https://") {
-            // TODO(srs): P2-138, fetching HTTPS includes. Reading taken (B
-            // dsl-breadth 6; Part C: phase-3 row `network`): refused.
-            return Err(self.error(ModelErrorKind::UrlNotSupported { url: written.into() }, span));
+        // P3-603, P3-606: an HTTPS include, or a relative one inside a
+        // fetched file, is fetched; with the network off it stays
+        // `UrlNotSupported` (P3-601, P2-138).
+        if let Some(url) = self.url_of(written, span) {
+            return self.fetch_file(&url, written, span).map(|file| vec![file]);
         }
         let resolved = self.resolve(written, span, "!include")?;
         let mut files = Vec::new();
@@ -288,6 +291,52 @@ impl Reader<'_> {
             Err(_) => files.push(self.read_file(&resolved, written, span)?),
         }
         Ok(files)
+    }
+
+    /// The URL `written` names: itself when it is an `https://` URL, else
+    /// resolved against the URL of the fetched file `span` is in (P3-606);
+    /// `None` for a local path in a local file.
+    fn url_of(&self, written: &str, span: Span) -> Option<String> {
+        if net::is_https(written) {
+            return Some(written.to_owned());
+        }
+        let base = self.paths.get(span.file.0 as usize)?.to_str()?;
+        net::is_https(base).then(|| net::join_url(base, written))
+    }
+
+    /// The file at `url`, fetched through `Loader::fetch` and parsed as the
+    /// next `FileId` (named by its URL), or the id it was read as before.
+    /// Network off is `UrlNotSupported` naming `written` (P3-601); a URL
+    /// that is not HTTPS is `InsecureUrl`; any other failure `FetchFailed`
+    /// (P3-611).
+    fn fetch_file(&mut self, url: &str, written: &str, span: Span) -> Result<FileId, ModelError> {
+        let resolved = PathBuf::from(url);
+        if self.chain.contains(&resolved) {
+            // P3-607: the cycle names the URL.
+            return Err(self.error(ModelErrorKind::IncludeCycle { path: url.into() }, span));
+        }
+        if let Some(i) = self.resolved.iter().position(|r| *r == resolved) {
+            return Ok(FileId(super::index_u32(i)));
+        }
+        let bytes = match self.loader.fetch(url) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                return Err(self.error(ModelErrorKind::UrlNotSupported { url: written.into() }, span));
+            }
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+                return Err(self.error(ModelErrorKind::InsecureUrl { url: url.into() }, span));
+            }
+            Err(e) => {
+                return Err(self.error(
+                    ModelErrorKind::FetchFailed {
+                        url: url.into(),
+                        reason: e.to_string(),
+                    },
+                    span,
+                ));
+            }
+        };
+        self.add_file(bytes, resolved, url, span)
     }
 
     /// `written`, relative to the folder of the file `span` is in: it
@@ -373,6 +422,12 @@ impl Reader<'_> {
             .loader
             .read(path)
             .map_err(|e| self.error(read_error(e), span))?;
+        self.add_file(bytes, resolved, written, span)
+    }
+
+    /// `bytes`, the file at `resolved` (written as `written`), parsed as
+    /// the next `FileId` with its own includes read.
+    fn add_file(&mut self, bytes: Vec<u8>, resolved: PathBuf, written: &str, span: Span) -> Result<FileId, ModelError> {
         let source = String::from_utf8(bytes).map_err(|_| {
             self.error(
                 ModelErrorKind::FileFormat {
