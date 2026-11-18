@@ -500,6 +500,27 @@ pub enum Edit {
         /// Index into `model::ViewSpec::steps` of the upper step.
         first: u32,
     },
+    /// Set the vertices of one drawn line of `view`: rewrite its `via`
+    /// line, add one after the view's last `at` line (DSL-9 placement:
+    /// else its last `size`, `paperSize` or `line` line, else before the
+    /// closing brace), or remove it with `None`, which returns the line
+    /// to the router (P3-5). The inverse is a `SetVia` with the points
+    /// the line had. Serves P3-310..P3-315.
+    SetVia {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The line's source, a canonical element key.
+        source: String,
+        /// The line's destination, a canonical element key.
+        destination: String,
+        /// In a dynamic view, the step's number (`via <n>: ...`);
+        /// `None` names the lowest-numbered step between those ends, and
+        /// is the only form in other views.
+        order: Option<String>,
+        /// The vertices `(x, y)` px, written as given (the editor snaps
+        /// them to the 10 px grid); `None` or empty removes the line.
+        points: Option<Vec<(i32, i32)>>,
+    },
 }
 
 /// The result of `apply`: the new text and the edits that undo it.
@@ -764,6 +785,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             jump,
         } => set_line(current, view, relationship, LineSetting::Jump(*jump)),
         Edit::SwapSteps { view, first } => swap_steps(current, view, *first),
+        Edit::SetVia { .. } => todo!(),
     }
 }
 

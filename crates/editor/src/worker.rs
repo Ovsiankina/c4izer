@@ -174,6 +174,20 @@ pub enum Job {
         /// Dragged boxes at their snapped centres, grid units.
         moved: BTreeMap<BoxId, Point>,
     },
+    /// A vertex drag preview (`pipeline::rebuild_with_vertices` with
+    /// `pipeline::PREVIEW_ROUTE`), dropped and stopped like `Drag`
+    /// (P3-311, EDIT-25).
+    // APPROVER: new pub item
+    DragVertex {
+        /// The parse `previous` was built from.
+        parsed: Arc<Parsed>,
+        /// The last full build of the view.
+        previous: Arc<ViewBuild>,
+        /// The line.
+        edge: c4rizer_core::view::EdgeId,
+        /// Its vertices, grid units.
+        vertices: Vec<Point>,
+    },
     /// Write SVG or PNG files (EDIT-7); never dropped as stale and never
     /// stopped.
     Export {
@@ -388,6 +402,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
             Job::Export { .. } => true,
             Job::Build { shown: true, .. } => Some(*i) == last_shown,
             Job::Drag { .. } => Some(*i) == keep_drag,
+            Job::DragVertex { .. } => todo!(),
             Job::Build { view, shown: false, .. } => background.get(view) == Some(i),
         })
         .map(|(_, r)| r)
@@ -435,6 +450,7 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
 pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
     let generation = request.generation;
     match request.job {
+        Job::DragVertex { .. } => todo!(),
         Job::Build {
             parsed,
             view,

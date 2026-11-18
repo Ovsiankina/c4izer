@@ -204,6 +204,11 @@ pub struct PlanEdge {
     /// The sequence number of the dynamic step the line draws (P3-208..
     /// P3-212); `None` on every other kind.
     pub order: Option<String>,
+    /// The hand-added vertices of the line, in grid units, source to
+    /// destination: the points of the view's `via` line for it, empty
+    /// when it has none (the router then routes it alone). Serves P3-4,
+    /// P3-303..P3-308.
+    pub vertices: Vec<Point>,
 }
 
 impl PlanEdge {
@@ -550,6 +555,7 @@ fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 },
                 style_tag: style_tag(model, r.id, mode),
                 order: Some(step.order.clone()),
+                vertices: Vec::new(),
             }
         })
         .collect();
@@ -708,6 +714,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 },
                 style_tag: style_tag(model, winner, mode),
                 order: None,
+                vertices: Vec::new(),
             })
         })
         .collect();
@@ -1216,6 +1223,7 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         style: ResolvedRelationshipStyle::DEFAULT,
         style_tag: None,
         order: None,
+        vertices: Vec::new(),
     };
     let mut edges: Vec<PlanEdge> = Vec::new();
     // Lifted relationships per ordered box pair, in relationship order.

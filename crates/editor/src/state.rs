@@ -429,6 +429,10 @@ pub enum Command {
     ToggleKey,
     /// Open or close the diagram navigator (P2-729).
     Navigator,
+    /// "Remove all vertices": delete every `via` line of the open view,
+    /// one undo step (P3-313).
+    // APPROVER: new pub item
+    RemoveAllVertices,
     /// Select step `n` (index into `ViewSpec::steps`) of the open dynamic
     /// view, from the Steps list (P3-219).
     // APPROVER: new pub item
@@ -604,6 +608,17 @@ pub enum Gesture {
         /// Shift held at the start: add to the selection.
         add: bool,
     },
+    /// Left drag on a vertex handle of the selected line (P3-311).
+    // APPROVER: new pub item
+    DraggingVertex {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+        /// Index of the vertex in the line's vertices.
+        index: usize,
+        /// Every vertex of the line, grid units, the dragged one at its
+        /// current snapped position (the last sent to the worker).
+        vertices: Vec<Point>,
+    },
     /// Middle drag or Space+drag (EDIT-9, EDIT-28).
     Panning {
         /// The last pointer position, screen px.
@@ -741,10 +756,40 @@ pub enum Action {
         /// Index into `ViewSpec::steps` of the upper step.
         first: u32,
     },
+    /// Set, move or remove line vertices, with the boxes moved by the
+    /// same gesture, one batch (P3-310..P3-315).
+    // APPROVER: new pub item
+    Vertices {
+        /// The view.
+        view: ViewRef,
+        /// Boxes moved by the gesture, canonical key to centre px; empty
+        /// for a vertex-only edit.
+        boxes: BTreeMap<String, (i32, i32)>,
+        /// The `via` lines to write, each one line's whole vertex list.
+        vias: Vec<ViaChange>,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
     /// Apply a redo step (EDIT-19).
     Redo(Step),
+}
+
+/// One line's new vertex list, as `edit::Edit::SetVia` names it
+/// (P3-310..P3-315).
+// APPROVER: new pub item
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViaChange {
+    /// The line's source, canonical element key.
+    pub source: String,
+    /// The line's destination, canonical element key.
+    pub destination: String,
+    /// The dynamic step number, `None` in other views.
+    pub order: Option<String>,
+    /// The vertices, px, on the 10 px grid; `None` removes the `via`
+    /// line.
+    pub points: Option<Vec<(i32, i32)>>,
 }
 
 /// A write in flight: the action, and the inverse its batch produced,
@@ -2134,6 +2179,7 @@ impl State {
                 out.extend(elements.iter().map(|e| Edit::ResetStyle { element: e.clone() }));
                 out
             }
+            Action::Vertices { .. } => todo!(),
             Action::Undo(step) | Action::Redo(step) => rebuild_first_write(parsed, &step.edits),
             Action::SwapSteps { view, first } => vec![Edit::SwapSteps {
                 view: view.key(),
@@ -3203,6 +3249,7 @@ impl State {
 
     fn pointer_move(&mut self, at: ScreenPoint) -> Vec<Effect> {
         match self.gesture.clone() {
+            Gesture::DraggingVertex { .. } => todo!(),
             Gesture::Idle => {
                 self.hover = self.hit(at);
                 Vec::new()
@@ -3436,6 +3483,7 @@ impl State {
     fn pointer_up(&mut self, at: ScreenPoint, button: Button) -> Vec<Effect> {
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
+            Gesture::DraggingVertex { .. } => todo!(),
             Gesture::Pressed {
                 at: from,
                 button: b,
@@ -3941,6 +3989,7 @@ impl State {
     #[expect(clippy::too_many_lines, reason = "one flat arm per command reads best")]
     fn command(&mut self, command: Command) -> Vec<Effect> {
         match command {
+            Command::RemoveAllVertices => todo!(),
             Command::SelectStep(step) => self.select_step(step),
             Command::MoveStep { step, up } => self.move_step(step, up),
             Command::Open(path) => {

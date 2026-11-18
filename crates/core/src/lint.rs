@@ -168,6 +168,10 @@ pub enum Rule {
     /// L27, error: a line crosses a deployment node boundary that holds
     /// neither of its ends (P3-123). Serves P3-126.
     ForeignNodeCrossing,
+    /// L28, warning: a vertex lies inside a box rectangle, or two
+    /// consecutive vertices of one line are the same point. Serves
+    /// P3-309.
+    VertexPlacement,
 }
 
 impl Rule {
@@ -202,6 +206,7 @@ impl Rule {
             Rule::TextFit => "L25",
             Rule::BoundaryIntrusion => "L26",
             Rule::ForeignNodeCrossing => "L27",
+            Rule::VertexPlacement => "L28",
         }
     }
 
@@ -216,7 +221,8 @@ impl Rule {
             | Rule::C2NoTechnology
             | Rule::LabelOverLine
             | Rule::LabelNoRoom
-            | Rule::TextFit => Severity::Warning,
+            | Rule::TextFit
+            | Rule::VertexPlacement => Severity::Warning,
             Rule::Unroutable
             | Rule::SegmentAngle
             | Rule::ThroughBox

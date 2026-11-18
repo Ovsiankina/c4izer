@@ -566,6 +566,33 @@ pub fn rebuild_after_move(
     Ok(finish(model, previous.plan.clone(), routes))
 }
 
+/// The vertex drag preview (P3-311, EDIT-25): `previous` with the
+/// vertices of `edge` set to `vertices` (grid units, empty for none),
+/// every box where `previous` had it, re-routed with `config`, labels
+/// re-placed, the scene rebuilt and re-linted. After release the editor
+/// runs a full build of the saved file instead. Deterministic
+/// (CORE-25). An `edge` out of range gives `previous` unchanged.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` was set while re-routing (EDIT-25).
+///
+/// # Panics
+///
+/// As `rebuild_after_move`.
+// APPROVER: new pub item
+pub fn rebuild_with_vertices(
+    model: &Model,
+    previous: &ViewBuild,
+    edge: crate::view::EdgeId,
+    vertices: &[Point],
+    config: &RouteConfig,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, Stopped> {
+    let _ = (model, previous, edge, vertices, config, stop);
+    todo!()
+}
+
 /// The `Keep` for building the same view from `new_model` after a
 /// re-parse (EDIT-1 reload, EDIT-3 release, EDIT-24 re-apply): every box
 /// of `old_plan` (built from `old_model`) at `old_centres[box]` (the
@@ -704,6 +731,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         default: None,
         paper_size: None,
         lines: Vec::new(),
+        vias: Vec::new(),
     })
 }
 

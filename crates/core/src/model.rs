@@ -1071,6 +1071,30 @@ pub struct ViewSpec {
     /// lines (c4rizer extension), in file order, at most one per
     /// relationship. Serves P2-708..P2-710.
     pub lines: Vec<LineLayout>,
+    /// `via <src> -> <dst> <x> <y> ...` lines (`via <n>: ...` in a
+    /// dynamic view), in file order, at most one per drawn line: the
+    /// hand-added vertices of each line. Serves P3-4, P3-300..P3-302.
+    pub vias: Vec<Via>,
+}
+
+/// One `via` line: the drawn line from `source` to `destination` (in a
+/// dynamic view, the step numbered `order`, else the lowest-numbered step
+/// between those ends) passes through `points`, in order. Coordinates
+/// are px, multiples of 10, as written. Serves P3-4, P3-300, P3-301.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Via {
+    /// The line's source element, as written.
+    pub source: Spanned<ElementId>,
+    /// The line's destination element, as written.
+    pub destination: Spanned<ElementId>,
+    /// `<n>:` of a dynamic view's `via <n>: ...`, without the colon.
+    pub order: Option<Spanned<String>>,
+    /// The vertices `(x, y)` in px, in order; each span covers both
+    /// numbers. Never empty.
+    pub points: Vec<Spanned<(i32, i32)>>,
+    /// The whole `via` line, line ending excluded; `edit` rewrites this.
+    pub span: Span,
 }
 
 /// Canvas size of a view (P2-701), Structurizr's `PaperSize` list: the
@@ -3189,6 +3213,16 @@ pub enum ModelErrorKind {
         /// The step's written technology, if any.
         technology: Option<String>,
     },
+    /// Two `via` lines for one drawn line in one view (P3-302); the
+    /// error's span is the second line.
+    DuplicateVia {
+        /// The line as written in the second `via` line (`a -> b`).
+        line: String,
+        /// The first `via` line for it.
+        first: Span,
+        /// Line and column of `first`, for `Display`.
+        first_position: Position,
+    },
     /// A dynamic step end the view's scope does not permit (P3-204..P3-207).
     // APPROVER: new pub item
     NotPermittedInView {
@@ -3491,6 +3525,13 @@ fn phase_3_message(kind: &ModelErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Re
         ModelErrorKind::DeploymentNodeLayout { id } => write!(
             f,
             "`{id}` is a deployment node — its boundary follows its contents; place the instances and infrastructure nodes inside it instead"
+        ),
+        ModelErrorKind::DuplicateVia {
+            line, first_position, ..
+        } => write!(
+            f,
+            "`{line}` already has a `via` line at {}:{} — keep one `via` line per line and list every vertex in it",
+            first_position.line, first_position.column
         ),
         _ => f.write_str("the file cannot become a model here"),
     }
@@ -7712,6 +7753,7 @@ fn new_view(
         default: None,
         paper_size: None,
         lines: Vec::new(),
+        vias: Vec::new(),
     }
 }
 

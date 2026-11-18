@@ -26,6 +26,8 @@ mod state;
 mod styles_themes_tests;
 #[cfg(test)]
 mod testutil;
+#[cfg(test)]
+mod vertices_tests;
 mod worker;
 
 use std::path::PathBuf;
