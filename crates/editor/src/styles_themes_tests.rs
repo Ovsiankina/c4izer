@@ -323,14 +323,19 @@ fn p2_436_draw_list_matches_svg() {
         let mut hops = 0;
         for (l, g) in scene.lines.iter().zip(lines) {
             let (prims, opacities) = shapes_of(&items, Source::Scene(ItemKey::Line(l.edge)));
-            assert_eq!(prims.len(), g.matches("<path").count() + g.matches("<circle").count());
+            // redesign 2026-11-19: the port is one SVG circle and two
+            // canvas discs (ring and paper).
+            assert_eq!(prims.len(), g.matches("<path").count() + g.matches("<circle").count() + 1);
             let Primitive::Path { dash, points, .. } = prims[0] else {
                 panic!("the route comes first")
             };
             let route = &g[..g.find("/>").expect("route")];
             assert_eq!(dash.is_some(), route.contains("stroke-dasharray"));
-            assert_eq!(points.len(), l.points.len() + 9 * l.jumps.len());
-            assert_eq!(route.matches(" A6,6 ").count(), l.jumps.len());
+            // redesign 2026-11-19: rounded corners add points, so the
+            // route is checked by its start and its hops (9 points each).
+            assert_eq!(points[0], list.camera.to_screen(l.points[0]));
+            assert!(points.len() >= l.points.len() + 9 * l.jumps.len());
+            assert_eq!(route.matches(" A6 6 ").count(), l.jumps.len());
             hops += l.jumps.len();
             assert!(opacities.iter().all(|&o| o == l.opacity));
             assert_eq!(svg_opacity(g), l.opacity);
