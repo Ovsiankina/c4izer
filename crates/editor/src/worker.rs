@@ -264,6 +264,18 @@ pub enum Job {
         /// Its destination end's anchor.
         destination: Option<c4rizer_core::anchor::Anchor>,
     },
+    /// A label drag preview (`label_preview`): the labels placed again
+    /// with the line's `position` overridden, no line re-routed; dropped
+    /// and stopped like `Drag` (P2-708 by drag, EDIT-25).
+    // APPROVER: new pub item
+    DragLabel {
+        /// The last full build of the view.
+        previous: Arc<ViewBuild>,
+        /// The line.
+        edge: c4rizer_core::view::EdgeId,
+        /// Its label's position, 0..100.
+        position: u8,
+    },
     /// Write SVG or PNG files (EDIT-7); never dropped as stale and never
     /// stopped.
     Export {
@@ -452,7 +464,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
     // time, the newest of either kind.
     let last_drag = queued
         .iter()
-        .rposition(|r| matches!(r.job, Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. }));
+        .rposition(|r| matches!(r.job, Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } | Job::DragLabel { .. }));
     let keep_drag = match (last_drag, last_shown) {
         (Some(d), Some(b)) => (d > b).then_some(d),
         (d, _) => d,
@@ -481,7 +493,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
         .filter(|(i, r)| match &r.job {
             Job::Export { .. } => true,
             Job::Build { shown: true, .. } => Some(*i) == last_shown,
-            Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } => Some(*i) == keep_drag,
+            Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } | Job::DragLabel { .. } => Some(*i) == keep_drag,
             Job::Build { view, shown: false, .. } => background.get(view) == Some(i),
         })
         .map(|(_, r)| r)
@@ -497,7 +509,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
 /// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
 #[must_use]
 pub fn stops(running: &Job, incoming: &Job) -> bool {
-    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. }) {
+    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } | Job::DragLabel { .. }) {
         return false;
     }
     if matches!(running, Job::Export { .. }) {
@@ -529,6 +541,15 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
 pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
     let generation = request.generation;
     match request.job {
+        Job::DragLabel { previous, edge, position } => {
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            Some(Reply::Dragged {
+                generation,
+                build: Arc::new(label_preview(&previous, edge, position)),
+            })
+        }
         Job::DragAnchor {
             parsed,
             previous,
@@ -594,6 +615,29 @@ pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
             },
         }),
     }
+}
+
+/// The label drag preview (P2-708 by drag, EDIT-25): `previous` with the
+/// `position` of `edge` set, its labels placed again by
+/// `label::place_labels` on its own routes, and the scene's labels and
+/// lines (whose chevrons keep clear of labels) taken from a scene built
+/// on them. Nothing is re-routed; the lint report stays `previous`'s.
+// DECISION: only labels and lines are taken from the rebuilt scene: the
+// pub `scene::build` sizes boundary tags with the default terminology,
+// and the rest of the scene does not depend on labels, so the shown
+// scene's tags and texts stay exactly as built. An `edge` out of range
+// gives `previous` unchanged.
+fn label_preview(previous: &ViewBuild, edge: c4rizer_core::view::EdgeId, position: u8) -> ViewBuild {
+    let mut build = previous.clone();
+    let Some(e) = build.plan.edges.get_mut(edge.0 as usize) else {
+        return build;
+    };
+    e.style.position = Some(position);
+    build.labels = c4rizer_core::label::place_labels(&build.plan, &build.routes);
+    let fresh = c4rizer_core::scene::build(&build.plan, &build.routes, &build.labels);
+    build.scene.labels = fresh.labels;
+    build.scene.lines = fresh.lines;
+    build
 }
 
 /// The outcome of one full build.

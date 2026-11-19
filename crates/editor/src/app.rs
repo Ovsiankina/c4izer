@@ -17,22 +17,29 @@
 // native dialog; worker replies and file events queue meanwhile and are
 // handled on the next frame.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
-use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, CrossingStyle, LabelMode, Mode, ViewKind};
+use c4rizer_core::model::{Mode, ViewKind};
 use eframe::egui;
 
 use crate::camera::ScreenPoint;
 use crate::canvas;
 use crate::files::{self, FileEvent, UiState, Watcher};
-use crate::state::{
-    Alignment, Axis, CanvasStep, Command, Dialog, Effect, Event, NavLevel, Overlay, Problem, State, ViewEntry,
-};
+use crate::state::{Command, Dialog, Effect, Event, Problem, State, ViewEntry};
+use crate::theme;
 use crate::worker::{ExportFormat, ViewRef, Wake, Worker};
+
+mod frame;
+mod inplace;
+mod panels;
+
+pub(crate) use inplace::focus_keys;
+#[cfg(test)]
+pub(crate) use inplace::suppress as suppress_edited;
 
 /// The startup report request (EDIT-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +91,16 @@ pub struct App {
     explore: crate::explore::Explore,
     /// The view map section of the left panel (P4-100).
     view_map: crate::view_map::ViewMapPanel,
+    /// The canvas region on screen last frame, for the overlays placed
+    /// over it.
+    canvas_rect: Cell<egui::Rect>,
+    /// The canvas size last frame (the fit note).
+    canvas_size: Cell<ScreenPoint>,
+    /// The window width last frame: crossing under 1000 px closes both
+    /// panels (behaviour change 1).
+    last_width: Option<f32>,
+    /// The context menu on screen last frame (behaviour change 6).
+    menu_rect: Cell<Option<egui::Rect>>,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -138,7 +155,7 @@ impl App {
     /// (EDIT-13). Serves EDIT-13, EDIT-14.
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>, startup: Startup) -> App {
-        canvas::install_fonts(&cc.egui_ctx);
+        theme::install(&cc.egui_ctx);
         let ui_state_path = files::state_file();
         let ui = ui_state_path.as_deref().map(UiState::load).unwrap_or_default();
         let worker = Worker::spawn(waker(&cc.egui_ctx));
@@ -159,6 +176,10 @@ impl App {
             include_rx,
             explore: crate::explore::Explore::default(),
             view_map: crate::view_map::ViewMapPanel::default(),
+            canvas_rect: Cell::new(egui::Rect::NOTHING),
+            canvas_size: Cell::new(ScreenPoint { x: 0.0, y: 0.0 }),
+            last_width: None,
+            menu_rect: Cell::new(None),
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -271,51 +292,6 @@ impl App {
         }
     }
 
-    /// The left panel: Open button, recent files when no file is open,
-    /// breadcrumb, view list. Returns the events its clicks make.
-    /// Serves EDIT-8, EDIT-13, EDIT-16.
-    #[must_use]
-    pub fn left_panel(&self, ui: &mut egui::Ui) -> Vec<Event> {
-        let mut out = Vec::new();
-        if ui.button("Open…").clicked() {
-            out.push(Event::Command(Command::ShowOpenDialog));
-        }
-        if self.state.doc.is_none() {
-            ui.separator();
-            ui.strong("Recent files");
-            if self.state.ui.recent.is_empty() {
-                ui.label("none yet");
-            }
-            for path in &self.state.ui.recent {
-                if ui.link(path.display().to_string()).clicked() {
-                    out.push(Event::Command(Command::Open(path.clone())));
-                }
-            }
-            return out;
-        }
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            for (i, crumb) in self.state.breadcrumb().iter().enumerate() {
-                if i > 0 {
-                    ui.label("›");
-                }
-                // P2-734: each crumb names a C4 level, the last the one on screen.
-                if ui.link(crumb_label(&self.state, i, crumb)).clicked() {
-                    out.push(Event::Command(Command::Crumb(i)));
-                }
-            }
-        });
-        ui.separator();
-        ui.strong("Views");
-        // P4-100: the view map takes the panel's bottom strip, so the
-        // list scrolls in what is left.
-        egui::ScrollArea::vertical()
-            .id_salt("c4rizer-view-list")
-            .auto_shrink([false, true])
-            .show(ui, |ui| view_list(ui, &self.state, &mut out));
-        out
-    }
-
     /// The left panel with the view map in its bottom strip (P4-100),
     /// drawn first so it claims that strip; a click on a node is the view
     /// list's `ShowView` (P4-109).
@@ -331,25 +307,6 @@ impl App {
         out
     }
 
-    /// The toolbar's Back and Forward buttons (P4-114, P4-115), each
-    /// disabled with nothing to return to; Back pushes its command, and
-    /// the return value says Forward was clicked.
-    fn history_buttons(&self, ui: &mut egui::Ui, events: &mut Vec<Event>) -> bool {
-        if ui
-            .add_enabled(self.state.can_go_back(), egui::Button::new("‹ Back"))
-            .on_hover_text("Back to the previous view (Alt+Left, B)")
-            .clicked()
-        {
-            events.push(Event::Command(Command::Back));
-        }
-        let forward = ui
-            .add_enabled(self.state.can_go_forward(), egui::Button::new("Forward ›"))
-            .on_hover_text("Forward to the view Back left (Alt+Right)")
-            .clicked();
-        ui.separator();
-        forward
-    }
-
     /// Forward from the toolbar (P4-115): a view pick, so it leaves
     /// Explore as Back does.
     fn go_forward(&mut self, ctx: &egui::Context) {
@@ -358,314 +315,58 @@ impl App {
         self.run(ctx, effects);
     }
 
-    /// The right panel: details, style panel (with target choice), align
-    /// and distribute buttons, lint findings, export buttons. Rows wrap,
-    /// so the panel fits its EDIT-32 width cap. Serves
-    /// EDIT-5, EDIT-6, EDIT-7, EDIT-10, EDIT-17, EDIT-20.
-    #[must_use]
-    #[expect(clippy::too_many_lines, reason = "the panel's widgets top to bottom")]
-    pub fn right_panel(&self, ui: &mut egui::Ui) -> Vec<Event> {
-        let mut out = Vec::new();
-        let mut events: Vec<Event> = Vec::new();
-        let mut command = |c: Command| out.push(Event::Command(c));
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(self.state.history.can_undo(), egui::Button::new("Undo")).clicked() {
-                command(Command::Undo);
-            }
-            if ui.add_enabled(self.state.history.can_redo(), egui::Button::new("Redo")).clicked() {
-                command(Command::Redo);
-            }
-        });
-        // P2-700..P2-704: the canvas commands of Structurizr's editor.
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Auto-place").on_hover_text("Place every box afresh (one undo step)").clicked() {
-                command(Command::AutoPlace);
-            }
-            // P2-702: Alt held keeps every box where it is.
-            let alt = ui.input(|i| i.modifiers.alt);
-            for (label, hover, step) in [
-                ("Canvas −", "Decrease canvas size (Alt: keep positions)", CanvasStep::Decrease),
-                ("Canvas auto", "Smallest canvas size that holds the diagram", CanvasStep::Auto),
-                ("Canvas +", "Increase canvas size (Alt: keep positions)", CanvasStep::Increase),
-            ] {
-                if ui.button(label).on_hover_text(hover).clicked() {
-                    command(Command::Canvas {
-                        step,
-                        keep_positions: alt,
-                    });
-                }
-            }
-            if ui.button("Magnet").on_hover_text("Bring boxes onto the canvas").clicked() {
-                command(Command::BringOntoCanvas);
-            }
-            if ui.button("Centre").on_hover_text("Centre the diagram or the selected boxes").clicked() {
-                command(Command::Centre);
-            }
-            // P3-313: the parity row "Remove all relationship vertices".
-            if ui
-                .button("Remove vertices")
-                .on_hover_text("Remove every hand-added line vertex of this view (one undo step)")
-                .clicked()
-            {
-                command(Command::RemoveAllVertices);
-            }
-        });
-        // P4-318: the view's label mode.
-        if let Some(mode) = self.state.label_mode() {
-            let mut callout = mode == LabelMode::Callout;
-            if ui
-                .checkbox(&mut callout, "Callout labels")
-                .on_hover_text("Labels beside their lines on a shelf with a slanted leader (one undo step)")
-                .changed()
-            {
-                command(Command::SetLabelMode(if callout { LabelMode::Callout } else { LabelMode::Line }));
-            }
-        }
-        // P4-521: how the view marks its crossings.
-        if let Some(style) = self.state.crossing_style() {
-            ui.horizontal(|ui| {
-                ui.label("Crossings");
-                for (choice, name, hint) in [
-                    (CrossingStyle::Gap, "Gap", "Cut one line with a T bar on each side (one undo step)"),
-                    (CrossingStyle::Jump, "Jump", "One line hops over the other (one undo step)"),
-                    (CrossingStyle::Plain, "Plain", "Lines cross unmarked (one undo step)"),
-                ] {
-                    if ui.selectable_label(style == choice, name).on_hover_text(hint).clicked() && style != choice {
-                        command(Command::SetCrossingStyle(choice));
-                    }
-                }
-            });
-        }
-        // P4-424, P4-425: the bus actions of the selection.
-        let bus = self.state.bus_entries();
-        if !bus.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                for entry in bus {
-                    if ui.button(&entry.label).clicked() {
-                        command(Command::ContextAction(entry.action));
-                    }
-                }
-            });
-        }
-        ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            if let Some(d) = self.state.details() {
-                // P2-739: the in-place editor's fields show a pencil and
-                // a hover outline; a double click opens the editor (as
-                // Enter does, EDIT-5) on the field clicked.
-                let editable = editable_detail_fields(&self.state);
-                let mut field = |ui: &mut egui::Ui, label: &'static str, text: egui::WidgetText| {
-                    let Some(at) = editable.iter().position(|&f| f == label) else {
-                        ui.label(text);
-                        return;
-                    };
-                    let r = ui
-                        .horizontal_wrapped(|ui| {
-                            ui.label(text);
-                            ui.weak("✏");
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    let r = r.on_hover_text(format!("Double click or Enter to edit the {label}"));
-                    if r.hovered() {
-                        ui.painter().rect_stroke(
-                            r.rect.expand(2.0),
-                            2.0,
-                            ui.visuals().widgets.hovered.bg_stroke,
-                            egui::StrokeKind::Outside,
-                        );
-                    }
-                    if r.double_clicked() {
-                        events.push(Event::Input(crate::state::Input::KeyDown {
-                            key: crate::state::Key::Enter,
-                            mods: crate::state::Modifiers::default(),
-                            text_focus: false,
-                        }));
-                        for _ in 0..at {
-                            events.push(Event::Input(crate::state::Input::KeyDown {
-                                key: crate::state::Key::Tab,
-                                mods: crate::state::Modifiers::default(),
-                                text_focus: false,
-                            }));
-                        }
-                    }
-                };
-                field(ui, "name", egui::RichText::new(&d.name).strong().into());
-                ui.label(&d.kind);
-                if let Some(t) = &d.technology {
-                    field(ui, "technology", format!("Technology: {t}").into());
-                }
-                // P3-131: a deployment node's instances and environment.
-                if let Some(n) = &d.instances {
-                    ui.label(format!("Instances: {n}"));
-                }
-                if let Some(env) = &d.environment {
-                    ui.label(format!("Environment: {env}"));
-                }
-                if let Some(text) = &d.description {
-                    field(ui, "description", text.into());
-                }
-                if !d.tags.is_empty() {
-                    ui.label(format!("Tags: {}", d.tags.join(", ")));
-                }
-                if let Some(from) = &d.lifted_from {
-                    ui.label(format!("Lifted from: {from}"));
-                }
-                for other in &d.merged {
-                    ui.label(format!("Also: {other}"));
-                }
-                if let Some(step) = &d.step {
-                    // P3-218: number, ends and the relationship it stands for.
-                    ui.label(format!("Step {}: {}", step.order, step.ends));
-                    ui.label(format!("Stands for: {}", step.relationship));
-                }
-                ui.separator();
-            }
-            steps_panel(ui, &self.state, &mut command);
-            if let Some(panel) = self.state.style_panel() {
-                style_panel(ui, &panel, &mut command);
-            }
-            ui.strong("Lint");
-            let findings = self.state.findings();
-            let notices = self.state.notices();
-            if findings.is_empty() && notices.is_empty() {
-                ui.label("no findings");
-            }
-            for (i, f) in findings.iter().enumerate() {
-                if ui.selectable_label(false, &f.message).clicked() {
-                    command(Command::PickFinding(i));
-                }
-            }
-            // P2-126: notices name the construct, its file and line; they
-            // select nothing.
-            for notice in &notices {
-                ui.label(format!("notice: {notice}"));
-            }
-            ui.separator();
-            ui.strong("Export");
-            // P2-663: the SVG text choice, `name` by default; it lives in
-            // egui's memory and never reaches the diagram file (P2-665).
-            let id = egui::Id::unique("c4rizer-svg-text");
-            let choices = svg_text_choices();
-            let mut pick = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(choices.len() - 1);
-            // The label sits before a narrow combo, wrapping under it in
-            // a narrow panel; a label after the combo wrapped letter by
-            // letter (seen in the real window).
-            ui.horizontal_wrapped(|ui| {
-                ui.label("SVG text");
-                egui::ComboBox::from_id_salt("c4rizer-svg-text-combo")
-                    .width(70.0)
-                    .selected_text(choices[pick].0)
-                    .show_ui(ui, |ui| {
-                        for (i, (label, _)) in choices.iter().enumerate() {
-                            ui.selectable_value(&mut pick, i, *label);
-                        }
-                    });
-            });
-            ui.ctx().data_mut(|d| d.insert_temp(id, pick));
-            let svg = choices[pick].1;
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("View as SVG").clicked() {
-                    command(Command::ExportView(svg));
-                }
-                if ui.button("View as PNG").clicked() {
-                    command(Command::ExportView(ExportFormat::Png));
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("All views as SVG").clicked() {
-                    command(Command::ExportAll(svg));
-                }
-                if ui.button("All views as PNG").clicked() {
-                    command(Command::ExportAll(ExportFormat::Png));
-                }
-            });
-            // P3-431: every format of `c4rizer export -f` (P3-400), the
-            // SVG with the SVG text chosen above.
-            let id = egui::Id::unique("c4rizer-export-format");
-            let formats = export_choices();
-            let mut format = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(formats.len() - 1);
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Format");
-                egui::ComboBox::from_id_salt("c4rizer-export-format-combo")
-                    .width(150.0)
-                    .selected_text(formats[format].0)
-                    .show_ui(ui, |ui| {
-                        for (i, (label, _)) in formats.iter().enumerate() {
-                            ui.selectable_value(&mut format, i, *label);
-                        }
-                    });
-            });
-            ui.ctx().data_mut(|d| d.insert_temp(id, format));
-            let chosen = if formats[format].1 == ExportFormat::Svg { svg } else { formats[format].1 };
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Export view").clicked() {
-                    command(Command::ExportView(chosen));
-                }
-                if ui.button("Export all views").clicked() {
-                    command(Command::ExportAll(chosen));
-                }
-            });
-        });
-        out.extend(events);
-        out
-    }
-
-    /// The status bar from `State::status`: file path, problem (parse error with line and
-    /// column, missing file, I/O error), notice, read-only flag. Serves
-    /// EDIT-11, EDIT-19, EDIT-24, EDIT-27.
-    pub fn status_bar(&self, ui: &mut egui::Ui) {
-        let status = self.state.status();
-        ui.horizontal_wrapped(|ui| {
-            match &self.state.doc {
-                Some(doc) => ui.label(doc.path.display().to_string()),
-                None => ui.label("no file open"),
-            };
-            match &status.problem {
-                Some(Problem::Parse(_)) => {
-                    let text = problem_text(&self.state).unwrap_or_default();
-                    ui.colored_label(egui::Color32::RED, text);
-                }
-                Some(Problem::Missing) => {
-                    ui.colored_label(egui::Color32::RED, "the file is gone; showing the last diagram");
-                }
-                Some(Problem::Io(e)) => {
-                    ui.colored_label(egui::Color32::RED, e);
-                }
-                None => {}
-            }
-            if let Some(notice) = &status.notice {
-                ui.label(notice);
-            }
-            // P3-420: a workspace JSON says why it is read-only.
-            if self.state.json_doc() {
-                ui.strong("read-only: workspace JSON");
-            } else if self.state.doc.is_some() && self.state.read_only() {
-                ui.strong("read-only");
-            }
-        });
-    }
-
-    /// The centre: the canvas (`canvas::paint_items`, `canvas::paint`),
-    /// the in-place text field over the edited item (its changes as
-    /// `Event::Text`), and canvas input. Returns the events. Serves EDIT-5, EDIT-9, EDIT-12, EDIT-28.
+    /// The centre: the backdrop, the page (`canvas::paint_page`), the
+    /// scene and marks (`canvas::paint_items`, `canvas::paint`), the marks
+    /// outside the paper, the in-place fields in the edited item, in
+    /// place of its texts (`inplace`; changes as `Event::Text`, focus
+    /// moves as Tab presses), the tooltip card, the right-click
+    /// menu and canvas input; the start screen with no file open. Returns
+    /// the events. Serves EDIT-5, EDIT-9, EDIT-12, EDIT-13, EDIT-28.
     #[must_use]
     pub fn canvas(&self, ui: &mut egui::Ui) -> Vec<Event> {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let painter = painter.with_clip_rect(response.rect);
+        self.canvas_rect.set(response.rect);
+        self.paint_backdrop(&painter, response.rect);
+        if self.state.doc.is_none() {
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(response.rect));
+            return self.start_screen(&mut child);
+        }
         let list = self.state.draw_list();
         // While the zoom moves, text is drawn from a few cached sizes.
         canvas::track_zoom(ui.ctx(), list.camera.zoom);
-        // EDIT-31: the page in the export background first; outside it
-        // the central panel keeps the app's panel colour.
+        // EDIT-31: the page in the export background first.
         // P2-701: the paper of a view with a canvas size, under the page.
         canvas::paint_page(&painter, &list, self.state.paper_rect());
-        canvas::paint(&painter, &canvas::paint_items(&list));
+        // EDIT-5: the edited item's texts are typed in place, not drawn.
+        let slots = match (list.editing, list.scene, &self.state.text_edit) {
+            (Some(item), Some(scene), Some(edit)) => crate::state::inplace::slots(scene, item, &edit.fields),
+            _ => Vec::new(),
+        };
+        let mut items = canvas::paint_items(&list);
+        inplace::suppress(&mut items, &slots, &list.camera);
+        canvas::paint(&painter, &items);
         // P3-311: the selected line's vertex handles.
         canvas::paint(&painter, &canvas::vertex_handle_items(&list, &self.state.vertex_handles()));
         // P4-213, P4-214: its end handles, and the snap points while one is dragged.
         canvas::paint(&painter, &canvas::anchor_items(&list, &self.state.end_handles(), &self.state.snap_marks()));
-        let mut out: Vec<Event> = canvas::inputs(ui.ctx(), &response).into_iter().map(Event::Input).collect();
+        self.paint_paper_marks(&painter, response.rect);
+        // P2-708 by drag: a grab hand over a draggable label, a closed one
+        // while it slides.
+        if (response.hovered() || response.dragged())
+            && let Some(grabbing) = self.state.label_cursor()
+        {
+            ui.ctx().set_cursor_icon(if grabbing {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+        let mut inputs = canvas::inputs(ui.ctx(), &response);
+        // EDIT-5: a press on a field is the field's, not a canvas click
+        // (which would end the edit).
+        inplace::keep_presses_on_fields(&mut inputs, &slots, &list.camera);
+        let mut out: Vec<Event> = inputs.into_iter().map(Event::Input).collect();
         // P2-723: the tooltip overlay, below the item's bottom-right corner.
         if let (Some(tip), Some(scene)) = (&list.tooltip, list.scene)
             && let Some(bounds) = scene.item_bounds(tip.item)
@@ -679,73 +380,14 @@ impl App {
                 .fixed_pos(pos)
                 .order(egui::Order::Tooltip)
                 .interactable(false)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        let d = &tip.details;
-                        ui.strong(&d.name);
-                        ui.label(&d.kind);
-                        if let Some(t) = &d.technology {
-                            ui.label(format!("Technology: {t}"));
-                        }
-                        if let Some(text) = &d.description {
-                            ui.label(text);
-                        }
-                        if !d.tags.is_empty() {
-                            ui.label(format!("Tags: {}", d.tags.join(", ")));
-                        }
-                        if let Some(url) = &tip.url {
-                            ui.label(format!("URL: {url}"));
-                        }
-                        for (name, value) in &tip.properties {
-                            ui.label(format!("{name}: {value}"));
-                        }
-                        if tip.sticky {
-                            ui.weak("Escape closes");
-                        }
-                    });
-                });
+                .show(ui.ctx(), |ui| frame::tip_card(ui, tip));
         }
-        if let (Some(item), Some(scene), Some(edit)) = (list.editing, list.scene, &self.state.text_edit)
-            && let (Some(bounds), Some(field)) = (scene.item_bounds(item), edit.fields.get(edit.current))
-        {
-            let a = list.camera.to_screen(bounds.min);
-            let b = list.camera.to_screen(bounds.max);
-            let origin = response.rect.min;
-            let width = (b.x - a.x).max(160.0);
-            let top = origin.y + f32::midpoint(a.y, b.y) - 12.0;
-            let rect = egui::Rect::from_min_size(egui::pos2(origin.x + a.x, top), egui::vec2(width, 24.0));
-            let mut buffer = field.buffer.clone();
-            let id = egui::Id::unique(("c4rizer-text-edit", edit.current));
-            let edited = ui.put(
-                rect,
-                egui::TextEdit::singleline(&mut buffer)
-                    .id(id)
-                    .hint_text(field.label)
-                    .desired_width(width),
-            );
-            if !edited.has_focus() {
-                edited.request_focus();
-            }
-            if buffer != field.buffer {
-                out.push(Event::Text(buffer));
-            }
+        // EDIT-5: every field of the edited item typed in the shape.
+        if let Some(edit) = &self.state.text_edit {
+            out.extend(inplace::fields(ui, response.rect.min, &list.camera, edit, &slots, self.state.mode()));
         }
         // editor-ux-02: the right-click menu, at the pointer.
-        if let Some(Overlay::ContextMenu { entries }) = &self.state.overlay {
-            let at = response.rect.min + egui::vec2(self.state.menu_at.x, self.state.menu_at.y);
-            egui::Area::new(egui::Id::unique("c4rizer-context-menu"))
-                .fixed_pos(at)
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        for entry in entries {
-                            if ui.button(&entry.label).clicked() {
-                                out.push(Event::Command(Command::ContextAction(entry.action.clone())));
-                            }
-                        }
-                    });
-                });
-        }
+        self.menu_rect.set(self.context_menu(ui, response.rect.min, &mut out));
         out
     }
 
@@ -756,121 +398,6 @@ impl App {
             || self.state.view.is_none()
             || self.state.doc.as_ref().is_none_or(|d| d.parsed.is_none())
     }
-}
-
-/// The Steps list of a dynamic view (P3-219, P3-220): one row per step in
-/// number order; a click selects the step's line, the arrows move it.
-fn steps_panel(ui: &mut egui::Ui, state: &State, command: &mut impl FnMut(Command)) {
-    let rows = state.steps();
-    if rows.is_empty() {
-        return;
-    }
-    ui.strong("Steps");
-    for row in &rows {
-        ui.horizontal(|ui| {
-            if ui.small_button("↑").on_hover_text("Move this step up").clicked() {
-                command(Command::MoveStep { step: row.step, up: true });
-            }
-            if ui.small_button("↓").on_hover_text("Move this step down").clicked() {
-                command(Command::MoveStep { step: row.step, up: false });
-            }
-            if ui.selectable_label(row.selected, &row.label).clicked() {
-                command(Command::SelectStep(row.step));
-            }
-        });
-    }
-    ui.separator();
-}
-
-/// The style panel's widgets (EDIT-17, EDIT-20).
-fn style_panel(ui: &mut egui::Ui, panel: &crate::state::StylePanel, command: &mut impl FnMut(Command)) {
-    ui.strong(format!("Style ({} box{})", panel.boxes, if panel.boxes == 1 { "" } else { "es" }));
-    // DECISION: the target choice lives in egui's temporary memory
-    // (index 0: this box only, i: the i-th shared tag), so the panel
-    // stays a pure reader of `State`.
-    let id = egui::Id::unique("c4rizer-style-target");
-    let mut choice = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
-    if choice > panel.tags.len() {
-        choice = 0;
-    }
-    let name = |i: usize| {
-        if i == 0 {
-            "this box only".to_owned()
-        } else {
-            format!("all {}", panel.tags[i - 1])
-        }
-    };
-    egui::ComboBox::from_id_salt("c4rizer-style-target-combo")
-        .selected_text(name(choice))
-        .show_ui(ui, |ui| {
-            for i in 0..=panel.tags.len() {
-                ui.selectable_value(&mut choice, i, name(i));
-            }
-        });
-    ui.ctx().data_mut(|d| d.insert_temp(id, choice));
-    let target = if choice == 0 {
-        StyleTarget::ThisBox
-    } else {
-        StyleTarget::Tag(panel.tags[choice - 1].clone())
-    };
-    // DECISION: every colour-picker change is written at once (one
-    // undo step each): the canvas follows the picker live (EDIT-17).
-    let mut colour_row = |ui: &mut egui::Ui, label: &str, value: Option<Colour>, make: fn(Option<Colour>) -> StyleProperty| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(label);
-            let mut rgb = value.map_or([128, 128, 128], |c| [c.r, c.g, c.b]);
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                command(Command::SetStyle {
-                    target: target.clone(),
-                    property: make(Some(Colour {
-                        r: rgb[0],
-                        g: rgb[1],
-                        b: rgb[2],
-                    })),
-                });
-            }
-            if value.is_none() {
-                ui.label("(differs)");
-            }
-        });
-    };
-    colour_row(ui, "Fill", panel.background, StyleProperty::Background);
-    colour_row(ui, "Text", panel.color, StyleProperty::Color);
-    // P2-736: one drop-down, never a wrapped row of buttons.
-    shape_row(ui, panel.shape, &mut |shape| {
-        command(Command::SetStyle {
-            target: target.clone(),
-            property: StyleProperty::Shape(Some(shape)),
-        });
-    });
-    if ui.button("Reset to tag style").clicked() {
-        command(Command::ResetStyle);
-    }
-    if panel.boxes > 1 {
-        ui.horizontal_wrapped(|ui| {
-            for (label, how) in [
-                ("Left", Alignment::Left),
-                ("Centre", Alignment::Centre),
-                ("Right", Alignment::Right),
-                ("Top", Alignment::Top),
-                ("Middle", Alignment::Middle),
-                ("Bottom", Alignment::Bottom),
-            ] {
-                if ui.button(label).clicked() {
-                    command(Command::Align(how));
-                }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Distribute horizontally").clicked() {
-                command(Command::Distribute(Axis::Horizontal));
-            }
-            if ui.button("Distribute vertically").clicked() {
-                command(Command::Distribute(Axis::Vertical));
-            }
-        });
-    }
-    ui.separator();
 }
 
 /// A waker that repaints `ctx` (worker replies, file events).
@@ -903,52 +430,82 @@ pub(crate) fn view_label(entry: &ViewEntry) -> String {
     }
 }
 
-/// The view list of the left panel (EDIT-8, P2-737): one row per view,
-/// the title cut to the panel's width with an ellipsis, then the key; the
-/// full title (and EDIT-8's kind, P2-123's note) as tooltip. Pushes the
-/// events its clicks make; returns each row's line and rect.
+/// The view list of the left panel (EDIT-8, P2-737, behaviour change 11):
+/// one row per view, the key column first (mono, keys aligned), then the
+/// title cut to the room left with an ellipsis; the full title (and
+/// EDIT-8's kind, P2-123's note) as tooltip. Pushes the events its clicks
+/// make; returns each row's text as drawn and rect.
 fn view_list(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) -> Vec<(String, egui::Rect)> {
-    // egui stores a panel's width as its content's, and the cut below
-    // follows the width it is given, so without this claim the panel
-    // shrank frame after frame to its minimum.
+    // egui stores a panel's width as its content's, so without this
+    // claim the panel shrank frame after frame to its minimum.
     ui.set_min_width(ui.available_width());
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let key_w = panels::key_column(ui, state);
     let mut rows = Vec::new();
-        // P2-737: one line per view, the title cut to the panel's width,
-        // the full title (and EDIT-8's kind, P2-123's note) as tooltip.
-        // DECISION: the cut is measured with the button font: the longest
-        // title prefix whose line fits the panel less the label's padding
-        // (a character estimate wrapped in the real window); one
-        // character is always kept.
-        let room = ui.available_width() - 2.0 * ui.spacing().button_padding.x - 2.0;
-        let font = egui::TextStyle::Button.resolve(ui.style());
-        let ctx = ui.ctx().clone();
-        let fits = |line: &str| {
-            ctx.fonts_mut(|f| f.layout_no_wrap(line.to_owned(), font.clone(), egui::Color32::WHITE).size().x)
-                <= room
-        };
-        for entry in state.views() {
-            let full = entry.label.chars().count();
-            let budget = (1..=full).rev().find(|&n| fits(&view_list_line(&entry, n).0)).unwrap_or(1);
-            let (line, title) = view_list_line(&entry, budget);
-            let line_text = line.clone();
-            let tip = format!("{title}\n{}", view_label(&entry));
-            let text = if entry.kind.drawable() {
-                egui::RichText::new(line)
-            } else {
-                egui::RichText::new(line).weak()
-            };
-            // DECISION: the button truncates rather than wraps, so a key
-            // wider than the panel (the cut keeps the key whole) still
-            // stays on its one row, elided at the end.
-            let response = ui
-                .add(egui::Button::selectable(entry.current, text).truncate())
-                .on_hover_text(tip);
-            rows.push((line_text, response.rect));
-            if response.clicked() && !entry.current {
-                out.push(Event::Command(Command::ShowView(entry.view)));
-            }
+    for entry in state.views() {
+        let (line, response) = panels::view_row(ui, &entry, key_w);
+        rows.push((line, response.rect));
+        if response.clicked() && !entry.current {
+            out.push(Event::Command(Command::ShowView(entry.view)));
         }
+    }
     rows
+}
+
+/// The view kind as the paper's label names it: `C1 · SYSTEM CONTEXT`.
+fn level_title(kind: ViewKind) -> &'static str {
+    match kind {
+        ViewKind::SystemLandscape => "system landscape",
+        ViewKind::SystemContext => "system context",
+        ViewKind::Container => "container",
+        ViewKind::Component => "component",
+        ViewKind::Filtered => "filtered",
+        ViewKind::Custom => "custom",
+        ViewKind::Image => "image",
+        ViewKind::Dynamic => "dynamic",
+        ViewKind::Deployment => "deployment",
+        _ => "view",
+    }
+}
+
+/// A shape as the style panel names it: the reference keyword in words,
+/// first word capitalised (`MobileDevicePortrait` reads `Mobile device
+/// portrait`, `Box` stays `Box`).
+// DECISION: derived from `Shape::keyword` rather than a second table, so
+// the 19 names cannot drift from what `edit` writes (P2-417).
+fn shape_name(shape: c4rizer_core::model::Shape) -> String {
+    let mut out = String::new();
+    for c in shape.keyword().chars() {
+        if c.is_ascii_uppercase() && !out.is_empty() {
+            out.push(' ');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The style panel's shape choice: one drop-down of every panel shape in
+/// a form row (P2-736, EDIT-17). `pick` gets the shape chosen. Returns
+/// the row's rect.
+fn shape_row(
+    ui: &mut egui::Ui,
+    current: Option<c4rizer_core::model::Shape>,
+    pick: &mut dyn FnMut(c4rizer_core::model::Shape),
+) -> egui::Rect {
+    let names: Vec<String> = crate::state::PANEL_SHAPES.iter().map(|&s| shape_name(s)).collect();
+    let at = current.and_then(|c| crate::state::PANEL_SHAPES.iter().position(|&s| s == c));
+    let shown = current.map_or_else(|| "differs".to_owned(), shape_name);
+    let inner = ui.horizontal(|ui| {
+        crate::kit::form_row(ui, "Shape", |ui| crate::kit::select(ui, "shape", &shown, &names, at))
+    });
+    if let Some(i) = inner.inner
+        && Some(i) != at
+    {
+        pick(crate::state::PANEL_SHAPES[i]);
+    }
+    inner.response.rect
 }
 
 /// The view list as drawn headless in a left panel `width` px wide (the
@@ -985,7 +542,8 @@ pub(crate) fn draw_view_list(state: &State, width: f32, frames: usize) -> DrawnV
                     let mut out = Vec::new();
                     let rows = view_list(ui, state, &mut out);
                     drawn.rows = rows.into_iter().map(|(l, r)| (l, r.height())).collect();
-                    drawn.row_height = ui.spacing().interact_size.y;
+                    // redesign 2026-11-19: a view row is `size-row` high, one row.
+                    drawn.row_height = theme::SIZE_ROW;
                 });
             drawn.panel_width = panel.response.rect.width();
         });
@@ -1088,36 +646,6 @@ pub(crate) fn shape_choice_is_dropdown() -> bool {
     });
     output.textures_delta.clear();
     rows.0 <= rows.1 + 1.0
-}
-
-/// The style panel's shape choice: one drop-down of every panel shape
-/// (P2-736, EDIT-17). `pick` gets the shape chosen. Returns the row's
-/// rect.
-fn shape_row(
-    ui: &mut egui::Ui,
-    current: Option<c4rizer_core::model::Shape>,
-    pick: &mut dyn FnMut(c4rizer_core::model::Shape),
-) -> egui::Rect {
-    ui.horizontal(|ui| {
-        ui.label("Shape");
-        let mut chosen = current;
-        // Fills the rest of the row, so the row never outgrows the panel.
-        egui::ComboBox::from_id_salt("c4rizer-shape-combo")
-            .width((ui.available_width() - 2.0 * ui.spacing().icon_width).max(48.0))
-            .selected_text(current.map_or("(differs)", |s| s.keyword()))
-            .show_ui(ui, |ui| {
-                for shape in crate::state::PANEL_SHAPES {
-                    ui.selectable_value(&mut chosen, Some(shape), shape.keyword());
-                }
-            });
-        if let Some(shape) = chosen
-            && chosen != current
-        {
-            pick(shape);
-        }
-    })
-    .response
-    .rect
 }
 
 /// The view list's one-line text for `entry`: its title cut to `chars`
@@ -1248,85 +776,100 @@ impl eframe::App for App {
         }
         let mut events = Vec::new();
         let width = ctx.content_rect().width();
+        let narrow = !side_panels_start_open(width);
         let (_, mut right) = *self.panels.get_or_insert_with(|| {
-            let open = side_panels_start_open(width);
+            let open = !narrow;
             // EDIT-32: a narrow window starts with the view list closed too.
             self.state.aids.view_list = open;
             (open, open)
         });
+        // Behaviour change 1: crossing under 1000 px closes both panels,
+        // at start and on every resize, not only at start.
+        if narrow && self.last_width.is_some_and(side_panels_start_open) {
+            self.state.aids.view_list = false;
+            right = false;
+        }
+        self.last_width = Some(width);
         // P2-727: the view list panel is the state's (`n` toggles it).
-        let mut left = self.state.aids.view_list;
+        let was_left = self.state.aids.view_list;
         let mut fit = fit_key_pressed(&ctx);
         let mut dark = self.state.mode() == Mode::Dark;
-        let mut explore = self.explore.open;
-        let mut forward = false;
-        egui::Panel::top("c4rizer-toolbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                forward = self.history_buttons(ui, &mut events);
-                ui.toggle_value(&mut left, "Views");
-                // P3-9: the explore pages replace the canvas while on.
-                ui.toggle_value(&mut explore, "Explore")
-                    .on_hover_text("Model, relationships, graph, tree, documentation and decisions");
-                if ui.button("Fit view").on_hover_text("F").clicked() {
-                    fit = true;
-                }
-                // P2-705: fit width, height, content (`w`, `h`, `c`).
-                for (label, key, how) in [
-                    ("Fit width", "W", crate::camera::Fit::Width),
-                    ("Fit height", "H", crate::camera::Fit::Height),
-                ] {
-                    if ui.button(label).on_hover_text(key).clicked() {
-                        events.push(Event::Command(Command::Fit(how)));
-                    }
-                }
-                // TODO(srs): P2-706, the key. DECISION: reading taken (B
-                // editor-breadth 1): F11 and this toolbar item; `f` stays
-                // EDIT-30's Fit view.
-                if ui
-                    .selectable_label(self.state.aids.fullscreen, "Fullscreen")
-                    .on_hover_text("F11")
-                    .clicked()
-                {
-                    events.push(Event::Command(Command::Fullscreen));
-                }
-                // P2-433: rebuilds the shown view in that mode; writes
-                // nothing to the file.
-                ui.toggle_value(&mut dark, "Dark")
-                    .on_hover_text("Show and export the diagram in dark mode");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.toggle_value(&mut right, "Details");
-                });
-            });
-        });
+        let bar = frame::BarState {
+            left: was_left,
+            right,
+            explore: self.explore.open,
+            forward: false,
+        };
+        let bar = egui::Panel::top("c4rizer-topbar")
+            .exact_size(frame::BAR_H)
+            .frame(egui::Frame::new().fill(theme::BG_PANEL))
+            .show(ui, |ui| self.top_bar(ui, narrow, bar, &mut events))
+            .inner;
+        let (mut left, mut right) = (bar.left, bar.right);
+        // Narrow: the toggles open one panel at a time.
+        if narrow && left && right {
+            if was_left {
+                left = false;
+            } else {
+                right = false;
+            }
+        }
+        // P3-9: the explore pages replace the canvas while on; behaviour
+        // change 15: the right panel closes instead of dimming.
+        self.explore.open = bar.explore;
         self.panels = Some((left, right));
-        self.explore.open = explore;
-        // DECISION: the toolbar toggle writes the view-only flag directly,
+        // DECISION: the top-bar toggle writes the view-only flag directly,
         // as the shell writes `io_error`; it changes no file (P2-730).
         self.state.aids.view_list = left;
+        if bar.forward {
+            self.go_forward(&ctx);
+        }
+        egui::Panel::bottom("c4rizer-status")
+            .exact_size(theme::SIZE_ROW)
+            .frame(egui::Frame::new().fill(theme::BG_PANEL))
+            .show(ui, |ui| self.status_bar(ui, narrow, self.explore.open, &mut events, &mut fit, &mut dark));
         let mode = if dark { Mode::Dark } else { Mode::Light };
         if mode != self.state.mode() {
             let effects = self.state.set_mode(mode);
             self.run(&ctx, effects);
         }
-        if forward {
-            self.go_forward(&ctx);
-        }
-        egui::Panel::bottom("c4rizer-status").show(ui, |ui| self.status_bar(ui));
         let (min, max) = side_panel_range(width);
+        let panel_frame = egui::Frame::new().fill(theme::BG_PANEL);
         if left {
             egui::Panel::left("c4rizer-left")
                 .resizable(true)
+                .frame(panel_frame)
                 .default_size(220.0_f32.clamp(min, max))
                 .size_range(min..=max)
                 .show(ui, |ui| events.extend(self.left_side(ui)));
         }
-        if right {
+        // DECISION: with no file open the right panel stays shut and its
+        // toggle disabled (design pack `screen-Start`): it has nothing to
+        // show; the toggle's state is kept for when a file opens.
+        if right && !self.explore.open && self.state.doc.is_some() {
             egui::Panel::right("c4rizer-right")
                 .resizable(true)
-                .default_size(280.0_f32.clamp(min, max))
+                .frame(panel_frame)
+                .default_size(240.0_f32.clamp(min, max))
                 .size_range(min..=max)
-                // P3-507: off while Explore is open (it can write the file).
-                .show(ui, |ui| events.extend(ui.add_enabled_ui(!self.explore.open, |ui| self.right_panel(ui)).inner));
+                .show(ui, |ui| events.extend(self.right_panel(ui)));
+        }
+        // Behaviour change 6: a press outside the open menu, in a panel
+        // too, closes it; on the canvas the canvas's own press does.
+        if matches!(self.state.overlay, Some(crate::state::Overlay::ContextMenu { .. }))
+            && let Some(menu) = self.menu_rect.get()
+            && let Some(pos) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.interact_pos() } else { None })
+            && !menu.contains(pos)
+            && !self.canvas_rect.get().contains(pos)
+        {
+            events.insert(
+                0,
+                Event::Input(crate::state::Input::KeyDown {
+                    key: crate::state::Key::Escape,
+                    mods: crate::state::Modifiers::default(),
+                    text_focus: false,
+                }),
+            );
         }
         if self.explore.open
             && let Some(parsed) = self.state.doc.as_ref().and_then(|d| d.parsed.clone())
@@ -1334,8 +877,9 @@ impl eframe::App for App {
             self.explore_frame(ui, &ctx, &parsed, events);
             return;
         }
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG_CANVAS)).show(ui, |ui| {
             let size = ui.available_size();
+            self.canvas_size.set(ScreenPoint { x: size.x, y: size.y });
             // P2-711: the canvas size anchors the zoom keys and the fits.
             let effects = self.state.handle(Event::Input(crate::state::Input::CanvasSize {
                 size: ScreenPoint { x: size.x, y: size.y },
@@ -1388,6 +932,7 @@ impl App {
         mut events: Vec<Event>,
     ) {
         let actions = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BG_PANEL))
             .show(ui, |ui| {
                 self.explore.mode = self.state.mode();
                 self.explore.sync(parsed);
@@ -1415,135 +960,6 @@ impl App {
         for event in events {
             self.dispatch(ctx, event);
         }
-    }
-
-    /// The list open over the canvas (P2-715 quick navigation, P2-725
-    /// tag filter, P2-726 perspectives, P2-729 navigator), as a window;
-    /// returns the events its widgets make.
-    #[expect(clippy::too_many_lines, reason = "one flat arm per overlay window")]
-    fn overlays(&self, ctx: &egui::Context) -> Vec<Event> {
-        let mut out = Vec::new();
-        let Some(overlay) = self.state.overlay.clone() else {
-            return out;
-        };
-        match overlay {
-            Overlay::QuickNavigation { query, highlighted } => {
-                egui::Window::new("Quick navigation")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
-                    .show(ctx, |ui| {
-                        let mut buffer = query.clone();
-                        let field = ui.add(egui::TextEdit::singleline(&mut buffer).hint_text("view key or title"));
-                        if !field.has_focus() {
-                            field.request_focus();
-                        }
-                        if buffer != query {
-                            out.push(Event::Text(buffer));
-                        }
-                        for (i, entry) in self.state.quick_nav_entries().into_iter().enumerate() {
-                            if ui.selectable_label(i == highlighted, view_label(&entry)).clicked() {
-                                out.push(Event::Command(Command::ShowView(entry.view)));
-                            }
-                        }
-                    });
-            }
-            // Drawn over the canvas at the pointer (`App::canvas`).
-            Overlay::ContextMenu { .. } => {}
-            Overlay::TagFilter => {
-                egui::Window::new("Filter by tag")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 40.0))
-                    .show(ctx, |ui| {
-                        let chosen = &self.state.aids.tags;
-                        let choices = self.state.tag_choices();
-                        if choices.is_empty() {
-                            ui.label("no user-defined tags in this view");
-                        }
-                        for tag in choices {
-                            let mut on = chosen.contains(&tag);
-                            if ui.checkbox(&mut on, &tag).changed() {
-                                let mut next: Vec<String> = chosen.iter().filter(|t| **t != tag).cloned().collect();
-                                if on {
-                                    next.push(tag.clone());
-                                }
-                                out.push(Event::Command(Command::TagFilter(next)));
-                            }
-                        }
-                        ui.horizontal(|ui| {
-                            if ui.button("Clear").clicked() {
-                                out.push(Event::Command(Command::TagFilter(Vec::new())));
-                            }
-                            if ui.button("Close").clicked() {
-                                out.push(Event::Command(Command::TagFilterPanel));
-                            }
-                        });
-                    });
-            }
-            Overlay::Perspectives => {
-                egui::Window::new("Perspectives")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 40.0))
-                    .show(ctx, |ui| {
-                        let current = self.state.aids.perspective.clone();
-                        if ui.selectable_label(current.is_none(), "none").clicked() {
-                            out.push(Event::Command(Command::Perspective(None)));
-                        }
-                        for name in self.state.perspective_choices() {
-                            if ui.selectable_label(current.as_deref() == Some(name.as_str()), &name).clicked() {
-                                out.push(Event::Command(Command::Perspective(Some(name))));
-                            }
-                        }
-                        if ui.button("Close").clicked() {
-                            out.push(Event::Command(Command::PerspectivePanel));
-                        }
-                    });
-            }
-            Overlay::Navigator => {
-                egui::Window::new("Diagram navigator")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
-                    .show(ctx, |ui| {
-                        // P2-729: the search field filters all three groups.
-                        // DECISION: it takes focus like quick navigation's,
-                        // so typing searches at once; Escape still closes.
-                        let query = self.state.nav_query();
-                        let mut buffer = query.to_owned();
-                        let field = ui.add(egui::TextEdit::singleline(&mut buffer).hint_text("search views"));
-                        if !field.has_focus() {
-                            field.request_focus();
-                        }
-                        if buffer != query {
-                            out.push(Event::Text(buffer));
-                        }
-                        let entries = self.state.navigator();
-                        for (level, title) in [
-                            (NavLevel::Above, "Above"),
-                            (NavLevel::NextTo, "Next to"),
-                            (NavLevel::Below, "Below"),
-                        ] {
-                            ui.strong(title);
-                            let mut any = false;
-                            for (_, entry) in entries.iter().filter(|(l, _)| *l == level) {
-                                any = true;
-                                if ui.link(view_label(entry)).clicked() {
-                                    out.push(Event::Command(Command::ShowView(entry.view.clone())));
-                                }
-                            }
-                            if !any {
-                                ui.weak("none");
-                            }
-                        }
-                        if ui.button("Close").clicked() {
-                            out.push(Event::Command(Command::Navigator));
-                        }
-                    });
-            }
-        }
-        out
     }
 }
 
@@ -1747,5 +1163,19 @@ mod tests {
             let canvas = width - 2.0 * (max + super::PANEL_CHROME_PX);
             assert!(canvas >= 0.6 * width, "{width}: canvas {canvas}");
         }
+    }
+
+    /// The style panel names shapes in words (redesign 2026-11-19), one
+    /// distinct name per panel shape.
+    #[test]
+    fn shape_names_read_as_words() {
+        use c4rizer_core::model::Shape;
+        assert_eq!(super::shape_name(Shape::Box), "Box");
+        assert_eq!(super::shape_name(Shape::RoundedBox), "Rounded box");
+        assert_eq!(super::shape_name(Shape::MobileDevicePortrait), "Mobile device portrait");
+        let mut names: Vec<String> = crate::state::PANEL_SHAPES.iter().map(|&s| super::shape_name(s)).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), crate::state::PANEL_SHAPES.len());
     }
 }

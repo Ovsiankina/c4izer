@@ -1567,10 +1567,13 @@ fn p2_305_context_menu_lists_every_reachable_view_and_url() {
     sh.click_button(at, Button::Right, NONE);
     let labels: Vec<String> = sh.menu().into_iter().map(|e| e.label).collect();
     assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop"]);
-    // A box with neither views nor URL has no menu.
+    // owner decision 2026-11-19: behaviour change 5
+    // A box with neither views nor URL opens a menu with no entry (all
+    // rows greyed).
     let at = sh.screen("clerk");
     sh.click_button(at, Button::Right, NONE);
-    assert!(sh.s.overlay.is_none());
+    assert_eq!(sh.s.overlay, Some(Overlay::ContextMenu { entries: Vec::new() }));
+    sh.key(Key::Escape, NONE);
     // URL entries on a box and on a line.
     let at = sh.screen("customer");
     sh.click_button(at, Button::Right, NONE);
@@ -1652,6 +1655,35 @@ fn p2_305_context_menu_closes_on_click_and_escape() {
     sh.click_button(at, Button::Right, NONE);
     sh.click_button(ScreenPoint { x: 5.0, y: 5.0 }, Button::Left, NONE);
     assert!(sh.s.overlay.is_none());
+}
+
+/// Behaviour change 5: a right click on a box with no deeper view and no
+/// URL still opens the menu, with no entry, so every row is disabled
+/// (`app::frame::menu_rows`). It is harmless: Enter runs nothing, a
+/// release over a greyed row (which the canvas sees without its press)
+/// changes nothing, and Escape only closes it.
+// owner decision 2026-11-19: behaviour change 5
+#[test]
+fn p2_305_menu_without_entries_opens_disabled_and_harmless() {
+    let mut sh = Shell::with(SHOP);
+    let at = sh.screen("clerk");
+    sh.click_button(at, Button::Right, NONE);
+    let empty = Some(Overlay::ContextMenu { entries: Vec::new() });
+    assert_eq!(sh.s.overlay, empty, "the menu opens with every entry disabled");
+    assert_eq!(sh.selection(), [el("clerk")]);
+    sh.key(Key::Enter, NONE);
+    assert_eq!(sh.s.overlay, empty, "Enter leaves the menu");
+    assert!(sh.s.text_edit.is_none(), "Enter opens no editor under the menu");
+    sh.input(Input::PointerUp {
+        at: ScreenPoint { x: at.x + 20.0, y: at.y + 20.0 },
+        button: Button::Left,
+    });
+    assert_eq!(sh.s.overlay, empty, "a click on a greyed row runs nothing");
+    sh.key(Key::Escape, NONE);
+    assert!(sh.s.overlay.is_none(), "Escape closes it");
+    assert_eq!(sh.selection(), [el("clerk")], "and keeps the selection");
+    assert_eq!(sh.s.view, Some(declared("context")));
+    assert!(sh.writes.is_empty() && sh.urls.is_empty());
 }
 
 // ------------------------------------------------------------ task 12

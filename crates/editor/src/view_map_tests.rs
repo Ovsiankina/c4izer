@@ -230,7 +230,7 @@ impl Shell {
     }
 
     /// The views the context menu of the box at `at` enters, in menu
-    /// order (editor-ux-02); empty when no menu opens.
+    /// order (editor-ux-02); empty when the menu enters none.
     fn menu_targets(&mut self, at: ScreenPoint) -> Vec<ViewRef> {
         self.s.overlay = None;
         self.input(Input::PointerDown {
@@ -540,8 +540,16 @@ fn p4_111_large_map_scrolls_with_readable_text() {
     frame(&ctx, &mut panel, &p, None, size, Vec::new());
     let (content, area) = panel.sizes;
     assert!(content.x > area.x && content.y > area.y, "{content:?} over {area:?}");
-    let button = ctx.global_style().text_styles[&egui::TextStyle::Button].size;
-    assert!((panel.font_size - button).abs() < 1e-3, "the view list's font size");
+    // redesign 2026-11-19: the view list draws its keys in
+    // `theme::code_font()` (mono 11), no longer in egui's Button style, and
+    // the design pack's map keys are mono 10 (`.c4-map__key`): the map
+    // text is the view list's key size or at most 1 px under it.
+    let list = crate::theme::code_font().size;
+    assert!(
+        panel.font_size >= list - 1.0 && panel.font_size <= list,
+        "the view list's font size: {} against {list}",
+        panel.font_size
+    );
     let before = panel.drawn[0].rect;
     let inside = egui::pos2(80.0, 80.0);
     frame(

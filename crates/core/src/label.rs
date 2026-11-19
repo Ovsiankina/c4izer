@@ -818,7 +818,7 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
             }
         }
         let (font_px, line_px) = (label_font_px(edge), label_line_px(edge));
-        let (width_px, height_px) = label_size(&lines, font_px, line_px);
+        let (width_px, height_px) = label_size(&lines, font_px, line_px, plan.kind == ViewKind::Dynamic);
         let mut label = Label {
             edge: edge.id,
             lines,
@@ -908,7 +908,7 @@ fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels
             }
         }
         let (font_px, line_px) = (label_font_px(edge), label_line_px(edge));
-        let (width_px, height_px) = label_size(&lines, font_px, line_px);
+        let (width_px, height_px) = label_size(&lines, font_px, line_px, plan.kind == ViewKind::Dynamic);
         let mut label = Label {
             edge: edge.id,
             lines,
@@ -1441,14 +1441,21 @@ const fn ceil_grid(px: i32) -> i32 {
 }
 
 /// Rectangle size in px of a label of `lines` (CORE-14 font, pitch and
-/// paddings).
-fn label_size(lines: &[String], font_px: i32, line_px: i32) -> (i32, i32) {
+/// paddings). In a dynamic view (`dynamic`) a step label is measured as
+/// the renderers draw it: number disc, gap, then the text without its
+/// `<number>: ` (`scene::step_label_width`).
+// DECISION: the step badge's width is measured here, where labels are
+// placed, so the placed rectangle is the one drawn and the clearance
+// rules (boundaries, callouts, lines) hold for the disc too; the label
+// lines themselves keep `<number>: ` (P3-211).
+fn label_size(lines: &[String], font_px: i32, line_px: i32, dynamic: bool) -> (i32, i32) {
     let widest = lines
         .iter()
         .map(|s| text_advance(s, Weight::Regular))
         .max()
         .unwrap_or(0);
-    let text_px = (widest * font_px + EM - 1) / EM;
+    let step = dynamic.then(|| crate::scene::step_label_width(lines, font_px)).flatten();
+    let text_px = step.unwrap_or((widest * font_px + EM - 1) / EM);
     let count = i32::try_from(lines.len()).unwrap_or(i32::MAX / line_px.max(1));
     (
         text_px + 2 * LABEL_PAD_X_PX,

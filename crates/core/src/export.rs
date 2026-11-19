@@ -43,6 +43,19 @@
 // bytes") needs the whole pipeline, which export cannot run; it is asked
 // of pipeline in docs/deferred.md (`core_25_example_svg_bytes_identical`).
 // Here `core_25_svg_deterministic_bytes` covers only the export half.
+//
+// redesign 2026-11-19 (owner-approved visual redesign, design-system
+// Edge/Node): the renderers draw a line's stroke 1.5px when the scene
+// gives the default 2px, round its orthogonal corners (10px, at most half
+// the shorter leg), end it in a notched arrowhead (9 long, 7 wide, 2.5
+// notch) with a paper-filled port dot (r 2.5) at its source, set labels
+// on a paper plate (6x4 padding, 3px corners), cut a person's head from
+// its body with a 2.5px paper ring and draw a cylinder's lid in the text
+// colour. DECISION: this drawing geometry is computed here and, the same
+// way, in the editor's canvas.rs from the scene's own points, so the
+// scene's pub structs stay as they are (no new pub field); numbers it
+// makes are written with at most one decimal (CORE-25 allows
+// fixed-precision decimals), so equal scenes still give equal bytes.
 
 use std::fmt::Write as _;
 
@@ -150,7 +163,11 @@ pub fn static_site(
 /// EDIT-7.
 #[must_use]
 pub fn svg(scene: &Scene) -> String {
-    let mut w = Writer::default();
+    let mut w = Writer {
+        paper: scene.background,
+        mode: scene.mode,
+        out: String::new(),
+    };
     let b = scene.bounds;
     w.raw("<svg xmlns=\"http://www.w3.org/2000/svg\"");
     w.attr_str(
@@ -193,7 +210,10 @@ pub fn svg(scene: &Scene) -> String {
     }
     for item in &scene.boxes {
         w.open_with("box", item.opacity);
-        w.outline(&item.outline, item.fill, &item.stroke);
+        // redesign 2026-11-19: a cylinder's lid line in the text colour
+        // at 45% over the fill (design-system `.dg-lid`).
+        let lid = over(item.name.colour, LID_OPACITY, item.fill);
+        w.box_outline(&item.outline, item.fill, &item.stroke, Some(lid));
         if let Some(icon) = &item.icon {
             w.image(icon);
         }
@@ -205,7 +225,7 @@ pub fn svg(scene: &Scene) -> String {
         w.close();
     }
     for label in &scene.labels {
-        w.label(label);
+        w.label(label, step_disc(scene, label));
     }
     for (class, text) in [("title", &scene.title), ("subtitle", &scene.subtitle)] {
         if let Some(text) = text {
@@ -228,8 +248,10 @@ pub fn svg(scene: &Scene) -> String {
                 stroke,
                 tip,
             } => {
-                w.polyline(&[*from, *to], stroke);
-                w.tip(tip, stroke.colour);
+                // The key's line sample: route, head, port, as a line.
+                w.route(&[vec![*from, *to]], &[], stroke, tip, false);
+                w.head(tip, stroke);
+                w.port(*from, stroke, false);
             }
         }
         w.text(&entry.text);
@@ -305,6 +327,8 @@ fn faces_used(scene: &Scene) -> (bool, bool) {
             regular = true;
         }
     }
+    // A step disc's number is bold.
+    bold |= scene.labels.iter().any(|l| step_disc(scene, l).is_some());
     (regular, bold)
 }
 
@@ -403,9 +427,13 @@ impl std::error::Error for OutlineError {}
 
 /// The SVG text under construction. Writing to a `String` cannot fail,
 /// so `write!` results are dropped.
-#[derive(Default)]
 struct Writer {
     out: String,
+    /// The page colour (`Scene::background`): label plates, the port
+    /// dot's fill and the person's head ring (redesign 2026-11-19).
+    paper: Colour,
+    /// The scene's mode, for the label technology colour.
+    mode: crate::model::Mode,
 }
 
 impl Writer {
@@ -526,36 +554,82 @@ impl Writer {
             ..line.stroke
         };
         // P4-519: a bridged line's runs, then its T bars (solid, as the
-        // chevrons); an unbridged line is written exactly as before.
-        if line.runs.is_empty() {
-            self.route(&line.points, &line.jumps, &line.stroke);
-        } else {
-            for run in &line.runs {
-                self.route(run, &line.jumps, &line.stroke);
-            }
-            for bar in &line.bars {
-                self.polyline(bar, &solid);
-            }
+        // chevrons).
+        let whole = [line.points.clone()];
+        let runs: &[Vec<Point>] = if line.runs.is_empty() { &whole } else { &line.runs };
+        let written = line.thickness_written;
+        self.route(runs, &line.jumps, &line.stroke, &line.tip, written);
+        let width = edge_width(line.stroke.width_px, written);
+        for bar in &line.bars {
+            self.edge_stroke(&path_data(bar, false), &solid, width);
         }
         for chevron in &line.chevrons {
-            self.polyline(&chevron.points, &solid);
+            self.edge_stroke(&path_data(&chevron.points, false), &solid, width);
         }
-        self.tip(&line.tip, line.stroke.colour);
+        self.head(&line.tip, &line.stroke);
+        if let Some(&source) = line.points.first() {
+            self.port(source, &line.stroke, written);
+        }
         self.close();
     }
 
-    /// A line's route: its polyline, with a 6px half-circle hop at each of
-    /// `jumps` (P2-422).
-    fn route(&mut self, points: &[Point], jumps: &[Point], stroke: &Stroke) {
-        if jumps.is_empty() {
-            self.polyline(points, stroke);
-            return;
+    /// A line's runs: rounded corners, a 6px half-circle hop at each of
+    /// `jumps` (P2-422), the run reaching the arrow's tip stopped in its
+    /// notch; `written` as `edge_width`.
+    #[expect(clippy::too_many_arguments, reason = "a line's geometry, stroke and tip, plus the written-width flag")]
+    fn route(&mut self, runs: &[Vec<Point>], jumps: &[Point], stroke: &Stroke, tip: &Tip, written: bool) {
+        let width = edge_width(stroke.width_px, written);
+        for run in runs {
+            let trim = match tip {
+                Tip::Arrow(t) if run.last() == Some(&t[0]) => head_trim(stroke.width_px),
+                _ => 0.0,
+            };
+            let d = svg_path(&edge_path(run, jumps, trim));
+            self.edge_stroke(&d, stroke, width);
         }
+    }
+
+    /// An open path in `stroke`'s colour and dash at `width` px, round
+    /// joins.
+    fn edge_stroke(&mut self, d: &str, stroke: &Stroke, width: f64) {
         self.raw("<path");
-        self.attr_str("d", &route_data(points, jumps));
+        self.attr_str("d", d);
         self.raw(" fill=\"none\"");
-        self.stroke(Some(stroke));
+        self.attr_colour("stroke", stroke.colour);
+        let _ = write!(self.out, " stroke-width=\"{}\"", num(width));
+        if let Some([dash, gap]) = stroke.dash_px {
+            let _ = write!(self.out, " stroke-dasharray=\"{dash} {gap}\"");
+        }
         self.raw(" stroke-linejoin=\"round\"/>");
+    }
+
+    /// The notched arrowhead, or the join dot (redesign 2026-11-19).
+    fn head(&mut self, tip: &Tip, stroke: &Stroke) {
+        match tip {
+            Tip::Arrow(t) => {
+                let pts = notched_head(t, stroke.width_px);
+                let mut d = String::new();
+                for (i, (x, y)) in pts.iter().enumerate() {
+                    let _ = write!(d, "{}{} {} ", if i == 0 { 'M' } else { 'L' }, num(*x), num(*y));
+                }
+                d.push('Z');
+                self.path(&d, Some(stroke.colour), None);
+            }
+            other => self.tip(other, stroke.colour),
+        }
+    }
+
+    /// The port: a paper dot ringed in the line's colour at its source;
+    /// `written` as `edge_width`.
+    fn port(&mut self, at: Point, stroke: &Stroke, written: bool) {
+        self.raw("<circle");
+        self.attr_num("cx", at.x);
+        self.attr_num("cy", at.y);
+        let _ = write!(self.out, " r=\"{}\"", num(PORT_RADIUS_PX));
+        self.attr_colour("fill", self.paper);
+        self.attr_colour("stroke", stroke.colour);
+        let _ = write!(self.out, " stroke-width=\"{}\"", num(edge_width(stroke.width_px, written)));
+        self.raw("/>");
     }
 
     fn ellipse(&mut self, rect: Rect, fill: Option<Colour>, stroke: Option<&Stroke>) {
@@ -570,17 +644,41 @@ impl Writer {
         self.raw("/>");
     }
 
-    /// One label group: backing, callout marks (P4-316), text.
-    fn label(&mut self, label: &crate::scene::SceneLabel) {
+    /// One label group: backing, callout marks (P4-316), step disc, text.
+    fn label(&mut self, label: &crate::scene::SceneLabel, disc: Option<Colour>) {
         self.open_with("label", label.opacity);
         if let Some(fill) = label.fill {
-            self.rect(label.rect, 0, Some(fill), None);
+            // redesign 2026-11-19: a plate 6x4px around the text, 3px
+            // corners (design-system Edge).
+            self.rect(label_plate(&label.text), PLATE_RADIUS_PX, Some(fill), None);
         }
         // P4-316: a callout's shelf, leader and dot, before its text.
         if let Some(c) = &label.callout {
             self.callout(c);
         }
-        self.text(&label.text);
+        let tech = crate::scene::label_tech_colour(label.text.colour, self.mode);
+        let text = &label.text;
+        let step = disc.zip(text.lines.first().and_then(|l| crate::scene::step_number(l)));
+        if let Some((colour, (number, rest))) = step {
+            // Design-system Edge "Step": the number in a filled disc at the
+            // left of the text bounds, the lines centred in the column
+            // right of it (`scene_label` sized the bounds for this).
+            let (centre, column_x) = step_layout(text);
+            self.circle(centre, crate::scene::STEP_DISC_RADIUS_PX, colour, None);
+            self.raw("<text");
+            self.attr_num("x", centre.x);
+            self.attr_num("y", centre.y + crate::scene::STEP_NUMBER_DROP_PX);
+            let _ = write!(self.out, " font-family=\"{FONT_FAMILY}, sans-serif\"");
+            self.attr_num("font-size", crate::scene::STEP_NUMBER_FONT_PX);
+            self.raw(" font-weight=\"bold\"");
+            self.attr_colour("fill", self.paper);
+            self.raw(" text-anchor=\"middle\">");
+            escape_into(&mut self.out, number);
+            self.raw("</text>");
+            self.text_lines(text, column_x, Some(rest), Some(tech));
+        } else {
+            self.text_tech(text, Some(tech));
+        }
         self.close();
     }
 
@@ -605,6 +703,11 @@ impl Writer {
     }
 
     fn outline(&mut self, outline: &Outline, fill: Colour, stroke: &Stroke) {
+        self.box_outline(outline, fill, stroke, None);
+    }
+
+    /// `outline`, a cylinder's lid line in `lid` (else the stroke colour).
+    fn box_outline(&mut self, outline: &Outline, fill: Colour, stroke: &Stroke, lid: Option<Colour>) {
         match *outline {
             Outline::Rect { rect, radius_px } => {
                 self.rect(rect, radius_px, Some(fill), Some(stroke));
@@ -616,6 +719,18 @@ impl Writer {
                 body_radius_px,
             } => {
                 self.rect(body, body_radius_px, Some(fill), Some(stroke));
+                // redesign 2026-11-19: the head cut from the body by a
+                // 2.5px paper ring.
+                // DECISION: on boxes only (`lid` is given for boxes); a key
+                // swatch's 3px head would vanish in the ring.
+                if lid.is_some() {
+                self.raw("<circle");
+                self.attr_num("cx", head_centre.x);
+                self.attr_num("cy", head_centre.y);
+                let _ = write!(self.out, " r=\"{}\"", num(f64::from(head_radius_px) + HEAD_RING_PX));
+                self.attr_colour("fill", self.paper);
+                self.raw("/>");
+                }
                 self.circle(head_centre, head_radius_px, fill, Some(stroke));
             }
             Outline::Cylinder { rect, cap_ry_px } => {
@@ -634,7 +749,11 @@ impl Writer {
                 );
                 self.path(&body, Some(fill), Some(stroke));
                 let cap = format!("M{x},{top} A{rx},{ry} 0 0 0 {},{top}", x + w);
-                self.path(&cap, None, Some(stroke));
+                let lid_stroke = Stroke {
+                    colour: lid.unwrap_or(stroke.colour),
+                    ..*stroke
+                };
+                self.path(&cap, None, Some(&lid_stroke));
             }
             other => self.shape_outline(&other, fill, stroke),
         }
@@ -760,21 +879,47 @@ impl Writer {
     /// One `<text>` per line, baselines `line_px` apart, never re-wrapped
     /// (CORE-30).
     fn text(&mut self, block: &TextBlock) {
+        self.text_tech(block, None);
+    }
+
+    /// `text`, the last line in `tech` when given and bracketed (a
+    /// label's technology, redesign 2026-11-19).
+    fn text_tech(&mut self, block: &TextBlock, tech: Option<Colour>) {
+        self.text_lines(block, block.at.x, None, tech);
+    }
+
+    /// `text_tech` with every line on `x`, and the first line replaced by
+    /// `first` when given (a step label's text after its number; not
+    /// drawn when empty).
+    fn text_lines(&mut self, block: &TextBlock, x: i32, first: Option<&str>, tech: Option<Colour>) {
         let anchor = match block.align {
             Align::Start => "start",
             Align::Middle => "middle",
         };
         let mut y = block.at.y;
-        for line in &block.lines {
+        let last = block.lines.len().saturating_sub(1);
+        for (i, line) in block.lines.iter().enumerate() {
+            let line = match first {
+                Some(f) if i == 0 => f,
+                _ => line.as_str(),
+            };
+            if i == 0 && first.is_some_and(str::is_empty) {
+                y += block.line_px;
+                continue;
+            }
+            let colour = match tech {
+                Some(t) if i == last && i > 0 && line.starts_with('[') && line.ends_with(']') => t,
+                _ => block.colour,
+            };
             self.raw("<text");
-            self.attr_num("x", block.at.x);
+            self.attr_num("x", x);
             self.attr_num("y", y);
             let _ = write!(self.out, " font-family=\"{FONT_FAMILY}, sans-serif\"");
             self.attr_num("font-size", block.size_px);
             if block.weight == Weight::Bold {
                 self.raw(" font-weight=\"bold\"");
             }
-            self.attr_colour("fill", block.colour);
+            self.attr_colour("fill", colour);
             let _ = write!(self.out, " text-anchor=\"{anchor}\">");
             escape_into(&mut self.out, line);
             self.raw("</text>");
@@ -830,38 +975,230 @@ pub(crate) fn window_marks(rect: Rect, bar_px: i32, kind: WindowKind) -> Vec<Str
     out
 }
 
-/// Path data of a route with a 6px half-circle hop centred on each of
-/// `jumps` (P2-422), each on one of its segments.
-// DECISION: the hop offsets are whole px, 6 along an axis and (4, 4) on
-// a diagonal (6/sqrt 2 rounded), arcs drawn with sweep 1.
-fn route_data(points: &[Point], jumps: &[Point]) -> String {
-    let mut d = String::new();
-    for (i, p) in points.iter().enumerate() {
-        if i == 0 {
-            let _ = write!(d, "M{},{}", p.x, p.y);
-            continue;
-        }
-        let a = points[i - 1];
-        let (sx, sy) = ((p.x - a.x).signum(), (p.y - a.y).signum());
-        let step = if sx != 0 && sy != 0 { HOP_DIAGONAL_PX } else { HOP_RADIUS_PX };
+// ------------------------------------------------ edge drawing geometry
+//
+// redesign 2026-11-19 (design-system Edge). The editor's canvas.rs
+// repeats these numbers and steps; keep the two in step (EDIT-12).
+
+/// Stroke width a renderer draws a line `width_px` wide at: the scene's
+/// default 2px line is drawn `edge-width` 1.5px; a thickness a style
+/// wrote (`written`, `SceneLine::thickness_written`) draws as written,
+/// 2px included.
+// DECISION: the scene keeps integer widths (pub `Stroke::width_px`), so
+// the renderers map exactly the unwritten default 2px to 1.5px; key
+// samples pass `written` false and keep their earlier width.
+pub(crate) fn edge_width(width_px: i32, written: bool) -> f64 {
+    if width_px == 2 && !written { 1.5 } else { f64::from(width_px) }
+}
+
+/// Corner radius of a turn (`edge-corner`), at most half the shorter leg.
+const CORNER_PX: f64 = 10.0;
+/// Hop radius where a line jumps another (P2-422).
+const HOP_RADIUS_PX: f64 = 6.0;
+/// Arrowhead length, half width and notch at the default width
+/// (`edge-head`: 9 long, 7 wide, 2.5 notch); they scale with thickness/2
+/// as the scene's arrowhead does (P2-418).
+const HEAD_LEN_PX: f64 = 9.0;
+const HEAD_HALF_PX: f64 = 3.5;
+const HEAD_NOTCH_PX: f64 = 2.5;
+/// How far into the head past the notch the line runs, so no seam shows.
+const HEAD_OVERLAP_PX: f64 = 0.5;
+/// Port dot radius (`edge-port`).
+const PORT_RADIUS_PX: f64 = 2.5;
+/// Paper ring between a person's head and body.
+const HEAD_RING_PX: f64 = 2.5;
+/// Label plate padding and corner radius.
+const PLATE_PAD_X_PX: i32 = 6;
+const PLATE_PAD_Y_PX: i32 = 4;
+const PLATE_RADIUS_PX: i32 = 3;
+/// A cylinder lid's line: the text colour at this opacity over the fill.
+const LID_OPACITY: u8 = 45;
+
+/// The scale of a line's head: thickness/2, never below 1 (P2-418).
+fn head_scale(width_px: i32) -> f64 {
+    f64::from(width_px.max(2)) / 2.0
+}
+
+/// How far the run ending at an arrow's tip stops short of it: in the
+/// notch, plus `HEAD_OVERLAP_PX`.
+fn head_trim(width_px: i32) -> f64 {
+    (HEAD_LEN_PX - HEAD_NOTCH_PX - HEAD_OVERLAP_PX) * head_scale(width_px)
+}
+
+/// The notched head on the scene's arrow `t` (tip, back corners): tip,
+/// back corner, notch, back corner.
+fn notched_head(t: &[Point; 3], width_px: i32) -> [(f64, f64); 4] {
+    let f = |p: Point| (f64::from(p.x), f64::from(p.y));
+    let (tip, b1, b2) = (f(t[0]), f(t[1]), f(t[2]));
+    let back = (f64::midpoint(b1.0, b2.0), f64::midpoint(b1.1, b2.1));
+    let (dx, dy) = unit(back, tip);
+    let (nx, ny) = (-dy, dx);
+    let k = head_scale(width_px);
+    let (len, half, notch) = (HEAD_LEN_PX * k, HEAD_HALF_PX * k, (HEAD_LEN_PX - HEAD_NOTCH_PX) * k);
+    [
+        tip,
+        (tip.0 - dx * len + nx * half, tip.1 - dy * len + ny * half),
+        (tip.0 - dx * notch, tip.1 - dy * notch),
+        (tip.0 - dx * len - nx * half, tip.1 - dy * len - ny * half),
+    ]
+}
+
+/// The unit vector from `a` to `b`, zero when they meet.
+fn unit(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy);
+    if len < 1e-9 { (0.0, 0.0) } else { (dx / len, dy / len) }
+}
+
+/// The step disc's colour for `label`, `None` outside a dynamic view or
+/// for a label whose first line is no `<number>:` (`scene::step_number`).
+// DECISION: the disc takes its line's stroke colour: `dg-line` for an
+// unstyled line, as the design's Edge "Step" asks, and a styled line's
+// own colour so the badge reads with its line; the canvas does the same.
+fn step_disc(scene: &Scene, label: &crate::scene::SceneLabel) -> Option<Colour> {
+    if scene.kind != crate::model::ViewKind::Dynamic {
+        return None;
+    }
+    crate::scene::step_number(label.text.lines.first()?)?;
+    Some(
+        scene
+            .lines
+            .iter()
+            .find(|l| l.edge == label.edge)
+            .map_or(label.text.colour, |l| l.stroke.colour),
+    )
+}
+
+/// A step label's disc centre and the x its lines are centred on: the
+/// disc at the left of the text bounds, its centre `STEP_DISC_RISE_PX`
+/// over the first baseline; the lines in the middle of the bounds right
+/// of the disc and its gap. The canvas computes the same.
+fn step_layout(text: &TextBlock) -> (Point, i32) {
+    use crate::scene::{STEP_DISC_GAP_PX, STEP_DISC_RADIUS_PX, STEP_DISC_RISE_PX};
+    let b = text.bounds;
+    let centre = Point::new(b.min.x + STEP_DISC_RADIUS_PX, text.at.y - STEP_DISC_RISE_PX);
+    let column = b.min.x + 2 * STEP_DISC_RADIUS_PX + STEP_DISC_GAP_PX;
+    (centre, (column + b.max.x).div_euclid(2))
+}
+
+/// The plate behind a label's text: its bounds plus the padding.
+fn label_plate(text: &TextBlock) -> Rect {
+    let b = text.bounds;
+    Rect::from_corners(
+        Point::new(b.min.x - PLATE_PAD_X_PX, b.min.y - PLATE_PAD_Y_PX),
+        Point::new(b.max.x + PLATE_PAD_X_PX, b.max.y + PLATE_PAD_Y_PX),
+    )
+}
+
+/// One step of an edge's path, scene px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Seg {
+    /// Start here.
+    Move((f64, f64)),
+    /// Straight to here.
+    Line((f64, f64)),
+    /// A rounded corner: quadratic through the control (the vertex) to
+    /// the end.
+    Quad((f64, f64), (f64, f64)),
+    /// A hop over a crossing (P2-422): half circle, sweep 1, to here.
+    Hop((f64, f64)),
+}
+
+/// The path of a run: its last point pulled back `trim` px, each turn
+/// rounded by `CORNER_PX` (at most half the shorter leg), a hop at each
+/// of `jumps` on a segment.
+fn edge_path(points: &[Point], jumps: &[Point], trim: f64) -> Vec<Seg> {
+    let mut pts: Vec<(f64, f64)> = points.iter().map(|p| (f64::from(p.x), f64::from(p.y))).collect();
+    let n = pts.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n >= 2 && trim > 0.0 {
+        let (a, b) = (pts[n - 2], pts[n - 1]);
+        let len = (b.0 - a.0).hypot(b.1 - a.1);
+        let back = trim.min(len);
+        let (dx, dy) = unit(a, b);
+        pts[n - 1] = (b.0 - dx * back, b.1 - dy * back);
+    }
+    let dist = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).hypot(b.1 - a.1);
+    let radius: Vec<f64> = (0..n)
+        .map(|i| {
+            if i == 0 || i + 1 == n {
+                return 0.0;
+            }
+            let (u, v) = (unit(pts[i - 1], pts[i]), unit(pts[i], pts[i + 1]));
+            if (u.0 * v.1 - u.1 * v.0).abs() < 1e-9 {
+                return 0.0;
+            }
+            CORNER_PX.min(dist(pts[i - 1], pts[i]) / 2.0).min(dist(pts[i], pts[i + 1]) / 2.0)
+        })
+        .collect();
+    let mut out = vec![Seg::Move(pts[0])];
+    for i in 1..n {
+        let (a, b) = (pts[i - 1], pts[i]);
+        let (dx, dy) = unit(a, b);
         let mut on: Vec<Point> = jumps
             .iter()
             .copied()
-            .filter(|j| on_segment(a, *p, *j))
+            .filter(|j| on_segment(points[i - 1], points[i], *j))
             .collect();
-        on.sort_by_key(|j| (j.x - a.x).abs() + (j.y - a.y).abs());
+        on.sort_by_key(|j| (j.x - points[i - 1].x).abs() + (j.y - points[i - 1].y).abs());
         for j in on {
-            let (bx, by) = (j.x - sx * step, j.y - sy * step);
-            let (ex, ey) = (j.x + sx * step, j.y + sy * step);
-            let _ = write!(d, " L{bx},{by} A{HOP_RADIUS_PX},{HOP_RADIUS_PX} 0 0 1 {ex},{ey}");
+            let (jx, jy) = (f64::from(j.x), f64::from(j.y));
+            out.push(Seg::Line((jx - dx * HOP_RADIUS_PX, jy - dy * HOP_RADIUS_PX)));
+            out.push(Seg::Hop((jx + dx * HOP_RADIUS_PX, jy + dy * HOP_RADIUS_PX)));
         }
-        let _ = write!(d, " L{},{}", p.x, p.y);
+        let r = radius[i];
+        out.push(Seg::Line((b.0 - dx * r, b.1 - dy * r)));
+        if r > 0.0 {
+            let (ex, ey) = unit(b, pts[i + 1]);
+            out.push(Seg::Quad(b, (b.0 + ex * r, b.1 + ey * r)));
+        }
+    }
+    out
+}
+
+/// `segs` as SVG path data.
+fn svg_path(segs: &[Seg]) -> String {
+    let mut d = String::new();
+    for (i, seg) in segs.iter().enumerate() {
+        if i > 0 {
+            d.push(' ');
+        }
+        let _ = match *seg {
+            Seg::Move((x, y)) => write!(d, "M{} {}", num(x), num(y)),
+            Seg::Line((x, y)) => write!(d, "L{} {}", num(x), num(y)),
+            Seg::Quad((cx, cy), (x, y)) => write!(d, "Q{} {} {} {}", num(cx), num(cy), num(x), num(y)),
+            Seg::Hop((x, y)) => write!(d, "A{r} {r} 0 0 1 {} {}", num(x), num(y), r = num(HOP_RADIUS_PX)),
+        };
     }
     d
 }
 
-const HOP_RADIUS_PX: i32 = 6;
-const HOP_DIAGONAL_PX: i32 = 4;
+/// `v` rounded to one decimal, written without a trailing `.0`; the
+/// same bytes on every machine (CORE-25: fixed-precision decimals).
+fn num(v: f64) -> String {
+    #[expect(clippy::cast_possible_truncation, reason = "scene px are far inside i64")]
+    let tenths = (v * 10.0).round() as i64;
+    let sign = if tenths < 0 { "-" } else { "" };
+    let a = tenths.unsigned_abs();
+    if a.is_multiple_of(10) {
+        format!("{sign}{}", a / 10)
+    } else {
+        format!("{sign}{}.{}", a / 10, a % 10)
+    }
+}
+
+/// `top` at `opacity`/100 over `under`, each channel rounded to nearest.
+fn over(top: Colour, opacity: u8, under: Colour) -> Colour {
+    let a = u16::from(opacity.min(100));
+    let mix = |t: u8, u: u8| u8::try_from((u16::from(t) * a + u16::from(u) * (100 - a) + 50) / 100).unwrap_or(u8::MAX);
+    Colour {
+        r: mix(top.r, under.r),
+        g: mix(top.g, under.g),
+        b: mix(top.b, under.b),
+    }
+}
 
 /// True when `p` lies on the segment `a`..`b`, ends excluded.
 fn on_segment(a: Point, b: Point, p: Point) -> bool {
@@ -1524,19 +1861,25 @@ mod tests {
             let b = svg(&scene_of(SHOP, key));
             assert_eq!(a, b, "{key}");
             assert_eq!(svg(&scene_of(SHOP, key)), a, "{key} third run");
-            // Integers only: no number with a decimal point in any
-            // attribute value.
+            // Fixed precision: every number in an attribute value is an
+            // integer or has exactly one decimal (CORE-25).
+            // redesign 2026-11-19: was integers only; the redesign's
+            // 1.5px edges, notched heads and rounded corners need tenths.
             for el in root(&a).all() {
                 for (name, value) in &el.attrs {
                     if name == "xmlns" {
                         continue;
                     }
                     let b = value.as_bytes();
-                    for w in b.windows(2) {
+                    for (i, w) in b.windows(2).enumerate() {
+                        if w[0].is_ascii_digit() && w[1] == b'.' {
+                            let after = &b[i + 2..];
+                            let digits = after.iter().take_while(|c| c.is_ascii_digit()).count();
+                            assert_eq!(digits, 1, "not one decimal in {name}=\"{value}\"");
+                        }
                         assert!(
-                            !((w[0].is_ascii_digit() && w[1] == b'.')
-                                || (w[0] == b'.' && w[1].is_ascii_digit())),
-                            "fractional number in {name}=\"{value}\""
+                            !(w[0] == b'.' && i == 0),
+                            "number without integer part in {name}=\"{value}\""
                         );
                     }
                 }
@@ -1552,7 +1895,8 @@ mod tests {
         for (b, g) in scene.boxes.iter().zip(box_groups) {
             let shapes = match b.outline {
                 Outline::Rect { .. } => vec!["rect"],
-                Outline::Person { .. } => vec!["rect", "circle"],
+                // redesign 2026-11-19: the paper ring, then the head.
+                Outline::Person { .. } => vec!["rect", "circle", "circle"],
                 Outline::Cylinder { .. } | Outline::Bucket { .. } | Outline::Pipe { .. } => {
                     vec!["path", "path"]
                 }
@@ -1598,12 +1942,15 @@ mod tests {
         // Key groups: swatch shapes then text.
         let key_groups = groups.iter().filter(|g| g.attr("class") == Some("key"));
         for (e, g) in scene.legend.entries.iter().zip(key_groups) {
+            // redesign 2026-11-19: a line sample has a port after its
+            // head.
             let shapes = match e.swatch {
                 Swatch::Box {
                     outline: Outline::Rect { .. },
                     ..
                 } => 1,
-                Swatch::Box { .. } | Swatch::Line { .. } => 2,
+                Swatch::Box { .. } => 2,
+                Swatch::Line { .. } => 3,
             };
             assert_eq!(g.children.len(), shapes + e.text.lines.len());
         }
@@ -1649,25 +1996,30 @@ mod tests {
         assert_eq!(got, want);
         assert!(!scene.boundaries.is_empty() && !scene.labels.is_empty());
 
-        // Each line group holds exactly its polyline, chevrons and tip.
+        // Each line group holds exactly its route, chevrons, tip and port.
+        // redesign 2026-11-19: the route has rounded corners and stops
+        // in the arrow's notch, and a port dot follows the tip.
         let line_groups = groups.iter().filter(|g| g.attr("class") == Some("line"));
         for (line, g) in scene.lines.iter().zip(line_groups) {
-            let d: Vec<String> = line
-                .points
-                .iter()
-                .enumerate()
-                .map(|(i, p)| format!("{}{},{}", if i == 0 { "M" } else { "L" }, p.x, p.y))
-                .collect();
-            assert_eq!(g.children[0].attr("d"), Some(d.join(" ").as_str()));
+            let first = line.points[0];
+            let d = g.children[0].attr("d").expect("route data");
+            assert!(d.starts_with(&format!("M{} {}", first.x, first.y)), "{d}");
             assert_eq!(g.children[0].attr("fill"), Some("none"));
             let stroke = line.stroke.colour.to_string();
             assert_eq!(g.children[0].attr("stroke"), Some(stroke.as_str()));
-            assert_eq!(g.children.len(), 1 + line.chevrons.len() + 1);
+            assert_eq!(g.children[0].attr("stroke-width"), Some("1.5"));
+            assert_eq!(g.children.len(), 1 + line.chevrons.len() + 2);
             let tip = match line.tip {
                 Tip::Arrow(_) => "path",
                 Tip::Dot { .. } => "circle",
             };
-            assert_eq!(g.children.last().map(|e| e.name.as_str()), Some(tip));
+            let n = g.children.len();
+            assert_eq!(g.children[n - 2].name, tip);
+            let port = &g.children[n - 1];
+            assert_eq!(port.name, "circle");
+            assert_eq!(port.attr("cx"), Some(first.x.to_string().as_str()));
+            assert_eq!(port.attr("r"), Some("2.5"));
+            assert_eq!(port.attr("fill"), Some(scene.background.to_string().as_str()));
         }
 
         assert_box_and_key_groups(&scene, &groups);
@@ -1683,6 +2035,51 @@ mod tests {
         empty.legend.entries.clear();
         let drawn = parse_xml(&svg(&empty)).expect("parses");
         assert_eq!(drawn.children.len(), 1);
+    }
+
+    /// P2-418 with the redesign's 1.5px edge: a relationship style that
+    /// writes `thickness 2` draws its line (route, chevrons, port ring)
+    /// exactly 2px, as written; an unstyled line keeps 1.5px.
+    #[test]
+    fn p2_418_written_thickness_2_draws_2px() {
+        let src = r#"workspace {
+  model {
+    a = softwareSystem "A"
+    b = softwareSystem "B"
+    c = softwareSystem "C"
+    a -> b "Thick" "" "Thick"
+    a -> c "Plain"
+  }
+  views {
+    systemLandscape "l" {
+      include *
+    }
+    styles {
+      relationship "Thick" {
+        thickness 2
+      }
+    }
+  }
+}
+"#;
+        let model = parse(src).expect("parses").model;
+        let scene = scene_of(src, "l");
+        let doc = root(&svg(&scene));
+        let line_groups: Vec<&El> = doc.children.iter().filter(|g| g.attr("class") == Some("line")).collect();
+        assert_eq!(line_groups.len(), 2);
+        for (line, g) in scene.lines.iter().zip(line_groups) {
+            assert_eq!(line.stroke.width_px, 2);
+            let thick = model.relationship(line.relationship).tags.iter().any(|t| t == "Thick");
+            let want = if thick { "2" } else { "1.5" };
+            let n = g.children.len();
+            for (i, child) in g.children.iter().enumerate() {
+                // The arrowhead is filled, not stroked.
+                if i == n - 2 {
+                    continue;
+                }
+                assert_eq!(child.attr("stroke-width"), Some(want), "thick {thick}, child {i}");
+            }
+        }
     }
 
     /// PNG width and height from the IHDR chunk; asserts the signature.

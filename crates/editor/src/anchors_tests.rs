@@ -285,7 +285,8 @@ fn p4_217_context_menu_releases_an_end() {
     sh.event(Event::Command(Command::ContextAction(release_end)));
     assert!(sh.text().contains("            anchor web -> db from left\n"), "{}", sh.text());
     assert_eq!(sh.undo_steps(), 1);
-    // A line with no pin offers neither.
+    // A line with no pin offers neither, but the menu opens.
+    // owner decision 2026-11-19: behaviour change 5
     let mut plain = Shell::open(&shop(&[]));
     let l = plain.line("Web", "Db");
     let at = plain.at(i32::midpoint(l.points[0].x, l.points[1].x), i32::midpoint(l.points[0].y, l.points[1].y));
@@ -295,9 +296,10 @@ fn p4_217_context_menu_releases_an_end() {
         mods: Modifiers::default(),
     }));
     plain.event(Event::Input(Input::PointerUp { at, button: Button::Right }));
-    if let Some(Overlay::ContextMenu { entries }) = &plain.s.overlay {
-        assert!(entries.iter().all(|e| !matches!(e.action, MenuAction::ReleaseAnchor { .. })));
-    }
+    let Some(Overlay::ContextMenu { entries }) = &plain.s.overlay else {
+        panic!("a menu opens on every line: {:?}", plain.s.overlay);
+    };
+    assert!(entries.iter().all(|e| !matches!(e.action, MenuAction::ReleaseAnchor { .. })));
 }
 
 #[test]

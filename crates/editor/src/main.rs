@@ -35,6 +35,10 @@ mod exporters_tests;
 mod export_files;
 mod files;
 mod history;
+mod icons;
+mod kit;
+#[cfg(test)]
+mod label_drag_tests;
 #[cfg(test)]
 mod landscape_filtered_tests;
 mod state;
@@ -42,6 +46,7 @@ mod state;
 mod styles_themes_tests;
 #[cfg(test)]
 mod testutil;
+mod theme;
 #[cfg(test)]
 mod vertices_tests;
 mod view_map;

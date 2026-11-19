@@ -221,15 +221,29 @@ fn p4_523_canvas_paints_the_scene_runs_and_bars() {
             })
             .collect();
         let cam = &sh.s.camera;
-        let expect: Vec<Vec<(f32, f32)>> = carrier
-            .runs
+        let screen = |pts: &[c4rizer_core::geom::Point]| -> Vec<(f32, f32)> {
+            pts.iter().map(|&p| cam.to_screen(p)).map(|q| (q.x, q.y)).collect()
+        };
+        // redesign 2026-11-19: each run is painted from its first point
+        // with rounded corners (and the run reaching the arrow stops in
+        // its notch, within 6px of its end), so runs are compared by their
+        // ends; bars and chevrons are painted exactly as the scene gives
+        // them.
+        let runs = carrier.runs.len();
+        let expect_rest: Vec<Vec<(f32, f32)>> = carrier
+            .bars
             .iter()
-            .cloned()
-            .chain(carrier.bars.iter().map(|b| b.to_vec()))
-            .chain(carrier.chevrons.iter().map(|c| c.points.to_vec()))
-            .map(|pts| pts.iter().map(|&p| cam.to_screen(p)).map(|q| (q.x, q.y)).collect())
+            .map(|b| screen(b))
+            .chain(carrier.chevrons.iter().map(|c| screen(&c.points)))
             .collect();
-        assert_eq!(paths, expect, "{lines:?}");
+        assert_eq!(paths.len(), runs + expect_rest.len(), "{lines:?}");
+        assert_eq!(&paths[runs..], &expect_rest[..], "{lines:?}");
+        for (painted, run) in paths[..runs].iter().zip(&carrier.runs) {
+            let want = screen(run);
+            assert_eq!(painted.first(), want.first(), "{lines:?}");
+            let (a, b) = (painted.last().unwrap(), want.last().unwrap());
+            assert!((a.0 - b.0).hypot(a.1 - b.1) <= 6.0 * cam.zoom + 1e-3, "{lines:?}: {a:?} vs {b:?}");
+        }
         assert!(!carrier.runs.is_empty());
     }
 }

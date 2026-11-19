@@ -2518,6 +2518,29 @@ impl Model {
         style
     }
 
+    /// True when a relationship style block that applies to
+    /// `relationship` in `mode` writes `thickness` (a response step's
+    /// lookup adds `Relationship/Response`, as `response_style_in`): the
+    /// renderers then draw the resolved width as written, even the
+    /// default 2px they otherwise draw 1.5px (redesign `edge-width`).
+    // DECISION: any applying block counts, theme blocks included: a
+    // theme's `thickness 2` is a written style too, and which block wins
+    // does not matter, only that the width did not come from DEFAULT.
+    pub(crate) fn relationship_thickness_written_in(
+        &self,
+        relationship: RelationshipId,
+        mode: Mode,
+        response: bool,
+    ) -> bool {
+        let r = self.relationship(relationship);
+        let response_tag = response.then(|| RESPONSE_TAG.to_owned());
+        r.tags.iter().chain(response_tag.iter()).any(|tag| {
+            self.relationship_styles
+                .iter()
+                .any(|s| s.tag.value == *tag && s.mode.is_none_or(|m| m == mode) && s.thickness.is_some())
+        })
+    }
+
     /// `relationship_style_of_in(relationship, Mode::Light)`. Serves
     /// P2-12.
     pub fn relationship_style_of(&self, relationship: RelationshipId) -> ResolvedRelationshipStyle {

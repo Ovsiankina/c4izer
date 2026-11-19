@@ -839,6 +839,7 @@ mod tests {
             jumps: Vec::new(),
             runs: Vec::new(),
             bars: Vec::new(),
+            thickness_written: false,
         }
     }
 
