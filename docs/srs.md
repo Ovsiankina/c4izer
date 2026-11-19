@@ -1096,7 +1096,8 @@ with an `at` line, a `Keep::moved` entry or a `Keep::previous` entry.
   at 0 and 1, and L23 findings are at most 0 and 1. Measured 2026-11-17
   after the CORE-14 arrowhead fix: 2838 px and 9370 px.
 - **P2-114** On example view C3-startup, routed crossings are at most 8,
-  L23 findings at most 5, and total length at most 17733 px. No-room
+  L23 findings at most 5, and total length at most 17766 px (17733
+  before P4-600 moved the lines on the boundary's stroke). No-room
   labels and labels over a box stay at 0 on every view (P2-107).
 - **P2-115** `TODO(srs)` (owner): on example view C3-startup, routed
   crossings are at most 6, L23 findings at most 3, and total length at
@@ -3406,7 +3407,7 @@ each box has snap points, at the four corners, the middle of each side,
 and a few more on the long sides. I drag the end of an arrow near a box
 and it snaps to one of them." One testable sentence each; ids are
 allocated per row: view-map P4-100.., anchors P4-200.., callout-labels P4-300..,
-bus P4-400.., bridges P4-500..
+bus P4-400.., bridges P4-500.., boundary-clear P4-600..
 
 view-map
 
@@ -4004,6 +4005,26 @@ it excepted, P4-417) or a single line not on a bus. Lengths are px.
 - **P4-523** The canvas paints exactly the scene's runs and bars
   (EDIT-12, one scene): a bridge looks the same on screen as in SVG and
   PNG.
+
+boundary-clear
+
+Authority: the owner (2026-11-19), on C3-startup of `example/`: "An
+arrow should never touch the border of the frame, because printed or
+exported to PNG it can be impossible to read." Approver ruling: one lane
+pitch (CORE-12, 20px) of clearance, in every view kind, bundles
+included; lines still cross a boundary square or at 45°.
+
+- **P4-600** No horizontal or vertical segment of a line (bundle tracks
+  and fan-outs included) shares any length with a boundary side it is
+  parallel to while less than 20px from that side's stroke, in every
+  view kind; the router never runs a line along a stroke, it only
+  crosses one, square or at 45°.
+- **P4-601** No horizontal or vertical segment of a line shares any
+  length with an edge of the page (`Scene::bounds`) while less than 20px
+  from it.
+- **P4-602** On every view of `example.dsl` and `example/workspace.dsl`
+  the length P4-600 and P4-601 measure is 0, and the four goldens
+  (CLI-5) are unchanged.
 
 ## 5. Cross-cutting
 

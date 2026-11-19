@@ -804,12 +804,17 @@ impl Grid {
                 grow(p);
             }
         }
-        // P3-123: room to skirt a deployment node boundary.
+        // P3-123: room to skirt a deployment node boundary. P4-600: two
+        // lanes outside every boundary, clear of its stroke.
+        // DECISION: the board, not placement, gives the room: it reaches
+        // 4 cells past every other boundary, so two lanes run outside it at
+        // 20px and 40px from the stroke (BOUNDARY_MARGIN_UNITS unchanged,
+        // the goldens stay byte-identical); measured best of 2..5 cells for
+        // C3-startup's routing time (one lane: +40%, two: +20%).
         for k in 0..plan.boundaries.len() {
-            if matches!(plan.boundaries[k].of, crate::view::BoundaryOf::DeploymentNode(_))
-                && let Some(r) = plan.boundary_rect(k, centres)
-            {
-                let r = r.inflate(MARGIN / 2);
+            let deployment = matches!(plan.boundaries[k].of, crate::view::BoundaryOf::DeploymentNode(_));
+            if let Some(r) = plan.boundary_rect(k, centres) {
+                let r = r.inflate(if deployment { MARGIN / 2 } else { 2 * STROKE_CLEAR });
                 grow(r.min);
                 grow(r.max);
             }
@@ -912,6 +917,68 @@ struct Board {
     /// 0 off every corridor, `SHUT` where no other line may pass, else
     /// the axis bit a line may cross the bundle along (P4-413).
     corridor: Vec<u8>,
+    /// Per cell: the axis bits a line may not run along there, because
+    /// the cell lies within one lane pitch of a boundary side parallel to
+    /// that axis (P4-600, `along_bans`); empty on a view without
+    /// boundaries.
+    along: Vec<u8>,
+}
+
+/// P4-600: grid units a line keeps from a boundary's stroke when it runs
+/// parallel to it, one lane pitch (CORE-12, 20px).
+const STROKE_CLEAR: i32 = 2;
+// DECISION: P4-601 (page edge) needs no rule here: `Scene::bounds` is
+// everything drawn, lines included, grown by 40px, so no line is ever
+// nearer the edge than that; the boundary_clear test checks it.
+
+/// P4-600: per cell of `grid`, the axis bits (`axis_bit`) a line may not
+/// run along there: `axis_bit(N)` within `STROKE_CLEAR + widen - 1` cells
+/// across a vertical boundary side, between its two ends grown by
+/// `widen`, `axis_bit(E)` likewise for horizontal sides; a step along an
+/// axis is banned when both its cells carry that axis's bit. `widen` is
+/// a bundle spine's half width (every track keeps the clearance). Empty
+/// when the view has no boundaries.
+// DECISION: a ban on running along the stroke, not a cost: crossing a
+// boundary square or at 45° stays as cheap as before, and a step the ban
+// removes was one no rule allows; every boundary keeps a free lane two
+// cells inside its stroke (BOUNDARY_MARGIN_UNITS 4, box clearance 1) and
+// the board reaches two cells past it, so no line of the examples loses
+// its way round (measured).
+fn along_bans(plan: &ViewPlan, centres: &[Point], grid: Grid, widen: i32) -> Vec<u8> {
+    if plan.boundaries.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; grid.len()];
+    let reach = STROKE_CLEAR - 1 + widen;
+    let mut mark = |x: i32, y: i32, bit: u8| {
+        if let Some(i) = grid.index(Point::new(x, y)) {
+            out[i] |= bit;
+        }
+    };
+    for k in 0..plan.boundaries.len() {
+        let Some(r) = plan.boundary_rect(k, centres) else { continue };
+        for sx in [r.min.x, r.max.x] {
+            for x in sx - reach..=sx + reach {
+                for y in r.min.y - widen..=r.max.y + widen {
+                    mark(x, y, axis_bit(Dir::N));
+                }
+            }
+        }
+        for sy in [r.min.y, r.max.y] {
+            for y in sy - reach..=sy + reach {
+                for x in r.min.x - widen..=r.max.x + widen {
+                    mark(x, y, axis_bit(Dir::E));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// True when the step from cell `ci` to cell `ni` heading `nd` does not
+/// run along a boundary's stroke (P4-600).
+fn along_ok(bans: &[u8], ci: usize, ni: usize, nd: Dir) -> bool {
+    bans.is_empty() || nd.is_diagonal() || bans[ci] & bans[ni] & axis_bit(nd) == 0
 }
 
 /// `Board::corridor`: a cell between two tracks no other line may enter.
@@ -1010,6 +1077,7 @@ impl Board {
                 .map(|(e, &b)| !e.vertices.is_empty() || anchored(e) || b)
                 .collect(),
             corridor: Vec::new(),
+            along: along_bans(plan, centres, grid, 0),
         }
     }
 
@@ -1454,7 +1522,9 @@ impl Scratch {
                     continue;
                 }
                 let Some(ci) = g.index(c) else { continue };
-                if board.cells[ci].blocked > 0 {
+                // P4-600: `astar` never takes a step along a stroke, so the
+                // bound leaves it out too (still a lower bound, tighter).
+                if board.cells[ci].blocked > 0 || !along_ok(&board.along, ci, ni, d) {
                     continue;
                 }
                 let mut step = if d.is_diagonal() {
@@ -1797,7 +1867,7 @@ fn astar(
                 continue;
             }
             let Some(ni) = g.index(n) else { continue };
-            if board.cells[ni].blocked > 0 || !corridor_ok(board, ci, ni, nd, by != 0) {
+            if board.cells[ni].blocked > 0 || !corridor_ok(board, ci, ni, nd, by != 0) || !along_ok(&board.along, ci, ni, nd) {
                 continue;
             }
             let mut step = if nd.is_diagonal() {
@@ -2694,7 +2764,14 @@ fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>
             // the line crosses itself there (the user asked for that point).
             let goal_cell = matches!(goal, Goal::Cell(c) | Goal::Entry(c, _) if *c == ni);
             let entry = matches!(goal, Goal::Entry(c, _) if *c == ni);
-            if board.cells[ni].blocked > 0 || (own[ni] && !goal_cell) || !corridor_ok(board, ci, ni, nd, t != 0) {
+            // DECISION: a step onto a hand-placed vertex is exempt from
+            // P4-600, so a vertex the user put beside a stroke is still
+            // reached (P3-311); the router never puts one there itself.
+            if board.cells[ni].blocked > 0
+                || (own[ni] && !goal_cell)
+                || !corridor_ok(board, ci, ni, nd, t != 0)
+                || (!goal_cell && !along_ok(&board.along, ci, ni, nd))
+            {
                 continue;
             }
             let mut step = if nd.is_diagonal() {

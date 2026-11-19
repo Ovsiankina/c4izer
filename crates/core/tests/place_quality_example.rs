@@ -41,8 +41,11 @@ const BASE_WARNINGS: [usize; 4] = [0, 2, 4, 7];
 const AFTER_CROSSINGS: [u32; 4] = [0, 0, 1, 8];
 /// Total line length in px per view measured after place-quality-2-fix
 /// (CORE-14 arrowhead, 2026-11-17; 2778 and 9272 px on C2 and C3-serving
-/// before it, 3554 and 14 161 px before the outward-facing externals).
-const AFTER_LENGTH: [i64; 4] = [691, 2838, 9370, 17733];
+/// before it, 3554 and 14 161 px before the outward-facing externals);
+/// C3-serving 9370 -> 9387 and C3-startup 17733 -> 17766 px with P4-600
+/// (boundary-clear, 2026-11-19), which moves the lines that ran on the
+/// boundary's stroke one lane out.
+const AFTER_LENGTH: [i64; 4] = [691, 2838, 9387, 17766];
 
 fn builds() -> Vec<ViewBuild> {
     let model = match parse(EXAMPLE) {
@@ -453,7 +456,7 @@ fn p2_113_c2_c3_serving_length() {
 }
 
 /// P2-114: on C3-startup, routed crossings at most 8, L23 findings at
-/// most 5, total line length at most 17733 px.
+/// most 5, total line length at most 17766 px (17733 before P4-600).
 #[test]
 fn p2_114_c3_startup_no_worse() {
     let all = builds();
@@ -468,7 +471,7 @@ fn p2_114_c3_startup_no_worse() {
     );
     assert!(cross <= 8, "C3-startup: {cross} crossings, cap 8");
     assert!(l23 <= 5, "C3-startup: {l23} L23, cap 5");
-    assert!(len <= 17_733, "C3-startup: length {len}, cap 17733");
+    assert!(len <= 17_766, "C3-startup: length {len}, cap 17766");
 }
 
 /// How many times `points` passes the border of `r`: inside/outside

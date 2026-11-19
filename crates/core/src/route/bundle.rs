@@ -16,7 +16,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use super::{
     Board, Ctx, Dir, Goal, Grid, Line, LineEnd, Point, Port, Rect, RouteConfig, RoutedBundle, Routes, SHUT, Segment,
     Side, Start, Stopped, AtomicBool, BEND, CLASH, MARGIN, START_OFFSET, STEP_DIAGONAL, STEP_STRAIGHT, H_MAX, H_MIN,
-    axis_bit, cells_of, check, crossings, edge_id, end_ports, leg, pinned_any, pinned_grid, side_dir, solve,
+    along_bans, along_ok, axis_bit, cells_of, check, crossings, edge_id, end_ports, leg, pinned_any, pinned_grid, side_dir, solve,
     solve_pinned, vertices,
 };
 use crate::view::{BoxId, ViewPlan};
@@ -427,7 +427,10 @@ fn route_bundle(
     if (sa.x - sb.x).abs().max((sa.y - sb.y).abs()) < MIN_STRETCH || along_ab(sb) <= along_ab(sa) {
         return None;
     }
-    let spine = spine(grid, &fat, (sa, start_dir), (sb, end_dir), 2 + 2 * jm)?;
+    // P4-600: every track, the outermost `half` from the spine, keeps the
+    // clearance from a boundary's stroke.
+    let bans = along_bans(plan, centres, grid, half);
+    let spine = spine(grid, (&fat, &bans), (sa, start_dir), (sb, end_dir), 2 + 2 * jm)?;
 
     // Tracks (P4-406, P4-407): offsets of the spine.
     let (dirs, tracks) = tracks_of(&spine, nt)?;
@@ -668,7 +671,7 @@ struct SpineRec {
 /// The spine from `sa` to `sb` on the cells `fat` leaves free: its bends,
 /// first and last segment on an axis, every segment at least `min`
 /// steps, each bend 45° (CORE-6); `None` when there is none.
-fn spine(grid: Grid, fat: &[bool], (sa, start_dir): (Point, Option<Dir>), (sb, end_dir): (Point, Option<Dir>), min: i32) -> Option<Vec<Point>> {
+fn spine(grid: Grid, (fat, bans): (&[bool], &[u8]), (sa, start_dir): (Point, Option<Dir>), (sb, end_dir): (Point, Option<Dir>), min: i32) -> Option<Vec<Point>> {
     let start = grid.index(sa)?;
     let goal = grid.index(sb)?;
     let min = u8::try_from(min.clamp(1, 200)).ok()?;
@@ -744,7 +747,7 @@ fn spine(grid: Grid, fat: &[bool], (sa, start_dir): (Point, Option<Dir>), (sb, e
             let nd = super::turn(r.dir, by);
             let n = c.step(nd);
             let Some(ni) = grid.index(n) else { continue };
-            if fat[ni] {
+            if fat[ni] || !along_ok(bans, r.cell as usize, ni, nd) {
                 continue;
             }
             let mut step = if nd.is_diagonal() { STEP_DIAGONAL } else { STEP_STRAIGHT };

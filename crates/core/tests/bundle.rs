@@ -399,7 +399,10 @@ fn p4_412_members_never_cross_when_an_order_exists() {
 #[test]
 fn p4_413_others_cross_square_across_the_whole_bundle() {
     // A tall view: going round the bundle costs more than crossing it.
-    let m = parse(&grid_at(6100, STRAIGHT));
+    // DECISION: 8100 tall, not 6100: with P4-600 the lines that ran on the
+    // boundary's left stroke move one lane out, and at 6100 the rip-up
+    // then sends Left -> Right round the top (no crossing to check).
+    let m = parse(&grid_at(8100, STRAIGHT));
     let b = build(&m, "g");
     let r = routed(&b);
     let l = line(&b, edge(&m, &b, "Left", "Right"));
