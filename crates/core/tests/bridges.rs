@@ -336,9 +336,12 @@ fn p4_506_gap_square_and_slanted() {
     assert!(line(&s, 1).runs.is_empty() && line(&s, 1).bars.is_empty(), "the passing line is whole");
     // Bars in the carrier's colour and width, solid.
     let svg = export::svg(&s);
+    // redesign 2026-11-19: the default 2px line (and its bars) is drawn
+    // 1.5px (`edge-width`).
+    let width = if c.stroke.width_px == 2 { "1.5".to_owned() } else { c.stroke.width_px.to_string() };
     let bar = format!(
-        "<path d=\"M622,415 L622,405\" fill=\"none\" stroke=\"#{:02x}{:02x}{:02x}\" stroke-width=\"{}\" stroke-linejoin=\"round\"/>",
-        c.stroke.colour.r, c.stroke.colour.g, c.stroke.colour.b, c.stroke.width_px
+        "<path d=\"M622,415 L622,405\" fill=\"none\" stroke=\"#{:02x}{:02x}{:02x}\" stroke-width=\"{width}\" stroke-linejoin=\"round\"/>",
+        c.stroke.colour.r, c.stroke.colour.g, c.stroke.colour.b
     );
     assert!(svg.contains(&bar), "{svg}");
     // 45°: 28px.
@@ -624,23 +627,27 @@ fn p4_520_golden_diff_confined_to_the_carrier() {
     assert_eq!(differ.len(), 1, "{differ:?}");
     let site = only_bridge(&gap);
     let c = gap.lines.iter().find(|l| l.edge == site.carrier).expect("carrier");
-    // The plain group with its route path replaced by the runs and bars.
-    let path = |pts: &[Point]| {
-        let d: Vec<String> = pts.iter().enumerate().map(|(i, q)| format!("{}{},{}", if i == 0 { "M" } else { "L" }, q.x, q.y)).collect();
-        format!("<path d=\"{}\" fill=\"none\"", d.join(" "))
-    };
+    // The plain group with its one route path replaced by the runs and
+    // bars; chevrons, head and port unchanged.
+    // redesign 2026-11-19: route paths now carry rounded corners and the
+    // notch trim, so the pieces are checked by count, start point and
+    // style rather than as plain polylines.
     let i = differ[0];
     assert!(p[i].starts_with("<g class=\"line\">"), "{}", p[i]);
-    let route = path(&c.points);
-    let style = " stroke=\"#2e7d32\" stroke-width=\"2\" stroke-linejoin=\"round\"/>";
-    assert!(p[i].contains(&format!("{route}{style}")), "{}", p[i]);
-    let pieces: Vec<Vec<Point>> = c.runs.iter().cloned().chain(c.bars.iter().map(|b| b.to_vec())).collect();
-    let new = pieces.iter().fold(String::new(), |mut out, pts| {
-        out.push_str(&path(pts));
-        out.push_str(style);
-        out
-    });
-    assert_eq!(g[i], p[i].replacen(&format!("{route}{style}"), &new, 1));
+    let style = format!(" stroke=\"{}\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/>", c.stroke.colour);
+    let style = style.as_str();
+    let paths = |text: &str| text.matches("<path d=").count();
+    assert_eq!(paths(&g[i]), paths(&p[i]) - 1 + c.runs.len() + c.bars.len(), "{}", g[i]);
+    assert_eq!(g[i].matches(style).count(), p[i].matches(style).count() - 1 + c.runs.len() + c.bars.len());
+    for piece in c.runs.iter().map(|r| r[0]) {
+        assert!(g[i].contains(&format!("<path d=\"M{} {}", piece.x, piece.y)), "{piece:?} in {}", g[i]);
+    }
+    for bar in &c.bars {
+        let d = format!("<path d=\"M{},{} L{},{}\"", bar[0].x, bar[0].y, bar[1].x, bar[1].y);
+        assert!(g[i].contains(&d), "{d} in {}", g[i]);
+    }
+    let tail = |text: &str| text[text.rfind(style).unwrap_or(0)..].to_owned();
+    assert_eq!(tail(&g[i]), tail(&p[i]), "head and port unchanged");
     assert_eq!((c.runs.len(), c.bars.len()), (2, 2));
     // The other goldens are untouched.
     for key in ["C1", "C2", "C3-startup"] {

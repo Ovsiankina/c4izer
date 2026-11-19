@@ -1137,28 +1137,66 @@ fn scope_boundary(model: &Model, view: &ViewSpec, boxes: &[PlanBox], mode: Mode)
     })
 }
 
-/// The dark-mode defaults of a box (P2-431): a fill and a text colour no
-/// style block sets become #333333 and #ffffff. The model's resolved
-/// style stays mode-independent (P2-430); only the drawing changes.
-// TODO(srs): P2-431. Reading taken (B styles-themes 10c): background
-// #111111, box text #ffffff, default box fill #333333, line and boundary
-// #aaaaaa (the last three in `scene`).
-fn dark_defaults(model: &Model, element: ElementId, style: &mut ResolvedStyle) {
-    let blocks = model.styles_for_in(element, Mode::Dark);
+/// The default look of a box (P2-431): a fill, text colour and outline
+/// no style block sets come from the house palette of `mode`.
+/// The model's resolved style stays mode-independent (P2-430); only the
+/// drawing changes.
+// redesign 2026-11-19: the owner-approved redesign replaces the
+// Structurizr keyword defaults (#dddddd fill, #000000 text) and the dark
+// #333333/#ffffff with one blue stepped by C4 depth and a slate for
+// External (design-system tokens `dg-*`), each box outlined 1px in its
+// `dg-*-line` colour. Colours written in the file (a style block or a
+// theme) always win. Supersedes the TODO(srs) P2-431 reading (B
+// styles-themes 10c) for box fills; docs/deferred.md.
+fn house_defaults(model: &Model, element: ElementId, mode: Mode, style: &mut ResolvedStyle) {
+    let blocks = model.styles_for_in(element, mode);
     let sets = |f: fn(&crate::model::ElementStyle) -> bool| blocks.iter().any(|&i| f(&model.element_styles[i]));
-    if !sets(|s| s.background.is_some()) {
-        style.background = crate::model::Colour {
-            r: 0x33,
-            g: 0x33,
-            b: 0x33,
-        };
+    let e = model.element(element);
+    let (fill, text, line) = house_colours(e.kind, e.is_external(), mode);
+    let own_fill = sets(|s| s.background.is_some());
+    if !own_fill {
+        style.background = fill;
     }
     if !sets(|s| s.color.is_some()) {
-        style.color = crate::model::Colour {
-            r: 0xff,
-            g: 0xff,
-            b: 0xff,
-        };
+        style.color = text;
+    }
+    // DECISION: the token outline only goes with the token fill; a fill
+    // written in the file keeps its own outline (the fill darkened, as
+    // before), so a red box never gets a blue edge.
+    if !own_fill && !sets(|s| s.stroke.is_some()) {
+        style.stroke = Some(line);
+    }
+}
+
+/// `#rrggbb` as a colour, for the token table.
+const fn hex(v: u32) -> crate::model::Colour {
+    let [_, r, g, b] = v.to_be_bytes();
+    crate::model::Colour { r, g, b }
+}
+
+/// (fill, text, outline) of an unstyled box of `kind` in `mode`, from
+/// the design tokens `dg-<kind>`, `dg-on-<kind>`, `dg-<kind>-line`.
+// DECISION: instances draw as their element's kind; a custom element as
+// a software system; an infrastructure node as a container (it sits one
+// level inside a deployment node, as a container inside a system);
+// anything tagged External is slate whatever its kind.
+fn house_colours(
+    kind: ElementKind,
+    external: bool,
+    mode: Mode,
+) -> (crate::model::Colour, crate::model::Colour, crate::model::Colour) {
+    let dark = matches!(mode, Mode::Dark);
+    let pick = |light: u32, dark_v: u32| if dark { hex(dark_v) } else { hex(light) };
+    if external {
+        return (pick(0x5a_6470, 0x6a_7480), hex(0xff_ffff), pick(0x5a_6470, 0x8d_97a3));
+    }
+    match kind {
+        ElementKind::Person => (pick(0x0f_3a7d, 0x34_66c2), hex(0xff_ffff), pick(0x0f_3a7d, 0x5b_8be0)),
+        ElementKind::Container | ElementKind::ContainerInstance | ElementKind::InfrastructureNode => {
+            (pick(0x5a_a0f5, 0x6f_b0f8), hex(0x07_1a36), pick(0x2a_72e0, 0x9c_c8fb))
+        }
+        ElementKind::Component => (hex(0xb5_d4fb), hex(0x07_1a36), pick(0x2a_72e0, 0xd6_e7fd)),
+        _ => (pick(0x1b_5fd0, 0x2f_6fe0), hex(0xff_ffff), pick(0x1b_5fd0, 0x6f_9cf0)),
     }
 }
 
@@ -1206,9 +1244,7 @@ fn plan_box(
 ) -> PlanBox {
     let e = model.element(element);
     let mut style = model.style_of_in(element, mode);
-    if mode == Mode::Dark {
-        dark_defaults(model, element, &mut style);
-    }
+    house_defaults(model, element, mode, &mut style);
     // P2-402: a `size` line wins; else a resolved `width`/`height`
     // replaces that dimension of the kind default, each on its own.
     // DECISION: the half size rounds up to whole grid units as for a
@@ -1240,7 +1276,18 @@ fn plan_box(
             t.as_str() != "Element" && styled.iter().any(|&i| model.element_styles[i].tag.value == **t)
         })
         .cloned()
-        .unwrap_or_else(|| e.kind.default_tag().to_owned());
+        .unwrap_or_else(|| {
+            // redesign 2026-11-19: an unstyled External element draws in
+            // the house slate, a look of its own, so its key entry is
+            // named `External` (its own tag) rather than a second
+            // `Software System` entry.
+            let own_fill = styled.iter().any(|&i| model.element_styles[i].background.is_some());
+            if e.is_external() && !own_fill {
+                "External".to_owned()
+            } else {
+                e.kind.default_tag().to_owned()
+            }
+        });
     PlanBox {
         style_tag,
         id: BoxId(index),
@@ -1961,7 +2008,15 @@ mod tests {
         assert_eq!(mail.kind, ElementKind::SoftwareSystem);
         assert!(mail.external);
         assert_eq!(mail.tags, ["Element", "Software System", "External"]);
-        assert_eq!(mail.style, m.style_of(mail.element));
+        // redesign 2026-11-19: the plan's style is the model's resolved
+        // style with the house text colour where no style sets one (the
+        // External block sets fill and shape only); the model's own style
+        // keeps the keyword default (P2-430).
+        let resolved = m.style_of(mail.element);
+        assert_eq!(mail.style.background, resolved.background);
+        assert_eq!(mail.style.color, crate::model::Colour { r: 0xff, g: 0xff, b: 0xff });
+        assert_eq!(resolved.color, crate::model::Colour { r: 0, g: 0, b: 0 });
+        assert_eq!(mail.style.stroke, None, "a written fill keeps its own outline");
         assert_eq!(mail.style.shape, crate::model::Shape::Cylinder);
         assert_eq!(mail.name, "Mail");
         assert_eq!(mail.description.as_deref(), Some("Sends mail."));
@@ -1970,10 +2025,13 @@ mod tests {
         assert_eq!(rows.kind, ElementKind::Container);
         assert!(!rows.external);
         assert_eq!(rows.tags, ["Element", "Container", "Data"]);
-        assert_eq!(
-            rows.style,
-            ResolvedStyle::default_for(ElementKind::Container)
-        );
+        // redesign 2026-11-19: the keyword defaults with the house
+        // container fill, text and outline (`dg-container*`).
+        let mut house = ResolvedStyle::default_for(ElementKind::Container);
+        house.background = crate::model::Colour { r: 0x5a, g: 0xa0, b: 0xf5 };
+        house.color = crate::model::Colour { r: 0x07, g: 0x1a, b: 0x36 };
+        house.stroke = Some(crate::model::Colour { r: 0x2a, g: 0x72, b: 0xe0 });
+        assert_eq!(rows.style, house);
         assert_eq!(rows.description.as_deref(), Some("Keeps rows."));
         assert_eq!(rows.technology.as_deref(), Some("PostgreSQL"));
         let user_box = context_plan("").1;

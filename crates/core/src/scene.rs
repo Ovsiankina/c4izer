@@ -1054,7 +1054,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         .labels
         .iter()
         .flatten()
-        .map(|l| scene_label(plan, l, &boxes, &boundaries, pal))
+        .map(|l| scene_label(plan, l, &boundaries, pal))
         .collect();
     let label_rects = chevron_keepouts(&labels);
     let mut lines: Vec<SceneLine> = plan
@@ -1094,18 +1094,18 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
     let drawing = extent.rect();
     let mut below = drawing.max.y + TITLE_GAP_PX;
     let title = plan.title.as_ref().map(|t| {
-        let block = chrome_text(t, TITLE_FONT, drawing.min.x, below, pal.title);
+        let block = chrome_text(t, TITLE_FONT, drawing.min.x, below, pal.ink);
         below = block.bounds.max.y;
         block
     });
     let subtitle = plan.subtitle.as_ref().map(|t| {
-        let block = chrome_text(t, SUBTITLE_FONT, drawing.min.x, below, pal.subtitle);
+        let block = chrome_text(t, SUBTITLE_FONT, drawing.min.x, below, pal.ink_2);
         below = block.bounds.max.y;
         block
     });
     let mut legend = legend(looks(plan, &boxes, &lines, words), &drawing, below + KEY_GAP_PX);
     for entry in &mut legend.entries {
-        entry.text.colour = pal.key;
+        entry.text.colour = pal.ink_2;
     }
     for r in [
         title.as_ref().map(|t| t.bounds),
@@ -1196,7 +1196,7 @@ pub(crate) fn placeholder_text(image: &SceneImage) -> Option<TextBlock> {
             line_px: 18,
             weight: font.weight,
         },
-        SUBTITLE_COLOUR,
+        palette(Mode::Light).ink_2,
         middle(image.rect.centre().x, image.rect.centre().y - 9),
         &image.rect,
     );
@@ -1297,66 +1297,68 @@ fn svg_size(text: &str) -> Option<(f64, f64)> {
 // 62%. Line pitches the SRS leaves open: box name 18px, title 22px,
 // subtitle 16px, boundary tag 15px, key text 14px.
 
-const WHITE: Colour = Colour {
-    r: 0xff,
-    g: 0xff,
-    b: 0xff,
-};
-
 /// The colours a scene draws with where no style gives one (P2-431).
 #[derive(Clone, Copy)]
 struct Palette {
-    /// `Scene::background`, and the label backing.
+    /// `Scene::background`, and the label backing (`paper`).
     page: Colour,
-    /// An unstyled line, `None`: the destination's fill (CORE-3).
-    line: Option<Colour>,
-    /// An unstyled boundary's outline and tag.
+    /// An unstyled line, its arrowhead, port and step disc (`dg-line`).
+    line: Colour,
+    /// Label text and the title (`dg-ink`).
+    ink: Colour,
+    /// Subtitle, key text, boundary tag (`dg-ink-2`).
+    ink_2: Colour,
+    /// An unstyled boundary's outline (`dg-boundary`).
     boundary: Colour,
-    /// Title text.
-    title: Colour,
-    /// Subtitle text.
-    subtitle: Colour,
-    /// Key text.
-    key: Colour,
 }
 
-const DARK_GREY: Colour = Colour {
-    r: 0xaa,
-    g: 0xaa,
-    b: 0xaa,
-};
+/// `#rrggbb` as a colour, for the token table.
+const fn hex(v: u32) -> Colour {
+    let [_, r, g, b] = v.to_be_bytes();
+    Colour { r, g, b }
+}
 
-/// The palette of `mode`: light is phase 1.
-// TODO(srs): P2-431. Reading taken (B styles-themes 10c): dark page
-// #111111, unstyled lines and boundaries #aaaaaa (box defaults are set in
-// `view`). DECISION: the ruling leaves title, subtitle, key text and the
-// label backing "unchanged", which would draw #111111 text on the #111111
-// page; in dark mode they take #ffffff, #aaaaaa, #aaaaaa and the page
-// colour, so they stay readable (docs/deferred.md).
+/// The palette of `mode`.
+// redesign 2026-11-19: the owner-approved redesign's diagram tokens
+// (design-system tokens.json: `paper`, `dg-line`, `dg-ink`, `dg-ink-2`,
+// `dg-boundary`; light is the default, dark the editor's Dark mode).
+// Lines default to `dg-line` in both modes instead of the destination's
+// fill (CORE-3, conflict noted in docs/deferred.md); a relationship style
+// still wins. Supersedes the TODO(srs) P2-431 reading (B styles-themes
+// 10c: dark page #111111, lines and boundaries #aaaaaa).
 const fn palette(mode: Mode) -> Palette {
     match mode {
         Mode::Dark => Palette {
-            page: Colour {
-                r: 0x11,
-                g: 0x11,
-                b: 0x11,
-            },
-            line: Some(DARK_GREY),
-            boundary: DARK_GREY,
-            title: WHITE,
-            subtitle: DARK_GREY,
-            key: DARK_GREY,
+            page: hex(0x1e_2124),
+            line: hex(0x8f_a0b8),
+            ink: hex(0xe8_eaec),
+            ink_2: hex(0x9a_a2a8),
+            boundary: hex(0x73_7c83),
         },
         _ => Palette {
-            page: WHITE,
-            line: None,
-            boundary: BOUNDARY_COLOUR,
-            title: TITLE_COLOUR,
-            subtitle: SUBTITLE_COLOUR,
-            key: KEY_COLOUR,
+            page: hex(0xff_ffff),
+            line: hex(0x4a_5a70),
+            ink: hex(0x14_171a),
+            ink_2: hex(0x5a_6268),
+            boundary: hex(0x7b_848b),
         },
     }
 }
+
+/// The technology line's colour of a label drawn in `text` on a scene
+/// of `mode`: `dg-ink-2` under default `dg-ink` text, else the text's
+/// own colour. Both renderers draw the last, bracketed line of a label
+/// with it (redesign 2026-11-19, Edge: "technology under it in brackets
+/// in `dg-ink-2`").
+// DECISION: computed by the renderers from the scene's mode and the
+// label's colour, so `SceneLabel` keeps one text colour (pub layout
+// unchanged).
+#[must_use]
+pub(crate) fn label_tech_colour(text: Colour, mode: Mode) -> Colour {
+    let pal = palette(mode);
+    if text == pal.ink { pal.ink_2 } else { text }
+}
+
 /// Margin of `Scene::bounds` around everything drawn.
 const MARGIN_PX: i32 = 40;
 const PAD_PX: i32 = 10;
@@ -1371,7 +1373,9 @@ const BOX_RADIUS_PX: i32 = 6;
 const HEAD_RADIUS_PX: i32 = 30;
 const BODY_TOP_PX: i32 = 50;
 const BODY_RADIUS_PX: i32 = 22;
-const CAP_RY_PX: i32 = 12;
+// redesign 2026-11-19: a 9px lid (design-system Node: "a cylinder has a
+// 9 px lid"), was 12px from the prototype.
+const CAP_RY_PX: i32 = 9;
 const OUTLINE_PX: i32 = 1;
 
 /// A grid rectangle in px.
@@ -1599,14 +1603,16 @@ const BOX_DIMS: Dims = Dims {
     component_tab: (20, 10),
 };
 
+// redesign 2026-11-19: the key swatch is 18x12 with 2px corners
+// (design-system Legend, `.dgh-sw`); the other proportions shrink with it.
 const SWATCH_DIMS: Dims = Dims {
-    box_radius: 3,
+    box_radius: 2,
     rounded_radius: 6,
-    cap: 4,
-    bar: 5,
-    inset: 3,
-    tab: 4,
-    component_tab: (8, 4),
+    cap: 3,
+    bar: 4,
+    inset: 2,
+    tab: 3,
+    component_tab: (6, 3),
 };
 
 /// The screen of an `Outline::MobileDevice` (P2-11): the bezel is
@@ -2217,10 +2223,7 @@ fn scene_line(
         // chevrons and the tip solid with the same colour and width, so a
         // dashed line still shows whole direction marks (P2-420).
         stroke: Stroke {
-            colour: style
-                .color
-                .or(pal.line)
-                .unwrap_or_else(|| line_base(destination.fill, pal.page)),
+            colour: style.color.unwrap_or(pal.line),
             width_px: thickness,
             dash_px: dash_of(style.style),
         },
@@ -2356,7 +2359,6 @@ fn add_label(extent: &mut Extent, l: &SceneLabel) {
 fn scene_label(
     plan: &ViewPlan,
     label: &Label,
-    boxes: &[SceneBox],
     boundaries: &[SceneBoundary],
     pal: Palette,
 ) -> SceneLabel {
@@ -2388,18 +2390,13 @@ fn scene_label(
             Some(fill) => over(fill, b.opacity.min(100), under),
             None => under,
         });
-    let mut colour = edge.style.color.or(pal.line).unwrap_or_else(|| {
-        darker(
-            line_base(boxes[edge.destination.0 as usize].fill, pal.page),
-            LABEL_TEXT_DARKEN,
-        )
-    });
+    // redesign 2026-11-19: an unstyled line's label is `dg-ink`; a
+    // relationship style's colour still colours its label.
+    let mut colour = edge.style.color.unwrap_or(pal.ink);
     // Approver ruling 2026-11-17: in dark mode the text keeps the line's
     // colour only at a contrast of 3:1 or more against its backing.
-    if let Some(fallback) = pal.line
-        && contrast(colour, backing) < MIN_LABEL_CONTRAST
-    {
-        colour = fallback;
+    if matches!(plan.mode, Mode::Dark) && contrast(colour, backing) < MIN_LABEL_CONTRAST {
+        colour = pal.ink;
     }
     let font = Font {
         size_px: label.font_px,
@@ -2415,11 +2412,7 @@ fn scene_label(
             dot: c.leader[1],
             dot_radius_px: CALLOUT_DOT_RADIUS_PX,
             stroke: Stroke {
-                colour: edge
-                    .style
-                    .color
-                    .or(pal.line)
-                    .unwrap_or_else(|| line_base(boxes[edge.destination.0 as usize].fill, pal.page)),
+                colour: edge.style.color.unwrap_or(pal.line),
                 width_px: (thickness / 2).max(1),
                 dash_px: None,
             },
@@ -2442,31 +2435,6 @@ fn scene_label(
         fit: label.fit.clone(),
         opacity: edge.style.opacity.min(100),
         callout,
-    }
-}
-
-const LABEL_TEXT_DARKEN: u16 = 62;
-
-/// Structurizr's default line colour, `#707070`.
-const DEFAULT_LINE: Colour = Colour {
-    r: 0x70,
-    g: 0x70,
-    b: 0x70,
-};
-
-/// The least contrast a destination fill keeps against the page to colour
-/// a line (CORE-3).
-const MIN_LINE_CONTRAST: f64 = 1.3;
-
-/// The colour CORE-3 gives a line into a box filled `fill`.
-// DECISION: a fill within 1.3:1 of the page colour (white boxes on a
-// white page) would hide the line, so the line takes Structurizr's
-// default `#707070` instead; a relationship style still wins.
-fn line_base(fill: Colour, page: Colour) -> Colour {
-    if contrast(fill, page) < MIN_LINE_CONTRAST {
-        DEFAULT_LINE
-    } else {
-        fill
     }
 }
 
@@ -2506,11 +2474,6 @@ fn contrast(a: Colour, b: Colour) -> f64 {
 
 // ------------------------------------------------------------ boundary
 
-const BOUNDARY_COLOUR: Colour = Colour {
-    r: 0x66,
-    g: 0x66,
-    b: 0x66,
-};
 const BOUNDARY_DASH_PX: [i32; 2] = [8, 6];
 // The tag text as `label::boundary_tag` sizes it (label.rs DECISION):
 // 12px bold, from 12px right of the boundary's left edge, baseline 12px
@@ -2543,7 +2506,7 @@ fn scene_boundary(
         weight: Weight::Bold,
     };
     let node = matches!(boundary.of, BoundaryOf::DeploymentNode(_));
-    let colour = style.color.unwrap_or(pal.boundary);
+    let colour = style.color.unwrap_or(pal.ink_2);
     let tag = if node {
         // P3-114: name over type line, at the top left.
         text_block(
@@ -2622,27 +2585,13 @@ const KEY_FONT: Font = Font {
     line_px: SMALL_LINE_PX,
     weight: Weight::Regular,
 };
-const TITLE_COLOUR: Colour = Colour {
-    r: 0x11,
-    g: 0x11,
-    b: 0x11,
-};
-const SUBTITLE_COLOUR: Colour = Colour {
-    r: 0x55,
-    g: 0x55,
-    b: 0x55,
-};
-const KEY_COLOUR: Colour = Colour {
-    r: 0x33,
-    g: 0x33,
-    b: 0x33,
-};
 /// Space between the drawing and the title (CORE-14: clear of it).
 const TITLE_GAP_PX: i32 = 30;
 const KEY_GAP_PX: i32 = 16;
 const KEY_ROW_PX: i32 = 26;
-const KEY_BOX_W_PX: i32 = 26;
-const KEY_BOX_H_PX: i32 = 18;
+// redesign 2026-11-19: 18x12 swatches (design-system Legend).
+const KEY_BOX_W_PX: i32 = 18;
+const KEY_BOX_H_PX: i32 = 12;
 const KEY_LINE_W_PX: i32 = 30;
 const KEY_TEXT_GAP_PX: i32 = 8;
 const KEY_ENTRY_GAP_PX: i32 = 24;
@@ -2681,25 +2630,19 @@ enum Look {
     },
 }
 
-/// The `Relationship` entry's swatch colour when its lines differ in
-/// colour (Structurizr's default relationship colour).
-// TODO(srs): P2-434. Reading taken (B styles-themes 12): #707070.
-const MIXED_LINE_COLOUR: Colour = Colour {
-    r: 0x70,
-    g: 0x70,
-    b: 0x70,
-};
-
 /// The swatch outline of `shape` in the key, top left at `at`: the
 /// box's own outline at key size (P2-416).
 fn swatch_outline(shape: Shape, at: Point) -> Outline {
     let rect = Rect::from_corners(at, shift(at, KEY_BOX_W_PX, KEY_BOX_H_PX));
     match shape {
+        // P2-416: the person outline at key size. The redesign's Legend
+        // draws a pill for a person; P2-416 keeps the shape outline
+        // (docs/deferred.md D-R6).
         Shape::Person => Outline::Person {
-            head_centre: shift(at, KEY_BOX_W_PX / 2, 5),
-            head_radius_px: 5,
-            body: Rect::from_corners(shift(at, 3, 8), shift(at, KEY_BOX_W_PX - 3, KEY_BOX_H_PX)),
-            body_radius_px: 4,
+            head_centre: shift(at, KEY_BOX_W_PX / 2, 3),
+            head_radius_px: 3,
+            body: Rect::from_corners(shift(at, 2, 5), shift(at, KEY_BOX_W_PX - 2, KEY_BOX_H_PX)),
+            body_radius_px: 3,
         },
         _ => shape_outline(shape, rect, SWATCH_DIMS),
     }
@@ -2758,7 +2701,7 @@ fn looks(
     }
     for ((tag, dot), mut stroke, same) in groups {
         if !same {
-            stroke.colour = MIXED_LINE_COLOUR;
+            stroke.colour = palette(plan.mode).line;
         }
         looks.push((
             Look::Line { stroke, dot },
@@ -2825,7 +2768,8 @@ fn legend(looks: Vec<(Look, Vec<String>)>, drawing: &Rect, top: i32) -> Legend {
         let text = text_block(
             vec![label],
             KEY_FONT,
-            KEY_COLOUR,
+            // The caller sets the mode's key colour.
+            palette(Mode::Light).ink_2,
             start(x + swatch_w + KEY_TEXT_GAP_PX, mid - KEY_FONT.line_px / 2),
             &Rect::default(),
         );
@@ -2997,7 +2941,7 @@ mod tests {
 
     use crate::geom::{GRID_PX, Segment};
     use crate::label::place_labels;
-    use crate::model::{ResolvedStyle, parse};
+    use crate::model::parse;
     use crate::place::{Keep, place};
     use crate::route::{Join, Line, LineEnd, Port, RouteConfig, Side, route};
     use crate::view::plan;
@@ -3298,7 +3242,7 @@ mod tests {
             })
             .collect();
         // The lines take two colours, so the one entry is #707070 (P2-434).
-        assert_eq!(line_colours, vec![MIXED_LINE_COLOUR]);
+        assert_eq!(line_colours, vec![palette(Mode::Light).line]);
         for e in &scene.legend.entries {
             assert_eq!(e.text.lines, vec![e.names.join(", ")]);
             assert!(inside(&e.text.bounds, &scene.legend.rect));
@@ -3345,10 +3289,9 @@ mod tests {
         let Swatch::Box { fill, .. } = scene.legend.entries[0].swatch else {
             panic!("box swatch");
         };
-        assert_eq!(
-            fill,
-            ResolvedStyle::default_for(ElementKind::SoftwareSystem).background
-        );
+        // redesign 2026-11-19: an unstyled system's swatch is the house
+        // `dg-system` (was the keyword default #dddddd).
+        assert_eq!(fill, Colour { r: 0x1b, g: 0x5f, b: 0xd0 });
 
         let (plan, routes, labels) = staged(src, "pair");
         let scene = build(&plan, &routes, &labels);
@@ -3555,13 +3498,17 @@ mod tests {
         let (plan, routes, labels) = staged(SHOP, "c2");
         let scene = build(&plan, &routes, &labels);
         assert_eq!(scene.lines.len(), plan.edges.len());
+        // redesign 2026-11-19: an unstyled line is `dg-line`, not its
+        // destination's fill (owner-approved redesign; the CORE-3 conflict
+        // is docs/deferred.md D-R2). A relationship colour still wins
+        // (P2-419, tested in styles_themes).
+        let dg_line = palette(Mode::Light).line;
         for line in &scene.lines {
-            let dst = &scene.boxes[line.destination.0 as usize];
-            assert_eq!(line.stroke.colour, dst.fill, "line {:?}", line.edge);
+            assert_eq!(line.stroke.colour, dg_line, "line {:?}", line.edge);
             assert_eq!(line.stroke.width_px, 2);
             assert_eq!(line.stroke.dash_px, None, "lines are solid");
         }
-        // Lines into differently styled boxes differ in colour.
+        // Lines into differently styled boxes share the one line colour.
         let bank = scene_box(&scene, &plan, "Bank");
         let web = scene_box(&scene, &plan, "Web app");
         let into = |b: &SceneBox| {
@@ -3573,22 +3520,8 @@ mod tests {
                 .stroke
                 .colour
         };
-        assert_eq!(
-            into(bank),
-            Colour {
-                r: 0x99,
-                g: 0x99,
-                b: 0x99
-            }
-        );
-        assert_eq!(
-            into(web),
-            Colour {
-                r: 0x43,
-                g: 0x8d,
-                b: 0xd5
-            }
-        );
+        assert_eq!(into(bank), dg_line);
+        assert_eq!(into(web), dg_line);
     }
 
     #[test]

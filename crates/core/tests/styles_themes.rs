@@ -705,8 +705,10 @@ fn p2_413_shape_proportions() {
                 assert_eq!(rect.centre(), r.centre());
             }
             O::Hexagon { rect, inset_px } => assert_eq!((rect, inset_px), (r, h / 4)),
-            O::Bucket { rect, cap_ry_px } | O::Cylinder { rect, cap_ry_px } => assert_eq!((rect, cap_ry_px), (r, 12)),
-            O::Pipe { rect, cap_rx_px } => assert_eq!((rect, cap_rx_px), (r, 12)),
+            // redesign 2026-11-19: 9px caps (Node: "a 9 px lid"), was 12.
+            O::Bucket { rect, cap_ry_px } | O::Cylinder { rect, cap_ry_px } => assert_eq!((rect, cap_ry_px), (r, 9)),
+            // redesign 2026-11-19: the pipe shares the 9px cylinder cap.
+            O::Pipe { rect, cap_rx_px } => assert_eq!((rect, cap_rx_px), (r, 9)),
             O::Robot { head, body, .. } => {
                 assert_eq!(head.centre().x, r.centre().x);
                 assert_eq!((head.width(), head.height()), (w / 2, h / 4));
@@ -1635,7 +1637,9 @@ fn p2_430_plan_in_dark_mode() {
     assert_eq!(dark.mode, Mode::Dark);
     let sys_box = |p: &view::ViewPlan| p.boxes.iter().find(|b| b.element == sys(&m)).unwrap().style.clone();
     assert_eq!(sys_box(&dark).background, rgb(0x22, 0x22, 0x22));
-    assert_eq!(sys_box(&light).background, m.style_of(sys(&m)).background);
+    // redesign 2026-11-19: unstyled in light mode, the plan draws the
+    // house `dg-system` fill (was the resolved keyword default #dddddd).
+    assert_eq!(sys_box(&light).background, rgb(0x1b, 0x5f, 0xd0));
     assert!(dark.edges.iter().all(|e| e.style.color == Some(rgb(0xcc, 0xcc, 0xcc))));
     assert!(light.edges.iter().all(|e| e.style.color.is_none()));
 }
@@ -1713,8 +1717,12 @@ fn line_tagged<'a>(m: &Model, s: &'a scene::Scene, tag: &str) -> &'a scene::Scen
 fn p2_403_stroke_colour_and_default() {
     let (m, s) = ctx_scene(&tagged("                background #224466\n                stroke red"));
     assert_eq!(scene_box(&m, &s, "sys").stroke.colour, rgb(0xff, 0, 0));
-    // No stroke: the fill darkened to 72% (#dddddd -> #9f9f9f).
-    assert_eq!(scene_box(&m, &s, "peer").stroke.colour, rgb(0x9f, 0x9f, 0x9f));
+    // redesign 2026-11-19: no stroke and no fill: the house outline
+    // `dg-system-line` (was the #dddddd fill darkened to #9f9f9f). A
+    // written fill without a stroke keeps the darkened outline.
+    assert_eq!(scene_box(&m, &s, "peer").stroke.colour, rgb(0x1b, 0x5f, 0xd0));
+    let (m, s) = ctx_scene(&tagged("                background #dddddd"));
+    assert_eq!(scene_box(&m, &s, "sys").stroke.colour, rgb(0x9f, 0x9f, 0x9f));
 }
 
 /// `strokeWidth N` gives `SceneBox::stroke.width_px == N`; default 1.
@@ -1929,9 +1937,12 @@ fn p2_419_colour_overrides_core_3() {
     let svg = export::svg(&b.scene);
     let line_g = svg.lines().find(|l| l.starts_with("<g class=\"line\">")).unwrap();
     assert!(!line_g.contains("#dddddd") && line_g.contains("#aa0000"), "{line_g}");
-    // Without it: the destination's fill (CORE-3) and a darker label.
+    // Without it: `dg-line` and a `dg-ink` label.
+    // redesign 2026-11-19: was the destination's fill (CORE-3);
+    // docs/deferred.md D-R2.
     let (_, b) = long_label("");
-    assert_eq!(b.scene.lines[0].stroke.colour, rgb(0xdd, 0xdd, 0xdd));
+    assert_eq!(b.scene.lines[0].stroke.colour, rgb(0x4a, 0x5a, 0x70));
+    assert_eq!(b.scene.labels[0].text.colour, rgb(0x14, 0x17, 0x1a));
 }
 
 /// `style dashed|dotted` gives the line's polyline a dash array.
@@ -2233,10 +2244,12 @@ fn p2_411_boundary_default_unchanged() {
         let b = boundary_of("", key);
         assert_eq!(b.fill, None);
         assert_eq!(b.opacity, 100);
-        assert_eq!(b.stroke.colour, rgb(0x66, 0x66, 0x66));
+        // redesign 2026-11-19: outline `dg-boundary`, tag `dg-ink-2`
+        // (was #666666 for both); dash, width and size unchanged.
+        assert_eq!(b.stroke.colour, rgb(0x7b, 0x84, 0x8b));
         assert_eq!(b.stroke.width_px, 1);
         assert_eq!(b.stroke.dash_px, Some([8, 6]));
-        assert_eq!((b.tag.colour, b.tag.size_px), (rgb(0x66, 0x66, 0x66), 12));
+        assert_eq!((b.tag.colour, b.tag.size_px), (rgb(0x5a, 0x62, 0x68), 12));
         assert!(b.tag.lines[0].ends_with(']'));
         assert!(b.icon.is_none());
     }
@@ -2401,8 +2414,10 @@ fn p2_27_unnamed_lines_single_relationship_entry() {
     // No relationship style: one entry, though the lines take two colours.
     let m = parse(&ring_ws(""));
     let s = build_in(&m, "ctx", Mode::Light).scene;
+    // redesign 2026-11-19: unstyled lines all take `dg-line` now (they
+    // took two destination colours), still one entry.
     let colours: std::collections::BTreeSet<_> = s.lines.iter().map(|l| l.stroke.colour).collect();
-    assert!(colours.len() > 1);
+    assert_eq!(colours.len(), 1);
     let entries = line_entries(&s);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].0, ["Relationship"]);
@@ -2456,7 +2471,8 @@ fn p2_434_unnamed_swatch_colour() {
     // TODO(srs): P2-434. Reading taken (B styles-themes 12): #707070.
     let m = parse(&ring_ws(""));
     let s = build_in(&m, "ctx", Mode::Light).scene;
-    assert_eq!(line_entries(&s)[0].1.colour, rgb(0x70, 0x70, 0x70));
+    // redesign 2026-11-19: the mixed swatch is `dg-line` (was #707070).
+    assert_eq!(line_entries(&s)[0].1.colour, rgb(0x4a, 0x5a, 0x70));
     assert_eq!(line_entries(&s)[0].1.width_px, 2);
     // One colour among the lines: the swatch takes it.
     let m = parse(&long_line_ws(""));
@@ -2857,14 +2873,15 @@ fn p2_422_svg_jump_hops() {
     let mut hops = 0;
     for (l, g) in s.lines.iter().zip(&lines) {
         let route = &g[..g.find("/>").unwrap()];
-        assert_eq!(route.matches(" A6,6 ").count(), l.jumps.len(), "{route}");
+        // redesign 2026-11-19: path numbers are space-separated now.
+        assert_eq!(route.matches(" A6 6 ").count(), l.jumps.len(), "{route}");
         hops += l.jumps.len();
     }
     assert!(hops > 0);
     // No jump, no arcs in any line.
     let m = parse(&k33_ws(""));
     let svg = export::svg(&build_in(&m, "ctx", Mode::Light).scene);
-    assert!(groups(&svg, "line").iter().all(|g| !g.contains(" A6,6 ")));
+    assert!(groups(&svg, "line").iter().all(|g| !g.contains(" A6 6 ")));
 }
 
 /// The PNG of the all-styles fixture is its SVG rasterized (EXP-2).
@@ -3098,25 +3115,33 @@ fn p2_438_round_trip_all_styles() {
     }
 }
 
-/// Dark mode draws background #111111, box text #ffffff, default fill
-/// #333333, line and boundary #aaaaaa.
+/// Dark mode draws the redesign's dark diagram: paper #1e2124, unstyled
+/// containers `dg-container` with `dg-on-container` text and a
+/// `dg-container-line` outline, lines `dg-line`, boundary `dg-boundary`
+/// with its tag in `dg-ink-2`.
+// redesign 2026-11-19: the design tokens replace the P2-431 reading (B
+// styles-themes 10c: #111111 page, #333333/#ffffff boxes, #aaaaaa lines
+// and boundaries) and the light #dddddd default fill (docs/deferred.md
+// D-R5). The behaviour pinned stays: defaults per mode, styled
+// properties keep their value, resolved styles mode-independent.
 #[test]
 fn p2_431_dark_defaults() {
-    // TODO(srs): P2-431. Reading taken (B styles-themes 10c).
     let m = parse(&boundary_ws(&element_style("Db", "                background #00796b")));
     let light = build_in(&m, "c2", Mode::Light).scene;
     let dark = build_in(&m, "c2", Mode::Dark).scene;
-    let grey = rgb(0xaa, 0xaa, 0xaa);
     assert_eq!(light.background, rgb(0xff, 0xff, 0xff));
-    assert_eq!(dark.background, rgb(0x11, 0x11, 0x11));
+    assert_eq!(dark.background, rgb(0x1e, 0x21, 0x24));
     for b in &dark.boxes {
-        assert_eq!(b.fill, rgb(0x33, 0x33, 0x33));
-        assert_eq!(b.name.colour, rgb(0xff, 0xff, 0xff));
+        assert_eq!(b.fill, rgb(0x6f, 0xb0, 0xf8));
+        assert_eq!(b.name.colour, rgb(0x07, 0x1a, 0x36));
+        assert_eq!(b.stroke.colour, rgb(0x9c, 0xc8, 0xfb));
+        assert_eq!(b.stroke.width_px, 1);
     }
-    assert!(light.boxes.iter().all(|b| b.fill == rgb(0xdd, 0xdd, 0xdd)));
-    assert!(dark.lines.iter().all(|l| l.stroke.colour == grey));
-    assert_eq!(dark.boundaries[0].stroke.colour, grey);
-    assert_eq!(dark.boundaries[0].tag.colour, grey);
+    assert!(light.boxes.iter().all(|b| b.fill == rgb(0x5a, 0xa0, 0xf5) && b.stroke.colour == rgb(0x2a, 0x72, 0xe0)));
+    assert!(light.lines.iter().all(|l| l.stroke.colour == rgb(0x4a, 0x5a, 0x70)));
+    assert!(dark.lines.iter().all(|l| l.stroke.colour == rgb(0x8f, 0xa0, 0xb8)));
+    assert_eq!(dark.boundaries[0].stroke.colour, rgb(0x73, 0x7c, 0x83));
+    assert_eq!(dark.boundaries[0].tag.colour, rgb(0x9a, 0xa2, 0xa8));
     // A styled property keeps its value in dark mode.
     let m = parse(&boundary_ws(&element_style("Container", "                background #00796b\n                color #000000")));
     let dark = build_in(&m, "c2", Mode::Dark).scene;
@@ -3294,7 +3319,8 @@ fn p2_431_label_backing_composites_boundary_opacity() {
     let m = parse(&src);
     // 0.8 * 0xf4 + 0.2 * page, rounded.
     for (mode, want) in [
-        (Mode::Dark, rgb(0xc7, 0xc7, 0xc7)),
+        // redesign 2026-11-19: over the dark paper #1e2124 (was #111111).
+        (Mode::Dark, rgb(0xc9, 0xca, 0xca)),
         (Mode::Light, rgb(0xf6, 0xf6, 0xf6)),
     ] {
         let s = build_in(&m, "c2", mode).scene;
@@ -3323,7 +3349,8 @@ fn p2_431_dark_label_text_contrast() {
     };
     // Navy on the #111111 page: about 1.3:1.
     let navy = with("#000080");
-    assert!(label_colours(&navy, Mode::Dark).iter().all(|&c| c == rgb(0xaa, 0xaa, 0xaa)));
+    // redesign 2026-11-19: the fallback is `dg-ink` (was #aaaaaa).
+    assert!(label_colours(&navy, Mode::Dark).iter().all(|&c| c == rgb(0xe8, 0xea, 0xec)));
     assert!(label_colours(&navy, Mode::Light).iter().all(|&c| c == rgb(0, 0, 0x80)));
     // Amber on #111111: well above 3:1, kept.
     let amber = with("#ffcc00");
