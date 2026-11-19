@@ -387,13 +387,9 @@ fn editable_field(ui: &mut egui::Ui, editable: &[&'static str], label: &'static 
             mods: crate::state::Modifiers::default(),
             text_focus: false,
         }));
-        for _ in 0..at {
-            out.push(Event::Input(crate::state::Input::KeyDown {
-                key: crate::state::Key::Tab,
-                mods: crate::state::Modifiers::default(),
-                text_focus: false,
-            }));
-        }
+        // Enter opens on the first field; the Tab presses reach this one,
+        // as a click on a field in the canvas does.
+        out.extend(crate::app::focus_keys(0, at, editable.len()));
     }
 }
 

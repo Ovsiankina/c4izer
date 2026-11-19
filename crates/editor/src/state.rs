@@ -109,6 +109,7 @@ use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request,
 mod anchors;
 mod bridges;
 mod bundles;
+pub(crate) mod inplace;
 mod steps;
 mod vertices;
 pub use anchors::SnapMark;
@@ -4476,7 +4477,23 @@ impl State {
         self.selection.clear();
         self.selection.insert(item);
         self.open_text_edit();
+        self.focus_field_at(at);
         Vec::new()
+    }
+
+    /// Gives the in-place editor's focus to the field drawn under `at`
+    /// (its name, description, technology), keeping the first field when
+    /// none is there (EDIT-5).
+    fn focus_field_at(&mut self, at: ScreenPoint) {
+        let p = round_point(self.camera.to_scene(at));
+        let (Some(scene), Some(model), Some(edit)) = (self.scene(), self.model(), self.text_edit.as_ref()) else {
+            return;
+        };
+        let Some(item) = items_of(scene, model, &edit.item).into_iter().next() else { return };
+        let Some(field) = inplace::field_at(&inplace::slots(scene, item, &edit.fields), p) else { return };
+        if let Some(edit) = self.text_edit.as_mut() {
+            edit.current = field;
+        }
     }
 
     /// The views a box of `element` opens from the open view
@@ -6386,6 +6403,141 @@ mod tests {
             h.text()
         );
         assert!(h.text().contains("customer -> shop \"Visits\" \"HTTPS\""));
+    }
+
+    /// The screen point at the middle of `key`'s box text `which`
+    /// (`name` or `description`).
+    fn text_point(h: &H, key: &str, which: &str) -> ScreenPoint {
+        let b = &h.scene().boxes[h.box_id(key).0 as usize];
+        let block = if which == "name" { &b.name } else { b.description.as_ref().expect("a description") };
+        h.s.camera.to_screen(block.bounds.centre())
+    }
+
+    /// EDIT-5 (in-place editor): a double click on a box's description
+    /// opens every field with the description focused; on its name, with
+    /// the name focused; elsewhere in the box, with the first field.
+    #[test]
+    fn edit_5_double_click_focuses_the_field_under_the_pointer() {
+        let mut h = H::with_file(SHOP);
+        h.cmd(Command::ShowView(declared("containers")));
+        let at = text_point(&h, "web", "description");
+        h.input(Input::DoubleClick { at, mods: NONE });
+        let edit = h.s.text_edit.clone().expect("editor open");
+        let labels: Vec<&str> = edit.fields.iter().map(|f| f.label).collect();
+        assert_eq!(labels, ["name", "description", "technology"], "every field is editable");
+        assert_eq!(edit.fields[edit.current].label, "description");
+
+        h.key(Key::Escape, NONE);
+        let at = text_point(&h, "web", "name");
+        h.input(Input::DoubleClick { at, mods: NONE });
+        let edit = h.s.text_edit.clone().expect("editor open");
+        assert_eq!(edit.fields[edit.current].label, "name");
+
+        h.key(Key::Escape, NONE);
+        let r = h.rect("web");
+        let corner = h.s.camera.to_screen(Point::new(r.min.x + 4, r.max.y - 4));
+        h.input(Input::DoubleClick { at: corner, mods: NONE });
+        assert_eq!(h.s.text_edit.as_ref().map(|e| e.current), Some(0), "no field there: the first");
+    }
+
+    /// EDIT-5: the fields keep their own text while the focus moves
+    /// between them (Tab, or the Tab presses a click on a field sends);
+    /// typed text goes to the focused field only; one Enter writes all.
+    #[test]
+    fn edit_5_focus_moves_between_fields() {
+        let mut h = H::with_file(SHOP);
+        h.cmd(Command::ShowView(declared("containers")));
+        let at = text_point(&h, "web", "name");
+        h.input(Input::DoubleClick { at, mods: NONE });
+        h.event(Event::Text("Storefront".to_owned()));
+        // A click on the technology field: two Tab presses from the name.
+        for event in crate::app::focus_keys(0, 2, 3) {
+            h.event(event);
+        }
+        assert_eq!(h.s.text_edit.as_ref().map(|e| e.current), Some(2));
+        h.event(Event::Text("Rust 2024".to_owned()));
+        // Back to the description: one more Tab wraps past the end.
+        let current = h.s.text_edit.as_ref().map_or(0, |e| e.current);
+        for event in crate::app::focus_keys(current, 1, 3) {
+            h.event(event);
+        }
+        let edit = h.s.text_edit.clone().expect("editor open");
+        assert_eq!(edit.current, 1);
+        let buffers: Vec<&str> = edit.fields.iter().map(|f| f.buffer.as_str()).collect();
+        assert_eq!(buffers, ["Storefront", "Serves pages.", "Rust 2024"]);
+        h.key(Key::Enter, NONE);
+        assert_eq!(h.writes.len(), 1, "one batch");
+        assert!(h.text().contains("container \"Storefront\" \"Serves pages.\" \"Rust 2024\""), "{}", h.text());
+    }
+
+    /// EDIT-5: each field sits where the diagram draws its text, in that
+    /// text's font, and the canvas leaves the edited box's texts to the
+    /// fields; the other boxes keep theirs.
+    #[test]
+    fn edit_5_fields_sit_at_the_scene_texts() {
+        let mut h = H::with_file(SHOP);
+        h.cmd(Command::ShowView(declared("containers")));
+        let at = text_point(&h, "web", "name");
+        h.input(Input::DoubleClick { at, mods: NONE });
+        let edit = h.s.text_edit.clone().expect("editor open");
+        let id = h.box_id("web");
+        let b = h.scene().boxes[id.0 as usize].clone();
+        let slots = super::inplace::slots(h.scene(), ItemKey::Box(id), &edit.fields);
+        assert_eq!(slots.len(), 3);
+        let desc = b.description.clone().expect("a description");
+        assert!(slots[0].band.contains(b.name.bounds.centre()) && slots[0].bold && !slots[0].multiline);
+        assert_eq!((slots[0].size_px, slots[0].colour), (b.name.size_px, b.name.colour));
+        assert!(slots[1].band.contains(desc.bounds.centre()) && slots[1].multiline && !slots[1].bold);
+        assert!(slots[2].band.contains(b.type_line.bounds.centre()));
+        assert_eq!((slots[2].prefix.as_str(), slots[2].suffix.as_str()), ("[Container: ", "]"));
+        assert!(slots.iter().all(|s| b.rect.contains(s.band.min) && b.rect.contains(s.band.max)), "inside the box");
+
+        let list = h.s.draw_list();
+        let mut items = crate::canvas::paint_items(&list);
+        crate::app::suppress_edited(&mut items, &slots, &list.camera);
+        let texts = |source: ItemKey| -> Vec<String> {
+            items
+                .iter()
+                .filter(|i| i.source == crate::canvas::Source::Scene(source))
+                .filter_map(|i| match &i.primitive {
+                    crate::canvas::Primitive::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(texts(ItemKey::Box(id)).is_empty(), "{:?}", texts(ItemKey::Box(id)));
+        assert!(!texts(ItemKey::Box(h.box_id("db"))).is_empty());
+
+        // A line label: the description where the label draws it, the
+        // technology line below it.
+        h.key(Key::Escape, NONE);
+        let label = h.scene().labels.iter().find(|l| l.text.lines.concat().contains("Reads and writes")).cloned();
+        let label = label.expect("label web -> db");
+        let first_line = Point::new(label.text.bounds.centre().x, label.text.bounds.min.y + 3);
+        let at = h.s.camera.to_screen(first_line);
+        h.input(Input::DoubleClick { at, mods: NONE });
+        let edit = h.s.text_edit.clone().expect("editor open on the line");
+        assert_eq!(edit.fields[edit.current].label, "description");
+        let slots = super::inplace::slots(h.scene(), ItemKey::Line(label.edge), &edit.fields);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].band.min.y, label.text.bounds.min.y);
+        assert_eq!(slots[0].size_px, label.text.size_px);
+        assert!(slots[1].band.min.y >= slots[0].band.max.y, "technology below the description");
+    }
+
+    /// EDIT-5: Enter in the description confirms it (no new line); the
+    /// description is written.
+    #[test]
+    fn edit_5_enter_confirms_the_description() {
+        let mut h = H::with_file(SHOP);
+        h.cmd(Command::ShowView(declared("containers")));
+        let at = text_point(&h, "web", "description");
+        h.input(Input::DoubleClick { at, mods: NONE });
+        h.event(Event::Text("Serves pages and the cart.".to_owned()));
+        h.key(Key::Enter, NONE);
+        assert!(h.s.text_edit.is_none(), "Enter closes the editor");
+        assert_eq!(h.writes.len(), 1);
+        assert!(h.text().contains("container \"Web app\" \"Serves pages and the cart.\" \"Rust\""), "{}", h.text());
     }
 
     /// EDIT-5: the details panel of a lifted line names its relationship

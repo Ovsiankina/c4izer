@@ -34,7 +34,12 @@ use crate::theme;
 use crate::worker::{ExportFormat, ViewRef, Wake, Worker};
 
 mod frame;
+mod inplace;
 mod panels;
+
+pub(crate) use inplace::focus_keys;
+#[cfg(test)]
+pub(crate) use inplace::suppress as suppress_edited;
 
 /// The startup report request (EDIT-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,8 +317,9 @@ impl App {
 
     /// The centre: the backdrop, the page (`canvas::paint_page`), the
     /// scene and marks (`canvas::paint_items`, `canvas::paint`), the marks
-    /// outside the paper, the in-place text field over the edited item
-    /// (its changes as `Event::Text`), the tooltip card, the right-click
+    /// outside the paper, the in-place fields in the edited item, in
+    /// place of its texts (`inplace`; changes as `Event::Text`, focus
+    /// moves as Tab presses), the tooltip card, the right-click
     /// menu and canvas input; the start screen with no file open. Returns
     /// the events. Serves EDIT-5, EDIT-9, EDIT-12, EDIT-13, EDIT-28.
     #[must_use]
@@ -330,13 +336,24 @@ impl App {
         // EDIT-31: the page in the export background first.
         // P2-701: the paper of a view with a canvas size, under the page.
         canvas::paint_page(&painter, &list, self.state.paper_rect());
-        canvas::paint(&painter, &canvas::paint_items(&list));
+        // EDIT-5: the edited item's texts are typed in place, not drawn.
+        let slots = match (list.editing, list.scene, &self.state.text_edit) {
+            (Some(item), Some(scene), Some(edit)) => crate::state::inplace::slots(scene, item, &edit.fields),
+            _ => Vec::new(),
+        };
+        let mut items = canvas::paint_items(&list);
+        inplace::suppress(&mut items, &slots, &list.camera);
+        canvas::paint(&painter, &items);
         // P3-311: the selected line's vertex handles.
         canvas::paint(&painter, &canvas::vertex_handle_items(&list, &self.state.vertex_handles()));
         // P4-213, P4-214: its end handles, and the snap points while one is dragged.
         canvas::paint(&painter, &canvas::anchor_items(&list, &self.state.end_handles(), &self.state.snap_marks()));
         self.paint_paper_marks(&painter, response.rect);
-        let mut out: Vec<Event> = canvas::inputs(ui.ctx(), &response).into_iter().map(Event::Input).collect();
+        let mut inputs = canvas::inputs(ui.ctx(), &response);
+        // EDIT-5: a press on a field is the field's, not a canvas click
+        // (which would end the edit).
+        inplace::keep_presses_on_fields(&mut inputs, &slots, &list.camera);
+        let mut out: Vec<Event> = inputs.into_iter().map(Event::Input).collect();
         // P2-723: the tooltip overlay, below the item's bottom-right corner.
         if let (Some(tip), Some(scene)) = (&list.tooltip, list.scene)
             && let Some(bounds) = scene.item_bounds(tip.item)
@@ -352,62 +369,9 @@ impl App {
                 .interactable(false)
                 .show(ui.ctx(), |ui| frame::tip_card(ui, tip));
         }
-        if let (Some(item), Some(scene), Some(edit)) = (list.editing, list.scene, &self.state.text_edit)
-            && let (Some(bounds), Some(field)) = (scene.item_bounds(item), edit.fields.get(edit.current))
-        {
-            let a = list.camera.to_screen(bounds.min);
-            let b = list.camera.to_screen(bounds.max);
-            let origin = response.rect.min;
-            let width = (b.x - a.x).max(160.0);
-            let top = origin.y + f32::midpoint(a.y, b.y) - 13.0;
-            let rect = egui::Rect::from_min_size(egui::pos2(origin.x + a.x, top), egui::vec2(width, 26.0));
-            // The in-place editor (`components/Marks`): paper ground,
-            // diagram ink, a 1.5 px `mark` border, the field's name above.
-            let marks = theme::Marks::of(self.state.mode());
-            let ink = if self.state.mode() == Mode::Dark {
-                egui::Color32::from_rgb(0xe8, 0xea, 0xec)
-            } else {
-                egui::Color32::from_rgb(0x14, 0x17, 0x1a)
-            };
-            let paper = egui::Color32::from_rgb(scene.background.r, scene.background.g, scene.background.b);
-            let p = ui.painter();
-            p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_1), paper);
-            p.rect_stroke(
-                rect,
-                egui::CornerRadius::same(theme::RADIUS_1),
-                egui::Stroke::new(1.5, marks.mark),
-                egui::StrokeKind::Inside,
-            );
-            p.text(
-                rect.left_top() - egui::vec2(0.0, 4.0),
-                egui::Align2::LEFT_BOTTOM,
-                field.label.to_uppercase(),
-                theme::label_font(),
-                theme::INK_3,
-            );
-            let mut buffer = field.buffer.clone();
-            let id = egui::Id::unique(("c4rizer-text-edit", edit.current));
-            let edited = ui.scope(|ui| {
-                ui.visuals_mut().selection.bg_fill = marks.mark.gamma_multiply(0.3);
-                ui.visuals_mut().text_cursor.stroke = egui::Stroke::new(1.0, marks.mark);
-                ui.put(
-                    rect.shrink2(egui::vec2(8.0, 0.0)),
-                    egui::TextEdit::singleline(&mut buffer)
-                        .id(id)
-                        .frame(egui::Frame::NONE)
-                        .text_color(ink)
-                        .font(egui::FontId::new(13.0, egui::FontFamily::Name(crate::canvas::BOLD_FAMILY.into())))
-                        .align(egui::Align2::LEFT_CENTER)
-                        .desired_width(width - 16.0),
-                )
-            });
-            let edited = edited.inner;
-            if !edited.has_focus() {
-                edited.request_focus();
-            }
-            if buffer != field.buffer {
-                out.push(Event::Text(buffer));
-            }
+        // EDIT-5: every field of the edited item typed in the shape.
+        if let Some(edit) = &self.state.text_edit {
+            out.extend(inplace::fields(ui, response.rect.min, &list.camera, edit, &slots, self.state.mode()));
         }
         // editor-ux-02: the right-click menu, at the pointer.
         self.menu_rect.set(self.context_menu(ui, response.rect.min, &mut out));
