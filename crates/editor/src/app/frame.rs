@@ -450,7 +450,11 @@ impl App {
                 ui.painter().rect_filled(r, CornerRadius::ZERO, BG_RAISED);
             }
             let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            let folder = path.parent().map_or_else(String::new, |p| format!("{}/", p.display()));
+            // DECISION: a path opened by bare name has an empty parent;
+            // show it as `./`, not as the root `/`.
+            let folder = path.parent().map_or_else(String::new, |p| {
+                if p.as_os_str().is_empty() { "./".to_owned() } else { format!("{}/", p.display()) }
+            });
             let name_font = egui::FontId::new(12.0, egui::FontFamily::Name(theme::MEDIUM.into()));
             let g = ui.painter().layout_no_wrap(name, name_font, INK);
             let nx = r.min.x + 8.0;
