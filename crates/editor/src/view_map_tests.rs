@@ -230,7 +230,7 @@ impl Shell {
     }
 
     /// The views the context menu of the box at `at` enters, in menu
-    /// order (editor-ux-02); empty when no menu opens.
+    /// order (editor-ux-02); empty when the menu enters none.
     fn menu_targets(&mut self, at: ScreenPoint) -> Vec<ViewRef> {
         self.s.overlay = None;
         self.input(Input::PointerDown {

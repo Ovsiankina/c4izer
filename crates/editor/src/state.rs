@@ -4198,6 +4198,14 @@ impl State {
             return self.quick_nav_key(key);
         }
         match key {
+            // DECISION: the context menu has no keyboard highlight, so
+            // Enter or F2 while it is open runs nothing (no entry, no
+            // in-place editor under it); the menu stays as it is. This
+            // keeps a menu with every row disabled harmless (behaviour
+            // change 5).
+            Key::Enter | Key::F2 if matches!(self.overlay, Some(Overlay::ContextMenu { .. })) => {
+                return Vec::new();
+            }
             Key::Enter | Key::F2 => {
                 self.open_text_edit();
                 return Vec::new();
@@ -4560,10 +4568,17 @@ impl State {
 
     /// Opens the context menu at `at` over `hit` (editor-ux-02): "Enter
     /// <view>" for each view a box opens, and "Open URL" for an item
-    /// with a `url`. Nothing opens when the item has no entry.
+    /// with a `url`. Behaviour change 5: the menu opens on every box, line
+    /// or label, also with no entry (its rows are then all shown
+    /// disabled); elsewhere nothing opens.
     fn open_context_menu(&mut self, at: ScreenPoint, hit: Option<ItemKey>) {
         let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else { return };
-        let Some(hit) = hit else { return };
+        // DECISION: only a box, line or label opens the menu (the design's
+        // "on a box or line"); the title, key or a boundary, which have no
+        // menu rows at all, open nothing rather than an empty frame.
+        let Some(hit) = hit.filter(|h| matches!(h, ItemKey::Box(_) | ItemKey::Line(_) | ItemKey::Label(_))) else {
+            return;
+        };
         let mut entries = Vec::new();
         let name_url = match (hit, scene.model_id(hit)) {
             (ItemKey::Box(_), Some(ModelId::Element(e))) => {
@@ -4599,10 +4614,10 @@ impl State {
                 action: MenuAction::OpenUrl { name, url },
             });
         }
-        if !entries.is_empty() {
-            self.menu_at = at;
-            self.overlay = Some(Overlay::ContextMenu { entries });
-        }
+        // Owner decision 2026-11-19 (behaviour change 5): open also with
+        // no entry; `app::frame::menu_rows` greys every row then.
+        self.menu_at = at;
+        self.overlay = Some(Overlay::ContextMenu { entries });
     }
 
     /// Opens the in-place editor on the single selected item (EDIT-5).

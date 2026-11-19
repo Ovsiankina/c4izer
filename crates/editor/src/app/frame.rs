@@ -726,9 +726,10 @@ pub(super) struct MenuRow<'a> {
 /// its shape. A box: `Enter …` | `Open URL`. A line: `Release start`,
 /// `Release end` | `Group as bus`, or `Ungroup bus` and `Remove from
 /// bus` | `Bridge on the other line` | `Open URL`.
-// DECISION: `State` offers only the entries that can run (and opens no
-// menu when there are none, as tested), so the disabled rows are filled
-// in here from the labels `State` gives. "Group as bus" replaces the
+// DECISION: `State` offers only the entries that can run (and opens the
+// menu on a box or line even when there are none, owner decision
+// 2026-11-19), so the disabled rows are filled in here from the labels
+// `State` gives. "Group as bus" replaces the
 // ungroup pair when offered, as the two never apply together; the bridge
 // row shows only at a crossing, where the pointer decides it. An entry
 // no slot names is still shown, last, so nothing is ever dropped.
@@ -996,5 +997,20 @@ mod tests {
         let shown: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
         assert_eq!(shown, ["Release start", "Release end", "Group as bus", "Open URL", "Something new"]);
         assert!(rows.last().is_some_and(|r| r.entry.is_some()));
+    }
+
+    /// Owner decision 2026-11-19 (behaviour change 5): with no entry the
+    /// menu still has its rows, every one disabled, so a click on any of
+    /// them runs nothing.
+    #[test]
+    fn menu_with_no_entry_is_all_disabled() {
+        let box_rows = menu_rows(&[], false);
+        assert_eq!(
+            texts(&box_rows),
+            [("Enter a view".to_owned(), false, false), ("Open URL".to_owned(), false, true)]
+        );
+        let line_rows = menu_rows(&[], true);
+        assert!(!line_rows.is_empty());
+        assert!(line_rows.iter().all(|r| r.entry.is_none()), "{:?}", texts(&line_rows));
     }
 }
