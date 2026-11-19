@@ -140,7 +140,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::model::{
-    self, Colour, ElementId, ElementKind, ElementStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
+    self, Colour, ElementId, ElementKind, ElementStyle, LabelMode, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
 };
 use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 
@@ -454,6 +454,18 @@ pub enum Edit {
         view: String,
         /// The size, `None` for auto (no line).
         size: Option<PaperSize>,
+    },
+    /// Set the label mode of `view`: rewrite or add its `labels` line, or
+    /// remove it with `None` (`labels line`, the default). A new line goes
+    /// after the view's last `labelWidth`, `bus`, `technology` or
+    /// `maxCrossings` line, else its last `include` line, else before the
+    /// closing brace. Serves P4-318.
+    // APPROVER: new pub item
+    SetLabelMode {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The mode, `None` for no line.
+        mode: Option<LabelMode>,
     },
     /// Set the label position of `relationship`'s line in `view`, in the
     /// view's `line` line for it (added, rewritten, or removed when it
@@ -791,6 +803,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::AddDefaultView { scope, kind } => add_default_view(current, scope, *kind),
         Edit::RemoveDefaultView { scope, kind } => remove_default_view(current, scope, *kind),
         Edit::SetCanvasSize { view, size } => set_canvas_size(current, view, *size),
+        Edit::SetLabelMode { view, mode } => set_label_mode(current, view, *mode),
         Edit::SetLinePosition {
             view,
             relationship,
@@ -1392,7 +1405,7 @@ impl<'a> Ctx<'a> {
             }
             match words.first().map(|w| w.to_ascii_lowercase()).as_deref() {
                 Some("include") if words.len() == 2 && words[1] == "*" => includes += 1,
-                Some("at" | "size" | "papersize" | "line") => {}
+                Some("at" | "size" | "papersize" | "line" | "labels") => {}
                 _ => return false,
             }
         }
@@ -1655,6 +1668,51 @@ fn set_canvas_size(current: &mut Parsed, view: &str, size: Option<PaperSize>) ->
             (None, Some(new)) => {
                 let line = one_line(format!("paperSize {}", new.keyword()));
                 let anchors = [spec.sizes.last().map(|s| s.span), spec.positions.last().map(|a| a.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// `SetLabelMode` (P4-318): the `labels` line, after the view's last
+/// option line, else its last `include` line, else before the closing
+/// brace.
+// DECISION: next to the other view options (`labelWidth` and kin), the
+// family the setting belongs to; with none written, under the `include`
+// lines that open the block.
+fn set_label_mode(current: &mut Parsed, view: &str, mode: Option<LabelMode>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetLabelMode {
+        view: view.to_owned(),
+        mode: spec.labels.map(|l| l.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.labels, mode) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.keyword().to_owned(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("labels {}", new.keyword()));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.max_crossings.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
                 insert_after_first(cx, owner, block, &anchors, &line)
             }
         })

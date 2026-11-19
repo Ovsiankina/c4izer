@@ -93,7 +93,7 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
+    Colour, ElementId, ElementKind, LabelMode, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
     ViewKind, parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
@@ -400,6 +400,10 @@ pub enum Command {
     },
     /// "Bring boxes onto the canvas" (the magnet), one undo step (P2-703).
     BringOntoCanvas,
+    /// Set the open view's label mode (the right panel's "Callout labels"
+    /// checkbox), one undo step (P4-318).
+    // APPROVER: new pub item
+    SetLabelMode(LabelMode),
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -773,6 +777,14 @@ pub enum Action {
         view: ViewRef,
         /// Index into `ViewSpec::steps` of the upper step.
         first: u32,
+    },
+    /// Set the view's `labels` line, `None` to remove it (P4-318).
+    // APPROVER: new pub item
+    SetLabelMode {
+        /// The view.
+        view: ViewRef,
+        /// The mode written, `None` for no line (`labels line`).
+        mode: Option<LabelMode>,
     },
     /// Set, move or remove line vertices, with the boxes moved by the
     /// same gesture, one batch (P3-310..P3-315).
@@ -2394,6 +2406,15 @@ impl State {
                 view: view.key(),
                 first: *first,
             }],
+            Action::SetLabelMode { view, mode } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetLabelMode {
+                    view: view.key(),
+                    mode: *mode,
+                });
+                out
+            }
             Action::SetLine {
                 view,
                 relationship,
@@ -4697,6 +4718,7 @@ impl State {
             Command::Canvas { step, keep_positions } => self.canvas_step(step, keep_positions),
             Command::BringOntoCanvas => self.bring_onto_canvas(),
             Command::Centre => self.centre(),
+            Command::SetLabelMode(mode) => self.set_label_mode(mode),
         }
     }
 
@@ -4856,6 +4878,27 @@ impl State {
     // editor-breadth 5d): per axis, the box is clamped into the canvas
     // and its centre rounded inward to the 10px grid; a box larger than
     // the canvas keeps its top-left edge on the canvas's.
+    /// The label mode of the open view (P4-318), `None` when it has no
+    /// layout to edit.
+    pub(crate) fn label_mode(&self) -> Option<LabelMode> {
+        self.layout_spec().map(|(_, spec)| spec.options().labels)
+    }
+
+    /// The "Callout labels" checkbox (P4-318): `labels callout` written,
+    /// or the `labels` line removed for `line`; nothing when the view
+    /// already has that mode.
+    // DECISION: `line` removes the line rather than writing `labels line`:
+    // the default needs no line, as `SetCanvasSize` drops `paperSize` for
+    // auto.
+    fn set_label_mode(&mut self, mode: LabelMode) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        if spec.options().labels == mode {
+            return Vec::new();
+        }
+        let mode = (mode != LabelMode::Line).then_some(mode);
+        self.write(Action::SetLabelMode { view, mode })
+    }
+
     fn bring_onto_canvas(&mut self) -> Vec<Effect> {
         let (Some(canvas), Some(scene)) = (self.canvas_rect(), self.scene()) else { return Vec::new() };
         let inward = |lo: i32, hi: i32, c: i32| -> i32 {

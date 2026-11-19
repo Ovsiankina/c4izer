@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, Mode, ViewKind};
+use c4rizer_core::model::{Colour, LabelMode, Mode, ViewKind};
 use eframe::egui;
 
 use crate::camera::ScreenPoint;
@@ -410,6 +410,17 @@ impl App {
                 command(Command::RemoveAllVertices);
             }
         });
+        // P4-318: the view's label mode.
+        if let Some(mode) = self.state.label_mode() {
+            let mut callout = mode == LabelMode::Callout;
+            if ui
+                .checkbox(&mut callout, "Callout labels")
+                .on_hover_text("Labels beside their lines on a shelf with a slanted leader (one undo step)")
+                .changed()
+            {
+                command(Command::SetLabelMode(if callout { LabelMode::Callout } else { LabelMode::Line }));
+            }
+        }
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             if let Some(d) = self.state.details() {

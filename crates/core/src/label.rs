@@ -80,8 +80,8 @@
 // brackets (`[Software System]` on a container view, `[Container]` on a
 // component view), in bold, as `boundary_tag` sizes it.
 
-use crate::geom::{GRID_PX, Point, Rect, Segment, grid_to_px};
-use crate::model::{ElementKind, MetadataSymbols, Terminology, ViewKind, ViewOptions};
+use crate::geom::{Contact, GRID_PX, Point, Rect, Segment, grid_to_px};
+use crate::model::{ElementKind, LabelMode, MetadataSymbols, Terminology, ViewKind, ViewOptions};
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, EdgeId, PlanEdge, ViewPlan};
 
@@ -370,12 +370,58 @@ pub struct Label {
     // TODO(srs): P2-423, the line pitch. Reading taken (SRS proposal):
     // N + 2, as 11/13 in phase 1.
     pub line_px: i32,
+    /// In a `labels callout` view, the callout geometry (P4-302..P4-310);
+    /// then `centre` is the grid point nearest the text block's centre.
+    /// `None` for an on-line label, including a callout fallback (P4-313).
+    // APPROVER: new pub item
+    pub callout: Option<Callout>,
 }
+
+/// A label drawn beside its line (P4-302..P4-310), all in px: the text
+/// block, the shelf under it and the slanted leader from one shelf end to
+/// the attach point on the label's own line. Serves P4-302..P4-310.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Callout {
+    /// The text block: `Label::width_px` by `Label::height_px`, paddings
+    /// included, no backing (P4-302).
+    pub text: Rect,
+    /// Left and right end of the shelf, on the text block's bottom edge,
+    /// `LABEL_PAD_X_PX` in from each side (P4-303).
+    pub shelf: [Point; 2],
+    /// Shelf end `S`, then attach point `A` on the line (P4-304..P4-306).
+    pub leader: [Point; 2],
+    /// The other lines the leader meets, ascending (P4-310).
+    pub crossings: Vec<EdgeId>,
+}
+
+/// The leader slopes `(dx, dy)`, preferred first: 19.98°, 14.93°, 25.02°
+/// from the horizontal, all within 14.9°..25.1° (P4-305).
+// APPROVER: new pub item
+pub const CALLOUT_SLOPES: [(i32, i32); 3] = [(11, 4), (15, 4), (15, 7)];
+
+/// Shortest leader, px (P4-305).
+// APPROVER: new pub item
+pub const LEADER_MIN_PX: i32 = 20;
+
+/// Longest leader, px: the bounded distance beyond which a label falls
+/// back to its line (P4-305, P4-313).
+// APPROVER: new pub item
+pub const LEADER_MAX_PX: i32 = 140;
+
+/// Clearance, px, between a callout's text block and boxes, tags, labels
+/// and lines (P4-308).
+// APPROVER: new pub item
+pub const CALLOUT_CLEAR_PX: i32 = 4;
 
 impl Label {
     /// The label rectangle in px, exactly as drawn: the rectangle the
     /// placement overlap tests use.
     const fn px_rect(&self) -> Rect {
+        if let Some(c) = &self.callout {
+            return c.text;
+        }
         let left = grid_to_px(self.centre.x) - self.width_px / 2;
         let top = grid_to_px(self.centre.y) - self.height_px / 2;
         Rect::from_corners(
@@ -412,6 +458,11 @@ pub struct Labels {
     /// drawn label (`label_lines` under the view's options) equals its
     /// own, so it has no label of its own (CORE-14).
     pub shared: Vec<(EdgeId, EdgeId)>,
+    /// In a `labels callout` view, the edges whose label found no free
+    /// place for a callout and sits on its line, ascending (P4-313, L29);
+    /// empty in a `labels line` view.
+    // APPROVER: new pub item
+    pub fallbacks: Vec<EdgeId>,
 }
 
 impl Labels {
@@ -742,7 +793,10 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
         plan.boxes.len(),
         "place_labels: routes of another plan (centres)"
     );
-    let scene = Obstacles::new(plan, routes, words);
+    if plan.options.labels == LabelMode::Callout {
+        return place_callouts(plan, routes, words);
+    }
+    let scene = Obstacles::new(plan, routes, words, false);
     let mut labels: Vec<Option<Label>> = Vec::with_capacity(plan.edges.len());
     let mut shared = Vec::new();
     for edge in &plan.edges {
@@ -774,6 +828,7 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
             fit: Fit::NoRoom,
             font_px,
             line_px,
+            callout: None,
         };
         let spots = walk(&line.points);
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
@@ -806,7 +861,286 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
         };
         labels.push(Some(label));
     }
-    Labels { labels, shared }
+    Labels {
+        labels,
+        shared,
+        fallbacks: Vec::new(),
+    }
+}
+
+/// `place_labels` in a `labels callout` view (P4-302..P4-313): every
+/// label first gets the least-cost callout (`best_callout`) in ascending
+/// `EdgeId`, each clear of the callouts before it; a label with none
+/// falls back to its line afterwards (`Labels::fallbacks`), clear of every
+/// callout's text block, shelf and leader. Joined lines share their
+/// trunk's label as on the `labels line` path.
+fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels {
+    let scene = Obstacles::new(plan, routes, words, true);
+    let mut labels: Vec<Option<Label>> = vec![None; plan.edges.len()];
+    let mut shared = Vec::new();
+    let mut pending: Vec<Label> = Vec::new();
+    // The shelves and leaders of the callouts placed so far.
+    let mut marks: Vec<Segment> = Vec::new();
+    for edge in &plan.edges {
+        let Some(line) = routes.line(edge.id) else {
+            continue;
+        };
+        let lines = label_lines(edge, &plan.options);
+        if lines.is_empty() {
+            continue;
+        }
+        if let Some(trunk) = line.joins() {
+            let t = &plan.edges[trunk.0 as usize];
+            if label_lines(t, &plan.options) == lines {
+                shared.push((edge.id, trunk));
+                continue;
+            }
+        }
+        let (font_px, line_px) = (label_font_px(edge), label_line_px(edge));
+        let (width_px, height_px) = label_size(&lines, font_px, line_px);
+        let mut label = Label {
+            edge: edge.id,
+            lines,
+            centre: Point::default(),
+            width_px,
+            height_px,
+            fit: Fit::Clear,
+            font_px,
+            line_px,
+            callout: None,
+        };
+        let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
+        let near = Near {
+            scene: &scene,
+            placed: &placed,
+            marks: &marks,
+        };
+        match best_callout(&label, line, edge.style.position, &near) {
+            Some(c) => {
+                let mid = c.text.centre();
+                label.centre = Point::new(
+                    (mid.x + GRID_PX / 2).div_euclid(GRID_PX),
+                    (mid.y + GRID_PX / 2).div_euclid(GRID_PX),
+                );
+                marks.push(Segment::new(c.shelf[0], c.shelf[1]));
+                marks.push(Segment::new(c.leader[0], c.leader[1]));
+                label.callout = Some(c);
+                labels[edge.id.0 as usize] = Some(label);
+            }
+            None => pending.push(label),
+        }
+    }
+    let mut fallbacks = Vec::with_capacity(pending.len());
+    for mut label in pending {
+        let edge = &plan.edges[label.edge.0 as usize];
+        let Some(line) = routes.line(edge.id) else {
+            continue;
+        };
+        let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
+        let spots = walk(&line.points);
+        let mut best: Option<(Point, Vec<EdgeId>, bool)> = None;
+        for c in candidates(&spots, line.joins().is_some(), edge.style.position) {
+            label.centre = c;
+            let rect = label.px_rect();
+            if scene.blocked(&rect)
+                || placed.iter().any(|p| p.overlaps(&rect))
+                || marks.iter().any(|m| m.passes_through(&rect))
+            {
+                continue;
+            }
+            let covered = scene.covered(&rect, edge.id);
+            let on_stroke = scene.on_stroke(&rect);
+            if covered.is_empty() && !on_stroke {
+                best = Some((c, covered, on_stroke));
+                break;
+            }
+            if best
+                .as_ref()
+                .is_none_or(|(_, b, s)| (covered.len(), on_stroke) < (b.len(), *s))
+            {
+                best = Some((c, covered, on_stroke));
+            }
+        }
+        (label.centre, label.fit) = match best {
+            Some((c, covered, _)) if covered.is_empty() => (c, Fit::Clear),
+            Some((c, covered, _)) => (c, Fit::OverLines(covered)),
+            None => (middle(&spots), Fit::NoRoom),
+        };
+        let i = label.edge.0 as usize;
+        fallbacks.push(label.edge);
+        labels[i] = Some(label);
+    }
+    Labels {
+        labels,
+        shared,
+        fallbacks,
+    }
+}
+
+/// What a callout keeps clear of besides `Obstacles`: the text blocks of
+/// the labels placed before it and the shelves and leaders of the
+/// callouts placed before it, all px.
+struct Near<'a> {
+    scene: &'a Obstacles,
+    placed: &'a [Rect],
+    marks: &'a [Segment],
+}
+
+// DECISION: the P4-311 cost weights, in thousandths of a px of leader:
+// a crossed line costs as much as 60px of leader, a slope other than
+// 20° 15px, an attach point with another line within `CROWD_PX` 40px,
+// and the attach point a quarter of its distance from the preferred
+// point along the line. Chosen on the four example views: shorter
+// leaders read best, a crossing confuses more than a long leader, and a
+// dot next to another line leaves unclear which line is meant. A text
+// block across a boundary's dashed stroke read as struck through on the
+// first render, so it is refused, not priced.
+const CROSSING_COST: i64 = 60_000;
+const SLOPE_COST: i64 = 15_000;
+const CROWD_COST: i64 = 40_000;
+const CROWD_PX: i32 = 8;
+const POSITION_DIVISOR: i64 = 4;
+
+/// The length in thousandths of a px of one `CALLOUT_SLOPES` step
+/// (`sqrt(dx² + dy²)`, truncated).
+const SLOPE_STEP_MILLI: [i64; 3] = [11_704, 15_524, 16_552];
+
+/// The least-cost callout of `label` on `line` (P4-311), `None` when no
+/// candidate meets P4-303..P4-309 within `LEADER_MAX_PX`. Candidates are
+/// every attach point `A` (a grid point of the line inside the CORE-14
+/// gaps), slope, side and length; they are tried in ascending lower-bound
+/// cost (cost without crossings and stroke), ties in generation order,
+/// stopping once the lower bound reaches the best cost found.
+// DECISION: branch and bound on an exact integer cost: deterministic
+// (CORE-25) and, as most views have a clear candidate among the first
+// few, fast.
+fn best_callout(label: &Label, line: &Line, position: Option<u8>, near: &Near<'_>) -> Option<Callout> {
+    let spots = walk(&line.points);
+    let total = spots.last().map_or(0, |&(_, d)| d);
+    let start = i64::from(START_GAP_PX) * MILLI;
+    let end = if line.joins().is_some() {
+        0
+    } else {
+        i64::from(ARROW_GAP_PX) * MILLI
+    };
+    let target = total * i64::from(position.unwrap_or(50).min(100)) / 100;
+    let (min, max) = (i64::from(LEADER_MIN_PX) * MILLI, i64::from(LEADER_MAX_PX) * MILLI);
+    // (lower bound, attach px, slope index, steps, right, down)
+    let mut all: Vec<(i64, Point, usize, i32, bool, bool)> = Vec::new();
+    for &(p, d) in spots.iter().filter(|&&(_, d)| d >= start && total - d >= end) {
+        let a = point_px(p);
+        let along = (d - target).abs() / POSITION_DIVISOR;
+        for (si, step) in SLOPE_STEP_MILLI.iter().enumerate() {
+            let slope = if si == 0 { 0 } else { SLOPE_COST };
+            let mut k = 1;
+            while i64::from(k) * step <= max {
+                let len = i64::from(k) * step;
+                if len >= min {
+                    for right in [true, false] {
+                        for down in [true, false] {
+                            all.push((len + slope + along, a, si, k, right, down));
+                        }
+                    }
+                }
+                k += 1;
+            }
+        }
+    }
+    // Stable: ties keep generation order.
+    all.sort_by_key(|c| c.0);
+    let own: &[Segment] = near
+        .scene
+        .lines
+        .iter()
+        .find(|(e, _)| *e == label.edge)
+        .map_or(&[], |(_, segs)| segs.as_slice());
+    let mut best: Option<(i64, Callout)> = None;
+    for (bound, a, si, k, right, down) in all {
+        if best.as_ref().is_some_and(|(c, _)| bound >= *c) {
+            break;
+        }
+        let (dx, dy) = CALLOUT_SLOPES[si];
+        // `A` lies right of `S` when `right`, below it when `down`.
+        let s = Point::new(
+            a.x - if right { k * dx } else { -k * dx },
+            a.y - if down { k * dy } else { -k * dy },
+        );
+        let pad = LABEL_PAD_X_PX;
+        let left_x = if right { s.x + pad - label.width_px } else { s.x - pad };
+        let text = Rect::from_corners(
+            Point::new(left_x, s.y - label.height_px),
+            Point::new(left_x + label.width_px, s.y),
+        );
+        let Some(extra) = callout_extra(&text, Segment::new(s, a), a, (label.edge, own), near) else {
+            continue;
+        };
+        let cost = bound + extra.0;
+        if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+            best = Some((
+                cost,
+                Callout {
+                    text,
+                    shelf: [
+                        Point::new(text.min.x + pad, text.max.y),
+                        Point::new(text.max.x - pad, text.max.y),
+                    ],
+                    leader: [s, a],
+                    crossings: extra.1,
+                },
+            ));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// The cost beyond the lower bound of a callout candidate with text block
+/// `text` and leader `leader` ending at `a` on the line `own` of edge
+/// `own_edge` (px segments), with the lines its leader crosses; `None` when it breaks
+/// P4-308 or P4-309.
+fn callout_extra(
+    text: &Rect,
+    leader: Segment,
+    a: Point,
+    (own_edge, own): (EdgeId, &[Segment]),
+    near: &Near<'_>,
+) -> Option<(i64, Vec<EdgeId>)> {
+    let scene = near.scene;
+    let grown = text.inflate(CALLOUT_CLEAR_PX);
+    // P4-308.
+    if scene.blocked(&grown)
+        || scene.on_stroke(text)
+        || near.placed.iter().any(|p| p.overlaps(&grown))
+        || near.marks.iter().any(|m| m.passes_through(&grown))
+        || scene.lines.iter().any(|(_, segs)| segs.iter().any(|s| s.passes_through(&grown)))
+    {
+        return None;
+    }
+    // P4-309.
+    let at = Segment::new(a, a);
+    if scene.boxes.iter().chain(&scene.tags).any(|b| leader.passes_through(b))
+        || near.placed.iter().any(|p| leader.passes_through(p))
+        || near.marks.iter().any(|m| m.contact(&leader) != Contact::Disjoint)
+        || own
+            .iter()
+            .any(|s| s.contact(&leader) != Contact::Disjoint && s.contact(&at) == Contact::Disjoint)
+    {
+        return None;
+    }
+    // P4-310.
+    let crossings: Vec<EdgeId> = scene
+        .lines
+        .iter()
+        .filter(|(e, segs)| *e != own_edge && segs.iter().any(|s| s.contact(&leader) != Contact::Disjoint))
+        .map(|(e, _)| *e)
+        .collect();
+    let around = Rect::from_centre(a, CROWD_PX, CROWD_PX);
+    let crowded = scene
+        .lines
+        .iter()
+        .any(|(e, segs)| *e != own_edge && segs.iter().any(|s| s.passes_through(&around)));
+    let crowd = if crowded { CROWD_COST } else { 0 };
+    let count = i64::try_from(crossings.len()).unwrap_or(i64::MAX / CROSSING_COST);
+    Some((count * CROSSING_COST + crowd, crossings))
 }
 
 /// What a label keeps clear of, apart from the labels placed before it:
@@ -823,7 +1157,7 @@ struct Obstacles {
 }
 
 impl Obstacles {
-    fn new(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Self {
+    fn new(plan: &ViewPlan, routes: &Routes, words: &Words<'_>, all_strokes: bool) -> Self {
         let centres = &routes.centres;
         let boxes = plan
             .boxes
@@ -864,7 +1198,9 @@ impl Obstacles {
         // covers more lines, and it never changes the fit. Limited to
         // dynamic views so the static views' placement (and the goldens)
         // stays exactly as before.
-        let strokes = if plan.kind == crate::model::ViewKind::Dynamic {
+        // DECISION: callouts (P4-311) keep off the strokes on every view
+        // kind; `all_strokes` is false on the `labels line` path.
+        let strokes = if all_strokes || plan.kind == crate::model::ViewKind::Dynamic {
             (0..plan.boundaries.len())
                 .filter_map(|i| plan.boundary_rect(i, centres))
                 .flat_map(|r| stroke_bands(&rect_px(&r)))
@@ -1545,6 +1881,7 @@ mod tests {
             fit: Fit::Clear,
             font_px: LABEL_FONT_PX,
             line_px: LABEL_LINE_PX,
+            callout: None,
         };
         // px rectangle: x 9..52, y 11..30.
         assert_eq!(l.bounds(), Rect::from_corners(pt(0, 1), pt(6, 3)));

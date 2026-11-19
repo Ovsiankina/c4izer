@@ -217,12 +217,7 @@ pub fn svg(scene: &Scene) -> String {
         w.close();
     }
     for label in &scene.labels {
-        w.open_with("label", label.opacity);
-        if let Some(fill) = label.fill {
-            w.rect(label.rect, 0, Some(fill), None);
-        }
-        w.text(&label.text);
-        w.close();
+        w.label(label);
     }
     for (class, text) in [("title", &scene.title), ("subtitle", &scene.subtitle)] {
         if let Some(text) = text {
@@ -556,6 +551,33 @@ impl Writer {
         self.fill(fill);
         self.stroke(stroke);
         self.raw("/>");
+    }
+
+    /// One label group: backing, callout marks (P4-316), text.
+    fn label(&mut self, label: &crate::scene::SceneLabel) {
+        self.open_with("label", label.opacity);
+        if let Some(fill) = label.fill {
+            self.rect(label.rect, 0, Some(fill), None);
+        }
+        // P4-316: a callout's shelf, leader and dot, before its text.
+        if let Some(c) = &label.callout {
+            self.callout(c);
+        }
+        self.text(&label.text);
+        self.close();
+    }
+
+    /// A callout's shelf, leader and dot (P4-316).
+    fn callout(&mut self, c: &crate::scene::SceneCallout) {
+        self.polyline(&c.shelf, &c.stroke);
+        self.polyline(&c.leader, &c.stroke);
+        self.tip(
+            &Tip::Dot {
+                at: c.dot,
+                radius_px: c.dot_radius_px,
+            },
+            c.stroke.colour,
+        );
     }
 
     fn tip(&mut self, tip: &Tip, colour: Colour) {

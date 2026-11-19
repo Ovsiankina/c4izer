@@ -369,6 +369,7 @@ are the only escapes. `[x]` means optional; `<id>` may be a dotted path
 | `technology` | `on\|off` | `on` | c4rizer extension: `off` hides technology on every line of the view |
 | `bus` | `on\|off` | `off` | c4rizer extension: a line may join another line into the same box, ending in a dot (CORE-8); lanes (CORE-12) are always on |
 | `labelWidth` | `N` | `24` | c4rizer extension: characters per label line |
+| `labels` | `line\|callout` | `line` | c4rizer extension: `callout` draws each label beside its line on a shelf with a slanted leader to the line (P4-300..P4-319) |
 | `maxCrossings` | `N` | `0` | c4rizer extension: crossing budget of the view |
 | `focus` | `<id>...` | none (all lines) | c4rizer extension: draw only lines touching these boxes |
 | `hide` | `<src> -> <dst>` | none | c4rizer extension: leave this line out; one per `hide` line |
@@ -670,6 +671,7 @@ Lint table. "Box" and "line" mean what the view draws, after lifting.
 | L26 | error | a box that is not a child of the scope overlaps the boundary rectangle |
 | L27 | error | a line crosses a deployment node boundary that contains neither of its ends (P3-126) |
 | L28 | warning | a vertex lies inside a box rectangle, or two consecutive vertices of one line are the same point (P3-309) |
+| L29 | warning | in a `labels callout` view, a label has no free place for a callout and is drawn on its line (P4-313) |
 
 Placement
 
@@ -3395,7 +3397,7 @@ relationships it gets messy and I have little control. Like draw.io:
 each box has snap points, at the four corners, the middle of each side,
 and a few more on the long sides. I drag the end of an arrow near a box
 and it snaps to one of them." One testable sentence each; ids are
-allocated per row: view-map P4-100.., anchors P4-200..
+allocated per row: view-map P4-100.., anchors P4-200.., callout-labels P4-300..
 
 view-map
 
@@ -3548,6 +3550,105 @@ only), so plain Structurizr files never hold one and stay valid.
   canvas does (EDIT-12, one scene).
 - **P4-220** The workspace JSON (P3-413) carries no anchors: Structurizr
   has no field for them (deferred, `docs/deferred.md`).
+
+callout-labels
+
+Authority: the owner (2026-11-19): "I don't want the labels on the
+arrows when it can be avoided: the label's background hides the lines.
+Do it like labels on 3D models: a horizontal line with the text sitting
+on top of it, and at one end a slanted part, about 20 degrees, going to
+the arrow. A hockey-stick shape." Approver rulings 1..6 (2026-11-19):
+opt-in per view, default off; text in free space with no backing; no
+cover of boxes, labels or lines; on-line fallback, reported; additive
+core API; editor draws the same scene, with a toggle. Ids P4-300..
+
+**File**
+
+- **P4-300** In a view block, `labels line` or `labels callout`
+  (keywords ignore case) sets the view's label mode; `line` is the
+  default; a second `labels` line overrides the first with the notice the
+  other view settings give; any other value is an `InvalidValue` parse
+  error.
+- **P4-301** A view with no `labels` line or with `labels line` is
+  labelled exactly as CORE-14/CORE-15 say: its SVG is byte-identical to
+  the renderer without this row (the goldens stay unchanged).
+
+**Geometry** (all px, integers)
+
+- **P4-302** In a `labels callout` view each label is a callout: its
+  text block has the CORE-14 size, wrapping, font and colour, and is
+  drawn with no backing fill.
+- **P4-303** The callout's shelf is a horizontal segment on the bottom
+  edge of the text block, from its left edge plus 5px to its right edge
+  minus 5px (as wide as the widest text line).
+- **P4-304** The callout's leader is one straight segment from one end
+  `S` of the shelf to an attach point `A` on the label's own line, going
+  away from the text: from the right end `A.x > S.x`, from the left end
+  `A.x < S.x`; `A` may be above or below `S`.
+- **P4-305** `A − S` is a whole multiple of `(±11, ±4)`, `(±15, ±4)` or
+  `(±15, ±7)`: the leader's angle from the horizontal is 19.98°, 14.93°
+  or 25.02°, always within the band 14.9°..25.1°, 20° preferred. Its
+  length is 20px to 140px.
+- **P4-306** `A` is a grid point of the drawn line at least 30px along
+  it from its start and, unless it ends in a join dot, 50px back from
+  its end (the CORE-14 gaps).
+- **P4-307** Shelf and leader are drawn solid in the line's colour, half
+  the line's width rounded down and at least 1px wide, with a filled dot
+  of radius 3px at `A` in the same colour.
+
+**No overlap** (measured on the exact px geometry)
+
+- **P4-308** The text block grown by 4px on every side overlaps no box
+  rectangle, no boundary name tag and no other label's text block, and
+  no line, its own included, nor a boundary's dashed stroke (2px each
+  side of it), passes through it.
+- **P4-309** The leader passes through no box rectangle and no other
+  label's text block, crosses no other callout's shelf or leader, and
+  meets its own line at `A` only.
+- **P4-310** The other lines the leader crosses are counted
+  (`label::Callout::crossings`, ascending) and minimised by P4-311.
+
+**Search**
+
+- **P4-311** Among every candidate (attach point, slope, side, up or
+  down, length) meeting P4-303..P4-309, the label takes the one of least
+  cost: leader length + 60 × lines its leader crosses + 15 when the slope
+  is not `(11, 4)` + 40 when another line passes within 8px of `A` (a
+  16px square around it) + a quarter of `A`'s distance along the line
+  from the preferred point (half the line's length, or the P2-425
+  `position`), all in px; ties go to the earlier candidate in a fixed
+  order (CORE-25).
+- **P4-312** Labels are placed in ascending `EdgeId`, each clear of
+  every callout placed before it; a joined line whose trunk has the same
+  label has none of its own (CORE-14).
+- **P4-313** A label with no candidate within the P4-305 length gets
+  its CORE-14 on-line label instead, placed after every callout and
+  clear of every callout's text block, shelf and leader, and is reported
+  as warning L29 naming the relationship: `no free place for callout
+  label "<description>" (<src> -> <dst>); drawn on its line`.
+- **P4-314** Callouts apply to every view kind that draws labelled
+  lines, dynamic and deployment views included.
+- **P4-315** On each of the four views of `tests/data/example` with
+  `labels callout`, every callout meets P4-303..P4-309 and the number of
+  L29 fallbacks is at most a quarter of the view's labels.
+
+**Export and editor**
+
+- **P4-316** SVG (and so PNG) draws each callout's shelf, leader and dot
+  inside the label's `<g class="label">`, before its text, and the
+  scene bounds hold them.
+- **P4-317** The editor canvas draws callouts from the same scene
+  (EDIT-12); a click on a callout's text block selects its label and a
+  double click edits its text in place (EDIT-28), as for on-line labels.
+- **P4-318** The editor's right panel shows a "Callout labels" checkbox
+  for the open view, checked when its mode is `callout`; toggling it
+  writes `labels callout`, or removes the `labels` line, as one atomic
+  edit checked against the file on disk (EDIT-22, EDIT-24) and one undo
+  step; a new `labels` line goes after the view's last `labelWidth`,
+  `bus`, `technology` or `maxCrossings` line, else after its last
+  `include` line, else before the closing brace.
+- **P4-319** The workspace JSON (P3-413) carries no label mode, as for
+  the other c4rizer view settings.
 
 ## 5. Cross-cutting
 

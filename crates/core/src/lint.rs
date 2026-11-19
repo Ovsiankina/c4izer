@@ -71,7 +71,7 @@ use std::fmt;
 
 use crate::geom::{Point, Rect, Segment};
 use crate::label::Fit;
-use crate::model::{ElementId, ElementKind, Model, RelationshipId, ViewKind};
+use crate::model::{ElementId, ElementKind, LabelMode, Model, RelationshipId, ViewKind};
 use crate::scene::{ItemKey, ModelId, Scene, SceneBox, SceneBoundary, SceneLine};
 use crate::text::Span;
 use crate::view::{BoundaryOf, BoxId, EdgeId};
@@ -172,6 +172,10 @@ pub enum Rule {
     /// consecutive vertices of one line are the same point. Serves
     /// P3-309.
     VertexPlacement,
+    /// L29, warning: in a `labels callout` view, a label has no free place
+    /// for a callout and is drawn on its line. Serves P4-313.
+    // APPROVER: new pub item
+    CalloutFallback,
 }
 
 impl Rule {
@@ -207,6 +211,7 @@ impl Rule {
             Rule::BoundaryIntrusion => "L26",
             Rule::ForeignNodeCrossing => "L27",
             Rule::VertexPlacement => "L28",
+            Rule::CalloutFallback => "L29",
         }
     }
 
@@ -222,7 +227,8 @@ impl Rule {
             | Rule::LabelOverLine
             | Rule::LabelNoRoom
             | Rule::TextFit
-            | Rule::VertexPlacement => Severity::Warning,
+            | Rule::VertexPlacement
+            | Rule::CalloutFallback => Severity::Warning,
             Rule::Unroutable
             | Rule::SegmentAngle
             | Rule::ThroughBox
@@ -1284,6 +1290,16 @@ impl<'a> Lint<'a> {
                     vec![self.label_span(lab.edge, lab.relationship)],
                     format!("no room for label \"{desc}\" ({ends})"),
                 ),
+            }
+            // P4-313: an on-line label in a callout view is a fallback.
+            if scene.options.labels == LabelMode::Callout && lab.callout.is_none() {
+                self.push(
+                    Rule::CalloutFallback,
+                    vec![ModelId::Relationship(lab.relationship)],
+                    vec![ItemKey::Label(lab.edge)],
+                    vec![self.label_span(lab.edge, lab.relationship)],
+                    format!("no free place for callout label \"{desc}\" ({ends}); drawn on its line"),
+                );
             }
         }
     }

@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod anchors_tests;
 mod app;
+#[cfg(test)]
+mod callout_labels_tests;
 mod camera;
 mod canvas;
 #[cfg(test)]

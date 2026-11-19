@@ -518,7 +518,36 @@ pub struct SceneLabel {
     pub fit: Fit,
     /// 0..100, the line's opacity (P2-426).
     pub opacity: u8,
+    /// In a `labels callout` view, the shelf, leader and dot drawn with
+    /// the text (P4-303..P4-307); `None` for an on-line label.
+    // APPROVER: new pub item
+    pub callout: Option<SceneCallout>,
 }
+
+/// The marks of a callout label (`label::Callout`), px: shelf and leader
+/// solid in the line's colour at half its width (at least 1px), and a
+/// filled dot at the attach point. Serves P4-303..P4-307, P4-316.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneCallout {
+    /// Left and right end of the shelf (P4-303).
+    pub shelf: [Point; 2],
+    /// Shelf end, then attach point on the line (P4-304).
+    pub leader: [Point; 2],
+    /// The attach point: the dot's centre (P4-307).
+    pub dot: Point,
+    /// The dot's radius, `CALLOUT_DOT_RADIUS_PX` (P4-307).
+    pub dot_radius_px: i32,
+    /// Solid, the line's colour, half the line's width, at least 1px.
+    pub stroke: Stroke,
+    /// The other lines the leader crosses, ascending (P4-310).
+    pub crossings: Vec<EdgeId>,
+}
+
+/// The radius, px, of the dot at a callout's attach point (P4-307).
+// APPROVER: new pub item
+pub const CALLOUT_DOT_RADIUS_PX: i32 = 3;
 
 /// One dashed boundary (CORE-1): `ViewPlan::boundary_rect` in px and its
 /// name tag at the bottom left in `label::boundary_tag`. Serves CORE-1,
@@ -965,7 +994,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         .flatten()
         .map(|l| scene_label(plan, l, &boxes, &boundaries, pal))
         .collect();
-    let label_rects: Vec<Rect> = labels.iter().map(|l| l.rect).collect();
+    let label_rects = chevron_keepouts(&labels);
     let mut lines: Vec<SceneLine> = plan
         .edges
         .iter()
@@ -984,7 +1013,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         extent.add_rect(&line_bounds(l));
     }
     for l in &labels {
-        extent.add_rect(&l.rect);
+        add_label(&mut extent, l);
     }
     for b in &boundaries {
         extent.add_rect(&b.rect);
@@ -2220,6 +2249,32 @@ fn intersection(first: &Segment, second: &Segment) -> Option<Point> {
 
 // --------------------------------------------------------------- labels
 
+/// The rectangles chevrons keep 8px from (CORE-10): every label, and
+/// every callout's dot.
+// DECISION: a callout's dot also keeps chevrons 8px away, so the dot
+// never sits on a direction mark (seen on the first callout render).
+fn chevron_keepouts(labels: &[SceneLabel]) -> Vec<Rect> {
+    labels
+        .iter()
+        .map(|l| l.rect)
+        .chain(
+            labels
+                .iter()
+                .filter_map(|l| l.callout.as_ref())
+                .map(|c| Rect::from_centre(c.dot, c.dot_radius_px, c.dot_radius_px)),
+        )
+        .collect()
+}
+
+/// Grows `extent` by label `l`, its callout marks included (P4-316).
+fn add_label(extent: &mut Extent, l: &SceneLabel) {
+    extent.add_rect(&l.rect);
+    if let Some(c) = &l.callout {
+        extent.add_rect(&Rect::from_corners(c.leader[0], c.leader[1]));
+        extent.add_rect(&Rect::from_centre(c.dot, c.dot_radius_px, c.dot_radius_px));
+    }
+}
+
 /// The label of one edge in px (`label::Label` geometry) with its text.
 fn scene_label(
     plan: &ViewPlan,
@@ -2229,15 +2284,20 @@ fn scene_label(
     pal: Palette,
 ) -> SceneLabel {
     let edge = &plan.edges[label.edge.0 as usize];
-    let centre = px_point(label.centre);
-    let min = Point::new(
-        centre.x - label.width_px / 2,
-        centre.y - label.height_px / 2,
-    );
-    let rect = Rect::from_corners(
-        min,
-        Point::new(min.x + label.width_px, min.y + label.height_px),
-    );
+    let (centre, rect) = if let Some(c) = &label.callout {
+        (c.text.centre(), c.text)
+    } else {
+        let centre = px_point(label.centre);
+        let min = Point::new(
+            centre.x - label.width_px / 2,
+            centre.y - label.height_px / 2,
+        );
+        let rect = Rect::from_corners(
+            min,
+            Point::new(min.x + label.width_px, min.y + label.height_px),
+        );
+        (centre, rect)
+    };
     // Approver ruling 2026-11-17: a backing inside a boundary takes that
     // boundary's fill when it has one, else the page colour.
     // DECISION: the colour actually behind the label's centre: every
@@ -2269,11 +2329,32 @@ fn scene_label(
         line_px: label.line_px,
         weight: Weight::Regular,
     };
+    // P4-307: the line's own colour and half its width.
+    let callout = label.callout.as_ref().map(|c| {
+        let thickness = i32::try_from(edge.style.thickness).unwrap_or(i32::MAX).clamp(1, 100);
+        SceneCallout {
+            shelf: c.shelf,
+            leader: c.leader,
+            dot: c.leader[1],
+            dot_radius_px: CALLOUT_DOT_RADIUS_PX,
+            stroke: Stroke {
+                colour: edge
+                    .style
+                    .color
+                    .or(pal.line)
+                    .unwrap_or_else(|| line_base(boxes[edge.destination.0 as usize].fill, pal.page)),
+                width_px: (thickness / 2).max(1),
+                dash_px: None,
+            },
+            crossings: c.crossings.clone(),
+        }
+    });
     SceneLabel {
         edge: label.edge,
         relationship: edge.winner(),
         rect,
-        fill: Some(backing),
+        // P4-302: a callout has no backing.
+        fill: if callout.is_some() { None } else { Some(backing) },
         text: text_block(
             label.lines.clone(),
             font,
@@ -2283,6 +2364,7 @@ fn scene_label(
         ),
         fit: label.fit.clone(),
         opacity: edge.style.opacity.min(100),
+        callout,
     }
 }
 
@@ -2972,6 +3054,7 @@ mod tests {
         Labels {
             labels: vec![None; plan.edges.len()],
             shared: Vec::new(),
+            fallbacks: Vec::new(),
         }
     }
 
@@ -3592,6 +3675,7 @@ mod tests {
             fit: Fit::Clear,
             font_px: crate::label::LABEL_FONT_PX,
             line_px: crate::label::LABEL_LINE_PX,
+            callout: None,
         });
         let scene = build(&plan, &routes, &labels);
         let at: Vec<Point> = scene.lines[0].chevrons.iter().map(|c| c.at).collect();

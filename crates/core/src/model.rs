@@ -991,6 +991,42 @@ pub struct ViewOptions {
     pub label_width: u32,
     /// `maxCrossings <n>`: crossing budget.
     pub max_crossings: u32,
+    /// `labels line|callout` (c4rizer extension): on-line labels or
+    /// callouts beside the line. Serves P4-300.
+    // APPROVER: new pub item
+    pub labels: LabelMode,
+}
+
+/// How a view draws its line labels: `labels line|callout` (c4rizer
+/// extension). Serves P4-300..P4-302.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LabelMode {
+    /// On its own line, with a backing (CORE-14, CORE-15): the default.
+    #[default]
+    Line,
+    /// Beside its line on a shelf, with a slanted leader to the line
+    /// (P4-302..P4-313).
+    Callout,
+}
+
+impl LabelMode {
+    /// The written keyword: `line` or `callout`. Serves P4-300, P4-318.
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            LabelMode::Line => "line",
+            LabelMode::Callout => "callout",
+        }
+    }
+
+    /// The mode written `word`, ignoring case.
+    fn from_keyword(word: &str) -> Option<LabelMode> {
+        [LabelMode::Line, LabelMode::Callout]
+            .into_iter()
+            .find(|m| m.keyword().eq_ignore_ascii_case(word))
+    }
 }
 
 impl ViewOptions {
@@ -1001,6 +1037,7 @@ impl ViewOptions {
         bus: false,
         label_width: 24,
         max_crossings: 0,
+        labels: LabelMode::Line,
     };
 }
 
@@ -1044,6 +1081,9 @@ pub struct ViewSpec {
     pub label_width: Option<Spanned<u32>>,
     /// `maxCrossings <n>`.
     pub max_crossings: Option<Spanned<u32>>,
+    /// `labels line|callout` (c4rizer extension). Serves P4-300.
+    // APPROVER: new pub item
+    pub labels: Option<Spanned<LabelMode>>,
     /// `at` lines, in file order; at most one per element.
     pub positions: Vec<At>,
     /// `size` lines, in file order; at most one per element.
@@ -1477,6 +1517,10 @@ impl ViewSpec {
             max_crossings: match self.max_crossings {
                 Some(v) => v.value,
                 None => d.max_crossings,
+            },
+            labels: match self.labels {
+                Some(v) => v.value,
+                None => d.labels,
             },
         }
     }
@@ -6914,6 +6958,16 @@ impl Builder<'_> {
                 self.overridden(view.max_crossings.map(|t| t.span), head);
                 view.max_crossings = Some(self.count(head, 0)?);
             }
+            // P4-300.
+            "labels" => {
+                self.overridden(view.labels.map(|t| t.span), head);
+                let word = self.one_word(head)?;
+                let value = LabelMode::from_keyword(word).ok_or_else(|| self.invalid(head, "labels", 1))?;
+                view.labels = Some(Spanned {
+                    value,
+                    span: head.span(1),
+                });
+            }
             "focus" => {
                 if head.len() < 2 {
                     return Err(self.missing(head, "element"));
@@ -8117,6 +8171,7 @@ const DYNAMIC_LINES: &[&str] = &[
     "labelwidth",
     "maxcrossings",
     "bus",
+    "labels",
 ];
 
 /// True for a relationship expression (P2-332): a relationship form, or
@@ -8170,6 +8225,7 @@ fn new_view(
         bus: None,
         label_width: None,
         max_crossings: None,
+        labels: None,
         positions: Vec::new(),
         sizes: Vec::new(),
         span,
@@ -9123,7 +9179,8 @@ mod tests {
                 technology: false,
                 bus: true,
                 label_width: 16,
-                max_crossings: 2
+                max_crossings: 2,
+                labels: LabelMode::Line,
             }
         );
         let focus: Vec<ElementId> = v.focus.iter().map(|f| f.value).collect();
@@ -9662,7 +9719,8 @@ mod tests {
                 technology: true,
                 bus: true,
                 label_width: 16,
-                max_crossings: 1
+                max_crossings: 1,
+                labels: LabelMode::Line,
             }
         );
         assert_eq!(serving.hide.len(), 2);

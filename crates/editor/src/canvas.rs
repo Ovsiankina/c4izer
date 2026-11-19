@@ -256,6 +256,22 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         {
             push(source, polygon(rect_points(cam, l.rect, 0), Some(rgb(fill)), None, cam));
         }
+        // P4-317: a callout's shelf, leader and dot, as the SVG draws them
+        // (P4-316); not painted when every text line is hidden.
+        if let Some(c) = &l.callout
+            && !shown.is_empty()
+        {
+            let colour = rgb(c.stroke.colour);
+            for seg in [c.shelf, c.leader] {
+                push(source, Primitive::Path {
+                    points: seg.iter().map(|&p| cam.to_screen(p)).collect(),
+                    colour,
+                    width: px(c.stroke.width_px) * cam.zoom,
+                    dash: None,
+                });
+            }
+            push(source, tip(&Tip::Dot { at: c.dot, radius_px: c.dot_radius_px }, colour, cam));
+        }
         for t in shown {
             push(source, t);
         }
