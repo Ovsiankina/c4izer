@@ -42,7 +42,7 @@ const MIN_TEXT_ON_SCREEN_PX: f32 = 9.0;
 // on an axis it overflows (`fit_pan`); the floor counts
 // the default 11px text only, a style's smaller `fontSize` is not
 // looked up (fit takes bounds, not the scene).
-const MIN_FIT_ZOOM: f32 = MIN_TEXT_ON_SCREEN_PX / SMALLEST_TEXT_PX;
+pub(crate) const MIN_FIT_ZOOM: f32 = MIN_TEXT_ON_SCREEN_PX / SMALLEST_TEXT_PX;
 
 /// A point in screen px, origin at the canvas's top-left corner, y down.
 /// Every pointer event carries one (EDIT-28).

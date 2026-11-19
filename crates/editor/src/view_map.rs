@@ -28,7 +28,9 @@ use std::sync::Arc;
 use c4rizer_core::model::{ElementKind, Model, Parsed, ViewKind, ViewSpec};
 use eframe::egui;
 
+use crate::icons::{self, Icon};
 use crate::state::{listed_views, views_entered};
+use crate::theme;
 use crate::worker::ViewRef;
 
 /// The row of views with no C4 level (custom, image) (P4-102).
@@ -405,15 +407,17 @@ impl ViewMapPanel {
         // resizable (default 40% of the panel, 25..75%), the folded one
         // is the header's height, so folding never leaves a gap and the
         // view list above always keeps at least a quarter.
-        let header_h = ui.spacing().interact_size.y + 2.0 * ui.spacing().item_spacing.y + 4.0;
+        let header_h = theme::SIZE_ROW;
         if self.open {
             egui::Panel::bottom("c4rizer-view-map")
+                .frame(egui::Frame::new().fill(theme::BG_PANEL))
                 .resizable(true)
                 .default_size((full * 0.4).max(header_h * 3.0))
                 .size_range((full * 0.25).max(header_h * 2.0)..=(full * 0.75).max(header_h * 2.0))
                 .show(ui, |ui| picked = self.show(ui, parsed, current));
         } else {
             egui::Panel::bottom("c4rizer-view-map-folded")
+                .frame(egui::Frame::new().fill(theme::BG_PANEL))
                 .resizable(false)
                 .exact_size(header_h)
                 .show(ui, |ui| picked = self.show(ui, parsed, current));
@@ -422,33 +426,48 @@ impl ViewMapPanel {
     }
 
     /// The header and, while open, the map filling `ui` (P4-100,
-    /// P4-108..P4-111). Returns the view a click picked.
+    /// P4-108..P4-111). Returns the view a click picked. Redesign
+    /// 2026-11-19 (`components/ViewMap`): a Section header; mono keys;
+    /// each row's level tag in a left gutter, a node repeating its tag
+    /// only where it differs from its row's; square links in
+    /// `line-strong`.
+    #[expect(clippy::too_many_lines, reason = "header, measure, then paint")]
     pub fn show(&mut self, ui: &mut egui::Ui, parsed: &Arc<Parsed>, current: Option<&ViewRef>) -> Option<ViewRef> {
-        let header = egui::CollapsingHeader::new(egui::RichText::new("View map").strong())
-            .id_salt("c4rizer-view-map-header")
-            .open(Some(self.open))
-            .show_unindented(ui, |_| {});
-        self.header = header.header_response.rect;
-        if header.header_response.clicked() {
+        let (hr, header) = ui.allocate_exact_size(egui::vec2(ui.available_width(), theme::SIZE_ROW), egui::Sense::click());
+        self.header = hr;
+        if header.clicked() {
             self.open = !self.open;
         }
+        let chevron = if self.open { Icon::ChevronDown } else { Icon::ChevronRight };
+        icons::paint(ui.painter(), chevron, egui::Rect::from_min_size(egui::pos2(hr.min.x + 12.0, hr.center().y - 6.0), egui::Vec2::splat(12.0)), theme::INK_3);
+        let label = egui::WidgetText::from(theme::label("View map")).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
+        ui.painter().galley(egui::pos2(hr.min.x + 32.0, hr.center().y - label.size().y / 2.0), label, theme::INK_3);
         self.drawn.clear();
         if !self.open {
             return None;
         }
         let map = self.sync(parsed);
         if map.nodes.is_empty() {
-            ui.weak("no views");
+            ui.label(egui::RichText::new("no views").color(theme::INK_3));
             return None;
         }
         let moved = self.last_current.as_ref() != current;
         self.last_current = current.cloned();
-        let font = egui::TextStyle::Button.resolve(ui.style());
+        let font = egui::FontId::monospace(10.0);
         self.font_size = font.size;
         let measure = |ui: &egui::Ui, text: &str| {
             ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE).size())
         };
         let line_h = measure(ui, "Hg").y;
+        let rows = map.nodes.iter().map(|n| n.row).max().unwrap_or(0) + 1;
+        // Each row's level tag: the tag of its first node.
+        let row_tag: Vec<String> = (0..rows)
+            .map(|r| map.nodes.iter().find(|n| n.row == r).map(|n| n.tag.clone()).unwrap_or_default())
+            .collect();
+        let inner_tag = |n: &MapNode| -> Option<String> {
+            (!n.key.eq_ignore_ascii_case(&n.tag) && !n.tag.eq_ignore_ascii_case(&row_tag[n.row])).then(|| n.tag.clone())
+        };
+        let two_lines = map.nodes.iter().any(|n| inner_tag(n).is_some());
         let widest = |tags_only: bool| {
             map.nodes
                 .iter()
@@ -456,16 +475,17 @@ impl ViewMapPanel {
                 .fold(0.0_f32, f32::max)
         };
         let columns = map.nodes.iter().map(|n| n.column).fold(0.0_f32, f32::max) + 1.0;
+        let gutter = row_tag.iter().map(|t| measure(ui, t).x).fold(0.0_f32, f32::max) + 12.0 + 8.0;
         // P4-111: solid scroll bars, so a cut map always shows its bar;
         // the vertical bar's room is kept whether shown or not.
         let (text_w, tag_w) = (widest(false), widest(true));
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-        let room = ui.available_width() - ui.spacing().scroll.allocated_width();
-        let node = egui::vec2(node_width(text_w, tag_w, columns, room), 2.0 * line_h + 2.0 * PAD);
-        let rows = map.nodes.iter().map(|n| n.row).max().unwrap_or(0) + 1;
+        let room = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
+        let lines_in = if two_lines { 2.0 } else { 1.0 };
+        let node = egui::vec2(node_width(text_w, tag_w, columns, room), lines_in * line_h + 2.0 * NODE_PAD_Y);
         #[expect(clippy::cast_precision_loss, reason = "a few rows")]
         let content = egui::vec2(
-            columns * node.x + (columns - 1.0) * GAP_X + 2.0 * MARGIN,
+            gutter + columns * node.x + (columns - 1.0) * GAP_X + 2.0 * MARGIN,
             rows as f32 * node.y + (rows - 1) as f32 * GAP_Y + 2.0 * MARGIN,
         );
         let area = ui.available_size();
@@ -478,22 +498,32 @@ impl ViewMapPanel {
             .show(ui, |ui| {
                 let size = egui::vec2(content.x.max(ui.available_width()), content.y);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                // A map narrower than the area is centred in it.
-                let origin = rect.min + egui::vec2((size.x - content.x) / 2.0 + MARGIN, MARGIN);
+                // A map narrower than the area is centred in what the
+                // gutter leaves.
+                let origin = rect.min + egui::vec2(gutter + (size.x - content.x) / 2.0 + MARGIN, MARGIN);
                 #[expect(clippy::cast_precision_loss, reason = "a few rows")]
                 let place = |n: &MapNode| {
                     let min = origin + egui::vec2(n.column * (node.x + GAP_X), n.row as f32 * (node.y + GAP_Y));
                     egui::Rect::from_min_size(min, node)
                 };
                 let painter = ui.painter().clone();
-                let line = egui::Stroke::new(1.2, ui.visuals().weak_text_color());
+                for (r, tag) in row_tag.iter().enumerate() {
+                    #[expect(clippy::cast_precision_loss, reason = "a few rows")]
+                    let y = origin.y + r as f32 * (node.y + GAP_Y) + node.y / 2.0;
+                    painter.text(
+                        egui::pos2(rect.min.x + 12.0, y),
+                        egui::Align2::LEFT_CENTER,
+                        tag,
+                        egui::FontId::monospace(9.0),
+                        theme::INK_3,
+                    );
+                }
+                let line = egui::Stroke::new(1.0, theme::LINE_STRONG);
                 for &(a, b) in &map.drawn {
                     let (from, to) = (place(&map.nodes[a]).center_bottom(), place(&map.nodes[b]).center_top());
-                    let mid = f32::midpoint(from.y, to.y);
-                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                        [from, egui::pos2(from.x, mid), egui::pos2(to.x, mid), to],
-                        false,
-                        egui::Color32::TRANSPARENT,
+                    let mid = f32::midpoint(from.y, to.y).round() + 0.5;
+                    painter.add(egui::Shape::line(
+                        vec![from, egui::pos2(from.x, mid), egui::pos2(to.x, mid), to],
                         line,
                     ));
                 }
@@ -504,7 +534,7 @@ impl ViewMapPanel {
                         .interact(r, ui.scope_id().with(("c4rizer-view-map-node", i)), egui::Sense::click())
                         .on_hover_text(hover_text(n))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    paint_node(ui, n, r, &font, (is_current, response.hovered()));
+                    paint_node(ui, n, inner_tag(n).as_deref(), r, &font, (is_current, response.hovered()));
                     if is_current && moved {
                         ui.scroll_to_rect(r.expand(MARGIN), None);
                     }
@@ -516,6 +546,39 @@ impl ViewMapPanel {
             });
         self.drawn = drawn;
         picked
+    }
+}
+
+/// Node text padding above and below, px.
+const NODE_PAD_Y: f32 = 3.0;
+
+/// Paints node `n` in `r` with its key, and `tag` under it when the row's
+/// gutter does not already say it (P4-104); `(current, hovered)` pick the
+/// colours (P4-108).
+fn paint_node(ui: &egui::Ui, n: &MapNode, tag: Option<&str>, r: egui::Rect, font: &egui::FontId, (current, hovered): (bool, bool)) {
+    let painter = ui.painter();
+    let (fill, stroke, text) = if current {
+        (theme::ACCENT_SOFT, theme::ACCENT, theme::ACCENT)
+    } else if hovered {
+        (theme::BG_ACTIVE, theme::LINE_STRONG, theme::INK)
+    } else {
+        (theme::BG_RAISED, theme::LINE_2, theme::INK_2)
+    };
+    painter.rect(r, theme::RADIUS_1, fill, egui::Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    let room = r.width() - 2.0 * PAD;
+    let fit = |t: &str| {
+        fit_text(t, room, |t| {
+            ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x)
+        })
+    };
+    match tag {
+        Some(tag) => {
+            painter.text(r.center_top() + egui::vec2(0.0, NODE_PAD_Y), egui::Align2::CENTER_TOP, fit(&n.key), font.clone(), text);
+            painter.text(r.center_bottom() - egui::vec2(0.0, NODE_PAD_Y), egui::Align2::CENTER_BOTTOM, fit(tag), font.clone(), theme::INK_3);
+        }
+        None => {
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, fit(&n.key), font.clone(), text);
+        }
     }
 }
 
@@ -534,36 +597,6 @@ pub fn node_width(widest_text: f32, widest_tag: f32, columns: f32, room: f32) ->
     natural.min(fits).max(minimum)
 }
 
-/// Paints node `n` in `r`: its box, then its lines cut to the box
-/// (P4-104); `(current, hovered)` pick the colours (P4-108).
-fn paint_node(ui: &egui::Ui, n: &MapNode, r: egui::Rect, font: &egui::FontId, (current, hovered): (bool, bool)) {
-    let (visuals, painter) = (ui.visuals(), ui.painter());
-    let (fill, stroke, text) = if current {
-        (visuals.selection.bg_fill, egui::Stroke::new(2.0, visuals.selection.stroke.color), visuals.strong_text_color())
-    } else if hovered {
-        (visuals.widgets.hovered.weak_bg_fill, visuals.widgets.hovered.bg_stroke, visuals.text_color())
-    } else {
-        (visuals.widgets.inactive.weak_bg_fill, visuals.widgets.noninteractive.bg_stroke, visuals.text_color())
-    };
-    painter.rect(r, 4.0, fill, stroke, egui::StrokeKind::Inside);
-    let room = r.width() - 2.0 * PAD;
-    let weak = if current { text } else { visuals.weak_text_color() };
-    let fit = |t: &str| {
-        fit_text(t, room, |t| {
-            ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x)
-        })
-    };
-    match n.lines().as_slice() {
-        [key, tag] => {
-            painter.text(r.center_top() + egui::vec2(0.0, PAD), egui::Align2::CENTER_TOP, fit(key), font.clone(), text);
-            painter.text(r.center_bottom() - egui::vec2(0.0, PAD), egui::Align2::CENTER_BOTTOM, fit(tag), font.clone(), weak);
-        }
-        [one] => {
-            painter.text(r.center(), egui::Align2::CENTER_CENTER, fit(one), font.clone(), text);
-        }
-        _ => {}
-    }
-}
 
 /// `text` cut with an ellipsis to fit `room` px as `width` measures it;
 /// one character is always kept.

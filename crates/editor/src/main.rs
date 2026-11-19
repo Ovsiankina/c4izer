@@ -35,6 +35,8 @@ mod exporters_tests;
 mod export_files;
 mod files;
 mod history;
+mod icons;
+mod kit;
 #[cfg(test)]
 mod landscape_filtered_tests;
 mod state;
@@ -42,6 +44,8 @@ mod state;
 mod styles_themes_tests;
 #[cfg(test)]
 mod testutil;
+#[allow(dead_code, reason = "widgets land screen by screen")]
+mod theme;
 #[cfg(test)]
 mod vertices_tests;
 mod view_map;
