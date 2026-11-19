@@ -21,8 +21,9 @@
 // "Explore" toggle is on (Structurizr's Explore is its own page); a usage
 // click or a node double click turns it off and shows the view.
 // DECISION: the model page indents nested elements instead of drawing
-// boxes inside boxes (model.jsp nests `div`s); each row keeps the
-// element's style colours as model.jsp does.
+// boxes inside boxes (model.jsp nests `div`s); each row shows the
+// element's fill as a 10 px swatch on the panel ground (redesign
+// 2026-11-19, `components/ModelRow`) instead of filling the whole row.
 // DECISION: an expanded row lists outgoing relationships, then incoming
 // ones (SRS "with their direction"; model.jsp lists outgoing only).
 // DECISION: the search keeps a matching element's ancestors on the model
@@ -55,7 +56,13 @@ use c4rizer_core::view::{BoxId, ViewPlan};
 use eframe::egui;
 
 use crate::camera::{Camera, ScenePoint, ScreenPoint};
+use crate::icons::{self, Icon};
+use crate::kit::{self, ChipKind, Look};
 use crate::state::{DrawList, kind_label};
+use crate::theme::{
+    self, ACCENT, ACCENT_SOFT, BG_CANVAS, BG_PANEL, BG_RAISED, INK, INK_2, INK_3, LINE, LINE_2, PAD, SIZE_CONTROL, SIZE_ICON,
+    SIZE_ROW,
+};
 use crate::worker::ViewRef;
 
 /// One explore page (P3-9).
@@ -350,6 +357,12 @@ type TableKey = (String, Column, bool);
 
 /// The height a model row is given before it was first drawn, px.
 const ROW_ESTIMATE: f32 = 52.0;
+
+/// The bar's height with its hairline, px (`.c4-explore__bar`).
+const BAR: f32 = 36.0;
+
+/// The usages panel's width, px (`.c4-explore__side`).
+const SIDE: f32 = 260.0;
 
 /// What the pages derive from one parse, rebuilt when it changes.
 #[derive(Debug)]
@@ -875,8 +888,8 @@ impl Explore {
     pub fn show(&mut self, ui: &mut egui::Ui, model: &Model) -> Vec<Action> {
         let mut out = Vec::new();
         self.drawn_embeds.clear();
-        self.menu(ui, model);
-        ui.separator();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        self.bar(ui, model);
         match self.page.clone() {
             Page::Model => self.model_page(ui, model, &mut out),
             Page::Relationships => self.relationships_page(ui, model, &mut out),
@@ -894,84 +907,169 @@ impl Explore {
         out
     }
 
-    /// The page choice and the search field.
-    fn menu(&mut self, ui: &mut egui::Ui, model: &Model) {
-        ui.horizontal_wrapped(|ui| {
-            for (page, label) in [
-                (Page::Model, "Model"),
-                (Page::Relationships, "Relationships"),
-                (Page::Documentation, "Documentation"),
-                (Page::Decisions, "Decisions"),
-            ] {
-                if ui.selectable_label(self.page == page, label).clicked() {
-                    self.page = page;
-                }
+    /// The bar (`.c4-explore__bar`): the page tabs, the graph and tree
+    /// selects, the search field at the right; a hairline under it.
+    fn bar(&mut self, ui: &mut egui::Ui, model: &Model) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), BAR), egui::Sense::hover());
+        let rule = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 1.0), rect.max);
+        ui.painter().rect_filled(rule, 0.0, LINE);
+        let inner = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 1.0)).shrink2(egui::vec2(PAD, 0.0));
+        let mut bar = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        bar.set_clip_rect(inner.intersect(ui.clip_rect()));
+        bar.spacing_mut().item_spacing.x = 16.0;
+        for (page, label) in [
+            (Page::Model, "Model"),
+            (Page::Relationships, "Relationships"),
+            (Page::Documentation, "Documentation"),
+            (Page::Decisions, "Decisions"),
+        ] {
+            if tab(&mut bar, label, self.page == page).clicked() {
+                self.page = page;
             }
-            ui.separator();
-            let pages = Explore::pages(model);
-            for (graph, label) in [(true, "Graph"), (false, "Tree")] {
-                let current = match &self.page {
-                    Page::Graph(k) if graph => Some(k.clone()),
-                    Page::Tree(k) if !graph => Some(k.clone()),
-                    _ => None,
-                };
-                let text = current.as_ref().map_or_else(|| format!("{label}…"), |k| format!("{label}: {k}"));
-                egui::ComboBox::from_id_salt(("c4rizer-explore-pick", graph))
-                    .selected_text(text)
-                    .show_ui(ui, |ui| {
-                        for p in &pages {
-                            let key = match p {
-                                Page::Graph(k) if graph => k,
-                                Page::Tree(k) if !graph => k,
-                                _ => continue,
-                            };
-                            let title = model
-                                .view(key)
-                                .and_then(|v| v.title.as_ref().or(v.description.as_ref()))
-                                .map_or_else(|| key.clone(), |t| format!("{key} · {}", t.value));
-                            if ui.selectable_label(current.as_deref() == Some(key.as_str()), title).clicked() {
-                                if graph {
-                                    self.open_graph(model, key);
-                                } else {
-                                    self.open_tree(model, key);
-                                }
-                            }
-                        }
-                    });
-            }
-            if matches!(self.page, Page::Model | Page::Relationships) {
-                ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Search name, id, description, technology, tag, property")
-                        .desired_width(320.0),
-                );
-                if !self.query.is_empty() && ui.small_button("✕").on_hover_text("Clear the search").clicked() {
-                    self.query.clear();
-                }
+        }
+        let search = matches!(self.page, Page::Model | Page::Relationships);
+        // DECISION: the selects take 123 px each (the design's 250 px
+        // pair) and the search 280 px; in a narrow window both shrink,
+        // the selects to 70 px, the search to 100 px, before anything
+        // is cut at the bar's end.
+        let room = bar.available_width() - if search { 16.0 + 100.0 } else { 0.0 };
+        let select_w = ((room - 4.0) / 2.0).clamp(70.0, 123.0);
+        bar.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for graph in [true, false] {
+                self.view_select(ui, model, graph, select_w);
             }
         });
+        if search {
+            let w = bar.available_width().clamp(100.0, 280.0);
+            bar.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, SIZE_CONTROL),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| self.search_field(ui, w),
+                );
+            });
+        }
+    }
+
+    /// The `Graph…` or `Tree…` select: one row per view offering it.
+    fn view_select(&mut self, ui: &mut egui::Ui, model: &Model, graph: bool, width: f32) {
+        let pages = Explore::pages(model);
+        let label = if graph { "Graph" } else { "Tree" };
+        let current = match &self.page {
+            Page::Graph(k) if graph => Some(k.clone()),
+            Page::Tree(k) if !graph => Some(k.clone()),
+            _ => None,
+        };
+        let keys: Vec<&String> = pages
+            .iter()
+            .filter_map(|p| match p {
+                Page::Graph(k) if graph => Some(k),
+                Page::Tree(k) if !graph => Some(k),
+                _ => None,
+            })
+            .collect();
+        let titles: Vec<String> = keys
+            .iter()
+            .map(|key| {
+                model
+                    .view(key)
+                    .and_then(|v| v.title.as_ref().or(v.description.as_ref()))
+                    .map_or_else(|| (*key).clone(), |t| format!("{key} · {}", t.value))
+            })
+            .collect();
+        let text = current.as_ref().map_or_else(|| format!("{label}…"), |k| format!("{label}: {k}"));
+        let selected = keys.iter().position(|k| current.as_deref() == Some(k.as_str()));
+        let picked = ui
+            .allocate_ui_with_layout(
+                egui::vec2(width, SIZE_CONTROL),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(width);
+                    kit::select(ui, if graph { "explore-graph" } else { "explore-tree" }, &text, &titles, selected)
+                },
+            )
+            .inner;
+        if let Some(key) = picked.and_then(|i| keys.get(i)).map(|k| (*k).clone()) {
+            if graph {
+                self.open_graph(model, &key);
+            } else {
+                self.open_tree(model, &key);
+            }
+        }
+    }
+
+    /// The search field (`components/Field`): `bg-canvas`, `line-strong`
+    /// around (`accent` while typing), a search icon, a clear button once
+    /// something is typed (P3-503).
+    fn search_field(&mut self, ui: &mut egui::Ui, width: f32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, SIZE_CONTROL), egui::Sense::hover());
+        let ground = ui.painter().add(egui::Shape::Noop);
+        let mut field = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        field.spacing_mut().item_spacing.x = 4.0;
+        let (icon, _) = field.allocate_exact_size(egui::vec2(SIZE_ICON, SIZE_ICON), egui::Sense::hover());
+        icons::paint(field.painter(), Icon::Search, icon, INK_3);
+        let clear = if self.query.is_empty() { 0.0 } else { SIZE_ICON + 4.0 };
+        // DECISION: the design's shorter hint; the search still matches
+        // technology and properties too (P3-503).
+        let edit = field.add(
+            egui::TextEdit::singleline(&mut self.query)
+                .id(egui::Id::unique("c4rizer-explore-search"))
+                .hint_text(egui::RichText::new("Search name, id, description, tag").color(INK_3))
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(egui::vec2(0.0, SIZE_CONTROL - 2.0))
+                .text_color(INK)
+                .desired_width((field.available_width() - clear).max(20.0)),
+        );
+        if !self.query.is_empty() {
+            let (r, response) = field.allocate_exact_size(egui::vec2(SIZE_ICON, SIZE_ICON), egui::Sense::click());
+            icons::paint(field.painter(), Icon::Close, r, if response.hovered() { INK } else { INK_3 });
+            if kit::tip(response, "Clear the search", None).clicked() {
+                self.query.clear();
+            }
+        }
+        let border = if edit.has_focus() { ACCENT } else { theme::LINE_STRONG };
+        ui.painter().set(
+            ground,
+            egui::epaint::RectShape::new(
+                rect,
+                theme::RADIUS_1,
+                BG_CANVAS,
+                egui::Stroke::new(1.0, border),
+                egui::StrokeKind::Inside,
+            ),
+        );
     }
 
     /// The model page: nested rows and, for the selected element, its
     /// usages (P3-500, P3-501, P3-504, P3-505, P3-506).
     fn model_page(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
         let rows = self.cached_model_rows(model);
-        let width = ui.available_width();
-        let usages_width = (width * 0.3).clamp(220.0, 420.0);
         egui::Panel::right("c4rizer-explore-usages")
             .resizable(true)
-            .default_size(usages_width)
+            .frame(egui::Frame::new().fill(BG_PANEL))
+            .default_size(SIDE)
             .show(ui, |ui| self.usages_panel(ui, model, out));
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG_PANEL)).show(ui, |ui| {
             // DECISION: the rows out of sight are not drawn: each takes the
             // height it had when last drawn (an estimate before that), so a
             // frame costs the rows in sight only (P3-503). Rows vary in
             // height (wrapping, expanded relationships), so egui's
             // `show_rows` (one fixed height) does not fit.
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 if rows.is_empty() {
-                    ui.weak(if self.query.is_empty() { "The model is empty." } else { "Nothing matches the search." });
+                    empty(ui, if self.query.is_empty() { "The model is empty." } else { "Nothing matches the search." });
                 }
                 if self.memo.heights.len() != rows.len() {
                     self.memo.heights = vec![None; rows.len()];
@@ -990,11 +1088,12 @@ impl Explore {
                     }
                     let top = ui.cursor().top();
                     if first {
-                        ui.add_space(6.0);
-                        ui.heading(match &row.section {
+                        let n = rows.iter().filter(|r| r.section == row.section).count();
+                        let title = match &row.section {
                             Section::Static => "Static model".to_owned(),
                             Section::Deployment(env) => format!("Deployment model: {env}"),
-                        });
+                        };
+                        group(ui, &title, &format!("{n} element{}", if n == 1 { "" } else { "s" }));
                     }
                     self.model_row(ui, model, row, out);
                     let drawn = ui.cursor().top() - top;
@@ -1005,227 +1104,305 @@ impl Explore {
         });
     }
 
-    /// One element row, with its relationships when expanded.
+    /// One element row (`components/ModelRow`), with its relationships
+    /// when expanded: chevron, swatch of the element's fill, the lines,
+    /// then `Usages` and "Reveal in file" at the right.
     fn model_row(&mut self, ui: &mut egui::Ui, model: &Model, row: &ModelRow, out: &mut Vec<Action>) {
-        let style = model.style_of_in(row.element, self.mode);
-        let fill = colour(style.background, if row.matched { 255 } else { 110 });
-        let stroke = colour(style.stroke.unwrap_or_else(|| darker(style.background)), 255);
         let selected = self.selected == Some(row.element);
+        let open = self.expanded.contains(&row.element);
         #[expect(clippy::cast_precision_loss, reason = "nesting depth is tiny")]
         let indent = row.depth as f32 * 24.0;
-        // The frame's content width: the column minus the indent, the
-        // inner margin and the stroke, so no row runs under the usages
-        // panel.
-        let inner = (ui.available_width() - indent - 2.0 * 8.0 - 6.0).max(120.0);
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            let frame = egui::Frame::new()
-                .fill(fill)
-                .stroke(egui::Stroke::new(if selected { 3.0 } else { 1.5 }, stroke))
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(8, 5));
-            // DECISION: no click sense on the whole frame: it would sit
-            // on top of the row's buttons and take their clicks; the name
-            // and "Usages" select the element.
-            frame
-                .show(ui, |ui| {
-                    ui.set_width(inner);
-                    // The frame sits in a horizontal row (the indent):
-                    // its content is laid out top to bottom.
-                    ui.vertical(|ui| self.row_content(ui, model, row, out));
-                });
-        });
-        if self.expanded.contains(&row.element) {
-            let lines = self.relationship_lines(model, row.element);
-            ui.horizontal(|ui| {
-                ui.add_space(indent + 24.0);
-                egui::Frame::new()
-                    .fill(ui.visuals().extreme_bg_color)
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
-                        ui.set_width((inner - 24.0).max(100.0));
-                        ui.vertical(|ui| {
-                            if lines.is_empty() {
-                                ui.weak("No relationships.");
-                            }
-                            for l in &lines {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(if l.outgoing { "→" } else { "←" });
-                                    let desc = if l.description.is_empty() { "—" } else { &l.description };
-                                    ui.label(desc);
-                                    if !l.technology.is_empty() {
-                                        ui.weak(format!("[{}]", l.technology));
-                                    }
-                                    ui.label(if l.outgoing { "to" } else { "from" });
-                                    let other = model.element(l.other);
-                                    if ui.link(&other.name.value).clicked() {
-                                        self.selected = Some(l.other);
-                                    }
-                                    ui.weak(type_line(model, l.other));
-                                    if l.implied {
-                                        badge(ui, "implied", egui::Color32::from_gray(120), egui::Color32::WHITE);
-                                    }
-                                });
-                            }
-                        });
-                    });
-            });
+        let full = ui.available_rect_before_wrap();
+        let (left, right, top) = (full.min.x, full.max.x, full.min.y);
+        let x0 = left + PAD + indent;
+        let usages_w = text_px(ui, "Usages", &theme::ui_font()) + 16.0;
+        let acts_w = usages_w + 4.0 + SIZE_CONTROL;
+        let main_x = x0 + 16.0 + 8.0 + 10.0 + 8.0;
+        // The lines' width: the column minus the indent, the leading marks
+        // and the buttons, so no row runs under the usages panel.
+        let main_w = (right - PAD - acts_w - 8.0 - main_x).max(80.0);
+        let ground = ui.painter().add(egui::Shape::Noop);
+        let mut main = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(egui::pos2(main_x, top + 4.0), egui::vec2(main_w, 4096.0)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        if !row.matched {
+            main.multiply_opacity(0.45);
         }
-        ui.add_space(3.0);
+        self.row_lines(&mut main, row, selected);
+        let h = (main.min_rect().height() + 8.0).max(36.0);
+        let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, top + h));
+        ui.allocate_rect(rect, egui::Sense::hover());
+        let ground_fill = if selected {
+            ACCENT_SOFT
+        } else if ui.rect_contains_pointer(rect) {
+            BG_RAISED
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().set(ground, egui::Shape::rect_filled(rect, 0.0, ground_fill));
+        row_rule(ui, rect);
+        let cy = rect.center().y;
+        let chevron = egui::Rect::from_center_size(egui::pos2(x0 + 8.0, cy), egui::vec2(SIZE_ICON, SIZE_ICON));
+        let id = egui::Id::unique(("c4rizer-explore-chevron", row.element.0));
+        let response = ui.interact(chevron.expand(4.0), id, egui::Sense::click());
+        icons::paint(ui.painter(), if open { Icon::ChevronDown } else { Icon::ChevronRight }, chevron, if response.hovered() { INK } else { INK_3 });
+        if response.on_hover_text("Show the relationships").clicked() {
+            if open {
+                self.expanded.remove(&row.element);
+            } else {
+                self.expanded.insert(row.element);
+            }
+        }
+        let style = model.style_of_in(row.element, self.mode);
+        let swatch = egui::Rect::from_center_size(egui::pos2(x0 + 16.0 + 8.0 + 5.0, cy), egui::vec2(10.0, 10.0));
+        ui.painter().rect_filled(swatch, 1.0, colour(style.background, if row.matched { 255 } else { 110 }));
+        let copy = egui::Rect::from_min_size(egui::pos2(right - PAD - SIZE_CONTROL, cy - SIZE_CONTROL / 2.0), egui::vec2(SIZE_CONTROL, SIZE_CONTROL));
+        let usages = egui::Rect::from_min_size(egui::pos2(copy.min.x - 4.0 - usages_w, copy.min.y), egui::vec2(usages_w, SIZE_CONTROL));
+        let r = put(ui, usages, |ui| kit::Button::new("Usages").look(Look::Ghost).on(selected).show(ui));
+        if r.on_hover_text("Show the views that draw it").clicked() {
+            self.selected = Some(row.element);
+        }
+        let r = put(ui, copy, |ui| kit::Button::icon(Icon::Copy).look(Look::Ghost).show(ui));
+        if kit::tip(r, "Reveal in file: copy path:line:column", None).clicked()
+            && let Some(parsed) = self.parsed()
+        {
+            out.push(Action::Copy(reveal_text(&parsed, model.element(row.element).span)));
+        }
+        if open {
+            self.relationship_rows(ui, model, row.element, indent);
+        }
     }
 
-    /// The lines of one element row: id, name, type, marks, tags and
-    /// buttons, then the description.
-    fn row_content(&mut self, ui: &mut egui::Ui, model: &Model, row: &ModelRow, out: &mut Vec<Action>) {
-        let text = colour(model.style_of_in(row.element, self.mode).color, 255);
+    /// The lines of one element row: key, name, type, marks and tags,
+    /// then the description.
+    fn row_lines(&mut self, ui: &mut egui::Ui, row: &ModelRow, selected: bool) {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 1.0);
+        // A wrapped line's height comes from the parent's interact size.
+        ui.spacing_mut().interact_size.y = 20.0;
         ui.horizontal_wrapped(|ui| {
-            let open = self.expanded.contains(&row.element);
-            let arrow = if open { "▾" } else { "▸" };
-            if ui
-                .add(egui::Button::new(egui::RichText::new(arrow).color(text)).frame(false))
-                .on_hover_text("Show the relationships")
-                .clicked()
-            {
-                if open {
-                    self.expanded.remove(&row.element);
-                } else {
-                    self.expanded.insert(row.element);
-                }
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+            kit::chip(ui, &row.id, ChipKind::Key);
+            let name = egui::Label::new(egui::RichText::new(&row.name).font(theme::strong_font()).color(INK)).sense(egui::Sense::click());
+            let response = ui.add(name).on_hover_text("Show its usages");
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            badge(ui, &row.id, egui::Color32::from_gray(70), egui::Color32::WHITE);
-            let name = egui::Button::new(egui::RichText::new(&row.name).color(text).family(bold()).size(14.0)).frame(false);
-            if ui.add(name).on_hover_text("Show its usages").clicked() {
+            if response.clicked() {
                 self.selected = Some(row.element);
             }
-            ui.label(egui::RichText::new(&row.type_line).color(text).size(11.0));
+            let kind = row.type_line.trim_start_matches('[').trim_end_matches(']');
+            ui.label(theme::label(kind).color(if selected { INK_2 } else { INK_3 }));
             if row.in_no_view {
-                badge(ui, "in no view", egui::Color32::from_rgb(0xb0, 0x30, 0x30), egui::Color32::WHITE)
-                    .on_hover_text("No view draws this element (inspection model.element.noview)");
+                kit::chip(ui, "in no view", ChipKind::Warn).on_hover_text("No view draws this element (inspection model.element.noview)");
             }
-            gap(ui, 12.0);
-            for tag in &row.tags {
-                badge(ui, tag, egui::Color32::from_black_alpha(40), text);
-            }
-            gap(ui, 12.0);
-            if ui.small_button("Usages").clicked() {
-                self.selected = Some(row.element);
-            }
-            if ui.small_button("Reveal in file").on_hover_text("Copy path:line:column").clicked()
-                && let Some(parsed) = self.parsed()
-            {
-                out.push(Action::Copy(reveal_text(&parsed, model.element(row.element).span)));
+            // DECISION: the generic `Element` tag every element carries is
+            // not shown (the design's rows leave it out); the rest are.
+            for tag in row.tags.iter().filter(|t| *t != "Element") {
+                kit::chip(ui, tag, ChipKind::Plain);
             }
         });
         if !row.description.is_empty() {
-            ui.label(egui::RichText::new(&row.description).color(text));
+            // DECISION: the description wraps instead of being cut to one
+            // line, so a long one stays readable.
+            ui.label(egui::RichText::new(&row.description).color(INK_2));
         }
     }
 
-    /// The usages of the selected element (P3-504).
+    /// The relationships under an expanded row (`.c4-mrow--rel`): arrow,
+    /// other end (a click selects it), description, technology, `implied`.
+    fn relationship_rows(&mut self, ui: &mut egui::Ui, model: &Model, element: ElementId, indent: f32) {
+        let lines = self.relationship_lines(model, element);
+        let full = ui.available_rect_before_wrap();
+        let (left, right) = (full.min.x, full.max.x);
+        let arrow_x = left + PAD + indent + 24.0 + 16.0 + 8.0;
+        let main_x = arrow_x + 16.0 + 8.0;
+        let main_w = (right - PAD - main_x).max(80.0);
+        for i in 0..lines.len().max(1) {
+            let top = ui.cursor().top();
+            let ground = ui.painter().add(egui::Shape::Noop);
+            let mut main = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_min_size(egui::pos2(main_x, top + 4.0), egui::vec2(main_w, 4096.0)))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            main.spacing_mut().interact_size.y = 20.0;
+            main.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                let Some(l) = lines.get(i) else {
+                    ui.label(egui::RichText::new("No relationships.").color(INK_3));
+                    return;
+                };
+                let other = model.element(l.other);
+                let name = egui::Label::new(egui::RichText::new(&other.name.value).color(ACCENT)).sense(egui::Sense::click());
+                let tip = format!("{} {} {}", if l.outgoing { "To" } else { "From" }, other.name.value, type_line(model, l.other));
+                let response = ui.add(name).on_hover_text(tip);
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    self.selected = Some(l.other);
+                }
+                if l.description.is_empty() {
+                    ui.label(egui::RichText::new("—").color(INK_3));
+                } else {
+                    ui.label(egui::RichText::new(&l.description).color(INK_2));
+                }
+                if !l.technology.is_empty() {
+                    ui.label(theme::code(&l.technology, INK_3));
+                }
+                if l.implied {
+                    kit::chip(ui, "implied", ChipKind::Ok);
+                }
+            });
+            let h = (main.min_rect().height() + 8.0).max(SIZE_ROW);
+            let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, top + h));
+            ui.allocate_rect(rect, egui::Sense::hover());
+            ui.painter().set(ground, egui::Shape::rect_filled(rect, 0.0, BG_CANVAS));
+            row_rule(ui, rect);
+            if let Some(l) = lines.get(i) {
+                let r = egui::Rect::from_center_size(egui::pos2(arrow_x + 8.0, rect.center().y), egui::vec2(SIZE_ICON, SIZE_ICON));
+                icons::paint(ui.painter(), if l.outgoing { Icon::ArrowDown } else { Icon::ArrowUp }, r, INK_3);
+                let id = egui::Id::unique(("c4rizer-explore-direction", element.0, i));
+                let _ = ui.interact(r, id, egui::Sense::hover()).on_hover_text(if l.outgoing { "Outgoing" } else { "Incoming" });
+            }
+        }
+    }
+
+    /// The usages of the selected element (P3-504): a header naming it
+    /// with the count, one row per view (a click opens it with the box
+    /// selected), then how each view draws it.
     fn usages_panel(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
-        ui.heading("Usages");
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let usages = self.cached_usages(model);
+        let title = self.selected.map_or_else(|| "Usages".to_owned(), |e| format!("Usages · {}", model.element(e).name.value));
+        let count = self.selected.map(|_| usages.len().to_string());
+        side_head(ui, &title, count.as_deref());
         let Some(selected) = self.selected else {
-            ui.weak("Select an element to see the views that draw it.");
+            empty(ui, "Select an element to see the views that draw it.");
             return;
         };
-        let element = model.element(selected);
-        ui.label(egui::RichText::new(&element.name.value).family(bold()));
-        ui.weak(type_line(model, selected));
-        ui.add_space(4.0);
-        let usages = self.cached_usages(model);
         if usages.is_empty() {
-            ui.label("In no view.");
+            empty(ui, "In no view.");
+            return;
         }
+        let code = theme::code_font();
+        let key_w = usages.iter().map(|u| text_px(ui, &u.view, &code)).fold(0.0_f32, f32::max).min(104.0);
         egui::ScrollArea::vertical().id_salt("c4rizer-explore-usages-list").show(ui, |ui| {
-            for u in usages.iter() {
-                let (how, target) = match u.drawn {
-                    Drawn::Directly => ("drawn directly".to_owned(), selected),
-                    Drawn::Lifted { onto } => (format!("through {}", model.element(onto).name.value), onto),
-                    _ => ("drawn".to_owned(), selected),
-                };
-                let text = match &u.title {
-                    Some(t) => format!("{} · {t}", u.view),
-                    None => u.view.clone(),
-                };
-                ui.horizontal_wrapped(|ui| {
-                    if ui.link(text).on_hover_text("Open this view with the box selected").clicked() {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 0)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for u in usages.iter() {
+                    let target = match u.drawn {
+                        Drawn::Lifted { onto } => onto,
+                        _ => selected,
+                    };
+                    let response = usage_row(ui, &u.view, u.title.as_deref(), key_w);
+                    if response.on_hover_text("Open this view with the box selected").clicked() {
                         out.push(Action::Open {
                             view: ViewRef::Declared(u.view.clone()),
                             element: key_of(model, target),
                         });
                     }
-                    ui.weak(how);
-                });
-            }
-        });
-    }
-
-    /// The relationships table (P3-502, P3-503, P3-506).
-    fn relationships_page(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
-        let rows = self.cached_table(model);
-        let width = ui.available_width() - 110.0;
-        let widths = [0.08, 0.16, 0.16, 0.3, 0.14, 0.16].map(|f: f32| (width * f).max(40.0));
-        ui.horizontal(|ui| {
-            for (column, w) in Column::ALL.into_iter().zip(widths) {
-                let mark = match self.sort {
-                    (c, false) if c == column => " ▲",
-                    (c, true) if c == column => " ▼",
-                    _ => "",
-                };
-                let button = egui::Button::new(egui::RichText::new(format!("{}{mark}", column.title())).family(bold()));
-                if ui.add_sized([w, 22.0], button).on_hover_text("Sort by this column").clicked() {
-                    self.sort = if self.sort.0 == column { (column, !self.sort.1) } else { (column, false) };
                 }
-            }
-        });
-        ui.weak(format!("{} relationships", rows.len()));
-        let row_height = 22.0;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show_rows(ui, row_height, rows.len(), |ui, range| {
-                for row in &rows[range] {
-                    ui.horizontal(|ui| {
-                        for (column, w) in Column::ALL.into_iter().zip(widths) {
-                            let mut text = row.cell(column).to_owned();
-                            if column == Column::Id && row.row.implied {
-                                text = format!("{text} (implied)");
-                            }
-                            let label = egui::Label::new(text.clone()).truncate();
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(w, row_height - 4.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.set_width(w);
-                                    ui.add(label).on_hover_text(text);
-                                },
-                            );
-                        }
-                        if ui.small_button("Reveal").on_hover_text("Copy path:line:column").clicked()
-                            && let Some(parsed) = self.parsed()
-                        {
-                            out.push(Action::Copy(reveal_text(&parsed, model.relationship(row.row.relationship).span)));
-                        }
+            });
+            egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 12, top: 12, bottom: 12 }).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 8.0);
+                for u in usages.iter() {
+                    let how = match u.drawn {
+                        Drawn::Directly => "drawn directly".to_owned(),
+                        Drawn::Lifted { onto } => format!("through {}", model.element(onto).name.value),
+                        _ => "drawn".to_owned(),
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(theme::code(&u.view, INK_2));
+                        ui.label(egui::RichText::new(how).color(INK_2));
                     });
                 }
             });
+        });
+    }
+
+    /// The relationships table (`components/Table`; P3-502, P3-503,
+    /// P3-506): a header that sorts, rows of elided cells, "Reveal in
+    /// file" at each row's end.
+    fn relationships_page(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
+        let rows = self.cached_table(model);
+        group(ui, "Relationships", &format!("{} relationship{}", rows.len(), if rows.len() == 1 { "" } else { "s" }));
+        let full = ui.available_width();
+        let reveal = SIZE_CONTROL + 2.0 * 8.0;
+        let widths = [0.08, 0.16, 0.16, 0.3, 0.14, 0.16].map(|f: f32| ((full - reveal) * f).max(40.0));
+        self.table_head(ui, widths);
+        if rows.is_empty() {
+            empty(ui, if self.query.is_empty() { "No relationships." } else { "Nothing matches the search." });
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, SIZE_ROW, rows.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for row in &rows[range] {
+                    if table_row(ui, row, widths) && let Some(parsed) = self.parsed() {
+                        out.push(Action::Copy(reveal_text(&parsed, model.relationship(row.row.relationship).span)));
+                    }
+                }
+            });
+    }
+
+    /// The table's header row: a click sorts by that column, again
+    /// reverses (P3-502).
+    fn table_head(&mut self, ui: &mut egui::Ui, widths: [f32; 6]) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::hover());
+        let mut x = rect.min.x;
+        for (column, w) in Column::ALL.into_iter().zip(widths) {
+            let cell = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, SIZE_ROW));
+            x += w;
+            let response = ui.interact(cell, egui::Id::unique(("c4rizer-explore-sort", column)), egui::Sense::click());
+            let sorted = self.sort.0 == column;
+            let ink = if sorted || response.hovered() { INK } else { INK_3 };
+            let galley = egui::WidgetText::from(theme::label(column.title()).color(ink)).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (w - 2.0 * PAD - 16.0).max(8.0),
+                egui::TextStyle::Small,
+            );
+            let at = egui::pos2(cell.min.x + PAD, cell.center().y - galley.size().y / 2.0);
+            let end = at.x + galley.size().x;
+            ui.painter().galley(at, galley, ink);
+            if sorted {
+                let icon = if self.sort.1 { Icon::ArrowDown } else { Icon::ArrowUp };
+                let r = egui::Rect::from_min_size(egui::pos2(end + 4.0, cell.center().y - 6.0), egui::vec2(12.0, 12.0));
+                icons::paint(ui.painter(), icon, r, INK);
+            }
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.on_hover_text("Sort by this column").clicked() {
+                self.sort = if sorted { (column, !self.sort.1) } else { (column, false) };
+            }
+        }
+        let rule = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 1.0), rect.max);
+        ui.painter().rect_filled(rule, 0.0, LINE_2);
     }
 
     /// The graph page (P3-508, P3-509, P3-512).
     #[expect(clippy::many_single_char_names, reason = "geometry: points, ends, radii")]
     fn graph_page(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
         let Some(graph) = &self.graph else {
-            ui.weak("No graph for this view: graphs are offered for custom, landscape, context, container and component views.");
+            empty(ui, "No graph for this view: graphs are offered for custom, landscape, context, container and component views.");
             return;
         };
         let title = model
             .view(&graph.key)
             .and_then(|v| v.title.as_ref().or(v.description.as_ref()))
             .map_or_else(|| graph.key.clone(), |t| t.value.clone());
-        ui.horizontal(|ui| {
-            ui.strong(title);
-            ui.weak("Click a node to show its neighbours · double-click opens the diagram · wheel zooms · middle drag or Space+drag pans");
-        });
+        page_title(
+            ui,
+            &title,
+            "Click a node to show its neighbours · double-click opens the diagram · wheel zooms · middle drag or Space+drag pans",
+        );
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let canvas = ScreenPoint { x: response.rect.width(), y: response.rect.height() };
         let rel = |p: egui::Pos2| ScreenPoint { x: p.x - response.rect.min.x, y: p.y - response.rect.min.y };
@@ -1306,17 +1483,14 @@ impl Explore {
     /// The tree page (P3-510, P3-512).
     fn tree_page(&mut self, ui: &mut egui::Ui, model: &Model, out: &mut Vec<Action>) {
         let Some(tree) = &self.tree else {
-            ui.weak("No tree for this view: trees are offered for custom, landscape, context, container, component and deployment views.");
+            empty(ui, "No tree for this view: trees are offered for custom, landscape, context, container, component and deployment views.");
             return;
         };
         let title = model
             .view(&tree.key)
             .and_then(|v| v.title.as_ref().or(v.description.as_ref()))
             .map_or_else(|| tree.key.clone(), |t| t.value.clone());
-        ui.horizontal(|ui| {
-            ui.strong(title);
-            ui.weak("Double-click a node to open the diagram · wheel zooms · middle drag or Space+drag pans");
-        });
+        page_title(ui, &title, "Double-click a node to open the diagram · wheel zooms · middle drag or Space+drag pans");
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let canvas = ScreenPoint { x: response.rect.width(), y: response.rect.height() };
         let rel = |p: egui::Pos2| ScreenPoint { x: p.x - response.rect.min.x, y: p.y - response.rect.min.y };
@@ -1387,13 +1561,15 @@ impl Explore {
     fn documentation_page(&mut self, ui: &mut egui::Ui, model: &Model) {
         let sections = self.sections().to_vec();
         if sections.is_empty() {
-            ui.weak("No documentation: attach a folder with `!docs <path>` to the workspace or a software system.");
+            empty(ui, "No documentation: attach a folder with `!docs <path>` to the workspace or a software system.");
             return;
         }
         egui::Panel::left("c4rizer-explore-sections")
             .resizable(true)
+            .frame(egui::Frame::new().fill(BG_PANEL).inner_margin(egui::Margin::same(8)))
             .default_size(240.0)
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut owner: Option<Option<ElementId>> = None;
                     for (i, s) in sections.iter().enumerate() {
@@ -1408,7 +1584,8 @@ impl Explore {
                     }
                 });
             });
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG_PANEL).inner_margin(egui::Margin::same(12))).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             let Some(section) = sections.get(self.section) else { return };
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.weak(format!("{} · {}", owner_name(model, section.owner), section.path.display()));
@@ -1432,13 +1609,15 @@ impl Explore {
     fn decisions_page(&mut self, ui: &mut egui::Ui, model: &Model) {
         let decisions = self.decisions().to_vec();
         if decisions.is_empty() {
-            ui.weak("No decisions: attach a folder with `!adrs <path>` to the workspace or a software system.");
+            empty(ui, "No decisions: attach a folder with `!adrs <path>` to the workspace or a software system.");
             return;
         }
         egui::Panel::left("c4rizer-explore-decisions")
             .resizable(true)
+            .frame(egui::Frame::new().fill(BG_PANEL).inner_margin(egui::Margin::same(8)))
             .default_size(360.0)
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut owner: Option<Option<ElementId>> = None;
                     egui::Grid::new("c4rizer-decision-list").striped(true).num_columns(4).show(ui, |ui| {
@@ -1467,7 +1646,8 @@ impl Explore {
                     });
                 });
             });
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG_PANEL).inner_margin(egui::Margin::same(12))).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             let Some(d) = decisions.get(self.decision) else { return };
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -1515,7 +1695,7 @@ impl Explore {
                     "{remote} remote image{} not fetched: network is off for this file (P3-600).",
                     if remote == 1 { "" } else { "s" }
                 ))
-                .color(egui::Color32::from_rgb(0xb0, 0x70, 0x00)),
+                .color(theme::WARN),
             );
         }
         for b in &blocks {
@@ -1865,47 +2045,191 @@ fn alpha(opacity: f32) -> u8 {
     a
 }
 
-/// The bold font family.
+/// The bold font family: the chrome's strong face (Geist, weight 600).
 fn bold() -> egui::FontFamily {
-    egui::FontFamily::Name(crate::canvas::BOLD_FAMILY.into())
+    egui::FontFamily::Name(theme::SEMIBOLD.into())
 }
 
-/// A gap of `px` in a wrapped row, left out when the line has no room
-/// for it: a space never wraps, so at a line's end it would push the row
-/// past its frame.
-fn gap(ui: &mut egui::Ui, px: f32) {
-    if ui.available_size_before_wrap().x > px {
-        ui.add_space(px);
+/// The width of `text` in `font`, px.
+fn text_px(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
+    ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), INK).size().x)
+}
+
+/// Runs `add` in a child placed at `rect`, without moving `ui`'s cursor.
+fn put(ui: &mut egui::Ui, rect: egui::Rect, add: impl FnOnce(&mut egui::Ui) -> egui::Response) -> egui::Response {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    add(&mut child)
+}
+
+/// A page tab (`components/Tabs`): text, `ink-2` (`ink` when hovered or
+/// on), a 2 px `accent` underline when on.
+fn tab(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
+    let font = theme::ui_font();
+    let w = text_px(ui, text, &font);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), egui::Sense::click());
+    let ink = if on || response.hovered() { INK } else { INK_2 };
+    ui.painter().text(egui::pos2(rect.min.x, rect.center().y), egui::Align2::LEFT_CENTER, text, font, ink);
+    if on {
+        let line = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 2.0), rect.max);
+        ui.painter().rect_filled(line, 0.0, ACCENT);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    kit::focus_ring(ui, &response);
+    response
+}
+
+/// A group header (`.c4-group`): 28 px on `bg-canvas`, a label at the
+/// left, a count at the right, a hairline under it.
+fn group(ui: &mut egui::Ui, title: &str, count: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, BG_CANVAS);
+    let galley = egui::WidgetText::from(theme::label(title)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (rect.width() / 2.0).max(40.0),
+        egui::TextStyle::Small,
+    );
+    ui.painter()
+        .galley(egui::pos2(rect.min.x + PAD, rect.center().y - galley.size().y / 2.0), galley, INK_3);
+    ui.painter().text(
+        egui::pos2(rect.max.x - PAD, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        count,
+        theme::code_font(),
+        INK_3,
+    );
+    row_rule(ui, rect);
+}
+
+/// The 1 px `line` under a model row or group header, at the bottom of
+/// `rect`, as wide as it.
+fn row_rule(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0, LINE));
+}
+
+/// A side panel's header (`.c4-sec__head` without the fold): 28 px, a
+/// label cut to fit, an optional count at the right, a hairline under.
+fn side_head(ui: &mut egui::Ui, title: &str, count: Option<&str>) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::hover());
+    let room = (rect.width() - 2.0 * PAD - if count.is_some() { 32.0 } else { 0.0 }).max(16.0);
+    let galley = egui::WidgetText::from(theme::label(title)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room,
+        egui::TextStyle::Small,
+    );
+    ui.painter()
+        .galley(egui::pos2(rect.min.x + PAD, rect.center().y - galley.size().y / 2.0), galley, INK_3);
+    if let Some(count) = count {
+        ui.painter().text(
+            egui::pos2(rect.max.x - PAD, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            count,
+            egui::FontId::monospace(10.0),
+            INK_3,
+        );
     }
 }
 
-/// A small rounded label.
-fn badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32, colour: egui::Color32) -> egui::Response {
-    // DECISION: one sized widget (a button that only senses hover), not a
-    // frame around a label: a wrapped row moves it to the next line whole,
-    // where a frame of unknown size would overflow the row or break its
-    // text into one letter per line.
-    // No `ui.scope` around it: a scope's child would overflow the line
-    // instead of wrapping.
-    ui.add(
-        egui::Button::new(egui::RichText::new(text).size(11.0).color(colour))
-            .fill(fill)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(3.0)
-            .min_size(egui::vec2(0.0, 17.0))
-            .wrap_mode(egui::TextWrapMode::Extend)
-            .sense(egui::Sense::hover()),
-    )
+/// A short note in `ink-3`, padded 12.
+fn empty(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+        ui.label(egui::RichText::new(text).color(INK_3));
+    });
 }
 
-/// A decision status as a coloured badge (decisions.jsp colours).
+/// One view of the usages panel: key (mono) and title, 28 px, a click
+/// opens it.
+fn usage_row(ui: &mut egui::Ui, key: &str, title: Option<&str>, key_w: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::click());
+    let p = ui.painter();
+    if response.hovered() {
+        p.rect_filled(rect, theme::RADIUS_1, BG_RAISED);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let code = theme::code_font();
+    let x0 = rect.min.x + 8.0;
+    let key_text = kit::elide(ui, key, &code, key_w);
+    p.text(egui::pos2(x0, rect.center().y), egui::Align2::LEFT_CENTER, key_text, code, INK);
+    if let Some(title) = title {
+        let font = theme::ui_font();
+        let x = x0 + key_w + 8.0;
+        let shown = kit::elide(ui, title, &font, (rect.max.x - 8.0 - x).max(0.0));
+        p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, shown, font, INK);
+    }
+    kit::focus_ring(ui, &response);
+    response
+}
+
+/// One row of the relationships table: cells cut to their column (the
+/// whole text on hover), `implied` marked, the reveal button at the end.
+/// True when "Reveal in file" was clicked.
+fn table_row(ui: &mut egui::Ui, row: &TableRow, widths: [f32; 6]) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::hover());
+    if response.hovered() || ui.rect_contains_pointer(rect) {
+        ui.painter().rect_filled(rect, 0.0, BG_RAISED);
+    }
+    let rule = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 1.0), rect.max);
+    ui.painter().rect_filled(rule, 0.0, LINE);
+    let mut x = rect.min.x;
+    for (column, w) in Column::ALL.into_iter().zip(widths) {
+        let cell = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(w, SIZE_ROW));
+        x += w;
+        let text = row.cell(column);
+        let (font, ink) = if column == Column::Id { (theme::code_font(), INK) } else { (theme::ui_font(), INK_2) };
+        let implied = column == Column::Id && row.row.implied;
+        let chip = if implied { text_px(ui, "implied", &theme::ui_font()) + 12.0 + 8.0 } else { 0.0 };
+        let room = (w - 2.0 * PAD - chip).max(8.0);
+        let shown = kit::elide(ui, text, &font, room);
+        let end = cell.min.x + PAD + text_px(ui, &shown, &font);
+        ui.painter().text(egui::pos2(cell.min.x + PAD, cell.center().y), egui::Align2::LEFT_CENTER, &shown, font, ink);
+        if implied {
+            let at = egui::Rect::from_min_size(egui::pos2(end + 8.0, cell.center().y - 9.0), egui::vec2(chip - 8.0, 18.0));
+            let _ = put(ui, at, |ui| kit::chip(ui, "implied", ChipKind::Ok));
+        }
+        if shown != text {
+            let id = egui::Id::unique(("c4rizer-explore-cell", row.row.relationship.0, column));
+            let _ = ui.interact(cell, id, egui::Sense::hover()).on_hover_text(text);
+        }
+    }
+    let at = egui::Rect::from_min_size(egui::pos2(rect.max.x - 8.0 - SIZE_CONTROL, rect.center().y - SIZE_CONTROL / 2.0), egui::vec2(SIZE_CONTROL, SIZE_CONTROL));
+    let r = put(ui, at, |ui| kit::Button::icon(Icon::Copy).look(Look::Ghost).show(ui));
+    kit::tip(r, "Reveal in file: copy path:line:column", None).clicked()
+}
+
+/// A graph or tree page's title line: the view's title, then the
+/// gestures in `ink-3`, cut to fit; a hairline under it.
+fn page_title(ui: &mut egui::Ui, title: &str, hint: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SIZE_ROW), egui::Sense::hover());
+    let strong = theme::strong_font();
+    let x0 = rect.min.x + PAD;
+    let title = kit::elide(ui, title, &strong, (rect.width() - 2.0 * PAD).max(0.0));
+    let w = text_px(ui, &title, &strong);
+    ui.painter().text(egui::pos2(x0, rect.center().y), egui::Align2::LEFT_CENTER, &title, strong, INK);
+    let font = theme::ui_font();
+    let x = x0 + w + PAD;
+    let hint = kit::elide(ui, hint, &font, (rect.max.x - PAD - x).max(0.0));
+    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, hint, font, INK_3);
+    let rule = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 1.0), rect.max);
+    ui.painter().rect_filled(rule, 0.0, LINE);
+}
+
+/// A decision status as a chip: accepted reads fine, superseded,
+/// deprecated and rejected plain, anything else current (decisions.jsp's
+/// green, grey and blue).
 fn status_badge(ui: &mut egui::Ui, status: &str) {
-    let fill = match status.to_ascii_lowercase().as_str() {
-        "accepted" => egui::Color32::from_rgb(0x2e, 0x7d, 0x32),
-        "superseded" | "deprecated" | "rejected" => egui::Color32::from_rgb(0x9e, 0x9e, 0x9e),
-        _ => egui::Color32::from_rgb(0x1e, 0x88, 0xe5),
+    let kind = match status.to_ascii_lowercase().as_str() {
+        "accepted" => ChipKind::Ok,
+        "superseded" | "deprecated" | "rejected" => ChipKind::Plain,
+        _ => ChipKind::Accent,
     };
-    badge(ui, status, fill, egui::Color32::WHITE);
+    kit::chip(ui, status, kind);
 }
 
 /// The name shown for a docs owner: the workspace or the element.
@@ -1976,7 +2300,7 @@ fn cell_text(ui: &mut egui::Ui, spans: &[markdown::Span]) {
 /// An `AsciiDoc` section: its source in a monospace block under a one-line
 /// note (P3-515).
 fn asciidoc(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(ASCIIDOC_NOTE).italics().color(egui::Color32::from_rgb(0xb0, 0x70, 0x00)));
+    ui.label(egui::RichText::new(ASCIIDOC_NOTE).italics().color(theme::WARN));
     egui::Frame::new()
         .fill(ui.visuals().code_bg_color)
         .corner_radius(4.0)
@@ -1993,8 +2317,8 @@ pub const ASCIIDOC_NOTE: &str = "AsciiDoc is not rendered (no maintained Rust As
 /// A one-line placeholder in a dashed frame.
 fn placeholder(ui: &mut egui::Ui, text: &str) {
     egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color()))
-        .corner_radius(4.0)
+        .stroke(egui::Stroke::new(1.0, LINE_2))
+        .corner_radius(theme::RADIUS_2)
         .inner_margin(8)
         .show(ui, |ui| {
             ui.set_width(ui.available_width().min(640.0));

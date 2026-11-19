@@ -938,6 +938,7 @@ impl App {
         mut events: Vec<Event>,
     ) {
         let actions = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BG_PANEL))
             .show(ui, |ui| {
                 self.explore.mode = self.state.mode();
                 self.explore.sync(parsed);

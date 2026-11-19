@@ -64,7 +64,7 @@ fn frame(ctx: &egui::Context, e: &mut Explore, m: &Model, events: Vec<egui::Even
 /// A context with the app's fonts.
 fn context() -> egui::Context {
     let ctx = egui::Context::default();
-    crate::canvas::install_fonts(&ctx);
+    crate::theme::install(&ctx);
     ctx
 }
 
@@ -272,19 +272,43 @@ fn model_page_marks(e: &mut Explore, m: &Model, width: f32) -> (Vec<usize>, Vec<
             _ => None,
         })
         .collect();
-    let mut rights: Vec<i32> = flat
+    // Rows: each model row (and group header) ends with a 1 px `line`
+    // hairline drawn as a horizontal segment as wide as the row.
+    let rules: Vec<(f32, f32, f32)> = flat
         .iter()
         .filter_map(|s| match s {
-            // Row frames: rounded 4px, stroked 1.5px (3px when selected).
-            #[expect(clippy::cast_possible_truncation, reason = "screen px")]
-            egui::Shape::Rect(r) if r.corner_radius == egui::CornerRadius::same(4) && r.stroke.width >= 1.5 => {
-                Some(r.rect.right().round() as i32)
+            egui::Shape::LineSegment { points: [a, b], stroke }
+                if (a.y - b.y).abs() < 0.01 && (stroke.width - 1.0).abs() < 0.01 && stroke.color == crate::theme::LINE =>
+            {
+                Some((a.x.min(b.x), a.x.max(b.x), a.y))
             }
             _ => None,
         })
         .collect();
+    assert!(!rules.is_empty(), "the model rows are drawn at {width}px");
+    let mut rights: Vec<i32> = rules
+        .iter()
+        .map(|&(_, right, _)| {
+            #[expect(clippy::cast_possible_truncation, reason = "screen px")]
+            let right = right.round() as i32;
+            right
+        })
+        .collect();
     rights.sort_unstable();
     rights.dedup();
+    // Nothing drawn in the rows runs past their right edge: every text
+    // that starts inside the column ends inside it.
+    let (left, right) = (rules[0].0, rules[0].1);
+    // From the first group header (28 px above its hairline) down.
+    let top = rules.iter().map(|r| r.2).fold(f32::INFINITY, f32::min) - 28.0;
+    for s in &flat {
+        if let egui::Shape::Text(t) = s {
+            let r = t.visual_bounding_rect();
+            if r.min.y >= top && r.min.x >= left && r.min.x < right {
+                assert!(r.max.x <= right + 0.5, "{:?} runs past the rows' edge {right} at {width}px: {r:?}", t.galley.text());
+            }
+        }
+    }
     (legacy, rights)
 }
 
