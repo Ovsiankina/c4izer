@@ -555,6 +555,54 @@ pub enum Edit {
         /// The destination end's point (`to`), `None` for the router's.
         to: Option<crate::anchor::Anchor>,
     },
+    /// Set every bundle of `view` (the editor's "Bus"): the view's
+    /// `bundle` lines become one per entry of `bundles`, in order, each
+    /// naming its members in order. Existing lines are rewritten in place,
+    /// extra ones removed, new ones added after the view's last `bundle`
+    /// line, else after its last `anchor`, `via`, `at`, `size`,
+    /// `paperSize` or `line` line, else before the closing brace. The
+    /// inverse is a `SetBundles` with the bundles the view had. Serves
+    /// P4-424, P4-425, P4-427.
+    // APPROVER: new pub item
+    SetBundles {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The bundles, each its members.
+        bundles: Vec<Vec<LineRef>>,
+    },
+}
+
+/// A drawn line of a view named by its ends' canonical element keys and,
+/// in a dynamic view, its step number, as `via` names it (P3-300,
+/// P3-301). Serves P4-400, P4-424.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LineRef {
+    /// The line's source, a canonical element key.
+    pub source: String,
+    /// The line's destination, a canonical element key.
+    pub destination: String,
+    /// In a dynamic view, the step's number.
+    pub order: Option<String>,
+}
+
+impl LineRef {
+    /// The line from `source` to `destination` (step `order`). Serves
+    /// P4-424.
+    pub fn new(source: impl Into<String>, destination: impl Into<String>, order: Option<String>) -> Self {
+        LineRef {
+            source: source.into(),
+            destination: destination.into(),
+            order,
+        }
+    }
+
+    /// As written in a `bundle` line: `[<n>: ]<src> -> <dst>`.
+    fn written(&self) -> String {
+        let step = self.order.as_ref().map_or_else(String::new, |n| format!("{n}: "));
+        format!("{step}{} -> {}", self.source, self.destination)
+    }
 }
 
 /// The result of `apply`: the new text and the edits that undo it.
@@ -835,6 +883,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             from,
             to,
         } => set_anchor(current, view, source, destination, order.as_deref(), (*from, *to)),
+        Edit::SetBundles { view, bundles } => set_bundles(current, view, bundles),
     }
 }
 
@@ -2013,6 +2062,75 @@ fn set_anchor(
                 ];
                 insert_after_first(cx, owner, block, &anchors, &text)
             }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// The text of a `bundle` line naming `members`.
+fn bundle_text(members: &[LineRef]) -> String {
+    let named: Vec<String> = members.iter().map(LineRef::written).collect();
+    format!("bundle {}", named.join(" "))
+}
+
+/// `SetBundles` (P4-424, P4-425, P4-427): the view's `bundle` lines made
+/// `bundles`, one atomic step.
+// DECISION: one edit holds every bundle of the view, so "Group as bus",
+// which may take lines out of other bundles, is a single undo step; a
+// line whose text is unchanged is not touched.
+fn set_bundles(current: &mut Parsed, view: &str, bundles: &[Vec<LineRef>]) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let key = |id: ElementId| current.model.full_key(id).ok_or_else(|| gone(view));
+    let mut old = Vec::with_capacity(spec.bundles.len());
+    for b in &spec.bundles {
+        let mut members = Vec::with_capacity(b.members.len());
+        for m in &b.members {
+            members.push(LineRef::new(key(m.source.value)?, key(m.destination.value)?, m.order.as_ref().map(|o| o.value.clone())));
+        }
+        old.push(members);
+    }
+    let inverse = vec![Edit::SetBundles {
+        view: view.to_owned(),
+        bundles: old,
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        let mut patches = Vec::new();
+        for (i, line) in spec.bundles.iter().enumerate() {
+            if let Some(new) = bundles.get(i) {
+                let text = bundle_text(new);
+                if cx.src.get(line.span.range()) != Some(text.as_str()) {
+                    patches.push(Patch {
+                        range: line.span.range(),
+                        text,
+                    });
+                }
+            } else {
+                let statement = Ctx::child_holding(block, line.span).ok_or_else(|| gone(view))?;
+                patches.push(cx.remove_line(statement.span));
+            }
+        }
+        let extra: Lines = bundles.iter().skip(spec.bundles.len()).map(|b| (0, bundle_text(b))).collect();
+        if extra.is_empty() {
+            return Ok(Plan::Patches(patches));
+        }
+        let anchors = [
+            spec.bundles.last().map(|b| b.span),
+            spec.anchors.last().map(|a| a.span),
+            spec.vias.last().map(|v| v.span),
+            spec.positions.last().map(|a| a.span),
+            spec.sizes.last().map(|s| s.span),
+            spec.paper_size.map(|p| p.span),
+            spec.lines.last().map(|l| l.span),
+        ];
+        Ok(match insert_after_first(cx, owner, block, &anchors, &extra) {
+            Plan::Patches(more) => {
+                patches.extend(more);
+                Plan::Patches(patches)
+            }
+            split @ Plan::Split(_) => split,
         })
     })?;
     Ok(inverse)

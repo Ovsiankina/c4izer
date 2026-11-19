@@ -10,6 +10,8 @@
 mod anchors_tests;
 mod app;
 #[cfg(test)]
+mod bundle_tests;
+#[cfg(test)]
 mod callout_labels_tests;
 mod camera;
 mod canvas;

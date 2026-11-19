@@ -672,6 +672,8 @@ Lint table. "Box" and "line" mean what the view draws, after lifting.
 | L27 | error | a line crosses a deployment node boundary that contains neither of its ends (P3-126) |
 | L28 | warning | a vertex lies inside a box rectangle, or two consecutive vertices of one line are the same point (P3-309) |
 | L29 | warning | in a `labels callout` view, a label has no free place for a callout and is drawn on its line (P4-313) |
+| L30 | warning | the members of a bundle cross one another (P4-412) |
+| L31 | warning | a bundle has no shared stretch and is routed as ordinary lines (P4-408), or a member keeps its vertices and leaves its bundle (P4-417) |
 
 Placement
 
@@ -3397,7 +3399,8 @@ relationships it gets messy and I have little control. Like draw.io:
 each box has snap points, at the four corners, the middle of each side,
 and a few more on the long sides. I drag the end of an arrow near a box
 and it snaps to one of them." One testable sentence each; ids are
-allocated per row: view-map P4-100.., anchors P4-200.., callout-labels P4-300..
+allocated per row: view-map P4-100.., anchors P4-200.., callout-labels P4-300..,
+bus P4-400..
 
 view-map
 
@@ -3649,6 +3652,194 @@ core API; editor draws the same scene, with a toggle. Ids P4-300..
   `include` line, else before the closing brace.
 - **P4-319** The workspace JSON (P3-413) carries no label mode, as for
   the other c4rizer view settings.
+
+bus
+
+Authority: the owner (2026-11-19): "A bus like in a CPU, or like belts
+in Factorio, or tracks on a circuit board. I select several arrows and
+say: group them as a bus. Then they run close together, in parallel,
+and never cross one another. It looks tidy." Approver rulings 1..7
+(2026-11-19): written `bundle` in the DSL (the view setting `bus on|off`
+of CORE-8 is unchanged), shown as "Bus" in the editor; a c4rizer view
+line in the style of `via` and `anchor`; one shared corridor with
+parallel tracks, concentric corners, fan-outs only near the ends;
+members never cross one another where an order allows it; others cross
+the whole bundle square or not at all; any lines of one view may be
+bundled; unchanged routing without bundles; additive core API.
+
+Terms. A *bundle* is a set of two or more drawn lines of one view, its
+*members*. Each member's routed line is, in order, a *fan-out* from its
+source port, its *track*, and a fan-out to its destination port. The
+tracks of a bundle together are its *shared stretch*. The *spine* is the
+polyline the router finds for the bundle; each track is an offset of it.
+All lengths are px; one grid unit is 10px.
+
+**File and plan**
+
+- **P4-400** In a view block, `bundle <src> -> <dst> <src> -> <dst>
+  [<src> -> <dst> ...]` makes the drawn lines it names, named as `via`
+  names them (P3-300), the members of one bundle, in the order written;
+  in a dynamic view each member may carry its step number, `bundle 1: a
+  -> b 3: c -> d` (P3-301). Plain Structurizr files never hold one.
+- **P4-401** A `bundle` line that is malformed (a word that is not part
+  of `[<n>:] <src> -> <dst>`, a step number outside a dynamic view) is
+  ignored as a whole; a member that names an unknown element, a line the
+  view does not draw, a line named twice, or a line already a member of
+  an earlier `bundle` line of the view is dropped; a bundle left with
+  fewer than two members is ignored. Each case is a notice naming the
+  line or member and why (P2-3 style, `NoticeKind::BundleIgnored`); the
+  file still parses and every other line keeps working.
+- **P4-402** `ViewPlan::bundles` holds one entry per kept `bundle` line,
+  its members as `EdgeId`s in the order written; a view without one has
+  none.
+- **P4-403** With no `bundle` line in a view, its routes, labels and
+  scene are those of the router without this row: the goldens stay
+  byte-identical (P3-5, P4-210, P4-301), and the CORE-24 timings hold.
+  A view with bundles places its boxes exactly as without them (CORE-22
+  scores candidate layouts ignoring bundles), so grouping lines never
+  moves a box.
+
+**Geometry** (measured on `Routes`, grid units; `Routes::bundles`)
+
+- **P4-404** Bundles are routed before every other line of the view
+  (vertex lines and anchored lines included), in the order of their
+  `bundle` lines, and the other lines are then routed around them as
+  fixed obstacles (as P3-307).
+- **P4-405** Each member's track (`RoutedBundle::shared`, in the
+  member's direction) is a stretch of its line: every track segment lies
+  on a segment of the line; all tracks of
+  one bundle have the same number of segments, and segment `i` of every
+  track has the same direction, reversed for a member that runs the
+  other way (from the bundle's far end to its near end).
+- **P4-406** Tracks are numbered `0..n-1` across the bundle, right to
+  left seen along the spine. On an axis segment, track `k + 1` lies
+  exactly 20px (2 units) left of track `k`; on a diagonal segment its
+  line `x - y` or `x + y` is exactly 3 units further left (21.2px), the
+  nearest grid offset to the 20px pitch. The 20px pitch equals the lane
+  pitch (CORE-12): 10px, the only closer grid pitch, puts the 10px wide
+  arrowheads and chevrons (CORE-10) of neighbouring tracks against each
+  other and diagonal tracks 7px apart.
+- **P4-407** Corners are concentric: at each bend of the spine every
+  track turns by the same 45°, and the track on the inside of the turn
+  bends first: its bend point lies before the outer track's along the
+  incoming direction (one unit per track); no two tracks touch.
+- **P4-408** Every track segment is at least 20px long (CORE-6) and the
+  shortest track is at least 40px long; a bundle whose spine cannot meet
+  that (its ends lie so that no shared stretch of useful length exists,
+  no corridor wide enough runs between the boxes, or a member's line
+  would run longer than twice the Manhattan distance between its box
+  centres plus 200px, a detour rather than a shared stretch) has its
+  members routed
+  as ordinary lines and is reported as warning L31: `bundle (<members>)
+  has no shared stretch; routed as ordinary lines`.
+- **P4-409** Every track point keeps at least 10px from every box
+  (CORE-7): the spine is searched with every box grown by the bundle's
+  half width plus that clearance. The spine's ends: where every member
+  ends at one box, unpinned, the tracks run straight into ports side by
+  side on the side of that box facing the other group (a fan-out of the
+  port stub only); elsewhere the end is a free cell past every box of
+  its group along `ca -> cb` (the centres of the near and far ends), each
+  box grown by the half width, clearance, one cell and one more per
+  track on the wider side of the spine, nearest the axis `ca..cb`; the
+  far end is first sought straight on from the near end, so groups that
+  face each other get one straight stretch.
+- **P4-410** A fan-out leaves its port square to the side (CORE-9),
+  meets its track's end on a straight run of at least 20px heading at
+  most 45° from the track's direction, so the whole member line still
+  meets CORE-6, and is routed with the steps and costs of a vertex leg
+  (P3-303) around the bundle's tracks.
+- **P4-411** The near end of the bundle is the end the members' sources
+  lie at once members are turned to agree with the first member (a
+  member is turned when its source-to-destination vector points away
+  from the sum of the members' vectors so far). Track order: members are
+  ranked at the near end by the position of their near end (its box
+  centre, or its anchor point when pinned) along the left normal of the
+  spine's first segment, ties by their rank at the far end, then by
+  `EdgeId`; the far-end rank uses the left normal of the spine's last
+  segment the same way.
+- **P4-412** When the near-end and far-end ranks agree, no two members
+  of a bundle cross or touch anywhere (the L4 test, `geom::crossings`,
+  is 0 for every pair). When they disagree (the ends are permuted) the
+  track order is the near-end rank, which reaches the fewest possible
+  crossings, the number of pairs ranked in opposite orders; the
+  crossings between members are counted (`RoutedBundle::crossings`) and
+  any above 0 are reported as warning L30: `bundle (<members>) crosses
+  itself <k> times: its ends are in opposite orders`.
+- **P4-413** Another line that crosses a track on the shared stretch
+  crosses every track of that bundle with one straight axis segment,
+  square to the tracks (90°), from outside the outermost track on one
+  side to outside it on the other; it never runs between two tracks,
+  never bends there, and never crosses a diagonal segment or a bend of
+  the shared stretch.
+- **P4-414** A member never joins a trunk and is never a trunk with `bus
+  on` (as P3-308).
+
+**Vertices and anchors**
+
+- **P4-415** A member's anchored end (P4-206) leaves (or arrives at)
+  exactly its anchor point, and its fan-out starts (ends) there; the
+  anchor wins over the track order: crossings it forces are counted and
+  reported by P4-412.
+- **P4-416** A member's `via` vertices are kept on its fan-outs: each
+  vertex goes to the fan-out of the end whose box centre is nearer
+  (Manhattan, ties to the source); when that keeps the vertices' order
+  (every source-side vertex before every destination-side one), the
+  source fan-out passes port, its vertices, track start, and the
+  destination fan-out track end, its vertices, port (P3-304).
+- **P4-417** When P4-416's split breaks the vertices' order, the
+  vertices win: the member is routed as an ordinary vertex line, outside
+  the bundle (the others stay bundled while at least two remain), and is
+  reported as warning L31: `line <src> -> <dst> keeps its vertices and
+  leaves its bundle`.
+
+**Labels**
+
+- **P4-418** In a `labels line` view a member's label never lies on
+  another member (its rectangle crosses no other member's line, tracks
+  and fan-outs), nor on its own track unless that is one of the two
+  outermost;
+  with no such spot on its line it is drawn beside the bundle, 8px
+  outside the outermost track on its own side (else the other), clear of
+  boxes and labels, and reported as L24.
+- **P4-419** In a `labels callout` view a member's callout has a leader
+  that crosses no other member of its bundle, so one attached on the
+  shared stretch stands beside the bundle; P4-302..P4-313 hold
+  otherwise.
+
+**Export, lint and JSON**
+
+- **P4-420** `Scene::bundles` lists each bundle with its members in
+  track order, its shared stretches and its member crossings; SVG and
+  PNG draw the members from the scene's lines exactly as the canvas does
+  (EDIT-12, one scene).
+- **P4-421** The workspace JSON (P3-413) carries no bundles: Structurizr
+  has no field for them.
+- **P4-422** On copies of the C2 and C3-serving views of
+  `tests/data/example` with a bundle of three or four lines each
+  (members with different sources and different destinations among
+  them), P4-405..P4-413 hold, the members cross each other 0 times, and
+  every line is routed (no L1).
+
+**Editor**
+
+- **P4-423** Shift-click on a line adds it to the selection or removes
+  it, as for boxes (EDIT-5); a plain click selects that line alone.
+- **P4-424** With two or more lines selected, "Group as bus" is offered
+  in the right-click menu of a selected line and as a button in the
+  right panel; it writes one `bundle` line naming the selected lines in
+  `EdgeId` order, after removing them from any bundle they were in (a
+  bundle left with fewer than two members is removed).
+- **P4-425** With a bundled line selected, the right-click menu and the
+  right panel offer "Ungroup bus", which removes its whole `bundle`
+  line, and "Remove from bus", which removes that member only (the whole
+  line when one member would be left).
+- **P4-426** Selecting one member highlights the other members of its
+  bundle lightly (a halo fainter than the selection's).
+- **P4-427** A new `bundle` line goes after the view's last `bundle`
+  line, else after its last `anchor`, `via`, `at`, `size`, `paperSize` or
+  `line` line, else before the closing brace; every bundle edit is
+  atomic, checked against the file on disk (EDIT-22, EDIT-24), and one
+  undo step (as P3-315).
 
 ## 5. Cross-cutting
 

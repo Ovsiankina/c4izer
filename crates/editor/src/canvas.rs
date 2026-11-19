@@ -319,8 +319,25 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
             continue;
         };
         let source = Source::Mark(mark.item, mark.kind);
+        // P4-426: a bus peer gets a light halo along its own line.
+        if mark.kind == MarkKind::BusPeer {
+            if let ItemKey::Line(e) = mark.item
+                && let Some(l) = scene.lines.iter().find(|l| l.edge == e)
+            {
+                let points: Vec<ScreenPoint> = l.points.iter().map(|p| at(cam, px(p.x), px(p.y))).collect();
+                opacity.set(BUS_HALO_OPACITY);
+                push(source, Primitive::Path {
+                    points,
+                    colour: SELECTION,
+                    width: BUS_HALO_PX * cam.zoom,
+                    dash: None,
+                });
+                opacity.set(100);
+            }
+            continue;
+        }
         let (colour, dashed) = match mark.kind {
-            MarkKind::Selected | MarkKind::SelectedWithHandles => (SELECTION, false),
+            MarkKind::Selected | MarkKind::SelectedWithHandles | MarkKind::BusPeer => (SELECTION, false),
             MarkKind::Hover => (HOVER, false),
             MarkKind::Enterable => (ENTERABLE, true),
         };
@@ -423,6 +440,12 @@ const HOVER: [u8; 3] = [0x6b, 0x6b, 0x6b];
 const ENTERABLE: [u8; 3] = [0x0f, 0x7a, 0x40];
 /// Mark stroke width, screen px.
 const MARK_WIDTH: f32 = 2.0;
+/// Width of a bus peer's halo, scene px (P4-426).
+const BUS_HALO_PX: f32 = 8.0;
+/// Opacity of a bus peer's halo, 0..100: light beside the selection mark.
+// DECISION: the selection blue at 25%: visibly the same family as the
+// selected line, clearly fainter than its mark (P4-426).
+const BUS_HALO_OPACITY: u8 = 25;
 /// Gap between an item and its mark, scene px.
 const MARK_GAP_PX: i32 = 3;
 /// Inter's ascender in em (hhea ascender 2728 / 2816): from a baseline to

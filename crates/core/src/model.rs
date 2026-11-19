@@ -1124,6 +1124,40 @@ pub struct ViewSpec {
     /// P4-200..P4-203.
     // APPROVER: new pub item
     pub anchors: Vec<AnchorLine>,
+    /// `bundle <src> -> <dst> <src> -> <dst> ...` lines (c4rizer
+    /// extension, the editor's "Bus"), in file order, each keeping only
+    /// the members the view draws, no line in two of them, and at least two
+    /// members: a refused member or line is left out with a notice
+    /// (P4-401). Serves P4-400..P4-402.
+    // APPROVER: new pub item
+    pub bundles: Vec<BundleLine>,
+}
+
+/// One `bundle` line: its members, in the order written. Serves P4-400.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BundleLine {
+    /// The member lines, as written.
+    pub members: Vec<BundleMember>,
+    /// The whole `bundle` line, line ending excluded; `edit` rewrites this.
+    pub span: Span,
+}
+
+/// One member of a `bundle` line: the drawn line from `source` to
+/// `destination`, named as `via` names it (P3-300, P3-301). Serves P4-400.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BundleMember {
+    /// The line's source element, as written.
+    pub source: Spanned<ElementId>,
+    /// The line's destination element, as written.
+    pub destination: Spanned<ElementId>,
+    /// `<n>:` of a dynamic view's member, without the colon.
+    pub order: Option<Spanned<String>>,
+    /// The member as written (`[<n>:] <src> -> <dst>`).
+    pub span: Span,
 }
 
 /// One `anchor` line: the drawn line from `source` to `destination` (in
@@ -1828,6 +1862,12 @@ pub enum NoticeKind {
     /// already has one. `subject` says which and why.
     // APPROVER: new pub item
     AnchorIgnored,
+    /// A `bundle` line, or one member of it, c4rizer ignores (P4-401):
+    /// malformed, naming an unknown element, a line the view does not
+    /// draw, a line named twice or already bundled, or a bundle left with
+    /// fewer than two members. `subject` says which and why.
+    // APPROVER: new pub item
+    BundleIgnored,
 }
 
 /// Something the file says that c4rizer accepts with no effect: one per
@@ -1897,6 +1937,7 @@ impl fmt::Display for Notice {
                 write!(f, "view {view}: `{subject}` not imported — c4rizer cannot hold it")
             }
             NoticeKind::AnchorIgnored => write!(f, "view {view}: {subject} — the anchor line is ignored"),
+            NoticeKind::BundleIgnored => write!(f, "view {view}: {subject} — ignored in the bundle line"),
         }
     }
 }
@@ -6097,6 +6138,7 @@ impl Builder<'_> {
         self.check_positions(&view)?;
         self.check_vias(&view)?;
         self.check_anchors(&mut view);
+        self.check_bundles(&mut view);
         self.model.views.push(view);
         Ok(())
     }
@@ -6203,6 +6245,7 @@ impl Builder<'_> {
             self.check_positions(&view)?;
             self.check_vias(&view)?;
             self.check_anchors(&mut view);
+            self.check_bundles(&mut view);
         }
         self.model.views.push(view);
         Ok(())
@@ -6997,6 +7040,10 @@ impl Builder<'_> {
                 let via = self.via_line(head, view.kind == ViewKind::Dynamic)?;
                 view.vias.push(via);
             }
+            "bundle" => match self.bundle_line(head, view.kind == ViewKind::Dynamic) {
+                Ok(line) => view.bundles.push(line),
+                Err(why) => self.bundle_notice(view, head.span_of(0, head.len() - 1), &why),
+            },
             "anchor" => match self.anchor_line(head, view.kind == ViewKind::Dynamic) {
                 Ok(line) => view.anchors.push(line),
                 Err(why) => self.anchor_notice(view, head.span_of(0, head.len() - 1), &why),
@@ -7436,6 +7483,116 @@ impl Builder<'_> {
             span: Some(span),
             position: Some(self.position(span)),
         });
+    }
+
+    /// `bundle [<n>:] <src> -> <dst> [<n>:] <src> -> <dst> ...` (P4-400):
+    /// one or more members, each the ends as written with an optional step
+    /// number. `Err` holds why the whole line is ignored (P4-401); an
+    /// unknown element drops only its member, with a notice, in
+    /// `check_bundles`.
+    // DECISION: members are plain `<src> -> <dst>` triples one after the
+    // other (a comma would be part of a word, TokenKind::Word), so the
+    // line reads like a list of `via` heads.
+    fn bundle_line(&self, head: &Head<'_>, dynamic: bool) -> Result<BundleLine, String> {
+        let mut members = Vec::new();
+        let mut i = 1;
+        while i < head.len() {
+            let ordered = head.kind(i) == Some(TokenKind::Word) && head.text(i).ends_with(':');
+            if ordered && !dynamic {
+                return Err(format!("`{}` names a step outside a dynamic view", head.text(i)));
+            }
+            let o = i + usize::from(ordered);
+            if head.len() < o + 3 || head.kind(o + 1) != Some(TokenKind::Arrow) || head.kind(o) != Some(TokenKind::Word) || head.kind(o + 2) != Some(TokenKind::Word) {
+                return Err(format!("`{}` does not start `<source> -> <destination>`", head.text(i)));
+            }
+            let element = |k: usize| match self.view_element(head, k) {
+                Ok(e) => e,
+                // An unknown element: kept as id MAX, dropped with a
+                // notice by `check_bundles`.
+                Err(_) => Spanned {
+                    value: ElementId(u32::MAX),
+                    span: head.span(k),
+                },
+            };
+            members.push(BundleMember {
+                source: element(o),
+                destination: element(o + 2),
+                order: ordered.then(|| Spanned {
+                    value: head.text(i).trim_end_matches(':').to_owned(),
+                    span: head.span(i),
+                }),
+                span: head.span_of(i, o + 2),
+            });
+            i = o + 3;
+        }
+        if members.is_empty() {
+            return Err("`bundle` needs `<source> -> <destination>` members".to_owned());
+        }
+        Ok(BundleLine {
+            members,
+            span: head.span_of(0, head.len() - 1),
+        })
+    }
+
+    /// Records that the `bundle` line or member at `span` of `view` is
+    /// ignored, and `why` (P4-401).
+    fn bundle_notice(&mut self, view: &ViewSpec, span: Span, why: &str) {
+        let written = self.written(span).to_owned();
+        self.model.notices.push(Notice {
+            kind: NoticeKind::BundleIgnored,
+            subject: format!("`{written}`: {why}"),
+            view: Some(view.key.clone()),
+            span: Some(span),
+            position: Some(self.position(span)),
+        });
+    }
+
+    /// Keeps, per `bundle` line of `view`, the members that name a line
+    /// the view draws and that no earlier member claimed, and the lines
+    /// left with two members or more; the rest is dropped with a notice
+    /// (P4-401).
+    fn check_bundles(&mut self, view: &mut ViewSpec) {
+        if view.bundles.is_empty() {
+            return;
+        }
+        let plan = crate::view::plan(&self.model, view);
+        let mut seen: BTreeMap<crate::view::EdgeId, Span> = BTreeMap::new();
+        let mut kept = Vec::new();
+        for mut line in std::mem::take(&mut view.bundles) {
+            let mut members = Vec::new();
+            for m in std::mem::take(&mut line.members) {
+                let why = if m.source.value.0 == u32::MAX || m.destination.value.0 == u32::MAX {
+                    let bad = if m.source.value.0 == u32::MAX { m.source.span } else { m.destination.span };
+                    Some(format!("no element `{}`", self.written(bad)))
+                } else if let Some(edge) = crate::view::bundle_edge(&plan, &m) {
+                    if let Some(&first) = seen.get(&edge) {
+                        let at = self.position(first);
+                        Some(format!("this line is already bundled at {}:{}", at.line, at.column))
+                    } else {
+                        seen.insert(edge, m.span);
+                        None
+                    }
+                } else {
+                    Some("the view draws no such line".to_owned())
+                };
+                match why {
+                    Some(why) => self.bundle_notice(view, m.span, &why),
+                    None => members.push(m),
+                }
+            }
+            if members.len() < 2 {
+                for m in &members {
+                    if let Some(edge) = crate::view::bundle_edge(&plan, m) {
+                        seen.remove(&edge);
+                    }
+                }
+                self.bundle_notice(view, line.span, "a bundle needs two members or more");
+                continue;
+            }
+            line.members = members;
+            kept.push(line);
+        }
+        view.bundles = kept;
     }
 
     /// Keeps the `anchor` lines of `view` that name a line the view draws,
@@ -8158,6 +8315,7 @@ const DYNAMIC_LINES: &[&str] = &[
     "at",
     "via",
     "anchor",
+    "bundle",
     "size",
     "papersize",
     "line",
@@ -8238,6 +8396,7 @@ fn new_view(
         lines: Vec::new(),
         vias: Vec::new(),
         anchors: Vec::new(),
+        bundles: Vec::new(),
     }
 }
 

@@ -333,6 +333,10 @@ pub struct ViewPlan {
     /// boundaries; `None` for every other kind. Serves P2-19, P2-320,
     /// P2-321.
     pub image: Option<ViewImage>,
+    /// One entry per kept `bundle` line of the view, its members in the
+    /// order written; empty without `bundle` lines. Serves P4-402.
+    // APPROVER: new pub item
+    pub bundles: Vec<Vec<EdgeId>>,
 }
 
 impl ViewPlan {
@@ -481,7 +485,24 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
             e.destination_anchor = line.to.map(|a| a.value);
         }
     }
+    // P4-402: each `bundle` line's members.
+    for line in &view.bundles {
+        let members: Vec<EdgeId> = line.members.iter().filter_map(|m| bundle_edge(&plan, m)).collect();
+        if members.len() >= 2 {
+            plan.bundles.push(members);
+        }
+    }
     plan
+}
+
+/// The drawn line a `bundle` member names (P4-400): as `via_edge`.
+pub(crate) fn bundle_edge(plan: &ViewPlan, member: &crate::model::BundleMember) -> Option<EdgeId> {
+    line_edge(
+        plan,
+        member.source.value,
+        member.destination.value,
+        member.order.as_ref().map(|o| o.value.as_str()),
+    )
 }
 
 /// The drawn line an `anchor` line names (P4-200): as `via_edge`.
@@ -572,6 +593,7 @@ fn plan_raw(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         boundaries,
         mode,
         image: None,
+        bundles: Vec::new(),
     }
 }
 
@@ -657,6 +679,7 @@ fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         boundaries,
         mode,
         image: None,
+        bundles: Vec::new(),
     }
 }
 
@@ -725,6 +748,7 @@ fn image_plan(view: &ViewSpec, mode: Mode) -> ViewPlan {
         boundaries: Vec::new(),
         mode,
         image: view.image.clone(),
+        bundles: Vec::new(),
     }
 }
 
@@ -758,6 +782,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
             boundaries: Vec::new(),
             mode,
             image: None,
+            bundles: Vec::new(),
         };
     };
     let full = plan_in(model, base, mode);
@@ -828,6 +853,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         boundaries,
         mode,
         image: None,
+        bundles: Vec::new(),
     }
 }
 

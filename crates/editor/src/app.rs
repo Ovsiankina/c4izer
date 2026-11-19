@@ -421,6 +421,17 @@ impl App {
                 command(Command::SetLabelMode(if callout { LabelMode::Callout } else { LabelMode::Line }));
             }
         }
+        // P4-424, P4-425: the bus actions of the selection.
+        let bus = self.state.bus_entries();
+        if !bus.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for entry in bus {
+                    if ui.button(&entry.label).clicked() {
+                        command(Command::ContextAction(entry.action));
+                    }
+                }
+            });
+        }
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             if let Some(d) = self.state.details() {

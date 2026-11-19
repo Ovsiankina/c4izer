@@ -107,6 +107,7 @@ use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
 mod anchors;
+mod bundles;
 mod steps;
 mod vertices;
 pub use anchors::SnapMark;
@@ -810,6 +811,16 @@ pub enum Action {
         /// Every box of `view` at its centre, px (EDIT-26 first write).
         layout: BTreeMap<String, (i32, i32)>,
     },
+    /// Set every bus of the view: one `bundle` line each (P4-424..P4-427).
+    // APPROVER: new pub item
+    Bundles {
+        /// The view.
+        view: ViewRef,
+        /// The bundles, each its members.
+        bundles: Vec<Vec<c4rizer_core::edit::LineRef>>,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
     /// Apply a redo step (EDIT-19).
@@ -899,6 +910,10 @@ pub enum MarkKind {
     Hover,
     /// Under the pointer and enterable (EDIT-15).
     Enterable,
+    /// Another member of the bus of a selected line, marked lightly
+    /// (P4-426).
+    // APPROVER: new pub item
+    BusPeer,
 }
 
 /// One mark on one scene item (EDIT-12).
@@ -1052,6 +1067,21 @@ pub enum MenuAction {
         edge: c4rizer_core::view::EdgeId,
         /// True for the destination end.
         destination: bool,
+    },
+    /// Group the selected lines as one bus (P4-424).
+    // APPROVER: new pub item
+    GroupBus,
+    /// Remove the whole bus of a line (P4-425).
+    // APPROVER: new pub item
+    UngroupBus {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+    },
+    /// Take one line out of its bus (P4-425).
+    // APPROVER: new pub item
+    RemoveFromBus {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
     },
 }
 
@@ -1806,6 +1836,13 @@ impl State {
                 };
                 marks.push(Mark { item: *item, kind });
             }
+            // P4-426: the rest of a selected line's bus, lightly.
+            for peer in self.bus_peers() {
+                marks.push(Mark {
+                    item: ItemKey::Line(peer),
+                    kind: MarkKind::BusPeer,
+                });
+            }
             if let Some(hover) = self.hover
                 && !items.contains(&hover)
                 && scene.item_bounds(hover).is_some()
@@ -2398,6 +2435,14 @@ impl State {
                     order: change.order.clone(),
                     from: change.from,
                     to: change.to,
+                }];
+                layout_batch(model, view, layout, None, own)
+            }
+            Action::Bundles { view, bundles, layout } => {
+                let view = &layout_view(model, view);
+                let own = vec![Edit::SetBundles {
+                    view: view.key(),
+                    bundles: bundles.clone(),
                 }];
                 layout_batch(model, view, layout, None, own)
             }
@@ -3903,7 +3948,7 @@ impl State {
 
     /// A click (EDIT-15, EDIT-28): enter an enterable box, else select;
     /// Ctrl or right selects only; Shift toggles; empty canvas deselects.
-    fn click(&mut self, _button: Button, mods: Modifiers, hit: Option<ItemKey>) -> Vec<Effect> {
+    fn click(&mut self, button: Button, mods: Modifiers, hit: Option<ItemKey>) -> Vec<Effect> {
         self.text_edit = None;
         // TODO(srs): P2-724, the release. DECISION: reading taken (B
         // editor-breadth 9): Escape, or a click anywhere but the item.
@@ -3923,6 +3968,12 @@ impl State {
             {
                 self.selection.insert(s);
             }
+            return Vec::new();
+        }
+        // DECISION: a right click on an item already selected keeps the
+        // selection, so the context menu acts on all of it ("Group as bus",
+        // P4-424).
+        if button == Button::Right && selected.as_ref().is_some_and(|s| self.selection.contains(s)) {
             return Vec::new();
         }
         // EDIT-15 as amended by the owner: a single click selects an
@@ -4342,6 +4393,8 @@ impl State {
                 if let ItemKey::Line(edge) = hit {
                     entries.extend(self.anchor_entries(edge));
                 }
+                // P4-424, P4-425: the bus entries of the selection.
+                entries.extend(self.bus_entries());
                 let rel = model.relationship(r);
                 let name = format!(
                     "{} -> {}",
@@ -4447,6 +4500,9 @@ impl State {
                     MenuAction::Show(view) => self.show(view),
                     MenuAction::OpenUrl { name, url } => self.open_url(&name, Some(url)),
                     MenuAction::ReleaseAnchor { edge, destination } => self.release_anchor(edge, destination),
+                    MenuAction::GroupBus => self.group_bus(),
+                    MenuAction::UngroupBus { edge } => self.ungroup_bus(edge),
+                    MenuAction::RemoveFromBus { edge } => self.remove_from_bus(edge),
                 }
             }
             Command::ShowView(view) => {

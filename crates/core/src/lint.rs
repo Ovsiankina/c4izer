@@ -176,6 +176,15 @@ pub enum Rule {
     /// for a callout and is drawn on its line. Serves P4-313.
     // APPROVER: new pub item
     CalloutFallback,
+    /// L30, warning: the members of a bundle cross one another. Serves
+    /// P4-412.
+    // APPROVER: new pub item
+    BundleCrossing,
+    /// L31, warning: a bundle has no shared stretch and is routed as
+    /// ordinary lines, or a member keeps its vertices and leaves its
+    /// bundle. Serves P4-408, P4-417.
+    // APPROVER: new pub item
+    BundleFallback,
 }
 
 impl Rule {
@@ -212,6 +221,8 @@ impl Rule {
             Rule::ForeignNodeCrossing => "L27",
             Rule::VertexPlacement => "L28",
             Rule::CalloutFallback => "L29",
+            Rule::BundleCrossing => "L30",
+            Rule::BundleFallback => "L31",
         }
     }
 
@@ -228,7 +239,9 @@ impl Rule {
             | Rule::LabelNoRoom
             | Rule::TextFit
             | Rule::VertexPlacement
-            | Rule::CalloutFallback => Severity::Warning,
+            | Rule::CalloutFallback
+            | Rule::BundleCrossing
+            | Rule::BundleFallback => Severity::Warning,
             Rule::Unroutable
             | Rule::SegmentAngle
             | Rule::ThroughBox
@@ -426,6 +439,7 @@ pub fn lint(model: &Model, scene: &Scene) -> Report {
     cx.boundary_intrusion();
     cx.foreign_node_crossing();
     cx.vertex_placement();
+    cx.bundles();
     let mut findings = cx.findings;
     // DECISION: a stable sort by rule after collecting, so the rule order
     // holds even where one pass emits two rules (L9..L11, L12..L13).
@@ -1455,6 +1469,59 @@ impl<'a> Lint<'a> {
 }
 
 impl Lint<'_> {
+    /// L30 (P4-412) and L31 (P4-408, P4-417): per bundle, in plan order,
+    /// its member crossings, its fall back to ordinary lines, and each
+    /// member that left it for its vertices; each points at the bundle's
+    /// `bundle` line.
+    fn bundles(&mut self) {
+        if self.scene.bundles.is_empty() {
+            return;
+        }
+        let spans: Vec<Span> = self
+            .model
+            .view(&self.scene.key)
+            .map(|v| v.bundles.iter().map(|b| b.span).collect())
+            .unwrap_or_default();
+        for (i, b) in self.scene.bundles.clone().iter().enumerate() {
+            let lines: Vec<&SceneLine> = b.members.iter().filter_map(|e| self.scene.lines.iter().find(|l| l.edge == *e)).collect();
+            let names = lines.iter().map(|l| self.ends(l)).collect::<Vec<_>>().join(", ");
+            let subjects: Vec<ModelId> = lines.iter().map(|l| ModelId::Relationship(l.relationship)).collect();
+            let items: Vec<ItemKey> = lines.iter().map(|l| ItemKey::Line(l.edge)).collect();
+            let span: Vec<Span> = spans.get(i).copied().into_iter().collect();
+            if b.crossings > 0 {
+                let k = b.crossings;
+                self.push(
+                    Rule::BundleCrossing,
+                    subjects.clone(),
+                    items.clone(),
+                    span.clone(),
+                    format!("bundle ({names}) crosses itself {k} times: its ends are in opposite orders"),
+                );
+            }
+            if b.fallback {
+                self.push(
+                    Rule::BundleFallback,
+                    subjects.clone(),
+                    items.clone(),
+                    span.clone(),
+                    format!("bundle ({names}) has no shared stretch; routed as ordinary lines"),
+                );
+            }
+            for e in &b.left {
+                if let Some(l) = self.scene.lines.iter().find(|l| l.edge == *e) {
+                    let ends = self.ends(l);
+                    self.push(
+                        Rule::BundleFallback,
+                        vec![ModelId::Relationship(l.relationship)],
+                        vec![ItemKey::Line(*e)],
+                        span.clone(),
+                        format!("line {ends} keeps its vertices and leaves its bundle"),
+                    );
+                }
+            }
+        }
+    }
+
     /// L27 (P3-126): a line crossing a deployment node boundary that holds
     /// neither of its ends (P3-123), once per line and boundary.
     // DECISION: the line's polyline is sampled every 5px against the open

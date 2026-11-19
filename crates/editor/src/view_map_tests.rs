@@ -244,7 +244,11 @@ impl Shell {
                 .iter()
                 .filter_map(|e| match &e.action {
                     MenuAction::Show(v) => Some(v.clone()),
-                    MenuAction::OpenUrl { .. } | MenuAction::ReleaseAnchor { .. } => None,
+                    MenuAction::OpenUrl { .. }
+                    | MenuAction::ReleaseAnchor { .. }
+                    | MenuAction::GroupBus
+                    | MenuAction::UngroupBus { .. }
+                    | MenuAction::RemoveFromBus { .. } => None,
                 })
                 .collect(),
             _ => Vec::new(),

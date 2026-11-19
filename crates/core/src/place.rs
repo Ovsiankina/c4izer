@@ -336,6 +336,18 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
 /// sum of routed crossings, labels over lines and total line length in px
 /// (P2-108).
 fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usize, usize, i64) {
+    // DECISION: candidates are scored as if the view had no bundles
+    // (P4-402): grouping lines as a bus must not move the boxes, so a view
+    // keeps the layout it had before its lines were bundled.
+    let unbundled;
+    let plan = if plan.bundles.is_empty() {
+        plan
+    } else {
+        let mut p = plan.clone();
+        p.bundles.clear();
+        unbundled = p;
+        &unbundled
+    };
     let Ok(routes) = route::route(plan, centres, &PROBE, never) else {
         return (usize::MAX, usize::MAX, i64::MAX);
     };

@@ -710,6 +710,11 @@ pub struct Scene {
     /// The picture of an `image` view, from `plan.image`; `None` for
     /// every other kind. Serves P2-19, P2-320, P2-321.
     pub image: Option<SceneImage>,
+    /// The view's bundles as routed (`Routes::bundles`, points in grid
+    /// units): members in track order, tracks, member crossings, fallbacks.
+    /// Empty without bundles. Serves P4-420, L30, L31, P4-426.
+    // APPROVER: new pub item
+    pub bundles: Vec<crate::route::RoutedBundle>,
 }
 
 impl Scene {
@@ -963,6 +968,7 @@ pub fn build(plan: &ViewPlan, routes: &Routes, labels: &Labels) -> Scene {
 
 /// `build` with type words, key line entries and type-line brackets from
 /// `words` (`terminology`, P2-161..P2-163); `pipeline` calls it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, words: &Words<'_>) -> Scene {
     assert_eq!(
         routes.lines.len(),
@@ -1063,6 +1069,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         crossings: routes.crossings,
         mode: plan.mode,
         image,
+        bundles: routes.bundles.clone(),
     }
 }
 
@@ -3047,6 +3054,7 @@ mod tests {
             lines,
             centres,
             crossings: 0,
+            bundles: Vec::new(),
         }
     }
 

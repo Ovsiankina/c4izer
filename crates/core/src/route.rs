@@ -68,6 +68,10 @@ use crate::model::Shape;
 use crate::anchor::{Anchor, AnchorSide};
 use crate::view::{BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
 
+// P4-400..P4-417: bundles (the editor's "Bus") are routed first, in
+// `route/bundle.rs`; a view without bundles never enters it (P4-403).
+mod bundle;
+
 /// A side of a box: where a port sits and which way the line leaves it,
 /// square to the side (CORE-9). Discriminants are fixed so a port can be
 /// stored per grid cell. Serves CORE-9.
@@ -244,6 +248,53 @@ pub struct Routes {
     /// from the scene) must use the same rule or read this value through
     /// the scene, so the CORE-11 bar and L4 agree. Serves CORE-11.
     pub crossings: u32,
+    /// One entry per `ViewPlan::bundles` entry, in the same order; empty
+    /// on a view without bundles. Serves P4-405, P4-408, P4-412, P4-417.
+    // APPROVER: new pub item
+    pub bundles: Vec<RoutedBundle>,
+}
+
+/// How one bundle was routed (P4-405..P4-417). Points are grid units, as
+/// in `Line::points`. Serves P4-405, P4-408, P4-412, P4-417, P4-420.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RoutedBundle {
+    /// The bundle's members, as `ViewPlan::bundles` lists them.
+    pub members: Vec<EdgeId>,
+    /// The members routed on the shared stretch, in track order (track
+    /// 0, the rightmost seen along the spine, first); empty when the
+    /// bundle fell back to ordinary lines (`fallback`).
+    pub tracks: Vec<EdgeId>,
+    /// Per entry of `tracks`: that member's track, a run of consecutive
+    /// segments of its line, in the member's own direction (P4-405).
+    pub shared: Vec<Vec<Point>>,
+    /// Crossings between members (the L4 rule, every pair of `tracks`),
+    /// reported as L30 when above 0 (P4-412).
+    pub crossings: u32,
+    /// True when no shared stretch of useful length exists and the
+    /// members were routed as ordinary lines (P4-408, L31).
+    pub fallback: bool,
+    /// Members that kept their vertices and left the bundle (P4-417,
+    /// L31), ascending.
+    pub left: Vec<EdgeId>,
+}
+
+impl RoutedBundle {
+    /// The bundle `edge` belongs to in `bundles`, if any. Serves P4-418,
+    /// P4-426.
+    #[must_use]
+    pub fn of(bundles: &[RoutedBundle], edge: EdgeId) -> Option<&RoutedBundle> {
+        bundles.iter().find(|b| b.members.contains(&edge))
+    }
+
+    /// The track of `edge` (P4-405), `None` when it is not on the shared
+    /// stretch.
+    #[must_use]
+    pub fn track(&self, edge: EdgeId) -> Option<&[Point]> {
+        let k = self.tracks.iter().position(|&e| e == edge)?;
+        self.shared.get(k).map(Vec::as_slice)
+    }
 }
 
 impl Routes {
@@ -343,12 +394,15 @@ pub fn route(
     );
     assert!(config.orders >= 1, "route: config.orders must be at least 1");
     check(stop)?;
+    if !plan.bundles.is_empty() {
+        return bundle::solve_bundled(plan, centres, *config, stop);
+    }
     let kept = vec![None; plan.edges.len()];
     let set: Vec<usize> = (0..plan.edges.len()).collect();
     if pinned_any(plan) {
-        return solve_pinned(plan, centres, *config, stop, kept, &set);
+        return solve_pinned(plan, centres, *config, stop, kept, &set, &[]);
     }
-    solve(plan, centres, *config, stop, kept, &set)
+    solve(plan, centres, *config, stop, kept, &set, &[])
 }
 
 /// Re-routes, with every box at `centres[box]`, only the lines of
@@ -425,6 +479,13 @@ pub(crate) fn reroute_with(
     stop: &AtomicBool,
 ) -> Result<Routes, Stopped> {
     check(stop)?;
+    // DECISION: a view with bundles re-routes whole: a moved box shifts a
+    // spine, and with it every track of the bundle and the corridor the
+    // other lines cross (P4-404); bundled views are small, the preview's
+    // cheaper `config` still bounds the cost.
+    if !plan.bundles.is_empty() {
+        return bundle::solve_bundled(plan, centres, config, stop);
+    }
     let mut set = broken(plan, centres, previous);
     if !forced.is_empty() {
         set.extend(forced.iter().copied().filter(|&e| e < plan.edges.len()));
@@ -446,9 +507,9 @@ pub(crate) fn reroute_with(
         kept[e] = None;
     }
     if pinned_any(plan) {
-        return solve_pinned(plan, centres, config, stop, kept, &set);
+        return solve_pinned(plan, centres, config, stop, kept, &set, &[]);
     }
-    solve(plan, centres, config, stop, kept, &set)
+    solve(plan, centres, config, stop, kept, &set, &[])
 }
 
 // ------------------------------------------------------------ internals
@@ -845,8 +906,29 @@ struct Board {
     ends: Vec<(BoxId, BoxId)>,
     /// Per edge: true when it has hand-added vertices (P3-308: never a
     /// trunk) or a pinned end (P4-209); all false on a view without `via`
-    /// or `anchor` lines.
+    /// or `anchor` lines. A bundle member counts as pinned too (P4-414).
     pinned: Vec<bool>,
+    /// Per cell, on a view with bundles only (empty otherwise, P4-403):
+    /// 0 off every corridor, `SHUT` where no other line may pass, else
+    /// the axis bit a line may cross the bundle along (P4-413).
+    corridor: Vec<u8>,
+}
+
+/// `Board::corridor`: a cell between two tracks no other line may enter.
+const SHUT: u8 = 0x80;
+
+/// True when a line may step from cell `ci` to cell `ni` heading `nd`,
+/// having `turned` there, as far as bundle corridors go (P4-413): it never
+/// turns inside a corridor and enters one only square across it.
+fn corridor_ok(board: &Board, ci: usize, ni: usize, nd: Dir, turned: bool) -> bool {
+    if board.corridor.is_empty() {
+        return true;
+    }
+    if turned && board.corridor[ci] != 0 {
+        return false;
+    }
+    let there = board.corridor[ni];
+    there == 0 || (there != SHUT && !nd.is_diagonal() && there & axis_bit(nd) != 0)
 }
 
 /// One deployment node boundary as routing sees it (P3-123).
@@ -881,13 +963,20 @@ impl Board {
         // P3-308: with `bus`, a line with vertices gets a net of its own
         // (past every box id), so no line ever joins it or it them.
         let boxes = u32::try_from(plan.boxes.len()).expect("box count fits u32");
+        // P4-414: a bundle member never joins and is never joined.
+        let mut bundled = vec![false; plan.edges.len()];
+        for e in plan.bundles.iter().flatten() {
+            if let Some(b) = bundled.get_mut(e.0 as usize) {
+                *b = true;
+            }
+        }
         let edge_net = plan
             .edges
             .iter()
             .enumerate()
             .map(|(i, e)| {
                 let i = u32::try_from(i).expect("edge index fits u32");
-                if bus && e.vertices.is_empty() && !anchored(e) {
+                if bus && e.vertices.is_empty() && !anchored(e) && !bundled[i as usize] {
                     e.destination.0
                 } else if bus {
                     boxes + i
@@ -914,7 +1003,13 @@ impl Board {
             arrives: vec![None; plan.edges.len()],
             fences,
             ends: plan.edges.iter().map(|e| (e.source, e.destination)).collect(),
-            pinned: plan.edges.iter().map(|e| !e.vertices.is_empty() || anchored(e)).collect(),
+            pinned: plan
+                .edges
+                .iter()
+                .zip(&bundled)
+                .map(|(e, &b)| !e.vertices.is_empty() || anchored(e) || b)
+                .collect(),
+            corridor: Vec::new(),
         }
     }
 
@@ -1448,6 +1543,25 @@ impl Scratch {
 struct Ctx<'a> {
     plan: &'a ViewPlan,
     centres: &'a [Point],
+    /// The bundle corridors of the view (P4-413): cell, `Board::corridor`
+    /// value; empty without bundles.
+    corridor: &'a [(Point, u8)],
+}
+
+impl Ctx<'_> {
+    /// `Board::new` with this view's corridors stamped on it.
+    fn board(&self, grid: Grid, history: &[u32]) -> Board {
+        let mut board = Board::new(self.plan, self.centres, grid, history);
+        if !self.corridor.is_empty() {
+            board.corridor = vec![0; grid.len()];
+            for &(p, v) in self.corridor {
+                if let Some(i) = grid.index(p) {
+                    board.corridor[i] = if board.corridor[i] == 0 { v } else { SHUT };
+                }
+            }
+        }
+        board
+    }
 }
 
 /// Routes `edge` on `board`: the cheapest octilinear path from a free
@@ -1510,7 +1624,7 @@ fn search(ctx: &Ctx<'_>, board: &Board, sc: &mut Scratch, edge: usize) -> Option
         };
         beyond.then_some(t)
     };
-    if bus && !anchored(e) {
+    if bus && !anchored(e) && !board.pinned[edge] {
         for i in 0..g.len() {
             if trunk_at(i).is_some() {
                 targets.push(i);
@@ -1683,7 +1797,7 @@ fn astar(
                 continue;
             }
             let Some(ni) = g.index(n) else { continue };
-            if board.cells[ni].blocked > 0 {
+            if board.cells[ni].blocked > 0 || !corridor_ok(board, ci, ni, nd, by != 0) {
                 continue;
             }
             let mut step = if nd.is_diagonal() {
@@ -2007,7 +2121,7 @@ fn pass(
     history: &[u32],
     stop: &AtomicBool,
 ) -> Result<Pass, Stopped> {
-    let mut board = Board::new(ctx.plan, ctx.centres, grid, history);
+    let mut board = ctx.board(grid, history);
     for line in kept.iter().flatten() {
         board.add(&cells_of(&line.points), line.edge.0 as usize, &line.end);
     }
@@ -2163,8 +2277,9 @@ fn solve(
     stop: &AtomicBool,
     kept: Vec<Option<Line>>,
     set: &[usize],
+    corridor: &[(Point, u8)],
 ) -> Result<Routes, Stopped> {
-    let ctx = Ctx { plan, centres };
+    let ctx = Ctx { plan, centres, corridor };
     let grid = Grid::new(plan, centres, &kept);
     let mut sc = Scratch::new(grid.len());
     let mut best: Option<Pass> = None;
@@ -2198,7 +2313,7 @@ fn solve(
         if any_anchor && set.iter().any(|&e| b.lines[e].is_none() && anchored(&plan.edges[e])) {
             let walled: Vec<usize> = set.iter().copied().filter(|&e| b.lines[e].is_none() && anchored(&plan.edges[e])).collect();
             for e in walled {
-                b.lines[e] = pinned_line(&ctx, &Board::new(plan, centres, grid, &[]), e);
+                b.lines[e] = pinned_line(&ctx, &ctx.board(grid, &[]), e);
             }
             let crossings = count_crossings(&b.lines);
             (b.lines, crossings)
@@ -2213,6 +2328,7 @@ fn solve(
         lines,
         centres: centres[..plan.boxes.len()].to_vec(),
         crossings,
+        bundles: Vec::new(),
     })
 }
 
@@ -2242,15 +2358,16 @@ fn solve_pinned(
     stop: &AtomicBool,
     mut kept: Vec<Option<Line>>,
     set: &[usize],
+    corridor: &[(Point, u8)],
 ) -> Result<Routes, Stopped> {
     let (pinned, rest): (Vec<usize>, Vec<usize>) = set.iter().copied().partition(|&e| !plan.edges[e].vertices.is_empty());
     let grid = pinned_grid(plan, centres, &kept);
-    let ctx = Ctx { plan, centres };
+    let ctx = Ctx { plan, centres, corridor };
     for &e in &pinned {
         check(stop)?;
         kept[e] = route_pinned(&ctx, grid, &kept, e);
     }
-    solve(plan, centres, config, stop, kept, &rest)
+    solve(plan, centres, config, stop, kept, &rest, corridor)
 }
 
 /// `Grid::new` grown to hold every vertex with the board's margin round it.
@@ -2277,14 +2394,14 @@ fn pinned_grid(plan: &ViewPlan, centres: &[Point], kept: &[Option<Line>]) -> Gri
 // wins over CORE-8 neatness; with no way even then the line is
 // unroutable (CORE-13, L1), e.g. for a vertex inside a box (L28).
 fn route_pinned(ctx: &Ctx<'_>, grid: Grid, kept: &[Option<Line>], edge: usize) -> Option<Line> {
-    let mut board = Board::new(ctx.plan, ctx.centres, grid, &[]);
+    let mut board = ctx.board(grid, &[]);
     let mut any = false;
     for line in kept.iter().flatten() {
         board.add(&cells_of(&line.points), line.edge.0 as usize, &line.end);
         any = true;
     }
     pinned_line(ctx, &board, edge).or_else(|| {
-        any.then(|| pinned_line(ctx, &Board::new(ctx.plan, ctx.centres, grid, &[]), edge))
+        any.then(|| pinned_line(ctx, &ctx.board(grid, &[]), edge))
             .flatten()
     })
 }
@@ -2442,6 +2559,10 @@ struct Start {
 enum Goal<'a> {
     Cell(usize),
     Ports(&'a [(usize, Port)]),
+    /// A bundle track's first cell, reached on a straight run heading at
+    /// most 45° from the track's direction (P4-410); the cell may be the
+    /// line's own.
+    Entry(usize, Dir),
 }
 
 /// One routed leg: its cells from the start cell to the goal cell, the
@@ -2476,7 +2597,7 @@ fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>
     let g = board.grid;
     let net = board.edge_net[edge] + 1;
     let targets: Vec<Point> = match goal {
-        Goal::Cell(c) => vec![g.point(*c)],
+        Goal::Cell(c) | Goal::Entry(c, _) => vec![g.point(*c)],
         Goal::Ports(p) => p.iter().map(|&(c, _)| g.point(c)).collect(),
     };
     let first = *targets.first()?;
@@ -2493,6 +2614,7 @@ fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>
     let reached = |r: &LegRec| -> Option<Option<Port>> {
         match goal {
             Goal::Cell(c) => (r.cell as usize == *c && r.run == 2).then_some(None),
+            Goal::Entry(c, d) => (r.cell as usize == *c && r.run == 2 && r.dir.turn_steps(*d) <= 1).then_some(None),
             Goal::Ports(p) => {
                 let k = p.binary_search_by_key(&(r.cell as usize), |&(c, _)| c).ok()?;
                 let port = p[k].1;
@@ -2570,8 +2692,9 @@ fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>
             let Some(ni) = g.index(n) else { continue };
             // A vertex on an earlier leg of the same line is still a goal:
             // the line crosses itself there (the user asked for that point).
-            let goal_cell = matches!(goal, Goal::Cell(c) if *c == ni);
-            if board.cells[ni].blocked > 0 || (own[ni] && !goal_cell) {
+            let goal_cell = matches!(goal, Goal::Cell(c) | Goal::Entry(c, _) if *c == ni);
+            let entry = matches!(goal, Goal::Entry(c, _) if *c == ni);
+            if board.cells[ni].blocked > 0 || (own[ni] && !goal_cell) || !corridor_ok(board, ci, ni, nd, t != 0) {
                 continue;
             }
             let mut step = if nd.is_diagonal() {
@@ -2598,7 +2721,9 @@ fn leg(board: &Board, edge: usize, starts: &[Start], free: bool, goal: &Goal<'_>
                     }
                 }
             }
-            if board.cells[ni].net != 0 {
+            if entry {
+                // The track's own first cell (P4-410): no crossing there.
+            } else if board.cells[ni].net != 0 {
                 let ax = board.cells[ni].axes;
                 if board.cells[ni].net == net || on_other || ax.count_ones() != 1 || ax & axis_bit(nd) != 0 {
                     continue;
@@ -3577,6 +3702,7 @@ mod tests {
             lines: vec![None; hp.edges.len()],
             centres: hc.clone(),
             crossings: 0,
+            bundles: Vec::new(),
         };
         // Every box moved: every edge is re-routed.
         let all: Vec<Point> = hc.iter().map(|q| pt(q.x, q.y + 1)).collect();
@@ -3752,7 +3878,7 @@ mod tests {
         let grid = Grid::new(&p, &c, &kept);
         let board = Board::new(&p, &c, grid, &[]);
         let mut sc = Scratch::new(grid.len());
-        let ctx = Ctx { plan: &p, centres: &c };
+        let ctx = Ctx { plan: &p, centres: &c, corridor: &[] };
         let f = search(&ctx, &board, &mut sc, 0).expect("routes round the tall box");
         let reach = BOX.2 + WINDOW_MARGIN;
         assert!(

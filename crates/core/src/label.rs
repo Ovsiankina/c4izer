@@ -82,7 +82,7 @@
 
 use crate::geom::{Contact, GRID_PX, Point, Rect, Segment, grid_to_px};
 use crate::model::{ElementKind, LabelMode, MetadataSymbols, Terminology, ViewKind, ViewOptions};
-use crate::route::{Line, Routes};
+use crate::route::{Line, RoutedBundle, Routes};
 use crate::view::{BoundaryOf, EdgeId, PlanEdge, ViewPlan};
 
 /// Thousandths of an em: the unit of `text_advance`. A text's width in
@@ -832,13 +832,20 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
         };
         let spots = walk(&line.points);
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
+        let bus = Bus::of(routes, edge.id);
         // Best so far: the spot, the lines it covers, and whether it sits
         // on a boundary stroke (only ever true on a dynamic view).
         let mut best: Option<(Point, Vec<EdgeId>, bool)> = None;
         for c in candidates(&spots, line.joins().is_some(), edge.style.position) {
+            if bus.refuses_spot(c) {
+                continue;
+            }
             label.centre = c;
             let rect = label.px_rect();
             if scene.blocked(&rect) || placed.iter().any(|p| p.overlaps(&rect)) {
+                continue;
+            }
+            if bus.on_peer_track(&rect) {
                 continue;
             }
             let covered = scene.covered(&rect, edge.id);
@@ -857,7 +864,10 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
         (label.centre, label.fit) = match best {
             Some((c, covered, _)) if covered.is_empty() => (c, Fit::Clear),
             Some((c, covered, _)) => (c, Fit::OverLines(covered)),
-            None => (middle(&spots), Fit::NoRoom),
+            None => {
+                let at = bus.beside(&mut label, &scene, &placed).unwrap_or_else(|| bus.fallback(&spots));
+                (at, Fit::NoRoom)
+            }
         };
         labels.push(Some(label));
     }
@@ -874,6 +884,7 @@ pub(crate) fn place_labels_with(plan: &ViewPlan, routes: &Routes, words: &Words<
 /// falls back to its line afterwards (`Labels::fallbacks`), clear of every
 /// callout's text block, shelf and leader. Joined lines share their
 /// trunk's label as on the `labels line` path.
+#[allow(clippy::too_many_lines)]
 fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels {
     let scene = Obstacles::new(plan, routes, words, true);
     let mut labels: Vec<Option<Label>> = vec![None; plan.edges.len()];
@@ -910,10 +921,12 @@ fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels
             callout: None,
         };
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
+        let bus = Bus::of(routes, edge.id);
         let near = Near {
             scene: &scene,
             placed: &placed,
             marks: &marks,
+            peers: &bus.peers,
         };
         match best_callout(&label, line, edge.style.position, &near) {
             Some(c) => {
@@ -938,14 +951,21 @@ fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels
         };
         let placed: Vec<Rect> = labels.iter().flatten().map(Label::px_rect).collect();
         let spots = walk(&line.points);
+        let bus = Bus::of(routes, edge.id);
         let mut best: Option<(Point, Vec<EdgeId>, bool)> = None;
         for c in candidates(&spots, line.joins().is_some(), edge.style.position) {
+            if bus.refuses_spot(c) {
+                continue;
+            }
             label.centre = c;
             let rect = label.px_rect();
             if scene.blocked(&rect)
                 || placed.iter().any(|p| p.overlaps(&rect))
                 || marks.iter().any(|m| m.passes_through(&rect))
             {
+                continue;
+            }
+            if bus.on_peer_track(&rect) {
                 continue;
             }
             let covered = scene.covered(&rect, edge.id);
@@ -964,7 +984,10 @@ fn place_callouts(plan: &ViewPlan, routes: &Routes, words: &Words<'_>) -> Labels
         (label.centre, label.fit) = match best {
             Some((c, covered, _)) if covered.is_empty() => (c, Fit::Clear),
             Some((c, covered, _)) => (c, Fit::OverLines(covered)),
-            None => (middle(&spots), Fit::NoRoom),
+            None => {
+                let at = bus.beside(&mut label, &scene, &placed).unwrap_or_else(|| bus.fallback(&spots));
+                (at, Fit::NoRoom)
+            }
         };
         let i = label.edge.0 as usize;
         fallbacks.push(label.edge);
@@ -984,6 +1007,143 @@ struct Near<'a> {
     scene: &'a Obstacles,
     placed: &'a [Rect],
     marks: &'a [Segment],
+    /// The other members of the label's bundle, whose lines its leader
+    /// never crosses (P4-419); empty off every bundle.
+    peers: &'a [EdgeId],
+}
+
+/// What a bundle asks of one member's label (P4-418, P4-419): empty for
+/// a line in no routed bundle, so every other label is placed as before
+/// (P4-403).
+struct Bus {
+    /// The other members of the bundle.
+    peers: Vec<EdgeId>,
+    /// The member's own track, when it is not one of the two outermost.
+    inner: Option<Vec<Point>>,
+    /// The member's own track.
+    track: Option<Vec<Point>>,
+    /// The other members' lines, px.
+    peer_tracks: Vec<Segment>,
+    /// Every track of the bundle in track order, grid units.
+    all: Vec<Vec<Point>>,
+}
+
+impl Bus {
+    fn of(routes: &Routes, edge: EdgeId) -> Bus {
+        let Some(b) = RoutedBundle::of(&routes.bundles, edge).filter(|b| !b.tracks.is_empty()) else {
+            return Bus {
+                peers: Vec::new(),
+                inner: None,
+                track: None,
+                peer_tracks: Vec::new(),
+                all: Vec::new(),
+            };
+        };
+        let k = b.tracks.iter().position(|&e| e == edge);
+        let track = k.and_then(|k| b.shared.get(k).cloned());
+        let inner = k.filter(|&k| k != 0 && k + 1 != b.tracks.len()).and(track.clone());
+        // DECISION: a member's label keeps off the whole lines of the
+        // other members, fan-outs included: near the ends they still run
+        // 20px apart, so a label there would sit on the bus as well.
+        let peer_tracks = b
+            .tracks
+            .iter()
+            .filter(|&&e| e != edge)
+            .filter_map(|&e| routes.line(e))
+            .flat_map(|l| l.points.windows(2).map(|w| Segment::new(point_px(w[0]), point_px(w[1]))).collect::<Vec<_>>())
+            .collect();
+        Bus {
+            peers: b.tracks.iter().copied().filter(|&e| e != edge).collect(),
+            inner,
+            track,
+            peer_tracks,
+            all: b.shared.clone(),
+        }
+    }
+
+    /// True when `c` lies on an inner track (P4-418).
+    fn refuses_spot(&self, c: Point) -> bool {
+        self.inner.as_ref().is_some_and(|t| on_polyline(c, t))
+    }
+
+    /// True when the label rectangle `rect` (px) lies on another
+    /// member's line (P4-418).
+    fn on_peer_track(&self, rect: &Rect) -> bool {
+        self.peer_tracks.iter().any(|s| s.passes_through(rect))
+    }
+
+    /// A spot beside the bundle for `label` (P4-418): outside one of the
+    /// two outermost tracks, on an axis segment, middle first, the label's
+    /// rectangle 8px clear of the track; clear of boxes and placed labels,
+    /// clear of lines when such a spot exists.
+    fn beside(&self, label: &mut Label, scene: &Obstacles, placed: &[Rect]) -> Option<Point> {
+        let (Some(first), Some(last)) = (self.all.first(), self.all.last()) else {
+            return None;
+        };
+        let on_any = |p: Point| self.all.iter().any(|t| on_polyline(p, t));
+        let mut fallback = None;
+        // The outer side nearer the member's own track first, so the label
+        // stands on its line's side of the bundle.
+        let k = self.track.as_ref().and_then(|t| self.all.iter().position(|x| x == t || x.iter().rev().eq(t.iter()))).unwrap_or(0);
+        let sides = if 2 * k > self.all.len().saturating_sub(1) { [last, first] } else { [first, last] };
+        for t in sides {
+            for w in t.windows(2) {
+                let seg = Segment::new(w[0], w[1]);
+                let Some(d) = seg.dir().filter(|d| !d.is_diagonal()) else {
+                    continue;
+                };
+                let (dx, dy) = d.delta();
+                let steps = seg.len_steps().unwrap_or(0);
+                let half = if dx == 0 { label.width_px / 2 } else { label.height_px / 2 };
+                let off = (half + 8 + GRID_PX - 1) / GRID_PX;
+                for (nx, ny) in [(dy, -dx), (-dy, dx)] {
+                    if on_any(Point::new(w[0].x + 2 * nx, w[0].y + 2 * ny)) {
+                        continue;
+                    }
+                    let mid = steps / 2;
+                    for i in 0..=steps {
+                        let k = if i % 2 == 0 { mid + i / 2 } else { mid - (i + 1) / 2 };
+                        if k < 0 || k > steps {
+                            continue;
+                        }
+                        let p = Point::new(w[0].x + dx * k + nx * off, w[0].y + dy * k + ny * off);
+                        label.centre = p;
+                        let rect = label.px_rect();
+                        if scene.blocked(&rect) || placed.iter().any(|r| r.overlaps(&rect)) {
+                            continue;
+                        }
+                        if scene.covered(&rect, label.edge).is_empty() {
+                            return Some(p);
+                        }
+                        fallback.get_or_insert(p);
+                    }
+                }
+            }
+        }
+        fallback
+    }
+
+    /// Where a label with no room goes: the middle of the member's longer
+    /// fan-out (P4-418), else the middle of its line.
+    fn fallback(&self, spots: &[(Point, i64)]) -> Point {
+        let Some(t) = &self.track else {
+            return middle(spots);
+        };
+        let first = spots.iter().position(|&(p, _)| on_polyline(p, t));
+        let last = spots.iter().rposition(|&(p, _)| on_polyline(p, t));
+        let (Some(first), Some(last)) = (first, last) else {
+            return middle(spots);
+        };
+        let (before, after) = (&spots[..first], &spots[last + 1..]);
+        let run = if before.len() >= after.len() { before } else { after };
+        if run.is_empty() { middle(spots) } else { run[run.len() / 2].0 }
+    }
+}
+
+/// True when grid point `p` lies on the polyline `points`.
+fn on_polyline(p: Point, points: &[Point]) -> bool {
+    let at = Segment::new(p, p);
+    points.windows(2).any(|w| Segment::new(w[0], w[1]).contact(&at) != Contact::Disjoint)
 }
 
 // DECISION: the P4-311 cost weights, in thousandths of a px of leader:
@@ -1133,6 +1293,10 @@ fn callout_extra(
         .filter(|(e, segs)| *e != own_edge && segs.iter().any(|s| s.contact(&leader) != Contact::Disjoint))
         .map(|(e, _)| *e)
         .collect();
+    // P4-419: never across another member of the label's bundle.
+    if crossings.iter().any(|e| near.peers.contains(e)) {
+        return None;
+    }
     let around = Rect::from_centre(a, CROWD_PX, CROWD_PX);
     let crowded = scene
         .lines
@@ -1485,6 +1649,7 @@ mod tests {
             lines,
             centres,
             crossings: 0,
+            bundles: Vec::new(),
         }
     }
 
