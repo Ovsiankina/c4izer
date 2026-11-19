@@ -26,7 +26,7 @@ use crate::worker::{Job, Request};
 /// Where scene px `p` lies along the polyline `points`: the length from
 /// the first point to `p`'s nearest point on it.
 #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
-fn along(points: &[Point], p: Point) -> f32 {
+pub(super) fn along(points: &[Point], p: Point) -> f32 {
     let mut best = (f32::INFINITY, 0.0f32);
     let mut start = 0.0f32;
     for w in points.windows(2) {

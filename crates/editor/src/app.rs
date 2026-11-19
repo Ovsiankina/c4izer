@@ -349,6 +349,17 @@ impl App {
         // P4-213, P4-214: its end handles, and the snap points while one is dragged.
         canvas::paint(&painter, &canvas::anchor_items(&list, &self.state.end_handles(), &self.state.snap_marks()));
         self.paint_paper_marks(&painter, response.rect);
+        // P2-708 by drag: a grab hand over a draggable label, a closed one
+        // while it slides.
+        if (response.hovered() || response.dragged())
+            && let Some(grabbing) = self.state.label_cursor()
+        {
+            ui.ctx().set_cursor_icon(if grabbing {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
         let mut inputs = canvas::inputs(ui.ctx(), &response);
         // EDIT-5: a press on a field is the field's, not a canvas click
         // (which would end the edit).

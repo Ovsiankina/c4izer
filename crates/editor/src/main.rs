@@ -38,6 +38,8 @@ mod history;
 mod icons;
 mod kit;
 #[cfg(test)]
+mod label_drag_tests;
+#[cfg(test)]
 mod landscape_filtered_tests;
 mod state;
 #[cfg(test)]

@@ -110,6 +110,7 @@ mod anchors;
 mod bridges;
 mod bundles;
 pub(crate) mod inplace;
+mod label_drag;
 mod steps;
 mod vertices;
 pub use anchors::SnapMark;
@@ -647,6 +648,21 @@ pub enum Gesture {
         snapped: Option<c4rizer_core::anchor::Anchor>,
         /// The pointer, screen px.
         at: ScreenPoint,
+    },
+    /// Left drag on a line's label: it slides along its line, and release
+    /// writes the view's `line … position N` (P2-708 by drag).
+    // APPROVER: new pub item
+    DraggingLabel {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+        /// Where the drag started, screen px.
+        from: ScreenPoint,
+        /// The label's point on its line at the start, scene px: the
+        /// on-line label's centre or the callout's attach dot.
+        anchor: Point,
+        /// The current position, a whole percent of the route's length
+        /// (the last sent to the worker); `None` before the first move.
+        position: Option<u8>,
     },
     /// Middle drag or Space+drag (EDIT-9, EDIT-28).
     Panning {
@@ -1886,6 +1902,16 @@ impl State {
                     _ => MarkKind::Hover,
                 };
                 marks.push(Mark { item: hover, kind });
+            }
+            // P2-708 by drag: the dragged label wears the selection mark,
+            // as a dragged box does.
+            if let Gesture::DraggingLabel { edge, .. } = &self.gesture
+                && scene.item_bounds(ItemKey::Label(*edge)).is_some()
+            {
+                marks.push(Mark {
+                    item: ItemKey::Label(*edge),
+                    kind: MarkKind::Selected,
+                });
             }
             if let Gesture::Resizing { id, size, .. } = &self.gesture
                 && let Some(b) = scene.boxes.get(id.0 as usize)
@@ -3229,6 +3255,7 @@ impl State {
                 | Gesture::Pressed { .. }
                 | Gesture::DraggingVertex { .. }
                 | Gesture::DraggingEnd { .. }
+                | Gesture::DraggingLabel { .. }
         ) {
             self.gesture = Gesture::Idle;
         }
@@ -3671,6 +3698,7 @@ impl State {
         match self.gesture.clone() {
             Gesture::DraggingVertex { .. } => self.vertex_drag_to(at),
             Gesture::DraggingEnd { .. } => self.end_drag_to(at),
+            Gesture::DraggingLabel { .. } => self.label_drag_to(at),
             Gesture::Idle => {
                 self.hover = self.hit(at);
                 Vec::new()
@@ -3728,7 +3756,12 @@ impl State {
     ) -> Vec<Effect> {
         // P3-420: a move or resize on a workspace JSON says why it is
         // refused, and starts nothing else (no rubber band).
-        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some() || self.vertex_under(from).is_some() || self.end_under(from).is_some())
+        let label = self.label_under(from);
+        if (matches!(hit, Some(ItemKey::Box(_)))
+            || handle.is_some()
+            || self.vertex_under(from).is_some()
+            || self.end_under(from).is_some()
+            || label.is_some())
             && self.refuse_json()
         {
             self.gesture = Gesture::Idle;
@@ -3751,6 +3784,15 @@ impl State {
             self.text_edit = None;
             self.gesture = Gesture::Resizing { id, handle, from, size };
             return self.resize_to(id, handle, from, size, at);
+        }
+        // P2-708 by drag: a label slides along its line; read-only, a
+        // drag on it does nothing, as on a box (EDIT-11).
+        if let Some(edge) = label {
+            if read_only {
+                self.gesture = Gesture::Idle;
+                return Vec::new();
+            }
+            return self.start_label_drag(edge, from, at);
         }
         match hit {
             Some(ItemKey::Box(id)) if !read_only => {
@@ -3980,6 +4022,7 @@ impl State {
                 snapped,
                 ..
             } => self.finish_end_drag(edge, destination, snapped),
+            Gesture::DraggingLabel { edge, position, .. } => self.finish_label_drag(edge, position),
             Gesture::Pressed {
                 at: from,
                 button: b,
@@ -4133,7 +4176,8 @@ impl State {
         }
         // EDIT-18: Escape during a resize drops it; the box is drawn at
         // the size it had, and nothing is written.
-        if key == Key::Escape && matches!(self.gesture, Gesture::Resizing { .. }) {
+        // P2-708 by drag: so does Escape during a label drag.
+        if key == Key::Escape && matches!(self.gesture, Gesture::Resizing { .. } | Gesture::DraggingLabel { .. }) {
             self.cancel_gesture();
             return Vec::new();
         }
@@ -5468,7 +5512,10 @@ impl State {
                     self.refresh_preview(&to);
                 } else if matches!(
                     self.gesture,
-                    Gesture::DraggingVertex { .. } | Gesture::DraggingEnd { .. } | Gesture::Resizing { .. }
+                    Gesture::DraggingVertex { .. }
+                        | Gesture::DraggingEnd { .. }
+                        | Gesture::DraggingLabel { .. }
+                        | Gesture::Resizing { .. }
                 ) {
                     self.preview = Some(build.scene.clone());
                     self.dragged = Some(build);
