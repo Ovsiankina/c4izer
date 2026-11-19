@@ -908,7 +908,8 @@ Editing
   and never opens the menu (owner's ruling of editor-ux-03); left drag
   on a box moves it; left drag on empty canvas draws a rubber band;
   middle drag, right drag or Space+drag pans; the wheel zooms at the
-  cursor; Ctrl-click selects without entering; Shift-click toggles selection
+  cursor; the sideways wheel (tilt wheel or horizontal touchpad swipe)
+  pans left and right; Ctrl-click selects without entering; Shift-click toggles selection
   and never enters; a click on empty canvas or Escape deselects; Enter
   or F2 edits (EDIT-5); Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z
   and Ctrl+Y redo (EDIT-19).

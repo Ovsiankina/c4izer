@@ -257,6 +257,12 @@ pub enum Input {
         /// Notches, positive zooms in.
         notches: f32,
     },
+    /// Sideways wheel: pans the canvas by this many screen points, the
+    /// way the content moves (positive x moves it right; EDIT-9).
+    Pan {
+        /// The screen travel of the content.
+        by: ScreenPoint,
+    },
     /// A key went down.
     KeyDown {
         /// Which key.
@@ -3587,6 +3593,11 @@ impl State {
             }
             Input::Wheel { at, notches } => {
                 self.camera.zoom_at(at, ZOOM_STEP.powf(notches));
+                self.remember();
+                Vec::new()
+            }
+            Input::Pan { by } => {
+                self.camera.pan_by(by);
                 self.remember();
                 Vec::new()
             }
@@ -7893,6 +7904,25 @@ mod tests {
             inside(scene.legend.rect.min) && inside(scene.legend.rect.max),
             "key on screen"
         );
+    }
+
+    /// EDIT-9: the sideways wheel pans the camera by the content's screen
+    /// travel and keeps the zoom; the vertical wheel still zooms.
+    #[test]
+    fn edit_9_sideways_wheel_pans_vertical_zooms() {
+        let mut h = H::with_file(SHOP);
+        h.s.set_canvas_size(CANVAS);
+        let before = h.s.camera;
+        h.input(Input::Pan { by: pt(-40.0, 0.0) });
+        let after = h.s.camera;
+        assert!((after.zoom - before.zoom).abs() < 1e-6, "no zoom change");
+        assert!((after.pan.x - (before.pan.x + 40.0 / before.zoom)).abs() < 1e-4, "{before:?} -> {after:?}");
+        assert!((after.pan.y - before.pan.y).abs() < 1e-6);
+        h.input(Input::Wheel {
+            at: pt(100.0, 100.0),
+            notches: 1.0,
+        });
+        assert!(h.s.camera.zoom > after.zoom, "the vertical wheel still zooms");
     }
 
     /// EDIT-30, EDIT-1: a reload keeps zoom and pan; it does not fit

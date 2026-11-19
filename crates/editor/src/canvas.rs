@@ -1097,6 +1097,23 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
                         if notches != 0.0 {
                             out.push(Input::Wheel { at: rel(p), notches });
                         }
+                        // DECISION: the sideways wheel pans. egui's delta
+                        // says how the content moves (positive x: right), as
+                        // `pan_by` does, so it passes through: tilting right
+                        // moves the content left, like a scrollbar. A line is
+                        // 40 points (egui's own native line scroll speed), a
+                        // page the canvas width. Shift + vertical wheel is not
+                        // turned sideways here: egui only rewrites its smoothed
+                        // scroll delta, not this raw event, so it still zooms
+                        // (on macOS the OS already sends it as delta.x: a pan).
+                        let dx = match unit {
+                            MouseWheelUnit::Point => delta.x,
+                            MouseWheelUnit::Line => delta.x * 40.0,
+                            MouseWheelUnit::Page => delta.x * rect.width(),
+                        };
+                        if dx != 0.0 {
+                            out.push(Input::Pan { by: ScreenPoint { x: dx, y: 0.0 } });
+                        }
                     }
                 }
                 E::Key {
@@ -1423,6 +1440,38 @@ mod tests {
         let _ = frame_inputs(&ctx, Vec::new(), false);
         let off = frame_inputs(&ctx, vec![E::PointerMoved(Pos2::new(650.0, 150.0))], false);
         assert!(off.contains(&crate::state::Input::PointerLeft), "{off:?}");
+    }
+
+    /// EDIT-9: a wheel event over the canvas zooms on its y and pans on
+    /// its x; a sideways line is 40 points, the content moving as egui's
+    /// delta says.
+    #[test]
+    fn edit_9_sideways_wheel_reports_pan() {
+        use crate::state::Input;
+        use eframe::egui::{self, Event as E, Pos2};
+        let ctx = eframe::egui::Context::default();
+        let wheel = |unit, x: f32, y: f32| E::MouseWheel {
+            unit,
+            delta: egui::vec2(x, y),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+            source: egui::MouseWheelSource::Wheel,
+        };
+        let at = Pos2::new(150.0, 150.0);
+        for _ in 0..3 {
+            let _ = frame_inputs(&ctx, vec![E::PointerMoved(at)], false);
+        }
+        let side = frame_inputs(&ctx, vec![wheel(egui::MouseWheelUnit::Line, -1.0, 0.0)], false);
+        assert_eq!(side, [Input::Pan { by: ScreenPoint { x: -40.0, y: 0.0 } }], "{side:?}");
+        let both = frame_inputs(&ctx, vec![wheel(egui::MouseWheelUnit::Point, 12.0, 100.0)], false);
+        assert_eq!(
+            both,
+            [
+                Input::Wheel { at: ScreenPoint { x: 50.0, y: 50.0 }, notches: 2.0 },
+                Input::Pan { by: ScreenPoint { x: 12.0, y: 0.0 } },
+            ],
+            "{both:?}"
+        );
     }
 
     /// Fix round (P2-712): over a window drawn above the canvas, the
