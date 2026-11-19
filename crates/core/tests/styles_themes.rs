@@ -2248,6 +2248,16 @@ fn p2_411_boundary_tags_styled() {
     assert_eq!(b.fill, Some(rgb(0xee, 0xee, 0xee)));
 }
 
+/// A boundary styled `border dashed` draws the design's boundary dash,
+/// 6/4, like an unstyled one (redesign 2026-11-19).
+#[test]
+fn p2_411_boundary_styled_dashed_is_the_design_dash() {
+    let styles = element_style("Boundary", "                border dashed");
+    for key in ["c2", "c3"] {
+        assert_eq!(boundary_of(&styles, key).stroke.dash_px, Some([6, 4]), "{key}");
+    }
+}
+
 /// With no boundary style the boundary is the default one (dashed 6/4, 1px,
 /// no fill).
 #[test]

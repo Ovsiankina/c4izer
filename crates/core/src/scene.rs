@@ -2067,8 +2067,8 @@ fn icon_rect(shape: Shape, rect: Rect) -> Rect {
 // shorter than the dash, and still visible as dots at the 1px default
 // stroke width.
 // DECISION (redesign 2026-11-19): a styled `border dashed` keeps 8/6 on
-// boxes, lines and boundaries alike (P2-405, P2-420 test it); only the
-// unstyled boundary takes the design's 6/4 (`BOUNDARY_DASH_PX`).
+// boxes and lines (P2-405, P2-420 test it); every boundary, styled
+// dashed or not, takes the design's 6/4 (`BOUNDARY_DASH_PX`).
 const fn dash_of(border: Border) -> Option<[i32; 2]> {
     match border {
         Border::Dashed => Some(DASHED_PX),
@@ -2668,9 +2668,13 @@ fn scene_boundary(
             colour: style.stroke.unwrap_or(pal.boundary),
             width_px: style.stroke_width.map_or(OUTLINE_PX, i32::from),
             // P3-114: a deployment node is solid unless styled.
-            dash_px: style
-                .border
-                .map_or(if node { None } else { Some(BOUNDARY_DASH_PX) }, dash_of),
+            // DECISION (redesign 2026-11-19): a boundary styled `border
+            // dashed` draws the design's one boundary dash, 6/4, like an
+            // unstyled one; boxes and lines keep 8/6 (the design has no
+            // dashed box or line).
+            dash_px: style.border.map_or(if node { None } else { Some(BOUNDARY_DASH_PX) }, |b| {
+                if matches!(b, Border::Dashed) { Some(BOUNDARY_DASH_PX) } else { dash_of(b) }
+            }),
         },
         tag_rect,
         tag,
