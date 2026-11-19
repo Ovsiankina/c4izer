@@ -726,7 +726,17 @@ fn p2_413_shape_proportions() {
                 assert!(tabs[0].max.y < tabs[1].min.y);
             }
             O::Rect { rect, .. } | O::Ellipse { rect, circle: false } | O::Diamond { rect } => assert_eq!(rect, r),
-            O::Person { body, head_radius_px, .. } => assert_eq!((body.max, head_radius_px), (r.max, 30)),
+            // redesign 2026-11-19: a 24px head with the body from 30px
+            // down and 14px corners (Node preview), was a 30px head.
+            O::Person {
+                head_centre,
+                head_radius_px,
+                body,
+                body_radius_px,
+            } => {
+                assert_eq!((body.max, head_radius_px, body_radius_px), (r.max, 24, 14));
+                assert_eq!((head_centre.y - head_radius_px, body.min.y), (r.min.y, r.min.y + 30));
+            }
             ref other => panic!("{other:?}"),
         }
     }
@@ -860,7 +870,9 @@ fn p2_415_rounded_box_radius_larger() {
 fn p2_415_box_corner_radius() {
     // TODO(srs): P2-415. Reading taken (B styles-themes 3): Box 6px (phase-1
     // goldens), RoundedBox 20px.
-    for (word, want) in [("Box", 6), ("RoundedBox", 20)] {
+    // redesign 2026-11-19: RoundedBox 14px (`radius-node-round`), still
+    // larger than the Box's 6px.
+    for (word, want) in [("Box", 6), ("RoundedBox", 14)] {
         let (m, s) = shaped(word);
         match scene_box(&m, &s, "sys").outline {
             scene::Outline::Rect { radius_px, .. } => assert_eq!(radius_px, want, "{word}"),
@@ -2249,7 +2261,9 @@ fn p2_411_boundary_default_unchanged() {
         assert_eq!(b.stroke.colour, rgb(0x7b, 0x84, 0x8b));
         assert_eq!(b.stroke.width_px, 1);
         assert_eq!(b.stroke.dash_px, Some([8, 6]));
-        assert_eq!((b.tag.colour, b.tag.size_px), (rgb(0x5a, 0x62, 0x68), 12));
+        // redesign 2026-11-19: the tag is 11px (`.dg-boundary-t`), was
+        // 12px; the 8/6 dash stays as P2-411 pins it.
+        assert_eq!((b.tag.colour, b.tag.size_px), (rgb(0x5a, 0x62, 0x68), 11));
         assert!(b.tag.lines[0].ends_with(']'));
         assert!(b.icon.is_none());
     }

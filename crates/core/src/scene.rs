@@ -1297,7 +1297,8 @@ fn svg_size(text: &str) -> Option<(f64, f64)> {
 // DECISION: the px values CORE-1, CORE-2 and CORE-14 do not give, from
 // the prototype golden SVGs (`c4.py` `render`) rounded to whole px: box
 // corner radius 6, person head radius 30 with the body from 50px below
-// the top (corner radius 22), cylinder caps 12px tall, box outline 1px
+// the top (corner radius 22; redesign 2026-11-19: head 24, body from
+// 30px, corners 14, see `HEAD_RADIUS_PX`), cylinder caps 12px tall, box outline 1px
 // in the fill darkened to 72%, boundary 1px dashed 8/6 in #666666,
 // label backing white, label text in the destination fill darkened to
 // 62%. Line pitches the SRS leaves open: box name 18px, title 22px,
@@ -1418,9 +1419,14 @@ const SMALL_LINE_PX: i32 = 14;
 // prototype (`node_svg`: type at +15, description at +35 on a 14px pitch).
 const DESC_GAP_PX: i32 = 6;
 const BOX_RADIUS_PX: i32 = 6;
-const HEAD_RADIUS_PX: i32 = 30;
-const BODY_TOP_PX: i32 = 50;
-const BODY_RADIUS_PX: i32 = 22;
+// redesign 2026-11-19: the person of design-system Node (preview: body
+// `rx="14"`, head `r="24"` centred 6px above the body's top), was a 30px
+// head over a body from 50px down with 22px corners.
+// DECISION: the head's top is the box's top, so the body starts 30px
+// down (24 + 6) and the head reaches 18px into it, as in the preview.
+const HEAD_RADIUS_PX: i32 = 24;
+const BODY_TOP_PX: i32 = 30;
+const BODY_RADIUS_PX: i32 = 14;
 // redesign 2026-11-19: a 9px lid (design-system Node: "a cylinder has a
 // 9 px lid"), was 12px from the prototype.
 const CAP_RY_PX: i32 = 9;
@@ -1632,8 +1638,11 @@ struct Dims {
     component_tab: (i32, i32),
 }
 
+// redesign 2026-11-19: RoundedBox corners `radius-node-round` 14px
+// (tokens.json; Node preview `rx="14"`), was 20px (B ruling 3). P2-415
+// still holds: 14 > the Box's 6.
 // DECISION: shape proportions (P2-413 gives none, B ruling 6 says "per
-// the notation page"): Box 6px and RoundedBox 20px corners (B ruling 3);
+// the notation page"): Box 6px and RoundedBox 14px corners;
 // Circle the largest centred circle; Ellipse the inscribed ellipse;
 // Hexagon points a quarter of the height in from the sides; Bucket a
 // cylinder narrowing by a tenth of the width per side; Pipe 12px caps;
@@ -1643,7 +1652,7 @@ struct Dims {
 // 10px in from the left edge.
 const BOX_DIMS: Dims = Dims {
     box_radius: BOX_RADIUS_PX,
-    rounded_radius: 20,
+    rounded_radius: 14,
     cap: CAP_RY_PX,
     bar: 20,
     inset: 10,
@@ -1867,7 +1876,19 @@ fn scaled_about_centre(rect: Rect, num: i32) -> Rect {
 /// the 10px padding.
 fn text_area(shape: Shape, rect: Rect) -> Rect {
     let inner = match outline(shape, rect) {
-        Outline::Person { body, .. } | Outline::Robot { body, .. } => body,
+        // redesign 2026-11-19: the head reaches into the body, so a
+        // person's texts start below the head (Node preview: the text is
+        // centred between the head's bottom and the body's bottom).
+        Outline::Person {
+            head_centre,
+            head_radius_px,
+            body,
+            ..
+        } => Rect::from_corners(
+            Point::new(body.min.x, (head_centre.y + head_radius_px).clamp(body.min.y, body.max.y)),
+            body.max,
+        ),
+        Outline::Robot { body, .. } => body,
         Outline::Cylinder { rect, cap_ry_px } => Rect::from_corners(
             Point::new(rect.min.x, (rect.min.y + 2 * cap_ry_px).min(rect.max.y)),
             Point::new(rect.max.x, (rect.max.y - cap_ry_px).max(rect.min.y)),
@@ -2551,16 +2572,25 @@ fn contrast(a: Colour, b: Colour) -> f64 {
 
 // ------------------------------------------------------------ boundary
 
+// DECISION (redesign 2026-11-19): kept 8/6 although the design system's
+// `.dg-boundary` dashes 6 4: SRS P2-411 pins the unstyled boundary's
+// "dashed 8/6" (docs/deferred.md D-R6).
 const BOUNDARY_DASH_PX: [i32; 2] = [8, 6];
 // The tag text as `label::boundary_tag` sizes it (label.rs DECISION):
-// 12px bold, from 12px right of the boundary's left edge, baseline 12px
-// above its bottom edge.
+// bold, from `TAG_INSET_PX` right of the boundary's left edge, baseline
+// `TAG_BASELINE_PX` above its bottom edge.
+// redesign 2026-11-19: 11px on a 14px pitch, 10px in, baseline 11px up
+// (design-system `.dgh-boundary-t` 11/14 semibold `dg-ink-2`, its box
+// 10px in and 8px above the bottom edge: baseline at 8 + 14 - 11), was
+// 12px on 15, 12px in, 12px up. CORE-1 says bold; the bundled Inter has
+// no 600, so the tag stays Bold.
 const TAG_FONT: Font = Font {
-    size_px: 12,
-    line_px: 15,
+    size_px: 11,
+    line_px: 14,
     weight: Weight::Bold,
 };
-const TAG_INSET_PX: i32 = 12;
+const TAG_INSET_PX: i32 = 10;
+const TAG_BASELINE_PX: i32 = 11;
 
 /// Boundary `index` of `plan` in px, `None` when it has no member; its
 /// look from `view::Boundary::style` (P2-411), phase 1 where unset.
@@ -2575,7 +2605,7 @@ fn scene_boundary(
     let style = &boundary.style;
     let rect = px_rect(plan.boundary_rect(index, centres)?);
     let tag_rect = px_rect(boundary_tag_with(plan, index, centres, words)?);
-    let baseline = rect.max.y - TAG_INSET_PX;
+    let baseline = rect.max.y - TAG_BASELINE_PX;
     let size_px = boundary_tag_font_px(boundary);
     let font = Font {
         size_px,
@@ -2662,16 +2692,25 @@ const KEY_FONT: Font = Font {
     line_px: SMALL_LINE_PX,
     weight: Weight::Regular,
 };
+// redesign 2026-11-19: spacing of screen-Main (Main.html `.dgh-title`
+// and `.dgh-key`): the title's line 16px below the drawing (was 30), the
+// key's text line 14px below the title's (or subtitle's) line, which is
+// `KEY_GAP_PX` plus the row's half-leading (26 - 14) / 2 (was 16 + 6);
+// 6px from swatch to text (`.dgh-key span` gap, was 8) and 16px between
+// entries (`space-16`, was 24). Sizes stay as CORE-1 pins them: title
+// 18px Bold, subtitle 12px Regular (the design's 15px semibold and 11px
+// are not taken); key text 11px, the integer px nearest the design's
+// 10.5px (`TextBlock::size_px` is whole px).
 /// Space between the drawing and the title (CORE-14: clear of it).
-const TITLE_GAP_PX: i32 = 30;
-const KEY_GAP_PX: i32 = 16;
+const TITLE_GAP_PX: i32 = 16;
+const KEY_GAP_PX: i32 = 8;
 const KEY_ROW_PX: i32 = 26;
 // redesign 2026-11-19: 18x12 swatches (design-system Legend).
 const KEY_BOX_W_PX: i32 = 18;
 const KEY_BOX_H_PX: i32 = 12;
 const KEY_LINE_W_PX: i32 = 30;
-const KEY_TEXT_GAP_PX: i32 = 8;
-const KEY_ENTRY_GAP_PX: i32 = 24;
+const KEY_TEXT_GAP_PX: i32 = 6;
+const KEY_ENTRY_GAP_PX: i32 = 16;
 // DECISION: key rows wrap at the drawing's width, or 480px for a narrow
 // drawing, so the key never widens the scene much past the drawing.
 const KEY_MIN_WIDTH_PX: i32 = 480;

@@ -577,7 +577,7 @@ pub(crate) fn boundary_tag_lines(plan: &ViewPlan, index: usize, words: &Words<'_
 }
 
 /// The name-tag size in px of `boundary`: its style's `fontSize`, else
-/// 12 (P2-411). `scene` draws the tag at it.
+/// 11 (P2-411; redesign 2026-11-19, was 12). `scene` draws the tag at it.
 pub(crate) fn boundary_tag_font_px(boundary: &crate::view::Boundary) -> i32 {
     boundary
         .style
@@ -605,8 +605,11 @@ pub(crate) fn boundary_tag_text(plan: &ViewPlan, index: usize, words: &Words<'_>
 // baseline 12px above the bottom edge (prototype `x0 + 12, y1 - 12`),
 // and 8px of room stay right of the text. The 40px boundary margin
 // keeps every member box clear of it.
-const TAG_FONT_PX: i32 = 12;
-const TAG_TEXT_INSET_PX: i32 = 12;
+// redesign 2026-11-19: the tag is 11px from 10px right of the left edge
+// (design-system `.dg-boundary-t` 11px; screen-Line: `left` 10px in from
+// the boundary), was 12px from 12px in. The band stays 30px tall.
+const TAG_FONT_PX: i32 = 11;
+const TAG_TEXT_INSET_PX: i32 = 10;
 const TAG_PAD_RIGHT_PX: i32 = 8;
 const TAG_HEIGHT_UNITS: i32 = 3;
 
@@ -2089,15 +2092,16 @@ mod tests {
         assert_eq!(tag.min.x, outer.min.x);
         assert_eq!(tag.max.y, outer.max.y);
         assert!(outer.contains(tag.min) && outer.contains(tag.max));
-        let text_px = |s: &str| (text_advance(s, Weight::Bold) * 12 + EM - 1) / EM;
-        assert!(grid_to_px(tag.width()) >= text_px("Shop [Software System]") + 12);
+        // redesign 2026-11-19: the tag is 11px from 10px in (was 12, 12).
+        let text_px = |s: &str| (text_advance(s, Weight::Bold) * 11 + EM - 1) / EM;
+        assert!(grid_to_px(tag.width()) >= text_px("Shop [Software System]") + 10);
         assert!(grid_to_px(tag.height()) >= 12);
         assert!(boundary_tag(&p, 1, &centres).is_none());
         // A component view names the scope `[Container]`: a shorter tag.
         p.kind = ViewKind::Component;
         let short = boundary_tag(&p, 0, &centres).expect("tag");
         assert!(short.width() < tag.width());
-        assert!(grid_to_px(short.width()) >= text_px("Shop [Container]") + 12);
+        assert!(grid_to_px(short.width()) >= text_px("Shop [Container]") + 10);
         // Boxes keep clear of their own boundary's tag (40px margin).
         for (i, b) in p.boxes.iter().enumerate() {
             assert!(!b.rect_at(centres[i]).overlaps(&tag));

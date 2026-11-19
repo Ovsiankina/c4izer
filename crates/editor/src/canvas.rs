@@ -103,6 +103,9 @@ pub enum Primitive {
         centred: bool,
         /// Colour.
         colour: [u8; 3],
+        /// True for the chrome's mono face (Geist Mono, tracked 0.06em),
+        /// which only marks use; diagram text is always Inter.
+        mono: bool,
     },
 }
 
@@ -170,6 +173,7 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                 bold: false,
                 centred: true,
                 colour: grey,
+                mono: false,
             });
         }
     }
@@ -343,6 +347,7 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                 bold: true,
                 centred: true,
                 colour: rgb(scene.background),
+                mono: false,
             });
         }
         for t in shown {
@@ -435,6 +440,12 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
             stroke: Some((colour, width)),
             dash: dashed,
         });
+        if mark.kind == MarkKind::Enterable {
+            let outline = rect.inflate(MARK_GAP_PX);
+            for p in enter_tab(cam.to_screen(Point::new(outline.max.x, outline.min.y)), mk) {
+                push(source, p);
+            }
+        }
         if mark.kind == MarkKind::SelectedWithHandles && !list.read_only {
             // P2-735: a handle over a line end is drawn outside the edge.
             let ends = crate::state::line_ends(scene, cam);
@@ -590,6 +601,8 @@ const MARK_GAP_PX: i32 = 3;
 // DECISION: a constant of the bundled face rather than a font query, so
 // `paint` needs no font lookup per text line.
 const ASCENT_EM: f32 = 0.969;
+/// The tracking of a mark's mono label, em (Marks `.mk-enter-t`).
+const MONO_TRACKING_EM: f32 = 0.06;
 
 /// `i32` px to `f32`.
 #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
@@ -1191,6 +1204,49 @@ fn square(centre: ScreenPoint, half: f32, mk: MarkColours) -> Primitive {
     }
 }
 
+/// The text of the enter tab (design-system Marks: "a tab that names the
+/// gesture"; a box's views are entered from its context menu,
+/// editor-ux-02).
+const ENTER_TAB_TEXT: &str = "RIGHT-CLICK TO ENTER";
+/// The enter tab's size, screen px (Marks preview `.mk-enter-tab`).
+const ENTER_TAB_W: f32 = 122.0;
+const ENTER_TAB_H: f32 = 15.0;
+/// The tab text's size and its baseline below the tab's top, screen px
+/// (Marks preview `.mk-enter-t`: 9px mono, baseline 10.5px down).
+const ENTER_TAB_FONT: f32 = 9.0;
+const ENTER_TAB_BASELINE: f32 = 10.5;
+
+/// The tab over an enterable box's dashed hover outline (design-system
+/// Marks, "Hover · has views to enter"): a `mark` block standing on the
+/// outline's top edge, flush with its right end at `top_right`, naming
+/// the gesture in `mark-handle`. A mark: drawn on hover only, never
+/// exported.
+// DECISION: in screen px like the other marks' widths and handles, so the
+// tab reads the same at any zoom; it may stick out left of a box narrower
+// than the tab, as the design's right-aligned tab would.
+fn enter_tab(top_right: ScreenPoint, mk: MarkColours) -> [Primitive; 2] {
+    let (x1, y1) = (top_right.x, top_right.y);
+    let (x0, y0) = (x1 - ENTER_TAB_W, y1 - ENTER_TAB_H);
+    let p = |x: f32, y: f32| ScreenPoint { x, y };
+    [
+        Primitive::Polygon {
+            points: vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)],
+            fill: Some(mk.mark),
+            stroke: None,
+            dash: None,
+        },
+        Primitive::Text {
+            at: p(x0 + ENTER_TAB_W / 2.0, y0 + ENTER_TAB_BASELINE),
+            text: ENTER_TAB_TEXT.to_owned(),
+            size: ENTER_TAB_FONT,
+            bold: false,
+            centred: true,
+            colour: mk.handle,
+            mono: true,
+        },
+    ]
+}
+
 /// An outlined rectangle between two screen corners.
 fn screen_rect(a: ScreenPoint, b: ScreenPoint, colour: [u8; 3], width: f32, dash: Option<[f32; 2]>) -> Primitive {
     let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
@@ -1222,6 +1278,7 @@ pub fn text_items(block: &TextBlock, camera: &Camera) -> Vec<Primitive> {
             bold,
             centred,
             colour: rgb(block.colour),
+            mono: false,
         })
         .collect()
 }
@@ -1350,8 +1407,30 @@ fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive, opaci
             bold,
             centred,
             colour: c,
+            mono,
         } => {
             if *size < 1.0 {
+                return;
+            }
+            if *mono {
+                // A mark's label: Geist Mono, tracked 0.06em (Marks
+                // `.mk-enter-t`); its baseline on the anchor.
+                let format = eframe::egui::TextFormat {
+                    font_id: FontId::new(*size, FontFamily::Monospace),
+                    color: colour(*c),
+                    extra_letter_spacing: MONO_TRACKING_EM * size,
+                    ..Default::default()
+                };
+                let galley = painter.layout_job(eframe::egui::text::LayoutJob::single_section(text.clone(), format));
+                let ascent = galley
+                    .rows
+                    .first()
+                    .and_then(|r| r.row.glyphs.first())
+                    .map_or(ASCENT_EM * size, |g| g.pos.y);
+                let top = Pos2::new(origin.x + anchor.x, origin.y + anchor.y - ascent);
+                let align = if *centred { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
+                let min = align.anchor_size(top, galley.size()).min;
+                painter.galley(min, galley, colour(*c));
                 return;
             }
             // Diagram text is always Inter, never the chrome's
@@ -1761,6 +1840,50 @@ mod tests {
         }
     }
 
+    /// redesign 2026-11-19 (design-system Marks, "Hover · has views to
+    /// enter"): an enterable box's hover mark is the dashed `mark`
+    /// outline plus a 122x15 `mark` tab standing on the outline's top
+    /// edge, flush right, naming the gesture in mono `mark-handle` text;
+    /// a plain hover has no tab. Only marks carry it (never exported).
+    #[test]
+    fn enterable_hover_draws_the_gesture_tab() {
+        let s = scene("context");
+        let item = ItemKey::Box(BoxId(0));
+        let tab = |kind: MarkKind| {
+            let mut l = list(&s);
+            l.marks.push(Mark { item, kind });
+            paint_items(&l)
+                .into_iter()
+                .filter(|i| i.source == Source::Mark(item, kind))
+                .map(|i| i.primitive)
+                .collect::<Vec<_>>()
+        };
+        let enter = tab(MarkKind::Enterable);
+        let outline = s.item_bounds(item).expect("box").inflate(super::MARK_GAP_PX);
+        let cam = Camera::default();
+        let top_right = cam.to_screen(c4rizer_core::geom::Point::new(outline.max.x, outline.min.y));
+        let mk = super::mark_colours(s.mode);
+        let block = enter
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Polygon { points, fill: Some(f), stroke: None, .. } if *f == mk.mark => Some(points.clone()),
+                _ => None,
+            })
+            .expect("tab block");
+        let (xs, ys): (Vec<f32>, Vec<f32>) = block.iter().map(|q| (q.x, q.y)).unzip();
+        let max = |v: &[f32]| v.iter().copied().fold(f32::MIN, f32::max);
+        let min = |v: &[f32]| v.iter().copied().fold(f32::MAX, f32::min);
+        assert_eq!((max(&xs), max(&ys)), (top_right.x, top_right.y));
+        assert_eq!((max(&xs) - min(&xs), max(&ys) - min(&ys)), (122.0, 15.0));
+        assert!(enter.iter().any(|p| matches!(p,
+            Primitive::Text { text, mono: true, centred: true, colour, .. }
+                if text == "RIGHT-CLICK TO ENTER" && *colour == mk.handle)));
+        assert!(enter.iter().any(|p| matches!(p, Primitive::Polygon { dash: Some(_), .. })));
+        let hover = tab(MarkKind::Hover);
+        assert!(!hover.iter().any(|p| matches!(p, Primitive::Text { .. })));
+        assert!(!hover.iter().any(|p| matches!(p, Primitive::Polygon { fill: Some(_), .. })));
+    }
+
     /// Paint-order rank of a source (scene.rs header), marks after.
     fn rank(source: Source) -> u8 {
         match source {
@@ -2135,6 +2258,7 @@ mod tests {
                     bold: false,
                     centred: false,
                     colour: [0, 0, 0],
+                    mono: false,
                 },
             };
             super::paint(&painter, std::slice::from_ref(&item));
