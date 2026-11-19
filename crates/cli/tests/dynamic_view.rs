@@ -78,8 +78,11 @@ fn p3_3_cli_renders_dynamic_view() {
     assert!(text.contains("== flow: Checkout flow"), "{text}");
     assert!(!text.contains("not yet supported"), "{text}");
     let svg = fs::read_to_string(dir.path().join("out/flow.svg")).expect("flow.svg written");
-    for label in ["1: Submits the order", "2: Saves the order", "3: Confirms the save"] {
-        assert!(svg.contains(label), "{label} missing");
+    // Design-system Edge "Step": each number is drawn in its own disc
+    // before the label text (the scene text stays `<n>: <text>`, P3-211).
+    for (number, label) in [("1", "Submits the order"), ("2", "Saves the order"), ("3", "Confirms the save")] {
+        assert!(svg.contains(&format!("text-anchor=\"middle\">{number}</text>")), "step {number} missing");
+        assert!(svg.contains(&format!(">{label}</text>")), "{label} missing");
     }
     // The request/response pair is not L14 on a dynamic view (P3-216).
     assert!(!text.contains("two-way"), "{text}");

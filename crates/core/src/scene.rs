@@ -85,7 +85,7 @@
 
 use crate::geom::{Contact, Dir, GRID_PX, Point, Rect, Segment, crossings};
 use crate::label::{
-    EM, Fit, LABEL_PAD_Y_PX, Label, Labels, Weight, Words, boundary_tag_font_px,
+    EM, Fit, LABEL_PAD_X_PX, LABEL_PAD_Y_PX, Label, Labels, Weight, Words, boundary_tag_font_px,
     boundary_tag_text, boundary_tag_with, text_advance,
 };
 use crate::model::{
@@ -1359,6 +1359,48 @@ pub(crate) fn label_tech_colour(text: Colour, mode: Mode) -> Colour {
     if text == pal.ink { pal.ink_2 } else { text }
 }
 
+/// The step badge of a dynamic-view label (design-system Edge, "Step"):
+/// a filled `dg-line` disc of this radius at the left of the text.
+pub(crate) const STEP_DISC_RADIUS_PX: i32 = 8;
+/// Between the step disc and the text column.
+pub(crate) const STEP_DISC_GAP_PX: i32 = 4;
+/// The number inside the disc, bold, in the paper colour.
+pub(crate) const STEP_NUMBER_FONT_PX: i32 = 10;
+/// From a step label's first baseline up to the disc's centre.
+pub(crate) const STEP_DISC_RISE_PX: i32 = 3;
+/// From the disc's centre down to the number's baseline.
+pub(crate) const STEP_NUMBER_DROP_PX: i32 = 4;
+
+/// A dynamic-view label's first line split into its step number and the
+/// rest of the line: `"2: Reads"` gives `("2", "Reads")`, `"2:"` gives
+/// `("2", "")`. `None` when the line does not start with `<number>:`.
+// DECISION: the renderers know a label is a step label from
+// `Scene::kind == ViewKind::Dynamic` plus this split: in a dynamic view
+// every plan edge is a step (`view::dynamic_plan`), its description is
+// `<order>: <text>` (P3-211), the order is one DSL word (no whitespace),
+// and label wrapping never breaks a word, so the first line always starts
+// with the whole `<order>:`. No pub field is needed, the scene text stays
+// as P3-211 pins it, and the editor's canvas repeats this rule.
+pub(crate) fn step_number(line: &str) -> Option<(&str, &str)> {
+    let (head, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let number = head.strip_suffix(':')?;
+    (!number.is_empty()).then_some((number, rest))
+}
+
+/// The width in px of a step label drawn as disc, gap and text column
+/// (the first line without its `<number>: `, then the other lines), or
+/// `None` when `lines` is no step label.
+pub(crate) fn step_label_width(lines: &[String], size_px: i32) -> Option<i32> {
+    let (_, rest) = step_number(lines.first()?)?;
+    let column = std::iter::once(rest)
+        .chain(lines[1..].iter().map(String::as_str))
+        .map(|l| text_px(l, size_px, Weight::Regular))
+        .max()
+        .unwrap_or(0);
+    let disc = 2 * STEP_DISC_RADIUS_PX;
+    Some(if column > 0 { disc + STEP_DISC_GAP_PX + column } else { disc })
+}
+
 /// Margin of `Scene::bounds` around everything drawn.
 const MARGIN_PX: i32 = 40;
 const PAD_PX: i32 = 10;
@@ -2419,19 +2461,47 @@ fn scene_label(
             crossings: c.crossings.clone(),
         }
     });
+    let mut rect = rect;
+    let mut text = text_block(
+        label.lines.clone(),
+        font,
+        colour,
+        middle(centre.x, rect.min.y + LABEL_PAD_Y_PX),
+        &rect,
+    );
+    // Design-system Edge "Step": a dynamic view's label draws its number
+    // in a disc before the text. The lines keep `<number>: ` (P3-211);
+    // the bounds become the disc, gap and text column the renderers draw,
+    // centred where the text was.
+    // `label::label_size` already measured the label this way, so the
+    // rectangle holds it.
+    // DECISION: should the drawn width still exceed the text area (never
+    // expected), the rectangle grows by the difference, split evenly, so
+    // the text fits it (no L25) and the hit test covers the disc.
+    if plan.kind == ViewKind::Dynamic
+        && let Some(width) = step_label_width(&text.lines, font.size_px)
+    {
+        let left = text.at.x - width / 2;
+        text.bounds = Rect::from_corners(
+            Point::new(left, text.bounds.min.y),
+            Point::new(left + width, text.bounds.max.y),
+        );
+        let grow = width + 2 * LABEL_PAD_X_PX - rect.width();
+        if grow > 0 {
+            rect = Rect::from_corners(
+                Point::new(rect.min.x - grow / 2, rect.min.y),
+                Point::new(rect.max.x + grow - grow / 2, rect.max.y),
+            );
+        }
+        text.fits = rect.contains(text.bounds.min) && rect.contains(text.bounds.max);
+    }
     SceneLabel {
         edge: label.edge,
         relationship: edge.winner(),
         rect,
         // P4-302: a callout has no backing.
         fill: if callout.is_some() { None } else { Some(backing) },
-        text: text_block(
-            label.lines.clone(),
-            font,
-            colour,
-            middle(centre.x, rect.min.y + LABEL_PAD_Y_PX),
-            &rect,
-        ),
+        text,
         fit: label.fit.clone(),
         opacity: edge.style.opacity.min(100),
         callout,

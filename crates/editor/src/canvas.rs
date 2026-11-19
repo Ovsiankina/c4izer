@@ -19,7 +19,7 @@
 
 use c4rizer_core::geom::{Point, Rect};
 use c4rizer_core::label::Weight;
-use c4rizer_core::model::{Asset, Colour, Mode};
+use c4rizer_core::model::{Asset, Colour, Mode, ViewKind};
 use c4rizer_core::scene::{
     Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Stroke, Swatch, TextBlock, Tip, WindowKind,
 };
@@ -266,6 +266,14 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         let lines = &l.text.lines;
         let tech = lines.last().is_some_and(|t| t.starts_with('[') && t.ends_with(']'));
         let tech_colour = label_tech_colour(rgb(l.text.colour), scene.mode);
+        // Design-system Edge "Step", as the SVG draws it (core export's
+        // `step_disc`, `step_layout`): in a dynamic view a label's first
+        // line `<number>: <text>` draws the number in a disc in its line's
+        // colour, and every line is centred in the column right of it.
+        let step = (scene.kind == ViewKind::Dynamic)
+            .then(|| lines.first().and_then(|first| step_number(first)))
+            .flatten();
+        let column = step.map(|_| step_layout(&l.text));
         let shown: Vec<Primitive> = text_items(&l.text, cam)
             .into_iter()
             .enumerate()
@@ -274,6 +282,14 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                 !((is_tech && list.hide_metadata) || (!is_tech && list.hide_descriptions))
             })
             .map(|(i, mut t)| {
+                if let (Some((_, column_x)), Primitive::Text { at, text, .. }) = (column, &mut t) {
+                    *at = cam.to_screen(Point::new(column_x, l.text.at.y + i32::try_from(i).unwrap_or(0) * l.text.line_px));
+                    if i == 0
+                        && let Some((_, rest)) = step
+                    {
+                        rest.clone_into(text);
+                    }
+                }
                 // redesign 2026-11-19: the technology line in `dg-ink-2`,
                 // as the SVG (one line labels have no technology line).
                 if tech
@@ -311,6 +327,21 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                 });
             }
             push(source, tip(&Tip::Dot { at: c.dot, radius_px: c.dot_radius_px }, colour, cam));
+        }
+        // The disc belongs to the description line: hidden with it.
+        if let (Some((number, _)), Some((centre, _))) = (step, column)
+            && !list.hide_descriptions
+        {
+            let colour = scene.lines.iter().find(|line| line.edge == l.edge).map_or(rgb(l.text.colour), |line| rgb(line.stroke.colour));
+            push(source, tip(&Tip::Dot { at: centre, radius_px: STEP_DISC_RADIUS_PX }, colour, cam));
+            push(source, Primitive::Text {
+                at: cam.to_screen(Point::new(centre.x, centre.y + STEP_NUMBER_DROP_PX)),
+                text: number.to_owned(),
+                size: px(STEP_NUMBER_FONT_PX) * cam.zoom,
+                bold: true,
+                centred: true,
+                colour: rgb(scene.background),
+            });
         }
         for t in shown {
             push(source, t);
@@ -1022,6 +1053,35 @@ fn label_plate(text: &TextBlock) -> Rect {
         Point::new(b.min.x - PLATE_PAD_X_PX, b.min.y - PLATE_PAD_Y_PX),
         Point::new(b.max.x + PLATE_PAD_X_PX, b.max.y + PLATE_PAD_Y_PX),
     )
+}
+
+/// The step badge (core `scene::STEP_*`): disc radius, gap to the text
+/// column, number size, disc centre over the first baseline, number
+/// baseline under the disc centre.
+const STEP_DISC_RADIUS_PX: i32 = 8;
+const STEP_DISC_GAP_PX: i32 = 4;
+const STEP_NUMBER_FONT_PX: i32 = 10;
+const STEP_DISC_RISE_PX: i32 = 3;
+const STEP_NUMBER_DROP_PX: i32 = 4;
+
+/// A dynamic-view label's first line as step number and rest (core
+/// `scene::step_number`): `None` unless it starts with `<number>:`.
+// DECISION: the same rule as core, repeated because core keeps it
+// crate-private (no new pub item): in a dynamic view every label's first
+// line starts with its step's whole `<order>:` (P3-211).
+fn step_number(line: &str) -> Option<(&str, &str)> {
+    let (head, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let number = head.strip_suffix(':')?;
+    (!number.is_empty()).then_some((number, rest))
+}
+
+/// A step label's disc centre and the x its lines are centred on, scene
+/// px (core export's `step_layout`).
+fn step_layout(text: &TextBlock) -> (Point, i32) {
+    let b = text.bounds;
+    let centre = Point::new(b.min.x + STEP_DISC_RADIUS_PX, text.at.y - STEP_DISC_RISE_PX);
+    let column = b.min.x + 2 * STEP_DISC_RADIUS_PX + STEP_DISC_GAP_PX;
+    (centre, (column + b.max.x).div_euclid(2))
 }
 
 /// A label's technology colour: `dg-ink-2` under default `dg-ink` text,

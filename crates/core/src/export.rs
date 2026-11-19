@@ -225,7 +225,7 @@ pub fn svg(scene: &Scene) -> String {
         w.close();
     }
     for label in &scene.labels {
-        w.label(label);
+        w.label(label, step_disc(scene, label));
     }
     for (class, text) in [("title", &scene.title), ("subtitle", &scene.subtitle)] {
         if let Some(text) = text {
@@ -327,6 +327,8 @@ fn faces_used(scene: &Scene) -> (bool, bool) {
             regular = true;
         }
     }
+    // A step disc's number is bold.
+    bold |= scene.labels.iter().any(|l| step_disc(scene, l).is_some());
     (regular, bold)
 }
 
@@ -639,8 +641,8 @@ impl Writer {
         self.raw("/>");
     }
 
-    /// One label group: backing, callout marks (P4-316), text.
-    fn label(&mut self, label: &crate::scene::SceneLabel) {
+    /// One label group: backing, callout marks (P4-316), step disc, text.
+    fn label(&mut self, label: &crate::scene::SceneLabel, disc: Option<Colour>) {
         self.open_with("label", label.opacity);
         if let Some(fill) = label.fill {
             // redesign 2026-11-19: a plate 6x4px around the text, 3px
@@ -652,7 +654,28 @@ impl Writer {
             self.callout(c);
         }
         let tech = crate::scene::label_tech_colour(label.text.colour, self.mode);
-        self.text_tech(&label.text, Some(tech));
+        let text = &label.text;
+        let step = disc.zip(text.lines.first().and_then(|l| crate::scene::step_number(l)));
+        if let Some((colour, (number, rest))) = step {
+            // Design-system Edge "Step": the number in a filled disc at the
+            // left of the text bounds, the lines centred in the column
+            // right of it (`scene_label` sized the bounds for this).
+            let (centre, column_x) = step_layout(text);
+            self.circle(centre, crate::scene::STEP_DISC_RADIUS_PX, colour, None);
+            self.raw("<text");
+            self.attr_num("x", centre.x);
+            self.attr_num("y", centre.y + crate::scene::STEP_NUMBER_DROP_PX);
+            let _ = write!(self.out, " font-family=\"{FONT_FAMILY}, sans-serif\"");
+            self.attr_num("font-size", crate::scene::STEP_NUMBER_FONT_PX);
+            self.raw(" font-weight=\"bold\"");
+            self.attr_colour("fill", self.paper);
+            self.raw(" text-anchor=\"middle\">");
+            escape_into(&mut self.out, number);
+            self.raw("</text>");
+            self.text_lines(text, column_x, Some(rest), Some(tech));
+        } else {
+            self.text_tech(text, Some(tech));
+        }
         self.close();
     }
 
@@ -859,6 +882,13 @@ impl Writer {
     /// `text`, the last line in `tech` when given and bracketed (a
     /// label's technology, redesign 2026-11-19).
     fn text_tech(&mut self, block: &TextBlock, tech: Option<Colour>) {
+        self.text_lines(block, block.at.x, None, tech);
+    }
+
+    /// `text_tech` with every line on `x`, and the first line replaced by
+    /// `first` when given (a step label's text after its number; not
+    /// drawn when empty).
+    fn text_lines(&mut self, block: &TextBlock, x: i32, first: Option<&str>, tech: Option<Colour>) {
         let anchor = match block.align {
             Align::Start => "start",
             Align::Middle => "middle",
@@ -866,12 +896,20 @@ impl Writer {
         let mut y = block.at.y;
         let last = block.lines.len().saturating_sub(1);
         for (i, line) in block.lines.iter().enumerate() {
+            let line = match first {
+                Some(f) if i == 0 => f,
+                _ => line.as_str(),
+            };
+            if i == 0 && first.is_some_and(str::is_empty) {
+                y += block.line_px;
+                continue;
+            }
             let colour = match tech {
                 Some(t) if i == last && i > 0 && line.starts_with('[') && line.ends_with(']') => t,
                 _ => block.colour,
             };
             self.raw("<text");
-            self.attr_num("x", block.at.x);
+            self.attr_num("x", x);
             self.attr_num("y", y);
             let _ = write!(self.out, " font-family=\"{FONT_FAMILY}, sans-serif\"");
             self.attr_num("font-size", block.size_px);
@@ -1005,6 +1043,37 @@ fn unit(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len = dx.hypot(dy);
     if len < 1e-9 { (0.0, 0.0) } else { (dx / len, dy / len) }
+}
+
+/// The step disc's colour for `label`, `None` outside a dynamic view or
+/// for a label whose first line is no `<number>:` (`scene::step_number`).
+// DECISION: the disc takes its line's stroke colour: `dg-line` for an
+// unstyled line, as the design's Edge "Step" asks, and a styled line's
+// own colour so the badge reads with its line; the canvas does the same.
+fn step_disc(scene: &Scene, label: &crate::scene::SceneLabel) -> Option<Colour> {
+    if scene.kind != crate::model::ViewKind::Dynamic {
+        return None;
+    }
+    crate::scene::step_number(label.text.lines.first()?)?;
+    Some(
+        scene
+            .lines
+            .iter()
+            .find(|l| l.edge == label.edge)
+            .map_or(label.text.colour, |l| l.stroke.colour),
+    )
+}
+
+/// A step label's disc centre and the x its lines are centred on: the
+/// disc at the left of the text bounds, its centre `STEP_DISC_RISE_PX`
+/// over the first baseline; the lines in the middle of the bounds right
+/// of the disc and its gap. The canvas computes the same.
+fn step_layout(text: &TextBlock) -> (Point, i32) {
+    use crate::scene::{STEP_DISC_GAP_PX, STEP_DISC_RADIUS_PX, STEP_DISC_RISE_PX};
+    let b = text.bounds;
+    let centre = Point::new(b.min.x + STEP_DISC_RADIUS_PX, text.at.y - STEP_DISC_RISE_PX);
+    let column = b.min.x + 2 * STEP_DISC_RADIUS_PX + STEP_DISC_GAP_PX;
+    (centre, (column + b.max.x).div_euclid(2))
 }
 
 /// The plate behind a label's text: its bounds plus the padding.
