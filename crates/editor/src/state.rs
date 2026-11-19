@@ -3650,10 +3650,7 @@ impl State {
                 self.start_drag(from, at, mods, hit, handle)
             }
             Gesture::Dragging { from, boxes, to } => self.drag_to(from, &boxes, &to, at),
-            Gesture::Resizing { id, handle, from, size } => {
-                self.resize_to(id, handle, from, size, at);
-                Vec::new()
-            }
+            Gesture::Resizing { id, handle, from, size } => self.resize_to(id, handle, from, size, at),
             Gesture::RubberBand { from, add, .. } => {
                 self.gesture = Gesture::RubberBand { from, to: at, add };
                 Vec::new()
@@ -3704,8 +3701,7 @@ impl State {
             let size = (b.rect.width(), b.rect.height());
             self.text_edit = None;
             self.gesture = Gesture::Resizing { id, handle, from, size };
-            self.resize_to(id, handle, from, size, at);
-            return Vec::new();
+            return self.resize_to(id, handle, from, size, at);
         }
         match hit {
             Some(ItemKey::Box(id)) if !read_only => {
@@ -3828,12 +3824,13 @@ impl State {
     }
 
     /// The resized box's size for the pointer at `at` (EDIT-18): 20px
-    /// steps about the centre, never where the texts stop fitting.
+    /// steps about the centre, never where the texts stop fitting; a new
+    /// size asks the worker for a live preview (EDIT-18, EDIT-25).
     #[expect(clippy::too_many_arguments, reason = "the fields of `Gesture::Resizing` plus the pointer")]
-    fn resize_to(&mut self, id: BoxId, handle: Handle, from: ScreenPoint, size: (i32, i32), at: ScreenPoint) {
-        let Some((_, build)) = &self.shown else { return };
+    fn resize_to(&mut self, id: BoxId, handle: Handle, from: ScreenPoint, size: (i32, i32), at: ScreenPoint) -> Vec<Effect> {
+        let Some((_, build)) = &self.shown else { return Vec::new() };
         let (Some(b), Some(plan_box)) = (build.scene.boxes.get(id.0 as usize), build.plan.boxes.get(id.0 as usize)) else {
-            return;
+            return Vec::new();
         };
         let start = (b.rect.width(), b.rect.height());
         let (dx, dy) = ((at.x - from.x) / self.camera.zoom, (at.y - from.y) / self.camera.zoom);
@@ -3876,6 +3873,52 @@ impl State {
             from,
             size: next,
         };
+        if next == start {
+            self.dragged = None;
+            self.preview = None;
+            self.awaited_drag = None;
+            return Vec::new();
+        }
+        if next == size && self.awaited_drag.is_some() {
+            return Vec::new();
+        }
+        self.resize_preview(id, next)
+    }
+
+    /// Asks the worker for the scene with box `id` at `size` px (EDIT-18):
+    /// the move preview's job (`Job::Drag`, `rebuild_after_move` with
+    /// `PREVIEW_ROUTE`), so the box's texts are fitted by the scene stage
+    /// exactly as the build after release fits them, and only the lines
+    /// the new size touches are re-routed (EDIT-25, CORE-24).
+    fn resize_preview(&mut self, id: BoxId, size: (i32, i32)) -> Vec<Effect> {
+        let Some((parsed, shown)) = self.shown.clone() else {
+            return Vec::new();
+        };
+        let i = id.0 as usize;
+        let (Some(&centre), true) = (shown.routes.centres.get(i), i < shown.plan.boxes.len()) else {
+            return Vec::new();
+        };
+        let mut previous = (*shown).clone();
+        // Half sizes as `view::plan` reads the `size` line release writes
+        // (multiples of 20px, so whole grid units).
+        previous.plan.boxes[i].half_width = size.0 / 2 / GRID_PX;
+        previous.plan.boxes[i].half_height = size.1 / 2 / GRID_PX;
+        // DECISION: the resized box is handed to `rebuild_after_move` as
+        // moved from one grid unit off to its own centre, so the move
+        // preview's rule re-routes its lines and any line its new rect
+        // now crosses, with no new job kind or core function (pub API);
+        // the routes it returns carry the true centre.
+        previous.routes.centres[i] = Point::new(centre.x + 1, centre.y);
+        let generation = self.next_generation();
+        self.awaited_drag = Some(generation);
+        vec![Effect::Work(Request {
+            generation,
+            job: Job::Drag {
+                parsed,
+                previous: Arc::new(previous),
+                moved: BTreeMap::from([(id, centre)]),
+            },
+        })]
     }
 
     fn pointer_up(&mut self, at: ScreenPoint, button: Button) -> Vec<Effect> {
@@ -3920,23 +3963,39 @@ impl State {
                 self.write_moves(&to, Some(&boxes))
             }
             Gesture::Resizing { id, size, .. } => {
-                let (Some(view), Some(scene), Some(model)) = (self.view.clone(), self.scene(), self.model()) else {
+                self.dragged = None;
+                self.awaited_drag = None;
+                // The size before the drag is the shown build's; the
+                // preview already has the new one.
+                let (Some(view), Some((_, shown)), Some(model)) = (self.view.clone(), self.shown.as_ref(), self.model()) else {
+                    self.preview = None;
                     return Vec::new();
                 };
-                let Some(b) = scene.boxes.get(id.0 as usize) else { return Vec::new() };
+                let Some(b) = shown.scene.boxes.get(id.0 as usize) else {
+                    self.preview = None;
+                    return Vec::new();
+                };
+                let Some(element) = model.element(b.element).key.as_ref().map(|k| k.value.clone()) else {
+                    self.preview = None;
+                    return Vec::new();
+                };
                 if (b.rect.width(), b.rect.height()) == size {
+                    self.preview = None;
                     return Vec::new();
                 }
-                let Some(element) = model.element(b.element).key.as_ref().map(|k| k.value.clone()) else {
-                    return Vec::new();
-                };
                 let layout = self.layout();
-                self.write(Action::Resize {
+                // The preview stays until the saved file's build arrives
+                // (as for a move), so release shows no jump.
+                let effects = self.write(Action::Resize {
                     view,
                     element,
                     size,
                     layout,
-                })
+                });
+                if self.pending.is_none() {
+                    self.preview = None;
+                }
+                effects
             }
             Gesture::RubberBand { from, to, add } => {
                 self.band_select(from, to, add);
@@ -4022,6 +4081,12 @@ impl State {
                 }
                 _ => Vec::new(),
             };
+        }
+        // EDIT-18: Escape during a resize drops it; the box is drawn at
+        // the size it had, and nothing is written.
+        if key == Key::Escape && matches!(self.gesture, Gesture::Resizing { .. }) {
+            self.cancel_gesture();
+            return Vec::new();
         }
         // P2-712 (1): an open quick-navigation list takes every key.
         if let Some(Overlay::QuickNavigation { .. }) = self.overlay {
@@ -5332,7 +5397,10 @@ impl State {
                 if let Gesture::Dragging { to, .. } = self.gesture.clone() {
                     self.dragged = Some(build);
                     self.refresh_preview(&to);
-                } else if matches!(self.gesture, Gesture::DraggingVertex { .. } | Gesture::DraggingEnd { .. }) {
+                } else if matches!(
+                    self.gesture,
+                    Gesture::DraggingVertex { .. } | Gesture::DraggingEnd { .. } | Gesture::Resizing { .. }
+                ) {
                     self.preview = Some(build.scene.clone());
                     self.dragged = Some(build);
                 }
@@ -6923,7 +6991,9 @@ mod tests {
             (f32::midpoint(low.x, high.x) - mid.x).abs() <= 1.0 && (f32::midpoint(low.y, high.y) - mid.y).abs() <= 1.0,
             "about the centre"
         );
-        assert_eq!(h.scene().boxes[id.0 as usize].rect, start, "the box keeps its size until release");
+        let live = h.scene().boxes[id.0 as usize].rect;
+        assert_eq!((live.width(), live.height()), size, "the box is drawn at its new size while dragged");
+        assert_eq!(live.centre(), start.centre());
         h.up(pt(corner.x + 43.0, corner.y + 27.0), Button::Left);
 
         let (added, removed) = line_diff(&before, &h.text());
@@ -6951,6 +7021,107 @@ mod tests {
             "the box shrinks down to the floor: {small:?} from {r:?}, floor {floor:?}"
         );
         assert_ne!(small, (20, 20));
+    }
+
+    /// Presses the bottom-right handle of the selected `key` and drags it
+    /// by `(dx, dy)` in four steps, without releasing; the current
+    /// resize size.
+    fn resize_drag(h: &mut H, key: &str, dx: f32, dy: f32) -> (ScreenPoint, (i32, i32)) {
+        let corner = h.s.camera.to_screen(h.rect(key).max);
+        h.press(corner, Button::Left, NONE);
+        for i in 1..=4_u8 {
+            let f = f32::from(i) / 4.0;
+            h.move_to(pt(corner.x + dx * f, corner.y + dy * f));
+        }
+        match &h.s.gesture {
+            Gesture::Resizing { size, .. } => (pt(corner.x + dx, corner.y + dy), *size),
+            g => panic!("not resizing: {g:?}"),
+        }
+    }
+
+    /// EDIT-18 (live-resize): while a handle is dragged the scene on
+    /// screen has the box at the new size, its texts fitted as the build
+    /// after release fits them, and its lines end on the new outline;
+    /// nothing is written before release.
+    #[test]
+    fn edit_18_live_resize_preview_has_new_size_no_write() {
+        let mut h = H::with_file(&shop_at());
+        h.click("shop", Button::Left, CTRL);
+        let id = h.box_id("shop");
+        let start = h.rect("shop");
+        let (_, size) = resize_drag(&mut h, "shop", 63.0, 47.0);
+        assert!(size.0 > start.width() && size.1 > start.height(), "{size:?}");
+        assert!(h.writes.is_empty(), "no write before release");
+        let scene = h.scene().clone();
+        let live = scene.boxes[id.0 as usize].rect;
+        assert_eq!((live.width(), live.height()), size);
+        assert_eq!(live.centre(), start.centre());
+        assert!(h.s.preview.is_some(), "the move preview's mechanism shows it");
+        let ends: Vec<Point> = scene
+            .lines
+            .iter()
+            .filter_map(|l| {
+                if l.source == id {
+                    l.points.first().copied()
+                } else if l.destination == id {
+                    l.points.last().copied()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(!ends.is_empty(), "shop has lines");
+        for e in ends {
+            let outside = live.inflate(GRID_PX);
+            let inside = live.inflate(-GRID_PX);
+            assert!(
+                outside.contains(e) && !inside.contains(e),
+                "line end {e:?} follows the new outline {live:?}"
+            );
+        }
+    }
+
+    /// EDIT-18 (live-resize): Escape during a resize drag restores the
+    /// old size and writes nothing, also on the release after it.
+    #[test]
+    fn edit_18_live_resize_escape_restores() {
+        let mut h = H::with_file(&shop_at());
+        h.click("shop", Button::Left, CTRL);
+        let start = h.rect("shop");
+        let before = h.text();
+        let (end, _) = resize_drag(&mut h, "shop", 63.0, 47.0);
+        assert_ne!(h.rect("shop"), start);
+        h.key(Key::Escape, NONE);
+        assert!(matches!(h.s.gesture, Gesture::Idle));
+        assert_eq!(h.rect("shop"), start, "Escape restores the old size");
+        h.move_to(pt(end.x + 40.0, end.y + 40.0));
+        h.up(pt(end.x + 40.0, end.y + 40.0), Button::Left);
+        assert!(h.writes.is_empty(), "nothing written");
+        assert_eq!(h.text(), before);
+        assert_eq!(h.rect("shop"), start);
+    }
+
+    /// EDIT-18 (live-resize): release writes once, one undo step, and the
+    /// box after the saved file's build equals the last preview (no jump):
+    /// same rect, same fitted texts.
+    #[test]
+    fn edit_18_live_resize_release_equals_last_preview() {
+        let mut h = H::with_file(&shop_at());
+        h.click("shop", Button::Left, CTRL);
+        let id = h.box_id("shop");
+        let undo = h.s.history.undo.len();
+        let (end, size) = resize_drag(&mut h, "shop", 63.0, 47.0);
+        let previewed = h.scene().boxes[id.0 as usize].clone();
+        h.hold_writes = true;
+        h.up(end, Button::Left);
+        assert_eq!(h.writes.len(), 1, "one write, on release");
+        assert_eq!(h.scene().boxes[id.0 as usize], previewed, "the preview stays until the build lands");
+        h.release_writes();
+        assert!(h.s.preview.is_none(), "the saved file's build replaced the preview");
+        let built = h.scene().boxes[id.0 as usize].clone();
+        assert_eq!((built.rect.width(), built.rect.height()), size);
+        assert_eq!(built, previewed, "release result equals the last preview");
+        assert_eq!(h.s.history.undo.len(), undo + 1, "one undo step");
     }
 
     /// EDIT-19 (plan editor-05): 100 writes undo and redo in order through

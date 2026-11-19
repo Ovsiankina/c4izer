@@ -878,7 +878,12 @@ Editing
 - **EDIT-18** A box can be resized on the grid by its handles, never
   below the size that fits its wrapped text (CORE-30); a resize
   rewrites or adds only that box's `size` line (DSL-7), except on the
-  first write in a view (EDIT-26).
+  first write in a view (EDIT-26). While a handle is dragged the box is
+  drawn at its new size, texts fitted and attached lines following, as
+  the drag preview of a move (EDIT-25); the file is written once, on
+  release, as one undo step, and the box then equals the last preview;
+  Escape during the drag restores the old size and writes nothing.
+  *(Amended by live-resize.)*
 - **EDIT-19** Undo and redo cover every change the app wrote to the
   file (moves, resizes, text, styles), at least 100 steps, for the
   session; steps are semantic operations with their previous value, not
