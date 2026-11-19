@@ -464,8 +464,13 @@ impl ViewMapPanel {
         let row_tag: Vec<String> = (0..rows)
             .map(|r| map.nodes.iter().find(|n| n.row == r).map(|n| n.tag.clone()).unwrap_or_default())
             .collect();
+        // A node's second line (`MapNode::lines`), unless its row's gutter
+        // already says it.
         let inner_tag = |n: &MapNode| -> Option<String> {
-            (!n.key.eq_ignore_ascii_case(&n.tag) && !n.tag.eq_ignore_ascii_case(&row_tag[n.row])).then(|| n.tag.clone())
+            n.lines()
+                .get(1)
+                .filter(|tag| !tag.eq_ignore_ascii_case(&row_tag[n.row]))
+                .map(|tag| (*tag).to_owned())
         };
         let two_lines = map.nodes.iter().any(|n| inner_tag(n).is_some());
         // DECISION: node widths come from what a node draws, its key and
@@ -543,7 +548,7 @@ impl ViewMapPanel {
                         .interact(r, ui.scope_id().with(("c4rizer-view-map-node", i)), egui::Sense::click())
                         .on_hover_text(hover_text(n))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    paint_node(ui, n, inner_tag(n).as_deref(), r, &font, (is_current, response.hovered()));
+                    paint_node(ui, r, (&n.key, inner_tag(n).as_deref()), &font, (is_current, response.hovered()));
                     if is_current && moved {
                         ui.scroll_to_rect(r.expand(MARGIN), None);
                     }
@@ -576,10 +581,10 @@ fn level_label(level: u8) -> &'static str {
 /// Node text padding above and below, px.
 const NODE_PAD_Y: f32 = 3.0;
 
-/// Paints node `n` in `r` with its key, and `tag` under it when the row's
+/// Paints a node in `r` with its `key`, and `tag` under it when the row's
 /// gutter does not already say it (P4-104); `(current, hovered)` pick the
 /// colours (P4-108).
-fn paint_node(ui: &egui::Ui, n: &MapNode, tag: Option<&str>, r: egui::Rect, font: &egui::FontId, (current, hovered): (bool, bool)) {
+fn paint_node(ui: &egui::Ui, r: egui::Rect, (key, tag): (&str, Option<&str>), font: &egui::FontId, (current, hovered): (bool, bool)) {
     let painter = ui.painter();
     let (fill, stroke, text) = if current {
         (theme::ACCENT_SOFT, theme::ACCENT, theme::ACCENT)
@@ -597,11 +602,11 @@ fn paint_node(ui: &egui::Ui, n: &MapNode, tag: Option<&str>, r: egui::Rect, font
     };
     match tag {
         Some(tag) => {
-            painter.text(r.center_top() + egui::vec2(0.0, NODE_PAD_Y), egui::Align2::CENTER_TOP, fit(&n.key), font.clone(), text);
+            painter.text(r.center_top() + egui::vec2(0.0, NODE_PAD_Y), egui::Align2::CENTER_TOP, fit(key), font.clone(), text);
             painter.text(r.center_bottom() - egui::vec2(0.0, NODE_PAD_Y), egui::Align2::CENTER_BOTTOM, fit(tag), font.clone(), theme::INK_3);
         }
         None => {
-            painter.text(r.center(), egui::Align2::CENTER_CENTER, fit(&n.key), font.clone(), text);
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, fit(key), font.clone(), text);
         }
     }
 }

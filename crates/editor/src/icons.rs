@@ -19,6 +19,10 @@ use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, TextureOptions};
 /// One icon of the set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(missing_docs, reason = "each variant is the icon of its name")]
+// DECISION: the whole set of the design pack stays, pinned by
+// `every_icon_draws`, though a few icons (tag, layers, map, graph, tree,
+// sort, page, callout, chevron up) have no place in the chrome yet.
+#[cfg_attr(not(test), allow(dead_code, reason = "the design pack's whole set; some icons wait for a place"))]
 pub enum Icon {
     ChevronLeft,
     ChevronRight,

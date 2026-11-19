@@ -9,13 +9,14 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Strok
 use super::{App, crumb_label, problem_text, view_label};
 use crate::icons::{self, Icon};
 use crate::kit::{self, Button, Look, Segment};
-use crate::state::{Command, Event, NavLevel, Overlay, Problem};
+use crate::state::{Command, Event, MenuEntry, NavLevel, Overlay, Problem};
 use crate::theme::{
     self, ACCENT, BG_CANVAS, BG_OVERLAY, BG_RAISED, DANGER, INK, INK_2, INK_3, INK_DISABLED, LINE, LINE_2, OK, PAD,
     SIZE_BAR, SIZE_CONTROL, SIZE_ROW, WARN,
 };
 
 /// What the top bar's toggles were set to this frame.
+#[expect(clippy::struct_excessive_bools, reason = "independent toggles of the top bar")]
 pub(super) struct BarState {
     /// The views panel.
     pub left: bool,
@@ -50,7 +51,6 @@ fn cell<R>(ui: &mut egui::Ui, bar: Rect, rtl: bool, add: impl FnOnce(&mut egui::
 impl App {
     /// The top bar: Views toggle · file · Back, Forward · breadcrumb ·
     /// Undo, Redo · `Diagram / Explore` · Details toggle.
-    #[expect(clippy::too_many_lines, reason = "the bar's cells left to right")]
     pub(super) fn top_bar(&self, ui: &mut egui::Ui, narrow: bool, mut bar: BarState, events: &mut Vec<Event>) -> BarState {
         let rect = ui.max_rect();
         ui.horizontal_centered(|ui| {
@@ -96,11 +96,8 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(8.0);
-                let r = Button::icon(Icon::PanelRight)
-                    .look(Look::Ghost)
-                    .on(bar.right && !bar.explore)
-                    .enabled(!bar.explore)
-                    .show(ui);
+                let details = !bar.explore && self.state.doc.is_some();
+                let r = Button::icon(Icon::PanelRight).look(Look::Ghost).on(bar.right && details).enabled(details).show(ui);
                 if kit::tip(r, "Details panel", None).clicked() {
                     bar.right = !bar.right;
                 }
@@ -185,6 +182,7 @@ impl App {
     /// note drop and the path shortens to the file name. Serves EDIT-11,
     /// EDIT-19, EDIT-24, EDIT-27, P2-433, P2-705, P2-706.
     #[expect(clippy::too_many_lines, reason = "the bar's cells left to right")]
+    #[expect(clippy::too_many_arguments, reason = "the bar's inputs and the two toggles it may flip")]
     pub(super) fn status_bar(&self, ui: &mut egui::Ui, narrow: bool, explore: bool, events: &mut Vec<Event>, fit: &mut bool, dark: &mut bool) {
         let rect = ui.max_rect();
         let status = self.state.status();
@@ -338,16 +336,20 @@ impl App {
         let step = 20.0;
         let ox = rect.min.x + origin.x.rem_euclid(step);
         let oy = rect.min.y + origin.y.rem_euclid(step);
+        // DECISION: the dots are one unfeathered mesh, each snapped to a
+        // whole pixel: a feathered 1 px rect fades to nearly nothing on a
+        // pixel boundary, so the grid vanished on the start screen.
+        let mut mesh = egui::Mesh::default();
         let mut y = oy;
-        let dot = LINE_2;
         while y < rect.max.y {
             let mut x = ox;
             while x < rect.max.x {
-                painter.rect_filled(Rect::from_min_size(egui::pos2(x, y), Vec2::splat(1.0)), CornerRadius::ZERO, dot);
+                mesh.add_colored_rect(Rect::from_min_size(egui::pos2(x.floor(), y.floor()), Vec2::splat(1.0)), LINE_2);
                 x += step;
             }
             y += step;
         }
+        painter.add(egui::Shape::mesh(mesh));
     }
 
     /// The marks outside the paper: corner ticks, the view's key and kind
@@ -356,20 +358,24 @@ impl App {
         let Some(scene) = self.state.scene() else { return };
         let page = crate::canvas::page_rect(scene.bounds, self.state.paper_rect());
         let cam = self.state.camera;
-        let a = cam.to_screen(page.min);
-        let b = cam.to_screen(page.max);
-        let r = Rect::from_min_max(rect.min + Vec2::new(a.x, a.y), rect.min + Vec2::new(b.x, b.y));
+        let top_left = cam.to_screen(page.min);
+        let bottom_right = cam.to_screen(page.max);
+        let r = Rect::from_min_max(
+            rect.min + Vec2::new(top_left.x, top_left.y),
+            rect.min + Vec2::new(bottom_right.x, bottom_right.y),
+        );
         let tick = Stroke::new(1.0, theme::LINE_STRONG);
-        let (o, l) = (8.0, 8.0);
+        // Each tick: 8 px out from the paper's corner, 8 px long.
+        let (offset, length) = (8.0, 8.0);
         for (corner, dx, dy) in [
             (r.left_top(), -1.0, -1.0),
             (r.right_top(), 1.0, -1.0),
             (r.left_bottom(), -1.0, 1.0),
             (r.right_bottom(), 1.0, 1.0),
         ] {
-            let c = corner + Vec2::new(dx * o, dy * o);
-            painter.line_segment([c, c - Vec2::new(dx * l, 0.0)], tick);
-            painter.line_segment([c, c - Vec2::new(0.0, dy * l)], tick);
+            let at = corner + Vec2::new(dx * offset, dy * offset);
+            painter.line_segment([at, at - Vec2::new(dx * length, 0.0)], tick);
+            painter.line_segment([at, at - Vec2::new(0.0, dy * length)], tick);
         }
         let label = |text: String| -> egui::text::LayoutJob {
             let mut job = egui::text::LayoutJob::default();
@@ -386,7 +392,7 @@ impl App {
             job
         };
         if let Some(view) = &self.state.view {
-            let kind = self.state.kind_of(view).map(|k| super::level_title(k)).unwrap_or_default();
+            let kind = self.state.kind_of(view).map(super::level_title).unwrap_or_default();
             let mut text = format!("{}  ·  {kind}", view.key());
             if matches!(self.state.status().problem, Some(Problem::Parse(_) | Problem::Missing)) {
                 text.push_str("  ·  last good");
@@ -472,27 +478,40 @@ impl App {
     pub(super) fn context_menu(&self, ui: &egui::Ui, origin: Pos2, out: &mut Vec<Event>) -> Option<Rect> {
         let Some(Overlay::ContextMenu { entries }) = &self.state.overlay else { return None };
         let at = origin + Vec2::new(self.state.menu_at.x, self.state.menu_at.y);
-        let head = self.state.details().map(|d| {
-            if d.kind == "Relationship" {
-                "relationship".to_owned()
-            } else {
-                format!("{} · {}", d.kind, d.name)
-            }
-        });
+        let details = self.state.details();
+        let relationship = details.as_ref().is_some_and(|d| d.kind == "Relationship");
+        // The design's head: the box's name, or `Relationship`.
+        let head = details.map(|d| if relationship { d.kind } else { d.name });
+        let rows = menu_rows(entries, relationship);
         let shown = egui::Area::new(egui::Id::unique("c4rizer-context-menu"))
             .fixed_pos(at)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 kit::overlay_frame(ui).show(ui, |ui| {
-                    ui.set_min_width(200.0);
+                    // As wide as its widest row (8 + icon 16 + 8 + text + 8),
+                    // at least 200 px (`.c4-menu`), not the screen's width.
+                    let font = theme::ui_font();
+                    let widest = rows
+                        .iter()
+                        .map(|r| ui.fonts_mut(|f| f.layout_no_wrap(r.text.clone(), font.clone(), INK).size().x))
+                        .fold(0.0_f32, f32::max);
+                    ui.set_width((widest + 40.0).clamp(192.0, 480.0));
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if let Some(head) = &head {
                         egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                             ui.label(theme::label(head));
                         });
                     }
-                    for entry in entries {
-                        if kit::menu_row(ui, None, &entry.label, false, true, None).clicked() {
+                    for row in &rows {
+                        if row.separated {
+                            ui.add_space(4.0);
+                            kit_rule(ui, LINE_2);
+                            ui.add_space(4.0);
+                        }
+                        let r = kit::menu_row(ui, Some(row.icon), &row.text, false, row.entry.is_some());
+                        if let Some(entry) = row.entry
+                            && r.clicked()
+                        {
                             out.push(Event::Command(Command::ContextAction(entry.action.clone())));
                         }
                     }
@@ -559,12 +578,18 @@ impl App {
                                 }
                                 for (i, entry) in entries.into_iter().enumerate() {
                                     let (r, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SIZE_ROW), Sense::click());
-                                    if i == highlighted || response.hovered() {
-                                        ui.painter().rect_filled(r, CornerRadius::same(2), if i == highlighted { theme::ACCENT_SOFT } else { BG_RAISED });
+                                    // `components/Palette`: the row under the
+                                    // keyboard (or pointer) is `bg-raised`; the
+                                    // open view keeps its `accent-soft`.
+                                    let lit = i == highlighted || response.hovered();
+                                    if entry.current {
+                                        ui.painter().rect_filled(r, CornerRadius::same(2), theme::ACCENT_SOFT);
+                                    } else if lit {
+                                        ui.painter().rect_filled(r, CornerRadius::same(2), BG_RAISED);
                                     }
                                     let key = entry.view.key();
                                     let code = theme::code_font();
-                                    let g = ui.painter().layout_no_wrap(key.clone(), code, if i == highlighted { ACCENT } else { INK });
+                                    let g = ui.painter().layout_no_wrap(key.clone(), code, if entry.current { ACCENT } else { INK });
                                     let kw = g.size().x;
                                     ui.painter().galley(egui::pos2(r.min.x + 12.0, r.center().y - g.size().y / 2.0), g, INK);
                                     let font = theme::ui_font();
@@ -575,7 +600,7 @@ impl App {
                                         Align2::LEFT_CENTER,
                                         kit::elide(ui, &title, &font, room),
                                         font,
-                                        if i == highlighted { INK } else { INK_2 },
+                                        if lit || entry.current { INK } else { INK_2 },
                                     );
                                     if response.on_hover_text(view_label(&entry)).clicked() {
                                         out.push(Event::Command(Command::ShowView(entry.view)));
@@ -605,7 +630,7 @@ impl App {
             // Drawn over the canvas at the pointer (`App::canvas`).
             Overlay::ContextMenu { .. } => {}
             Overlay::TagFilter => {
-                small_window(ctx, canvas, "Filter by tag", &mut out, Command::TagFilterPanel, |ui, out| {
+                small_window(ctx, canvas, "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
                     let chosen = &self.state.aids.tags;
                     let choices = self.state.tag_choices();
                     if choices.is_empty() {
@@ -625,14 +650,14 @@ impl App {
                 });
             }
             Overlay::Perspectives => {
-                small_window(ctx, canvas, "Perspectives", &mut out, Command::PerspectivePanel, |ui, out| {
+                small_window(ctx, canvas, "Perspectives", &mut out, &Command::PerspectivePanel, |ui, out| {
                     let current = self.state.aids.perspective.clone();
-                    if kit::menu_row(ui, None, "none", current.is_none(), true, None).clicked() {
+                    if kit::menu_row(ui, None, "none", current.is_none(), true).clicked() {
                         out.push(Event::Command(Command::Perspective(None)));
                     }
                     for name in self.state.perspective_choices() {
                         let on = current.as_deref() == Some(name.as_str());
-                        if kit::menu_row(ui, None, &name, on, true, None).clicked() {
+                        if kit::menu_row(ui, None, &name, on, true).clicked() {
                             out.push(Event::Command(Command::Perspective(Some(name))));
                         }
                     }
@@ -640,7 +665,7 @@ impl App {
                 });
             }
             Overlay::Navigator => {
-                small_window(ctx, canvas, "Diagram navigator", &mut out, Command::Navigator, |ui, out| {
+                small_window(ctx, canvas, "Diagram navigator", &mut out, &Command::Navigator, |ui, out| {
                     // P2-729: the search field filters all three groups.
                     // DECISION: it takes focus like quick navigation's, so
                     // typing searches at once; Escape still closes.
@@ -669,7 +694,7 @@ impl App {
                         let mut any = false;
                         for (_, entry) in entries.iter().filter(|(l, _)| *l == level) {
                             any = true;
-                            if kit::menu_row(ui, None, &view_label(entry), false, true, None).clicked() {
+                            if kit::menu_row(ui, None, &view_label(entry), false, true).clicked() {
                                 out.push(Event::Command(Command::ShowView(entry.view.clone())));
                             }
                         }
@@ -685,15 +710,89 @@ impl App {
     }
 }
 
+/// One row of the context menu: what it says, its icon, the entry it
+/// runs (`None`: shown disabled), and whether a rule comes before it.
+#[derive(Debug, PartialEq)]
+pub(super) struct MenuRow<'a> {
+    pub text: String,
+    pub icon: Icon,
+    pub entry: Option<&'a MenuEntry>,
+    pub separated: bool,
+}
+
+/// The context menu's rows for `entries` (behaviour change 5,
+/// `components/Menu`): every entry the item can have, in groups split by
+/// a rule, an entry that cannot run now shown disabled so the menu keeps
+/// its shape. A box: `Enter …` | `Open URL`. A line: `Release start`,
+/// `Release end` | `Group as bus`, or `Ungroup bus` and `Remove from
+/// bus` | `Bridge on the other line` | `Open URL`.
+// DECISION: `State` offers only the entries that can run (and opens no
+// menu when there are none, as tested), so the disabled rows are filled
+// in here from the labels `State` gives. "Group as bus" replaces the
+// ungroup pair when offered, as the two never apply together; the bridge
+// row shows only at a crossing, where the pointer decides it. An entry
+// no slot names is still shown, last, so nothing is ever dropped.
+pub(super) fn menu_rows(entries: &[MenuEntry], relationship: bool) -> Vec<MenuRow<'_>> {
+    // (label, text when disabled, icon); an empty group list is skipped.
+    type Slot = (&'static str, &'static str, Icon);
+    let enter: Slot = ("Enter", "Enter a view", Icon::Enter);
+    let url: Slot = ("Open URL", "Open URL", Icon::External);
+    let matches = |slot: &str, e: &MenuEntry| e.label == slot || e.label.starts_with(&format!("{slot} "));
+    let has = |slot: &str| entries.iter().any(|e| matches(slot, e));
+    let groups: Vec<Vec<Slot>> = if relationship {
+        let bus = if has("Group as bus") {
+            vec![("Group as bus", "Group as bus", Icon::Bus)]
+        } else {
+            vec![("Ungroup bus", "Ungroup bus", Icon::Bus), ("Remove from bus", "Remove from bus", Icon::Minus)]
+        };
+        let bridge = if has("Bridge on the other line") {
+            vec![("Bridge on the other line", "Bridge on the other line", Icon::Routing)]
+        } else {
+            Vec::new()
+        };
+        vec![
+            vec![("Release start", "Release start", Icon::Reset), ("Release end", "Release end", Icon::Reset)],
+            bus,
+            bridge,
+            vec![url],
+        ]
+    } else {
+        vec![vec![enter], vec![url]]
+    };
+    let mut rows = Vec::new();
+    let mut used = vec![false; entries.len()];
+    for group in groups.iter().filter(|g| !g.is_empty()) {
+        let mut separated = !rows.is_empty();
+        for &(slot, disabled, icon) in group {
+            let mut any = false;
+            for (i, e) in entries.iter().enumerate().filter(|(_, e)| matches(slot, e)) {
+                used[i] = true;
+                any = true;
+                rows.push(MenuRow { text: e.label.clone(), icon, entry: Some(e), separated });
+                separated = false;
+            }
+            if !any {
+                rows.push(MenuRow { text: disabled.to_owned(), icon, entry: None, separated });
+                separated = false;
+            }
+        }
+    }
+    for (e, _) in entries.iter().zip(&used).filter(|(_, u)| !**u) {
+        rows.push(MenuRow { text: e.label.clone(), icon: Icon::ChevronRight, entry: Some(e), separated: false });
+    }
+    rows
+}
+
 /// A small window over the canvas, top right, 12 px in (`components/
 /// Window`): a 28 px title bar with a close button, the body, and an
 /// optional footer button.
+#[expect(clippy::too_many_arguments, reason = "where, title, the close command, then the body")]
 fn small_window(
     ctx: &egui::Context,
     canvas: Rect,
     title: &str,
     out: &mut Vec<Event>,
-    close: Command,
+    close: &Command,
     body: impl FnOnce(&mut egui::Ui, &mut Vec<Event>) -> Option<(&'static str, Command)>,
 ) {
     let width = 280.0;
@@ -840,3 +939,62 @@ pub(super) fn screen_rect(origin: Pos2, cam: &crate::camera::Camera, r: SceneRec
 
 /// The top bar's height, for the panel.
 pub(super) const BAR_H: f32 = SIZE_BAR;
+
+#[cfg(test)]
+mod tests {
+    use super::menu_rows;
+    use crate::state::{MenuAction, MenuEntry};
+
+    fn entry(label: &str) -> MenuEntry {
+        MenuEntry {
+            label: label.to_owned(),
+            action: MenuAction::GroupBus,
+        }
+    }
+
+    fn texts(rows: &[super::MenuRow<'_>]) -> Vec<(String, bool, bool)> {
+        rows.iter().map(|r| (r.text.clone(), r.entry.is_some(), r.separated)).collect()
+    }
+
+    /// Behaviour change 5: a box with a URL but no deeper view shows
+    /// `Enter` disabled above the URL entry, split by a rule.
+    #[test]
+    fn box_menu_keeps_its_shape() {
+        let url = entry("Open URL https://x.org");
+        let rows = menu_rows(std::slice::from_ref(&url), false);
+        assert_eq!(
+            texts(&rows),
+            [("Enter a view".to_owned(), false, false), ("Open URL https://x.org".to_owned(), true, true)]
+        );
+        assert_eq!(rows[1].entry, Some(&url));
+    }
+
+    /// Behaviour change 5: a bundled line without pins or URL shows the
+    /// release and URL entries disabled, the bus pair enabled.
+    #[test]
+    fn line_menu_greys_what_cannot_run() {
+        let entries = [entry("Ungroup bus"), entry("Remove from bus")];
+        let rows = menu_rows(&entries, true);
+        assert_eq!(
+            texts(&rows),
+            [
+                ("Release start".to_owned(), false, false),
+                ("Release end".to_owned(), false, false),
+                ("Ungroup bus".to_owned(), true, true),
+                ("Remove from bus".to_owned(), true, false),
+                ("Open URL".to_owned(), false, true),
+            ]
+        );
+    }
+
+    /// "Group as bus" takes the bus group's place; an entry no slot names
+    /// is still shown.
+    #[test]
+    fn line_menu_group_and_unknown_entries() {
+        let entries = [entry("Group as bus"), entry("Something new")];
+        let rows = menu_rows(&entries, true);
+        let shown: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
+        assert_eq!(shown, ["Release start", "Release end", "Group as bus", "Open URL", "Something new"]);
+        assert!(rows.last().is_some_and(|r| r.entry.is_some()));
+    }
+}

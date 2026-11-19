@@ -44,7 +44,6 @@ mod state;
 mod styles_themes_tests;
 #[cfg(test)]
 mod testutil;
-#[allow(dead_code, reason = "widgets land screen by screen")]
 mod theme;
 #[cfg(test)]
 mod vertices_tests;

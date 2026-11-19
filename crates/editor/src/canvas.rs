@@ -1487,15 +1487,18 @@ pub fn inputs(ctx: &eframe::egui::Context, response: &eframe::egui::Response) ->
     out
 }
 
-/// Registers the bundled font (`scene::FONT_REGULAR` and
-/// `scene::FONT_BOLD`, CORE-30, HLD §6) with egui as the proportional
-/// family, regular and bold, so the canvas paints with the same face the
-/// scene measured and the SVG names. No fallback face is part of this
-/// contract. Serves EDIT-12, CORE-30.
-pub fn install_fonts(ctx: &eframe::egui::Context) {
-    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+/// Adds the bundled font (`scene::FONT_REGULAR` and `scene::FONT_BOLD`,
+/// CORE-30, HLD §6) to `fonts` as the named families `REGULAR_FAMILY`
+/// and `BOLD_FAMILY`, one face each and no fallback, so the canvas paints
+/// with the same face the scene measured and the SVG names; the chrome's
+/// own faces (`theme::font_definitions`) stay out of them. Serves
+/// EDIT-12, CORE-30.
+// DECISION: the canvas owns its family names and faces and `theme`
+// calls this, so one place says which face the diagram is painted in;
+// `theme::install` is the only `set_fonts` of the editor.
+pub fn register_fonts(fonts: &mut eframe::egui::FontDefinitions) {
+    use eframe::egui::{FontData, FontFamily};
     use std::sync::Arc;
-    let mut fonts = FontDefinitions::default();
     fonts
         .font_data
         .insert(REGULAR_NAME.to_owned(), Arc::new(FontData::from_static(FONT_REGULAR)));
@@ -1504,14 +1507,10 @@ pub fn install_fonts(ctx: &eframe::egui::Context) {
         .insert(BOLD_NAME.to_owned(), Arc::new(FontData::from_static(FONT_BOLD)));
     fonts
         .families
-        .insert(FontFamily::Proportional, vec![REGULAR_NAME.to_owned()]);
-    fonts
-        .families
         .insert(FontFamily::Name(REGULAR_FAMILY.into()), vec![REGULAR_NAME.to_owned()]);
     fonts
         .families
         .insert(FontFamily::Name(BOLD_FAMILY.into()), vec![BOLD_NAME.to_owned()]);
-    ctx.set_fonts(fonts);
 }
 
 /// The egui font-data name of the bundled regular face.
@@ -1529,7 +1528,7 @@ mod tests {
     use c4rizer_core::scene::{ItemKey, Scene};
     use c4rizer_core::view::BoxId;
 
-    use super::{PaintItem, Primitive, Source, install_fonts, paint_items};
+    use super::{PaintItem, Primitive, Source, paint_items};
     use crate::camera::{Camera, ScreenPoint};
     use crate::state::{DrawList, Mark, MarkKind};
     use crate::testutil::SHOP;
@@ -1665,26 +1664,27 @@ mod tests {
         assert!(matches!(&last.primitive, Primitive::Polygon { points, fill: None, .. } if points.len() == 4));
     }
 
-    /// EDIT-12, CORE-30: after `install_fonts`, egui's proportional
-    /// family is the bundled face (`scene::FONT_REGULAR`,
+    /// EDIT-12, CORE-30: after the editor installs its fonts
+    /// (`theme::install`), the named families the canvas paints diagram
+    /// text in are the bundled face (`scene::FONT_REGULAR`,
     /// `scene::FONT_BOLD`), no other face.
+    // DECISION: since the redesign egui's proportional family is the
+    // chrome's Geist; the diagram is painted in the named families, so
+    // those are what EDIT-12 pins.
     #[test]
     fn edit_12_canvas_uses_bundled_font() {
         use eframe::egui::{Context, FontFamily, RawInput};
         let ctx = Context::default();
-        install_fonts(&ctx);
+        crate::theme::install(&ctx);
         let mut output = ctx.run_ui(RawInput::default(), |_| {});
         output.textures_delta.clear();
         let defs = ctx.fonts(|f| f.definitions().clone());
-        let proportional = &defs.families[&FontFamily::Proportional];
-        assert_eq!(proportional.len(), 1, "{proportional:?}");
         let bold = &defs.families[&FontFamily::Name(super::BOLD_FAMILY.into())];
         assert_eq!(bold.len(), 1, "{bold:?}");
         // The named regular family the canvas paints diagram text in.
         let regular = &defs.families[&FontFamily::Name(super::REGULAR_FAMILY.into())];
         assert_eq!(regular.len(), 1, "{regular:?}");
         let bytes = |name: &str| (*defs.font_data[name].font).as_ref().to_vec();
-        assert_eq!(bytes(&proportional[0]), c4rizer_core::scene::FONT_REGULAR);
         assert_eq!(bytes(&regular[0]), c4rizer_core::scene::FONT_REGULAR);
         assert_eq!(bytes(&bold[0]), c4rizer_core::scene::FONT_BOLD);
     }

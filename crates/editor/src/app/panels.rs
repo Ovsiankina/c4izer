@@ -23,6 +23,43 @@ fn colour32(c: Colour) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
 }
 
+/// `State::style_panel` with the fill and text colours the selected
+/// boxes are drawn in on the shown scene, when they all agree: a box
+/// whose file sets no colour is drawn in the house palette (redesign
+/// 2026-11-19), so the swatches and the head's dot show what the canvas
+/// shows rather than the `#dddddd` / `#000000` keyword defaults.
+// DECISION: read from the scene in the editor, as the house palette is
+// applied when the view is built and `Model::style_of` stays
+// mode-independent (P2-430); with no scene box to read, the model's
+// value stays.
+fn shown_style(state: &State) -> Option<crate::state::StylePanel> {
+    let mut panel = state.style_panel()?;
+    let (Some(scene), Some(model)) = (state.scene(), state.model()) else { return Some(panel) };
+    let ids: Vec<_> = state
+        .selection
+        .iter()
+        .filter_map(|s| match s {
+            Selected::Element(key) => model.find(key),
+            _ => None,
+        })
+        .collect();
+    let drawn: Vec<_> = scene.boxes.iter().filter(|b| ids.contains(&b.element)).collect();
+    if drawn.is_empty() || drawn.len() != ids.len() {
+        return Some(panel);
+    }
+    let agree = |f: fn(&c4rizer_core::scene::SceneBox) -> Colour| {
+        let first = f(drawn[0]);
+        drawn.iter().all(|b| f(b) == first).then_some(first)
+    };
+    if panel.background.is_some() {
+        panel.background = agree(|b| b.fill).or(panel.background);
+    }
+    if panel.color.is_some() {
+        panel.color = agree(|b| b.name.colour).or(panel.color);
+    }
+    Some(panel)
+}
+
 impl App {
     /// The right panel's sections, top to bottom. Serves EDIT-5, EDIT-6,
     /// EDIT-7, EDIT-10, EDIT-17, EDIT-20.
@@ -36,7 +73,7 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 self.selection_section(ui, &mut out);
-                let style = self.state.style_panel();
+                let style = shown_style(&self.state);
                 if let Some(panel) = &style {
                     style_section(ui, panel, &mut out);
                 }
@@ -79,7 +116,7 @@ impl App {
                     .iter()
                     .filter(|s| matches!(s, Selected::Element(_)))
                     .count();
-                let dot = self.state.style_panel().and_then(|p| p.background).map(colour32);
+                let dot = shown_style(&self.state).and_then(|p| p.background).map(colour32);
                 if boxes > 1 {
                     kit::head_label(ui, &format!("{boxes} boxes"), None);
                     let names: Vec<String> = self
@@ -98,74 +135,28 @@ impl App {
                 } else {
                     kit::head_label(ui, &d.kind, dot);
                     let editable = editable_detail_fields(&self.state);
-                    editable_field(ui, &editable, "name", &d.name, true, out);
+                    editable_field(ui, &editable, "name", field_text(&d.name, true), out);
                     if let Some(text) = &d.description
                         && d.kind != "Relationship"
                     {
-                        editable_field(ui, &editable, "description", text, false, out);
+                        editable_field(ui, &editable, "description", field_text(text, false), out);
                     }
                     if let Some(t) = &d.technology {
                         if d.kind == "Relationship" {
                             ui.label(theme::code(t, INK_2));
                         } else {
                             kit::prop_row(ui, "tech", |ui| {
-                                editable_field(ui, &editable, "technology", t, false, out);
+                                editable_field(ui, &editable, "technology", field_text(t, false), out);
                             });
                         }
                     }
                 }
                 if let Some(Selected::Relationship(r)) = self.state.selection.iter().next()
                     && count == 1
-                    && let Some(model) = self.state.model()
                 {
-                    let name = |key: &str| model.find(key).map_or_else(|| key.to_owned(), |id| model.element(id).name.value.clone());
-                    kit::prop_row(ui, "from", |ui| {
-                        ui.label(egui::RichText::new(name(&r.source)).color(INK));
-                    });
-                    kit::prop_row(ui, "to", |ui| {
-                        ui.label(egui::RichText::new(name(&r.destination)).color(INK));
-                    });
+                    relationship_rows(ui, &self.state, r);
                 }
-                // P3-131: a deployment node's instances and environment.
-                if let Some(n) = &d.instances {
-                    kit::prop_row(ui, "instances", |ui| {
-                        ui.label(theme::code(n, INK));
-                    });
-                }
-                if let Some(env) = &d.environment {
-                    kit::prop_row(ui, "env", |ui| {
-                        ui.label(egui::RichText::new(env).color(INK));
-                    });
-                }
-                if !d.tags.is_empty() {
-                    kit::prop_row(ui, "tags", |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::splat(4.0);
-                            for tag in &d.tags {
-                                kit::chip(ui, tag, ChipKind::Plain);
-                            }
-                        });
-                    });
-                }
-                if let Some(from) = &d.lifted_from {
-                    kit::prop_row(ui, "lifted", |ui| {
-                        ui.label(egui::RichText::new(from).color(INK_2));
-                    });
-                }
-                for other in &d.merged {
-                    kit::prop_row(ui, "also", |ui| {
-                        ui.label(egui::RichText::new(other).color(INK_2));
-                    });
-                }
-                if let Some(step) = &d.step {
-                    // P3-218: number, ends and the relationship it stands for.
-                    kit::prop_row(ui, "step", |ui| {
-                        ui.label(egui::RichText::new(format!("{}: {}", step.order, step.ends)).color(INK));
-                    });
-                    kit::prop_row(ui, "for", |ui| {
-                        ui.label(egui::RichText::new(&step.relationship).color(INK_2));
-                    });
-                }
+                detail_rows(ui, &d);
             });
         kit::hairline(ui);
     }
@@ -260,6 +251,9 @@ impl App {
         let mut out = Vec::new();
         ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
         if self.state.doc.is_none() {
+            // The note keeps the panel at its width; a resizable panel
+            // otherwise shrinks to its widest line.
+            ui.set_min_width(ui.available_width());
             egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 ui.label(theme::label("No file open"));
@@ -280,15 +274,91 @@ impl App {
     }
 }
 
-/// A details field: the name as `title`, others as `ui`; editable ones
-/// get a pencil and an outline on hover and open the in-place editor on
-/// a double click (Enter, then Tab to the field).
-fn editable_field(ui: &mut egui::Ui, editable: &[&'static str], label: &'static str, text: &str, title: bool, out: &mut Vec<Event>) {
-    let rich = if title {
+/// The rows of one selected relationship: its ends by name, then its bus
+/// when the line is bundled (`components/Details`, P4-426).
+fn relationship_rows(ui: &mut egui::Ui, state: &State, r: &c4rizer_core::edit::RelationshipRef) {
+    if let Some(model) = state.model() {
+        let name = |key: &str| model.find(key).map_or_else(|| key.to_owned(), |id| model.element(id).name.value.clone());
+        kit::prop_row(ui, "from", |ui| {
+            ui.label(egui::RichText::new(name(&r.source)).color(INK));
+        });
+        kit::prop_row(ui, "to", |ui| {
+            ui.label(egui::RichText::new(name(&r.destination)).color(INK));
+        });
+    }
+    if let [edge] = state.selected_lines().as_slice()
+        && let Some(bus) = state.bus_of(*edge)
+    {
+        kit::prop_row(ui, "bus", |ui| {
+            ui.label(egui::RichText::new(bus_text(bus.len())).color(INK_2));
+        });
+    }
+}
+
+/// The Bus row's value: `one of 3 lines`.
+fn bus_text(lines: usize) -> String {
+    format!("one of {lines} lines")
+}
+
+/// The property rows every kind of selection may have: deployment
+/// instances and environment, tags, where a lifted line comes from, the
+/// lines merged into it, and a dynamic step.
+fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details) {
+    // P3-131: a deployment node's instances and environment.
+    if let Some(n) = &d.instances {
+        kit::prop_row(ui, "instances", |ui| {
+            ui.label(theme::code(n, INK));
+        });
+    }
+    if let Some(env) = &d.environment {
+        kit::prop_row(ui, "env", |ui| {
+            ui.label(egui::RichText::new(env).color(INK));
+        });
+    }
+    if !d.tags.is_empty() {
+        kit::prop_row(ui, "tags", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(4.0);
+                for tag in &d.tags {
+                    kit::chip(ui, tag, ChipKind::Plain);
+                }
+            });
+        });
+    }
+    if let Some(from) = &d.lifted_from {
+        kit::prop_row(ui, "lifted", |ui| {
+            ui.label(egui::RichText::new(from).color(INK_2));
+        });
+    }
+    for other in &d.merged {
+        kit::prop_row(ui, "also", |ui| {
+            ui.label(egui::RichText::new(other).color(INK_2));
+        });
+    }
+    if let Some(step) = &d.step {
+        // P3-218: number, ends and the relationship it stands for.
+        kit::prop_row(ui, "step", |ui| {
+            ui.label(egui::RichText::new(format!("{}: {}", step.order, step.ends)).color(INK));
+        });
+        kit::prop_row(ui, "for", |ui| {
+            ui.label(egui::RichText::new(&step.relationship).color(INK_2));
+        });
+    }
+}
+
+/// A details field's text: the name as `title`, others as `ui`.
+fn field_text(text: &str, title: bool) -> egui::RichText {
+    if title {
         egui::RichText::new(text).font(theme::title_font()).color(INK)
     } else {
         egui::RichText::new(text).color(INK_2)
-    };
+    }
+}
+
+/// A details field showing `rich` (`field_text`); editable ones get a
+/// pencil and an outline on hover and open the in-place editor on a
+/// double click (Enter, then Tab to the field).
+fn editable_field(ui: &mut egui::Ui, editable: &[&'static str], label: &'static str, rich: egui::RichText, out: &mut Vec<Event>) {
     let Some(at) = editable.iter().position(|&f| f == label) else {
         ui.label(rich);
         return;

@@ -3,7 +3,11 @@
 //! for data, Inter for the diagram) and egui's `Visuals` and `Spacing`
 //! set once at start-up from them.
 //!
-//! Depends on: `c4rizer-core` (the Inter faces), `eframe`.
+//! Depends on: `canvas` (the Inter families), `eframe`.
+
+// DECISION: colours are written as the design's six-digit hex codes, so
+// a token reads the same here as in `tokens.css`.
+#![expect(clippy::unreadable_literal, reason = "hex colours as the design writes them")]
 
 // Shape: plain constants named after the tokens, so a widget reads
 // `theme::INK_2` where the design says `ink-2`. The chrome is dark in
@@ -127,16 +131,12 @@ impl Marks {
 
 // ------------------------------------------------------------ fonts
 
-/// Geist SemiBold: `title`, `ui-strong`.
+/// Geist `SemiBold`: `title`, `ui-strong`.
 pub const SEMIBOLD: &str = "Geist SemiBold";
 /// Geist Medium: `display`, a primary button, recent file names.
 pub const MEDIUM: &str = "Geist Medium";
 /// Geist Mono Medium: `label`.
 pub const MONO_MEDIUM: &str = "Geist Mono Medium";
-/// Inter Regular, the diagram's face (also `canvas::REGULAR_FAMILY`).
-pub const INTER: &str = "Inter";
-/// Inter Bold (`canvas::BOLD_FAMILY`).
-pub const INTER_BOLD: &str = "Inter Bold";
 
 const GEIST: &[u8] = include_bytes!("../../../assets/fonts/Geist-Variable.ttf");
 const GEIST_MONO: &[u8] = include_bytes!("../../../assets/fonts/GeistMono-Variable.ttf");
@@ -151,8 +151,9 @@ fn weight(bytes: &'static [u8], wght: f32) -> Arc<FontData> {
 }
 
 /// The font definitions: Geist as `Proportional`, Geist Mono as
-/// `Monospace`, the named weights above, Inter for the diagram; egui's
-/// own faces stay behind each as fallbacks for symbols.
+/// `Monospace`, the named weights above, and the diagram's Inter families
+/// (`canvas::register_fonts`); egui's own faces stay behind each chrome
+/// family as fallbacks for symbols.
 // DECISION: the variable Geist files are instanced by egui (`FontTweak::
 // coords`, skrifa) rather than shipped as one static file per weight; the
 // pack's WOFF2 were only unpacked to TTF, the outlines are unchanged.
@@ -167,8 +168,6 @@ pub fn font_definitions() -> FontDefinitions {
         ("Geist-600", weight(GEIST, 600.0)),
         ("GeistMono-400", weight(GEIST_MONO, 400.0)),
         ("GeistMono-500", weight(GEIST_MONO, 500.0)),
-        ("Inter-Regular", Arc::new(FontData::from_static(c4rizer_core::scene::FONT_REGULAR))),
-        ("Inter-Bold", Arc::new(FontData::from_static(c4rizer_core::scene::FONT_BOLD))),
     ];
     for (name, data) in faces {
         fonts.font_data.insert(name.to_owned(), data);
@@ -181,8 +180,7 @@ pub fn font_definitions() -> FontDefinitions {
     fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), with("Geist-600", &fallbacks));
     fonts.families.insert(FontFamily::Name(MEDIUM.into()), with("Geist-500", &fallbacks));
     fonts.families.insert(FontFamily::Name(MONO_MEDIUM.into()), with("GeistMono-500", &mono_fallbacks));
-    fonts.families.insert(FontFamily::Name(INTER.into()), vec!["Inter-Regular".to_owned()]);
-    fonts.families.insert(FontFamily::Name(INTER_BOLD.into()), vec!["Inter-Bold".to_owned()]);
+    crate::canvas::register_fonts(&mut fonts);
     fonts
 }
 

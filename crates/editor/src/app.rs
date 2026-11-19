@@ -396,7 +396,7 @@ impl App {
                         .id(id)
                         .frame(egui::Frame::NONE)
                         .text_color(ink)
-                        .font(egui::FontId::new(13.0, egui::FontFamily::Name(theme::INTER_BOLD.into())))
+                        .font(egui::FontId::new(13.0, egui::FontFamily::Name(crate::canvas::BOLD_FAMILY.into())))
                         .align(egui::Align2::LEFT_CENTER)
                         .desired_width(width - 16.0),
                 )
@@ -491,6 +491,24 @@ fn level_title(kind: ViewKind) -> &'static str {
     }
 }
 
+/// A shape as the style panel names it: the reference keyword in words,
+/// first word capitalised (`MobileDevicePortrait` reads `Mobile device
+/// portrait`, `Box` stays `Box`).
+// DECISION: derived from `Shape::keyword` rather than a second table, so
+// the 19 names cannot drift from what `edit` writes (P2-417).
+fn shape_name(shape: c4rizer_core::model::Shape) -> String {
+    let mut out = String::new();
+    for c in shape.keyword().chars() {
+        if c.is_ascii_uppercase() && !out.is_empty() {
+            out.push(' ');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The style panel's shape choice: one drop-down of every panel shape in
 /// a form row (P2-736, EDIT-17). `pick` gets the shape chosen. Returns
 /// the row's rect.
@@ -499,11 +517,11 @@ fn shape_row(
     current: Option<c4rizer_core::model::Shape>,
     pick: &mut dyn FnMut(c4rizer_core::model::Shape),
 ) -> egui::Rect {
-    let names: Vec<String> = crate::state::PANEL_SHAPES.iter().map(|s| s.keyword().to_owned()).collect();
+    let names: Vec<String> = crate::state::PANEL_SHAPES.iter().map(|&s| shape_name(s)).collect();
     let at = current.and_then(|c| crate::state::PANEL_SHAPES.iter().position(|&s| s == c));
-    let shown = current.map_or("differs", |s| s.keyword());
+    let shown = current.map_or_else(|| "differs".to_owned(), shape_name);
     let inner = ui.horizontal(|ui| {
-        crate::kit::form_row(ui, "Shape", |ui| crate::kit::select(ui, "shape", shown, &names, at))
+        crate::kit::form_row(ui, "Shape", |ui| crate::kit::select(ui, "shape", &shown, &names, at))
     });
     if let Some(i) = inner.inner
         && Some(i) != at
@@ -653,10 +671,6 @@ pub(crate) fn shape_choice_is_dropdown() -> bool {
     rows.0 <= rows.1 + 1.0
 }
 
-/// The style panel's shape choice: one drop-down of every panel shape
-/// (P2-736, EDIT-17). `pick` gets the shape chosen. Returns the row's
-/// rect.
-
 /// The view list's one-line text for `entry`: its title cut to `chars`
 /// characters with an ellipsis, then ` · ` and the key; and the full
 /// title for the tooltip. A view without a title shows its key once
@@ -794,7 +808,7 @@ impl eframe::App for App {
         });
         // Behaviour change 1: crossing under 1000 px closes both panels,
         // at start and on every resize, not only at start.
-        if narrow && self.last_width.is_some_and(|w| side_panels_start_open(w)) {
+        if narrow && self.last_width.is_some_and(side_panels_start_open) {
             self.state.aids.view_list = false;
             right = false;
         }
@@ -852,7 +866,10 @@ impl eframe::App for App {
                 .size_range(min..=max)
                 .show(ui, |ui| events.extend(self.left_side(ui)));
         }
-        if right && !self.explore.open {
+        // DECISION: with no file open the right panel stays shut and its
+        // toggle disabled (design pack `screen-Start`): it has nothing to
+        // show; the toggle's state is kept for when a file opens.
+        if right && !self.explore.open && self.state.doc.is_some() {
             egui::Panel::right("c4rizer-right")
                 .resizable(true)
                 .frame(panel_frame)
@@ -1169,5 +1186,19 @@ mod tests {
             let canvas = width - 2.0 * (max + super::PANEL_CHROME_PX);
             assert!(canvas >= 0.6 * width, "{width}: canvas {canvas}");
         }
+    }
+
+    /// The style panel names shapes in words (redesign 2026-11-19), one
+    /// distinct name per panel shape.
+    #[test]
+    fn shape_names_read_as_words() {
+        use c4rizer_core::model::Shape;
+        assert_eq!(super::shape_name(Shape::Box), "Box");
+        assert_eq!(super::shape_name(Shape::RoundedBox), "Rounded box");
+        assert_eq!(super::shape_name(Shape::MobileDevicePortrait), "Mobile device portrait");
+        let mut names: Vec<String> = crate::state::PANEL_SHAPES.iter().map(|&s| super::shape_name(s)).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), crate::state::PANEL_SHAPES.len());
     }
 }

@@ -107,7 +107,6 @@ pub struct Button<'a> {
     on: bool,
     enabled: bool,
     block: bool,
-    width: Option<f32>,
 }
 
 impl<'a> Button<'a> {
@@ -166,13 +165,6 @@ impl<'a> Button<'a> {
         self
     }
 
-    /// A fixed width.
-    #[must_use]
-    pub fn width(mut self, width: f32) -> Self {
-        self.width = Some(width);
-        self
-    }
-
     fn font(&self) -> FontId {
         if self.look == Look::Primary {
             FontId::new(12.0, egui::FontFamily::Name(crate::theme::MEDIUM.into()))
@@ -186,16 +178,11 @@ impl<'a> Button<'a> {
         let font = self.font();
         let text_w = self.text.map_or(0.0, |t| text_width(ui, t, &font));
         let natural = match (self.icon, self.text) {
-            (Some(_), None) => SIZE_CONTROL,
+            (_, None) => SIZE_CONTROL,
             (None, Some(_)) => text_w + 16.0,
             (Some(_), Some(_)) => SIZE_ICON + 4.0 + text_w + 16.0,
-            (None, None) => SIZE_CONTROL,
         };
-        let width = if self.block {
-            ui.available_width()
-        } else {
-            self.width.unwrap_or(natural)
-        };
+        let width = if self.block { ui.available_width() } else { natural };
         let sense = if self.enabled { Sense::click() } else { Sense::hover() };
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_CONTROL), sense);
         if ui.is_rect_visible(rect) {
@@ -430,6 +417,7 @@ pub fn segmented(ui: &mut Ui, items: &[Segment<'_>], fill: bool) -> Option<usize
 /// A panel section (`components/Section`): a 28 px header with a fold
 /// chevron, a label and an optional count; the body padded 0 12 12; a
 /// hairline under it. `count` is `(text, warn)`.
+#[expect(clippy::too_many_arguments, reason = "a section's id, title, count and fold, then its body")]
 pub fn section<R>(
     ui: &mut Ui,
     id: &str,
@@ -581,7 +569,7 @@ pub fn select(ui: &mut Ui, id: &str, current: &str, choices: &[String], selected
             .show_ui(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (i, text) in choices.iter().enumerate() {
-                    if menu_row(ui, None, text, selected == Some(i), true, None).clicked() {
+                    if menu_row(ui, None, text, selected == Some(i), true).clicked() {
                         picked = Some(i);
                     }
                 }
@@ -629,36 +617,33 @@ pub fn swatch(ui: &mut Ui, id: &str, value: Option<[u8; 3]>) -> Option<[u8; 3]> 
     let border = if response.hovered() { INK_3 } else { LINE_STRONG };
     p.rect_stroke(rect, r1(), Stroke::new(1.0, border), StrokeKind::Inside);
     let chip = Rect::from_min_size(egui::pos2(rect.min.x + 4.0, rect.center().y - 8.0), Vec2::splat(16.0));
-    match value {
-        Some([r, g, b]) => {
-            p.rect_filled(chip, CornerRadius::same(1), Color32::from_rgb(r, g, b));
-            p.text(
-                egui::pos2(chip.max.x + 8.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                format!("#{r:02x}{g:02x}{b:02x}"),
-                crate::theme::code_font(),
-                INK,
+    if let Some([r, g, b]) = value {
+        p.rect_filled(chip, CornerRadius::same(1), Color32::from_rgb(r, g, b));
+        p.text(
+            egui::pos2(chip.max.x + 8.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            format!("#{r:02x}{g:02x}{b:02x}"),
+            crate::theme::code_font(),
+            INK,
+        );
+    } else {
+        p.rect_filled(chip, CornerRadius::same(1), BG_CANVAS);
+        let hatch = p.with_clip_rect(chip);
+        let mut x = chip.min.x - 16.0;
+        while x < chip.max.x {
+            hatch.line_segment(
+                [egui::pos2(x, chip.max.y), egui::pos2(x + 16.0, chip.min.y)],
+                Stroke::new(2.0, BG_ACTIVE),
             );
+            x += 4.0;
         }
-        None => {
-            p.rect_filled(chip, CornerRadius::same(1), BG_CANVAS);
-            let clip = p.with_clip_rect(chip);
-            let mut x = chip.min.x - 16.0;
-            while x < chip.max.x {
-                clip.line_segment(
-                    [egui::pos2(x, chip.max.y), egui::pos2(x + 16.0, chip.min.y)],
-                    Stroke::new(2.0, BG_ACTIVE),
-                );
-                x += 4.0;
-            }
-            p.text(
-                egui::pos2(chip.max.x + 8.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                "differs",
-                crate::theme::code_font(),
-                INK_3,
-            );
-        }
+        p.text(
+            egui::pos2(chip.max.x + 8.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            "differs",
+            crate::theme::code_font(),
+            INK_3,
+        );
     }
     p.rect_stroke(chip, CornerRadius::same(1), Stroke::new(1.0, LINE_STRONG), StrokeKind::Inside);
     let mut picked = None;
@@ -737,9 +722,9 @@ pub fn kbd(ui: &mut Ui, text: &str) -> Response {
 // ------------------------------------------------------------ menu
 
 /// A menu row (`components/Menu`): 26 px, `accent-soft` on hover, an
-/// optional icon and trailing key; disabled rows show `ink-disabled` and
-/// take no click (behaviour change 5).
-pub fn menu_row(ui: &mut Ui, icon: Option<Icon>, text: &str, on: bool, enabled: bool, key: Option<&str>) -> Response {
+/// optional icon; disabled rows show `ink-disabled` and take no click
+/// (behaviour change 5).
+pub fn menu_row(ui: &mut Ui, icon: Option<Icon>, text: &str, on: bool, enabled: bool) -> Response {
     let width = ui.available_width().max(192.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 26.0), sense);
@@ -770,21 +755,11 @@ pub fn menu_row(ui: &mut Ui, icon: Option<Icon>, text: &str, on: bool, enabled: 
     let font = crate::theme::ui_font();
     let room = rect.max.x - x - 8.0;
     p.text(egui::pos2(x, rect.center().y), Align2::LEFT_CENTER, elide(ui, text, &font, room), font, ink);
-    if let Some(key) = key {
-        p.text(
-            egui::pos2(rect.max.x - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            key,
-            FontId::monospace(10.0),
-            INK_3,
-        );
-    }
     response
 }
 
 /// The frame of anything that floats: `bg-overlay`, `line-2`, `radius-2`,
 /// the overlay shadow.
-#[must_use]
 pub fn overlay_frame(ui: &Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
         .fill(BG_OVERLAY)
