@@ -1772,8 +1772,9 @@ are split into P2-400..P2-439 and P2-440, one testable sentence each.
   `background` (fill), `stroke`, `strokeWidth`, `color` and `fontSize`
   (name tag), `border`, `opacity` and `metadata` (`false` drops the
   bracketed type from the name tag), and a property no such block sets
-  keeps its default value (dashed 6/4, 1px, #666666, no fill; owner
-  decision 2026-11-19: the redesign's 6/4 dash, was 8/6). `shape`,
+  keeps its default value (dashed 6/4, 1px, `dg-boundary` #7b848b in
+  light and #737c83 in dark, no fill; owner decision 2026-11-19: the
+  redesign's 6/4 dash and boundary colour, were 8/6 and #666666). `shape`,
   `width`, `height` and `description` are ignored. `TODO(srs)`: a
   boundary `icon` (the reference puts it in the bottom-left corner).
 - **P2-412** Element styles for `Group` and then `Group:<name>` apply to
