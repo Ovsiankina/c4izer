@@ -271,6 +271,7 @@ fn p2_436_draw_list_matches_svg() {
             hide_key: false,
             faded: Vec::new(),
             tooltip: None,
+            written_thickness: crate::canvas::thickness_written(&parsed.model, scene),
         };
         let items = paint_items(&list);
         let boxes = svg_groups(&svg, "box");
@@ -416,4 +417,63 @@ fn p2_13_editor_opens_and_edits_themed_file() {
     assert!(written.contains("theme theme.json") && written.contains("#ffff00"), "{written}");
     assert!(sh.s.doc.as_ref().and_then(|d| d.parse_error.as_ref()).is_none());
     assert_eq!(shop_fill(&sh), (0x2e, 0x7d, 0x32), "theme still drawn");
+}
+
+/// One line whose style writes `thickness 2`, one unstyled.
+const THICK: &str = r#"workspace {
+    model {
+        a = softwareSystem "A"
+        b = softwareSystem "B"
+        c = softwareSystem "C"
+        a -> b "Thick" "" "Thick"
+        a -> c "Plain"
+    }
+    views {
+        systemLandscape "l" {
+            include *
+        }
+        styles {
+            relationship "Thick" {
+                thickness 2
+            }
+        }
+    }
+}
+"#;
+
+/// P2-418 with the redesign's 1.5px edge (EDIT-12): the canvas paints a
+/// line whose style writes `thickness 2` exactly 2px wide and an
+/// unstyled line 1.5px, as the SVG strokes them.
+#[test]
+fn p2_418_canvas_written_thickness_2_matches_svg() {
+    use c4rizer_core::scene::ItemKey;
+    let dir = TempDir::new("thick");
+    let path = dir.join("thick.dsl");
+    std::fs::write(&path, THICK).expect("fixture written");
+    let sh = Shell::open(&path);
+    let list = sh.s.draw_list();
+    let scene = list.scene.expect("a scene");
+    let svg = c4rizer_core::export::svg(scene);
+    let items = paint_items(&list);
+    let model = sh.s.model().expect("a parse");
+    let groups = svg_groups(&svg, "line");
+    assert_eq!(groups.len(), 2);
+    for (l, g) in scene.lines.iter().zip(groups) {
+        let thick = model.relationship(l.relationship).tags.iter().any(|t| t == "Thick");
+        let want = if thick { 2.0 } else { 1.5 };
+        let route = &g[..g.find("/>").expect("route")];
+        assert!(route.contains(&format!("stroke-width=\"{want}\"")), "{route}");
+        let (prims, _) = shapes_of(&items, Source::Scene(ItemKey::Line(l.edge)));
+        let widths: Vec<f32> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Path { width, .. } => Some(width / list.camera.zoom),
+                _ => None,
+            })
+            .collect();
+        assert!(!widths.is_empty());
+        for w in widths {
+            assert!((w - want).abs() < 1e-4, "thick {thick}: {w}");
+        }
+    }
 }

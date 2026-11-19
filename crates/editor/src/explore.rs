@@ -1773,7 +1773,7 @@ impl Explore {
         match source {
             ImageSource::Embed(key) => match self.embed(model, key) {
                 Embed::View(build) => {
-                    if let Some(rect) = embedded_view(ui, &build) {
+                    if let Some(rect) = embedded_view(ui, model, &build) {
                         self.drawn_embeds.push((key.clone(), rect));
                     }
                 }
@@ -2420,7 +2420,7 @@ fn fetch_remote(_url: &str) -> Option<Vec<u8>> {
 // TODO(srs): P3-517 also asks the placeholder to match inspection
 // `documentation.embeddedview`, which is not built (deferred row
 // "explore embed inspection").
-fn embedded_view(ui: &mut egui::Ui, build: &ViewBuild) -> Option<egui::Rect> {
+fn embedded_view(ui: &mut egui::Ui, model: &Model, build: &ViewBuild) -> Option<egui::Rect> {
     let scene = &build.scene;
     #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
     let (w, h) = (scene.bounds.width() as f32, scene.bounds.height() as f32);
@@ -2455,6 +2455,7 @@ fn embedded_view(ui: &mut egui::Ui, build: &ViewBuild) -> Option<egui::Rect> {
         hide_key: false,
         faded: Vec::new(),
         tooltip: None,
+        written_thickness: crate::canvas::thickness_written(model, scene),
     };
     crate::canvas::paint_page(&painter, &list, None);
     crate::canvas::paint(&painter, &crate::canvas::paint_items(&list));

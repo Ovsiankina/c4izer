@@ -1000,6 +1000,13 @@ pub struct DrawList<'a> {
     pub faded: Vec<ItemKey>,
     /// The tooltip overlay (P2-723, P2-724).
     pub tooltip: Option<Tooltip>,
+    /// The lines whose thickness a relationship style wrote
+    /// (`canvas::thickness_written`): painted as written, a written 2px
+    /// at 2px rather than the default's 1.5px, as the SVG (EDIT-12).
+    // DECISION: crate-private (the editor is a binary; no literal outside
+    // the crate), so no pub item is added; empty paints every 2px line
+    // 1.5px, the default look.
+    pub(crate) written_thickness: Vec<c4rizer_core::view::EdgeId>,
 }
 
 /// The tooltip overlay (P2-723): the hovered item's details, at the
@@ -1944,6 +1951,11 @@ impl State {
             hide_key: !self.aids.key,
             faded: self.faded(),
             tooltip: self.tooltip(),
+            // The model the scene was built from, so edge ids match.
+            written_thickness: match (scene, self.scene_model()) {
+                (Some(scene), Some(model)) => crate::canvas::thickness_written(model, scene),
+                _ => Vec::new(),
+            },
         }
     }
 

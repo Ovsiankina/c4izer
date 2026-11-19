@@ -249,9 +249,9 @@ pub fn svg(scene: &Scene) -> String {
                 tip,
             } => {
                 // The key's line sample: route, head, port, as a line.
-                w.route(&[vec![*from, *to]], &[], stroke, tip);
+                w.route(&[vec![*from, *to]], &[], stroke, tip, false);
                 w.head(tip, stroke);
-                w.port(*from, stroke);
+                w.port(*from, stroke, false);
             }
         }
         w.text(&entry.text);
@@ -557,8 +557,9 @@ impl Writer {
         // chevrons).
         let whole = [line.points.clone()];
         let runs: &[Vec<Point>] = if line.runs.is_empty() { &whole } else { &line.runs };
-        self.route(runs, &line.jumps, &line.stroke, &line.tip);
-        let width = edge_width(line.stroke.width_px);
+        let written = line.thickness_written;
+        self.route(runs, &line.jumps, &line.stroke, &line.tip, written);
+        let width = edge_width(line.stroke.width_px, written);
         for bar in &line.bars {
             self.edge_stroke(&path_data(bar, false), &solid, width);
         }
@@ -567,16 +568,17 @@ impl Writer {
         }
         self.head(&line.tip, &line.stroke);
         if let Some(&source) = line.points.first() {
-            self.port(source, &line.stroke);
+            self.port(source, &line.stroke, written);
         }
         self.close();
     }
 
     /// A line's runs: rounded corners, a 6px half-circle hop at each of
     /// `jumps` (P2-422), the run reaching the arrow's tip stopped in its
-    /// notch.
-    fn route(&mut self, runs: &[Vec<Point>], jumps: &[Point], stroke: &Stroke, tip: &Tip) {
-        let width = edge_width(stroke.width_px);
+    /// notch; `written` as `edge_width`.
+    #[expect(clippy::too_many_arguments, reason = "a line's geometry, stroke and tip, plus the written-width flag")]
+    fn route(&mut self, runs: &[Vec<Point>], jumps: &[Point], stroke: &Stroke, tip: &Tip, written: bool) {
+        let width = edge_width(stroke.width_px, written);
         for run in runs {
             let trim = match tip {
                 Tip::Arrow(t) if run.last() == Some(&t[0]) => head_trim(stroke.width_px),
@@ -617,15 +619,16 @@ impl Writer {
         }
     }
 
-    /// The port: a paper dot ringed in the line's colour at its source.
-    fn port(&mut self, at: Point, stroke: &Stroke) {
+    /// The port: a paper dot ringed in the line's colour at its source;
+    /// `written` as `edge_width`.
+    fn port(&mut self, at: Point, stroke: &Stroke, written: bool) {
         self.raw("<circle");
         self.attr_num("cx", at.x);
         self.attr_num("cy", at.y);
         let _ = write!(self.out, " r=\"{}\"", num(PORT_RADIUS_PX));
         self.attr_colour("fill", self.paper);
         self.attr_colour("stroke", stroke.colour);
-        let _ = write!(self.out, " stroke-width=\"{}\"", num(edge_width(stroke.width_px)));
+        let _ = write!(self.out, " stroke-width=\"{}\"", num(edge_width(stroke.width_px, written)));
         self.raw("/>");
     }
 
@@ -978,12 +981,14 @@ pub(crate) fn window_marks(rect: Rect, bar_px: i32, kind: WindowKind) -> Vec<Str
 // repeats these numbers and steps; keep the two in step (EDIT-12).
 
 /// Stroke width a renderer draws a line `width_px` wide at: the scene's
-/// default 2px line is drawn `edge-width` 1.5px.
+/// default 2px line is drawn `edge-width` 1.5px; a thickness a style
+/// wrote (`written`, `SceneLine::thickness_written`) draws as written,
+/// 2px included.
 // DECISION: the scene keeps integer widths (pub `Stroke::width_px`), so
-// the renderers map exactly the default 2px to 1.5px; any other written
-// thickness draws as written.
-pub(crate) fn edge_width(width_px: i32) -> f64 {
-    if width_px == 2 { 1.5 } else { f64::from(width_px) }
+// the renderers map exactly the unwritten default 2px to 1.5px; key
+// samples pass `written` false and keep their earlier width.
+pub(crate) fn edge_width(width_px: i32, written: bool) -> f64 {
+    if width_px == 2 && !written { 1.5 } else { f64::from(width_px) }
 }
 
 /// Corner radius of a turn (`edge-corner`), at most half the shorter leg.
@@ -2030,6 +2035,51 @@ mod tests {
         empty.legend.entries.clear();
         let drawn = parse_xml(&svg(&empty)).expect("parses");
         assert_eq!(drawn.children.len(), 1);
+    }
+
+    /// P2-418 with the redesign's 1.5px edge: a relationship style that
+    /// writes `thickness 2` draws its line (route, chevrons, port ring)
+    /// exactly 2px, as written; an unstyled line keeps 1.5px.
+    #[test]
+    fn p2_418_written_thickness_2_draws_2px() {
+        let src = r#"workspace {
+  model {
+    a = softwareSystem "A"
+    b = softwareSystem "B"
+    c = softwareSystem "C"
+    a -> b "Thick" "" "Thick"
+    a -> c "Plain"
+  }
+  views {
+    systemLandscape "l" {
+      include *
+    }
+    styles {
+      relationship "Thick" {
+        thickness 2
+      }
+    }
+  }
+}
+"#;
+        let model = parse(src).expect("parses").model;
+        let scene = scene_of(src, "l");
+        let doc = root(&svg(&scene));
+        let line_groups: Vec<&El> = doc.children.iter().filter(|g| g.attr("class") == Some("line")).collect();
+        assert_eq!(line_groups.len(), 2);
+        for (line, g) in scene.lines.iter().zip(line_groups) {
+            assert_eq!(line.stroke.width_px, 2);
+            let thick = model.relationship(line.relationship).tags.iter().any(|t| t == "Thick");
+            let want = if thick { "2" } else { "1.5" };
+            let n = g.children.len();
+            for (i, child) in g.children.iter().enumerate() {
+                // The arrowhead is filled, not stroked.
+                if i == n - 2 {
+                    continue;
+                }
+                assert_eq!(child.attr("stroke-width"), Some(want), "thick {thick}, child {i}");
+            }
+        }
     }
 
     /// PNG width and height from the IHDR chunk; asserts the signature.

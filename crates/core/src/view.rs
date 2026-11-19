@@ -201,6 +201,12 @@ pub struct PlanEdge {
     // surface has no field for it. Listed in docs/deferred.md in case the
     // owner wants it pub.
     pub(crate) style_tag: Option<String>,
+    /// True when a relationship style that applies to the winner writes
+    /// `thickness` (`Model::relationship_thickness_written_in`): the
+    /// renderers draw a written 2px at 2px, not the default's 1.5px.
+    // DECISION: crate-private like `style_tag`: `scene` reads the plan
+    // alone, and the frozen pub surface has no field for it.
+    pub(crate) thickness_written: bool,
     /// The sequence number of the dynamic step the line draws (P3-208..
     /// P3-212); `None` on every other kind.
     pub order: Option<String>,
@@ -589,6 +595,7 @@ fn plan_raw(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         e.id = EdgeId(index_u32(i));
         e.style = fold_line(model.relationship_style_of_in(e.winner(), mode), view, e.winner());
         e.style_tag = style_tag(model, e.winner(), mode);
+        e.thickness_written = model.relationship_thickness_written_in(e.winner(), mode, false);
     }
     let mut boundaries: Vec<Boundary> = scope_boundary(model, view, &boxes, mode).into_iter().collect();
     boundaries.extend(group_boundaries(model, view, &boxes, mode));
@@ -671,6 +678,7 @@ fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                     fold_line(model.relationship_style_of_in(r.id, mode), view, r.id)
                 },
                 style_tag: style_tag(model, r.id, mode),
+                thickness_written: model.relationship_thickness_written_in(r.id, mode, step.response),
                 order: Some(step.order.clone()),
                 vertices: Vec::new(),
                 source_anchor: None,
@@ -838,6 +846,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                     None => model.relationship_style_of_in(winner, mode),
                 },
                 style_tag: style_tag(model, winner, mode),
+                thickness_written: model.relationship_thickness_written_in(winner, mode, false),
                 order: None,
                 vertices: Vec::new(),
                 source_anchor: None,
@@ -1398,6 +1407,7 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         technology: r.technology.as_ref().map(|t| t.value.clone()),
         style: ResolvedRelationshipStyle::DEFAULT,
         style_tag: None,
+        thickness_written: false,
         order: None,
         vertices: Vec::new(),
         source_anchor: None,

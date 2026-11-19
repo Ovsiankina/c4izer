@@ -19,10 +19,11 @@
 
 use c4rizer_core::geom::{Point, Rect};
 use c4rizer_core::label::Weight;
-use c4rizer_core::model::{Asset, Colour, Mode, ViewKind};
+use c4rizer_core::model::{Asset, Colour, Mode, Model, ViewKind, ViewSpec};
 use c4rizer_core::scene::{
-    Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Stroke, Swatch, TextBlock, Tip, WindowKind,
+    Align, FONT_BOLD, FONT_REGULAR, ItemKey, Outline, Scene, Stroke, Swatch, TextBlock, Tip, WindowKind,
 };
+use c4rizer_core::view::EdgeId;
 
 use crate::camera::{Camera, ScreenPoint};
 use crate::state::{Button, DrawList, Input, Key, MarkKind, Modifiers};
@@ -189,7 +190,8 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         let source = Source::Scene(ItemKey::Line(l.edge));
         opacity.set(l.opacity);
         let colour = rgb(l.stroke.colour);
-        let width = edge_width(l.stroke.width_px) * cam.zoom;
+        let written = list.written_thickness.contains(&l.edge);
+        let width = edge_width(l.stroke.width_px, written) * cam.zoom;
         // P4-523: a bridged line's runs and T bars, as the SVG draws them
         // (P4-519).
         let whole = [l.points.clone()];
@@ -221,7 +223,7 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         }
         push(source, head(&l.tip, l.stroke.width_px, colour, cam));
         if let Some(&from) = l.points.first() {
-            for primitive in port(from, l.stroke.width_px, colour, paper, cam) {
+            for primitive in port(from, edge_width(l.stroke.width_px, written), colour, paper, cam) {
                 push(source, primitive);
             }
         }
@@ -374,12 +376,12 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
                     push(source, Primitive::Path {
                         points,
                         colour,
-                        width: edge_width(stroke.width_px) * cam.zoom,
+                        width: edge_width(stroke.width_px, false) * cam.zoom,
                         dash: dash(stroke, cam),
                     });
                 }
                 push(source, head(t, stroke.width_px, colour, cam));
-                for primitive in port(*from, stroke.width_px, colour, paper, cam) {
+                for primitive in port(*from, edge_width(stroke.width_px, false), colour, paper, cam) {
                     push(source, primitive);
                 }
             }
@@ -850,9 +852,50 @@ fn window_marks(rect: Rect, bar_px: i32, kind: WindowKind, cam: &Camera) -> Vec<
 // (`edge_width`, `edge_path`, `notched_head`, `label_plate`), so the
 // canvas keeps drawing what the export draws (EDIT-12). Keep in step.
 
-/// Stroke width of a line `width_px` wide: the default 2px is 1.5px.
-fn edge_width(width_px: i32) -> f32 {
-    if width_px == 2 { 1.5 } else { px(width_px) }
+/// Stroke width of a line `width_px` wide: the default 2px is 1.5px; a
+/// thickness a style wrote (`written`) draws as written, 2px included.
+fn edge_width(width_px: i32, written: bool) -> f32 {
+    if width_px == 2 && !written { 1.5 } else { px(width_px) }
+}
+
+/// The tag core's renderer adds to a dynamic view's response step for
+/// its style lookup (P3-201).
+// DECISION: repeated here, core's constant is private; the editor finds
+// a written thickness through the model's pub relationship styles only.
+const RESPONSE_TAG: &str = "Relationship/Response";
+
+/// The lines of `scene` whose thickness a relationship style wrote: a
+/// block in `model.relationship_styles` with `thickness`, for one of the
+/// winner's tags (plus `Relationship/Response` on a dynamic view's
+/// response step), in the scene's mode. The SVG reads the same fact from
+/// the plan (EDIT-12); these lines draw a written 2px at 2px.
+// DECISION: any applying block counts, theme blocks included, as core's
+// `Model::relationship_thickness_written_in`; which block wins does not
+// matter, only that the width did not come from the default.
+pub(crate) fn thickness_written(model: &Model, scene: &Scene) -> Vec<EdgeId> {
+    let spec = (scene.kind == ViewKind::Dynamic).then(|| model.view(&scene.key)).flatten();
+    let drawn = spec.map(ViewSpec::drawn_steps).unwrap_or_default();
+    scene
+        .lines
+        .iter()
+        .filter(|l| {
+            let response = spec.is_some_and(|v| {
+                drawn
+                    .get(l.edge.0 as usize)
+                    .and_then(|&i| v.steps.get(i))
+                    .is_some_and(|s| s.response)
+            });
+            let tags = &model.relationship(l.relationship).tags;
+            let extra = response.then_some(RESPONSE_TAG);
+            tags.iter().map(String::as_str).chain(extra).any(|tag| {
+                model
+                    .relationship_styles
+                    .iter()
+                    .any(|s| s.tag.value == tag && s.mode.is_none_or(|m| m == scene.mode) && s.thickness.is_some())
+            })
+        })
+        .map(|l| l.edge)
+        .collect()
 }
 
 /// Corner radius of a turn, at most half the shorter leg.
@@ -1029,8 +1072,9 @@ fn head(t: &Tip, width_px: i32, colour: [u8; 3], cam: &Camera) -> Primitive {
 
 /// The port at a line's source: a paper dot ringed in the line's colour,
 /// as two filled circles (the ring centred on radius 2.5).
-fn port(from: Point, width_px: i32, colour: [u8; 3], paper: [u8; 3], cam: &Camera) -> [Primitive; 2] {
-    let half = edge_width(width_px) / 2.0;
+/// `width` is the line's drawn width (`edge_width`), scene px.
+fn port(from: Point, width: f32, colour: [u8; 3], paper: [u8; 3], cam: &Camera) -> [Primitive; 2] {
+    let half = width / 2.0;
     let centre = cam.to_screen(from);
     [
         Primitive::Circle {
@@ -1614,6 +1658,7 @@ mod tests {
             hide_key: false,
             faded: Vec::new(),
             tooltip: None,
+            written_thickness: Vec::new(),
         }
     }
 

@@ -505,6 +505,12 @@ pub struct SceneLine {
     /// drawn solid with the line's colour and width; empty without a gap.
     // APPROVER: new pub item
     pub bars: Vec<[Point; 2]>,
+    /// `PlanEdge::thickness_written`: a style wrote the line's thickness,
+    /// so the SVG draws `stroke.width_px` as written, even 2px.
+    // DECISION: crate-private (the struct is `#[non_exhaustive]`, so no
+    // literal outside the crate breaks): the export reads it; the editor
+    // finds the same fact through the model's pub relationship styles.
+    pub(crate) thickness_written: bool,
 }
 
 /// One crossing of two routed lines in a view that marks crossings
@@ -2277,6 +2283,7 @@ fn scene_line(
         jumps: Vec::new(),
         runs: Vec::new(),
         bars: Vec::new(),
+        thickness_written: edge.thickness_written,
     }
 }
 
