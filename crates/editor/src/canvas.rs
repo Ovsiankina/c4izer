@@ -189,12 +189,33 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
         opacity.set(l.opacity);
         let colour = rgb(l.stroke.colour);
         let width = px(l.stroke.width_px) * cam.zoom;
-        push(source, Primitive::Path {
-            points: route_points(&l.points, &l.jumps, cam),
-            colour,
-            width,
-            dash: dash(&l.stroke, cam),
-        });
+        // P4-523: a bridged line's runs and T bars, as the SVG draws them
+        // (P4-519).
+        if l.runs.is_empty() {
+            push(source, Primitive::Path {
+                points: route_points(&l.points, &l.jumps, cam),
+                colour,
+                width,
+                dash: dash(&l.stroke, cam),
+            });
+        } else {
+            for run in &l.runs {
+                push(source, Primitive::Path {
+                    points: route_points(run, &l.jumps, cam),
+                    colour,
+                    width,
+                    dash: dash(&l.stroke, cam),
+                });
+            }
+            for bar in &l.bars {
+                push(source, Primitive::Path {
+                    points: bar.iter().map(|&p| cam.to_screen(p)).collect(),
+                    colour,
+                    width,
+                    dash: None,
+                });
+            }
+        }
         // Chevrons and the tip stay solid on a dashed line (P2-420).
         for c in &l.chevrons {
             push(source, Primitive::Path {

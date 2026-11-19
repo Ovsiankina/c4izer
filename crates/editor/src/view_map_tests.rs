@@ -248,7 +248,8 @@ impl Shell {
                     | MenuAction::ReleaseAnchor { .. }
                     | MenuAction::GroupBus
                     | MenuAction::UngroupBus { .. }
-                    | MenuAction::RemoveFromBus { .. } => None,
+                    | MenuAction::RemoveFromBus { .. }
+                    | MenuAction::FlipBridge { .. } => None,
                 })
                 .collect(),
             _ => Vec::new(),

@@ -536,12 +536,16 @@ fn p4_420_scene_lists_bundles_and_svg_draws_the_scene() {
     let (_, b) = grid_build(STRAIGHT);
     assert_eq!(b.scene.bundles, b.routes.bundles);
     // The SVG is drawn from the same scene as the canvas (EDIT-12): each
-    // scene line is one path through its points.
+    // scene line is one path through its points, or one per run where a
+    // bridge cuts it (P4-519).
     let svg = export::svg(&b.scene);
     for l in &b.scene.lines {
-        let rest: Vec<String> = l.points[1..].iter().map(|p| format!("L{},{}", p.x, p.y)).collect();
-        let d = format!("M{},{} {}", l.points[0].x, l.points[0].y, rest.join(" "));
-        assert!(svg.contains(&format!("d=\"{d}\"")), "{d}");
+        let runs = if l.runs.is_empty() { vec![l.points.clone()] } else { l.runs.clone() };
+        for run in runs {
+            let rest: Vec<String> = run[1..].iter().map(|p| format!("L{},{}", p.x, p.y)).collect();
+            let d = format!("M{},{} {}", run[0].x, run[0].y, rest.join(" "));
+            assert!(svg.contains(&format!("d=\"{d}\"")), "{d}");
+        }
     }
 }
 

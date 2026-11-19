@@ -337,6 +337,10 @@ pub struct ViewPlan {
     /// order written; empty without `bundle` lines. Serves P4-402.
     // APPROVER: new pub item
     pub bundles: Vec<Vec<EdgeId>>,
+    /// One entry per kept `bridge` line of the view whose two lines it
+    /// draws: `(carrier, other)` as written. Serves P4-502.
+    // APPROVER: new pub item
+    pub bridges: Vec<(EdgeId, EdgeId)>,
 }
 
 impl ViewPlan {
@@ -492,6 +496,14 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
             plan.bundles.push(members);
         }
     }
+    // P4-502: each `bridge` line's two lines.
+    for line in &view.bridges {
+        if let (Some(c), Some(o)) = (bundle_edge(&plan, &line.carrier), bundle_edge(&plan, &line.other))
+            && c != o
+        {
+            plan.bridges.push((c, o));
+        }
+    }
     plan
 }
 
@@ -594,6 +606,7 @@ fn plan_raw(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         mode,
         image: None,
         bundles: Vec::new(),
+        bridges: Vec::new(),
     }
 }
 
@@ -680,6 +693,7 @@ fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         mode,
         image: None,
         bundles: Vec::new(),
+        bridges: Vec::new(),
     }
 }
 
@@ -749,6 +763,7 @@ fn image_plan(view: &ViewSpec, mode: Mode) -> ViewPlan {
         mode,
         image: view.image.clone(),
         bundles: Vec::new(),
+        bridges: Vec::new(),
     }
 }
 
@@ -783,6 +798,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
             mode,
             image: None,
             bundles: Vec::new(),
+            bridges: Vec::new(),
         };
     };
     let full = plan_in(model, base, mode);
@@ -854,6 +870,7 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
         mode,
         image: None,
         bundles: Vec::new(),
+        bridges: Vec::new(),
     }
 }
 

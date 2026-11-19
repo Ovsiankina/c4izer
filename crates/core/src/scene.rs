@@ -495,6 +495,36 @@ pub struct SceneLine {
     /// P2-422); empty otherwise. L4's crossing
     /// count is unchanged.
     pub jumps: Vec<Point>,
+    /// The polylines stroked when a bridge cuts or bends this line
+    /// (P4-506, P4-508): the pieces between its gaps, or its whole route
+    /// with each hop; empty when it carries no bridge, and `points` is
+    /// stroked. `points` stays the route for hit-testing (P4-518).
+    // APPROVER: new pub item
+    pub runs: Vec<Vec<Point>>,
+    /// The T bars at its cut ends (P4-506, P4-510), each from end to end,
+    /// drawn solid with the line's colour and width; empty without a gap.
+    // APPROVER: new pub item
+    pub bars: Vec<[Point; 2]>,
+}
+
+/// One crossing of two routed lines in a view that marks crossings
+/// (`crossings gap|jump`): where, which line carries the bridge, which
+/// passes whole. Serves P4-503, P4-517, P4-522.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SceneBridge {
+    /// The crossing point, px, rounded.
+    pub at: Point,
+    /// The line cut or hopping there.
+    pub carrier: EdgeId,
+    /// The line passing whole.
+    pub passing: EdgeId,
+    /// False when the crossing is drawn plain (P4-515, P4-516).
+    pub drawn: bool,
+    /// True when the default rule chose the carrier (P4-504), false when
+    /// a `bridge` line did (P4-505).
+    pub by_default: bool,
 }
 
 /// One placed label (CORE-14): `label::Label` in px, its text block and
@@ -715,9 +745,35 @@ pub struct Scene {
     /// Empty without bundles. Serves P4-420, L30, L31, P4-426.
     // APPROVER: new pub item
     pub bundles: Vec<crate::route::RoutedBundle>,
+    /// Every crossing of routed lines with its bridge, in a view that
+    /// marks crossings; empty with `crossings plain` or no crossing.
+    /// Serves P4-503, P4-517.
+    // APPROVER: new pub item
+    pub bridges: Vec<SceneBridge>,
 }
 
 impl Scene {
+    /// How many crossings are drawn plain for want of room (P4-515,
+    /// P4-516). Serves P4-517.
+    // APPROVER: new pub item
+    #[must_use]
+    pub fn bridge_fallbacks(&self) -> u32 {
+        u32::try_from(self.bridges.iter().filter(|b| !b.drawn).count()).unwrap_or(u32::MAX)
+    }
+
+    /// The crossing nearest `at` (px) within `tolerance_px`, for the
+    /// editor's right-click (P4-522).
+    // APPROVER: new pub item
+    #[must_use]
+    pub fn bridge_near(&self, at: Point, tolerance_px: i32) -> Option<&SceneBridge> {
+        let d2 = |b: &SceneBridge| {
+            let (dx, dy) = (i64::from(b.at.x - at.x), i64::from(b.at.y - at.y));
+            dx * dx + dy * dy
+        };
+        let tol = i64::from(tolerance_px.max(0));
+        self.bridges.iter().filter(|b| d2(b) <= tol * tol).min_by_key(|b| d2(b))
+    }
+
     /// The model id behind `key`: a box's element, a line's or label's
     /// winning relationship, a boundary's element; `None` for the title,
     /// subtitle, key, or a key not in this scene. Serves CORE-1, EDIT-5,
@@ -1007,6 +1063,17 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         .map(|e| scene_line(e, routes, &boxes, &label_rects, pal))
         .collect();
     add_jumps(plan, &mut lines);
+    let bridges = crate::bridge::add(
+        plan.options.crossings,
+        &crate::bridge::Around {
+            written: &plan.bridges,
+            bundles: &routes.bundles,
+            boxes: &boxes,
+            labels: &labels,
+        },
+        &mut lines,
+        routes.crossings,
+    );
     let image = plan.image.clone().map(scene_image);
     let mut extent = Extent::default();
     if let Some(image) = &image {
@@ -1070,6 +1137,7 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
         mode: plan.mode,
         image,
         bundles: routes.bundles.clone(),
+        bridges,
     }
 }
 
@@ -2162,13 +2230,15 @@ fn scene_line(
         routed: routed_line.is_some(),
         opacity: style.opacity.min(100),
         jumps: Vec::new(),
+        runs: Vec::new(),
+        bars: Vec::new(),
     }
 }
 
 /// The bounds of a line's points and tip (px).
 fn line_bounds(line: &SceneLine) -> Rect {
     let mut e = Extent::default();
-    for &p in &line.points {
+    for &p in line.points.iter().chain(line.runs.iter().flatten()).chain(line.bars.iter().flatten()) {
         e.add_point(p);
     }
     match line.tip {

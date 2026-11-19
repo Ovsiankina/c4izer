@@ -370,6 +370,7 @@ are the only escapes. `[x]` means optional; `<id>` may be a dotted path
 | `bus` | `on\|off` | `off` | c4rizer extension: a line may join another line into the same box, ending in a dot (CORE-8); lanes (CORE-12) are always on |
 | `labelWidth` | `N` | `24` | c4rizer extension: characters per label line |
 | `labels` | `line\|callout` | `line` | c4rizer extension: `callout` draws each label beside its line on a shelf with a slanted leader to the line (P4-300..P4-319) |
+| `crossings` | `gap\|jump\|plain` | `gap` | c4rizer extension: where two lines cross, `gap` cuts one of them with a T bar on each cut end, `jump` makes it hop over the other, `plain` draws the crossing unmarked (P4-500..P4-523) |
 | `maxCrossings` | `N` | `0` | c4rizer extension: crossing budget of the view |
 | `focus` | `<id>...` | none (all lines) | c4rizer extension: draw only lines touching these boxes |
 | `hide` | `<src> -> <dst>` | none | c4rizer extension: leave this line out; one per `hide` line |
@@ -3405,7 +3406,7 @@ each box has snap points, at the four corners, the middle of each side,
 and a few more on the long sides. I drag the end of an arrow near a box
 and it snaps to one of them." One testable sentence each; ids are
 allocated per row: view-map P4-100.., anchors P4-200.., callout-labels P4-300..,
-bus P4-400..
+bus P4-400.., bridges P4-500..
 
 view-map
 
@@ -3845,6 +3846,164 @@ All lengths are px; one grid unit is 10px.
   `line` line, else before the closing brace; every bundle edit is
   atomic, checked against the file on disk (EDIT-22, EDIT-24), and one
   undo step (as P3-315).
+
+bridges
+
+**Bridges at crossings**
+
+The owner (2026-11-19): "Where arrows still cross, we need a little
+bridge. Either a cut in one of the lines, with a T-shaped end on both
+sides of the cut, or a little right-angle jump. I should be able to
+choose which of the two lines has the bridge. On buses, bridges are
+fused: the lines still do not touch, but the bars of the T ends fuse
+into one bar." Approver rulings 1..10 (2026-11-19): a per-view setting
+`crossings gap|jump|plain`, default `gap`; fixed sizes; any angle; a
+deterministic default carrier the owner can flip per crossing, kept in
+a `bridge` view line; bus cases drawn as one; crowded crossings merged,
+moved along or drawn plain and counted; drawing only.
+
+Terms. A *crossing* is a point where two routed lines of a view cross
+properly (`Contact::Cross`, the L4 rule: a joined line's last segment
+never crosses its trunk). At each crossing one line, the *carrier*,
+takes the bridge; the other, the *passing* line, is drawn whole. A
+*group* is a bus (a bundle with a shared stretch, its members that left
+it excepted, P4-417) or a single line not on a bus. Lengths are px.
+
+**File and plan**
+
+- **P4-500** In a view block, `crossings gap|jump|plain` (case
+  ignored) sets how the view marks its crossings; without it the view
+  uses `gap`; another word is an error naming the line (as `labels`,
+  P4-300). `plain` draws every line exactly as before this row.
+- **P4-501** In a view block, `bridge [<n>:] <src> -> <dst> [<n>:] <src>
+  -> <dst>` names two drawn lines, as `bundle` names its members
+  (P4-400): at their crossings the first one carries the bridge. A
+  `bridge` line that is malformed or names other than two lines, names
+  an unknown element, a line the view does not draw, the same line
+  twice, or a pair (in either order) an earlier `bridge` line of the
+  view names, is ignored with a notice naming it and why
+  (`NoticeKind::BridgeIgnored`); a pair that does not cross is kept and
+  has no effect until the lines cross. The file still parses.
+- **P4-502** `ViewPlan::bridges` holds one `(carrier, other)` entry per
+  kept `bridge` line, as `EdgeId`s in file order.
+
+**Carrier**
+
+- **P4-503** In a `gap` or `jump` view, `Scene::bridges` lists one
+  `SceneBridge` per crossing: its point (rounded px), carrier, passing
+  line, whether it is drawn, and whether the default rule chose the
+  carrier. A crossing where a `jump true` line (P2-422) already hops is
+  left to that hop and not listed. With `plain`, or no crossing, the
+  list is empty.
+- **P4-504** The default carrier: a single line crossing a bus carries
+  (the bus stays whole); otherwise the group whose lowest `EdgeId` is
+  lower carries, so the line drawn first is cut and the line drawn over
+  it passes; two members of one bus: the lower `EdgeId` carries. The rule
+  reads no position, so moving an unrelated box never changes it.
+- **P4-505** A kept `bridge` line decides every crossing between the
+  group of its first line and the group of its second: the first group
+  carries. It applies to a bus as a whole.
+
+**Gap**
+
+- **P4-506** In a `gap` view the carrier is cut for a fixed length
+  centred on the crossing: 16px (8px each side) when the lines cross at
+  90°, 28px (14px each side) when they cross at 45°; each cut end gets a
+  T bar 10px long, centred on the end, square to the carrier, solid in
+  the carrier's colour and width. The passing line is drawn whole.
+- **P4-507** Each bar keeps at least 3px between its centreline and the
+  passing line's centreline, at both angles.
+- **P4-508** In a `jump` view the carrier, over the same length as the
+  gap (P4-506), leaves its path square, runs 8px out parallel to
+  itself, and comes back square: two right angles out, along, two right
+  angles back, no arc. The hop stands on the upper side of the carrier
+  (smaller y), on the left (smaller x) for a vertical carrier; the
+  passing line crosses only its middle side.
+- **P4-509** Gaps, bars and hops are built in the carrier's own
+  direction, horizontal, vertical or diagonal, against a passing line in
+  any of those directions; on a diagonal every drawn point is a whole px
+  on the carrier's line (equal steps on both axes), so a 10px bar spans
+  8px on each axis and an 8px hop stands out 6px on each axis.
+
+**Buses**
+
+- **P4-510** Gap, bus carries: every track crossed by the passing line
+  is cut at the same place, and on each side the bars of neighbouring
+  tracks meet halfway between them, so they form one continuous bar
+  across the bus, reaching 5px beyond the outermost tracks; the tracks
+  still do not touch one another.
+- **P4-511** Gap, the single line carries over a bus: one gap from 8px
+  before the first track to 8px after the last (P4-413: it crosses them
+  square), with one bar on each side.
+- **P4-512** Jump, bus carries: every track makes the same hop at the
+  same place, side by side, all on the same side.
+- **P4-513** Jump, the single line carries over a bus: one hop from 8px
+  before the first track to 8px after the last.
+- **P4-514** P4-510..P4-513 hold whichever group P4-504 or P4-505 makes
+  the carrier; a crossing that is not square to a bus is marked track by
+  track.
+
+**Crowded cases**
+
+- **P4-515** Crossings on one segment of a carrier whose gaps would
+  overlap or leave less than 20px of line between them merge into one
+  gap (or hop) from the first one's start to the last one's end when
+  their passing segments are all parallel; otherwise each of them is
+  drawn plain.
+- **P4-516** A gap or hop, with its bars, keeps at least 12px from
+  either end of its carrier's segment (corners, box edges) and at least
+  3px plus half a 2px stroke from every box, label rectangle (`labels
+  line` and `labels callout`), callout shelf, leader and dot, chevron
+  of any other line, arrowhead, join dot, and line other than its
+  carrier and passing lines; it never covers a label. A chevron of its
+  carrier or passing line does not block it: in a `gap` or `jump` view
+  such a chevron, when it would lie within 8px of the bridge, slides
+  along its own segment, 1px steps, nearest first, forward first, to the
+  first place at least 8px from every bridge, 16px from both ends of the
+  segment and 8px from every label and callout dot, and is removed when
+  there is none; with `crossings plain` every chevron stays where
+  CORE-10 puts it. Failing that, it is moved along the
+  carrier by 1, -1, 2, -2, 3, -3, 4 or -4px, the first legal place;
+  with none it is drawn plain. The tracks of one bus crossing the same
+  lines move together or are all drawn plain.
+- **P4-517** Every crossing drawn plain under P4-515 or P4-516 has
+  `drawn` false; `Scene::bridge_fallbacks` counts them.
+
+**Drawing and export**
+
+- **P4-518** Bridges are drawing only: routes, lanes, `Scene::crossings`,
+  L4 and `maxCrossings` are those of `crossings plain`, and a click on a
+  line within its gap, or on a hop's stretch of route, still hits that
+  line (`SceneLine::points` stays the route).
+- **P4-519** `SceneLine::runs` holds the polylines stroked for a bridged
+  line (the pieces between its gaps, or the route with its hops) and
+  `SceneLine::bars` its bars; SVG writes each run and each bar as a
+  path in the line's group, before its chevrons and tip, and PNG and the
+  editor's canvas draw the same scene. A line without a bridge is
+  written exactly as before, and a view without a crossing does no
+  bridge work, so its output is byte-identical and as fast.
+- **P4-520** The golden `C3-serving.svg` (CLI-5) differs from the same
+  view with `crossings plain` only in the group of the one carrier of
+  its one crossing: its route split around the gap, plus the two bars;
+  the other three goldens are unchanged.
+
+**Editor**
+
+- **P4-521** The right panel shows a "Crossings" choice (Gap, Jump,
+  Plain) for a view with a layout; picking one writes the view's
+  `crossings` line (removed for `gap`), placed as `labels` (P4-318),
+  one undo step.
+- **P4-522** A right-click within the hit tolerance of a listed
+  crossing offers "Bridge on the other line": it rewrites the view's
+  `bridge` lines so the passing group carries there (an entry for that
+  pair removed, or one added naming the passing line first), one
+  atomic edit, checked against the file on disk and one undo step (as
+  P4-427). A new `bridge` line goes after the view's last `bridge` line,
+  else after its last `bundle`, `anchor`, `via`, `at`, `size`,
+  `paperSize` or `line` line, else before the closing brace.
+- **P4-523** The canvas paints exactly the scene's runs and bars
+  (EDIT-12, one scene): a bridge looks the same on screen as in SVG and
+  PNG.
 
 ## 5. Cross-cutting
 

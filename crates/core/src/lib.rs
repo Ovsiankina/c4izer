@@ -13,6 +13,7 @@ pub mod place;
 pub mod route;
 pub mod label;
 pub mod scene;
+pub mod bridge;
 pub mod lint;
 pub mod inspect;
 pub mod export;

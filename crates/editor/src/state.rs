@@ -107,6 +107,7 @@ use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
 mod anchors;
+mod bridges;
 mod bundles;
 mod steps;
 mod vertices;
@@ -405,6 +406,10 @@ pub enum Command {
     /// checkbox), one undo step (P4-318).
     // APPROVER: new pub item
     SetLabelMode(LabelMode),
+    /// Set the open view's crossing style (the right panel's "Crossings"
+    /// choice), one undo step (P4-521).
+    // APPROVER: new pub item
+    SetCrossingStyle(c4rizer_core::model::CrossingStyle),
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -787,6 +792,24 @@ pub enum Action {
         /// The mode written, `None` for no line (`labels line`).
         mode: Option<LabelMode>,
     },
+    /// Set the view's `crossings` line, `None` to remove it (P4-521).
+    // APPROVER: new pub item
+    SetCrossingStyle {
+        /// The view.
+        view: ViewRef,
+        /// The style written, `None` for no line (`crossings gap`).
+        style: Option<c4rizer_core::model::CrossingStyle>,
+    },
+    /// Set every `bridge` line of the view (P4-522).
+    // APPROVER: new pub item
+    Bridges {
+        /// The view.
+        view: ViewRef,
+        /// The bridges, each `(carrier, other)`.
+        bridges: Vec<(c4rizer_core::edit::LineRef, c4rizer_core::edit::LineRef)>,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
     /// Set, move or remove line vertices, with the boxes moved by the
     /// same gesture, one batch (P3-310..P3-315).
     // APPROVER: new pub item
@@ -1082,6 +1105,14 @@ pub enum MenuAction {
     RemoveFromBus {
         /// The line, by its plan edge in the scene shown.
         edge: c4rizer_core::view::EdgeId,
+    },
+    /// "Bridge on the other line" at a crossing (P4-522).
+    // APPROVER: new pub item
+    FlipBridge {
+        /// The crossing's carrier, by its plan edge in the scene shown.
+        carrier: c4rizer_core::view::EdgeId,
+        /// The crossing's passing line.
+        passing: c4rizer_core::view::EdgeId,
     },
 }
 
@@ -2459,6 +2490,23 @@ impl State {
                     mode: *mode,
                 });
                 out
+            }
+            Action::SetCrossingStyle { view, style } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetCrossingStyle {
+                    view: view.key(),
+                    style: *style,
+                });
+                out
+            }
+            Action::Bridges { view, bridges, layout } => {
+                let view = &layout_view(model, view);
+                let own = vec![Edit::SetBridges {
+                    view: view.key(),
+                    bridges: bridges.clone(),
+                }];
+                layout_batch(model, view, layout, None, own)
             }
             Action::SetLine {
                 view,
@@ -4460,6 +4508,8 @@ impl State {
                 }
                 // P4-424, P4-425: the bus entries of the selection.
                 entries.extend(self.bus_entries());
+                // P4-522: a crossing under the pointer.
+                entries.extend(self.bridge_entries(at));
                 let rel = model.relationship(r);
                 let name = format!(
                     "{} -> {}",
@@ -4568,6 +4618,7 @@ impl State {
                     MenuAction::GroupBus => self.group_bus(),
                     MenuAction::UngroupBus { edge } => self.ungroup_bus(edge),
                     MenuAction::RemoveFromBus { edge } => self.remove_from_bus(edge),
+                    MenuAction::FlipBridge { carrier, passing } => self.flip_bridge(carrier, passing),
                 }
             }
             Command::ShowView(view) => {
@@ -4840,6 +4891,7 @@ impl State {
             Command::BringOntoCanvas => self.bring_onto_canvas(),
             Command::Centre => self.centre(),
             Command::SetLabelMode(mode) => self.set_label_mode(mode),
+            Command::SetCrossingStyle(style) => self.set_crossing_style(style),
         }
     }
 

@@ -995,6 +995,47 @@ pub struct ViewOptions {
     /// callouts beside the line. Serves P4-300.
     // APPROVER: new pub item
     pub labels: LabelMode,
+    /// `crossings gap|jump|plain` (c4rizer extension): how the view marks
+    /// where two lines cross. Serves P4-500.
+    // APPROVER: new pub item
+    pub crossings: CrossingStyle,
+}
+
+/// How a view marks line crossings: `crossings gap|jump|plain` (c4rizer
+/// extension). Serves P4-500, P4-506, P4-508.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CrossingStyle {
+    /// The carrier is cut around the crossing, each cut end with a T bar
+    /// (P4-506): the default.
+    #[default]
+    Gap,
+    /// The carrier makes a small rectangular hop around the other line
+    /// (P4-508).
+    Jump,
+    /// Lines cross as drawn, no mark.
+    Plain,
+}
+
+impl CrossingStyle {
+    /// The written keyword: `gap`, `jump` or `plain`. Serves P4-500,
+    /// P4-521.
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            CrossingStyle::Gap => "gap",
+            CrossingStyle::Jump => "jump",
+            CrossingStyle::Plain => "plain",
+        }
+    }
+
+    /// The style written `word`, ignoring case.
+    fn from_keyword(word: &str) -> Option<CrossingStyle> {
+        [CrossingStyle::Gap, CrossingStyle::Jump, CrossingStyle::Plain]
+            .into_iter()
+            .find(|m| m.keyword().eq_ignore_ascii_case(word))
+    }
 }
 
 /// How a view draws its line labels: `labels line|callout` (c4rizer
@@ -1038,6 +1079,7 @@ impl ViewOptions {
         label_width: 24,
         max_crossings: 0,
         labels: LabelMode::Line,
+        crossings: CrossingStyle::Gap,
     };
 }
 
@@ -1084,6 +1126,9 @@ pub struct ViewSpec {
     /// `labels line|callout` (c4rizer extension). Serves P4-300.
     // APPROVER: new pub item
     pub labels: Option<Spanned<LabelMode>>,
+    /// `crossings gap|jump|plain` (c4rizer extension). Serves P4-500.
+    // APPROVER: new pub item
+    pub crossings: Option<Spanned<CrossingStyle>>,
     /// `at` lines, in file order; at most one per element.
     pub positions: Vec<At>,
     /// `size` lines, in file order; at most one per element.
@@ -1131,6 +1176,31 @@ pub struct ViewSpec {
     /// (P4-401). Serves P4-400..P4-402.
     // APPROVER: new pub item
     pub bundles: Vec<BundleLine>,
+    /// `bridge <src> -> <dst> <src> -> <dst>` lines (c4rizer extension),
+    /// in file order, each naming two lines the view draws, at most one
+    /// per pair: a refused one is left out with a notice (P4-501). Serves
+    /// P4-501, P4-502, P4-505.
+    // APPROVER: new pub item
+    pub bridges: Vec<BridgeLine>,
+}
+
+/// One `bridge` line: at the crossings of the two lines it names, the
+/// first one (or the bus it belongs to) carries the bridge, the second
+/// passes whole. Each line is named as a `bundle` member is. Serves
+/// P4-501, P4-505.
+// DECISION: the two lines reuse `BundleMember` (ends as written, step
+// number, span): the same `[<n>:] <src> -> <dst>` shape, checked by the
+// same rule, no second copy of it.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BridgeLine {
+    /// The line that carries the bridge (cut or hopping).
+    pub carrier: BundleMember,
+    /// The line that passes whole.
+    pub other: BundleMember,
+    /// The whole `bridge` line, line ending excluded.
+    pub span: Span,
 }
 
 /// One `bundle` line: its members, in the order written. Serves P4-400.
@@ -1556,6 +1626,10 @@ impl ViewSpec {
                 Some(v) => v.value,
                 None => d.labels,
             },
+            crossings: match self.crossings {
+                Some(v) => v.value,
+                None => d.crossings,
+            },
         }
     }
 
@@ -1868,6 +1942,12 @@ pub enum NoticeKind {
     /// fewer than two members. `subject` says which and why.
     // APPROVER: new pub item
     BundleIgnored,
+    /// A `bridge` line c4rizer ignores (P4-501): malformed, naming an
+    /// unknown element, a line the view does not draw, the same line
+    /// twice, or a pair an earlier `bridge` line already decides.
+    /// `subject` says which and why.
+    // APPROVER: new pub item
+    BridgeIgnored,
 }
 
 /// Something the file says that c4rizer accepts with no effect: one per
@@ -1938,6 +2018,7 @@ impl fmt::Display for Notice {
             }
             NoticeKind::AnchorIgnored => write!(f, "view {view}: {subject} — the anchor line is ignored"),
             NoticeKind::BundleIgnored => write!(f, "view {view}: {subject} — ignored in the bundle line"),
+            NoticeKind::BridgeIgnored => write!(f, "view {view}: {subject} — the bridge line is ignored"),
         }
     }
 }
@@ -6139,6 +6220,7 @@ impl Builder<'_> {
         self.check_vias(&view)?;
         self.check_anchors(&mut view);
         self.check_bundles(&mut view);
+        self.check_bridges(&mut view);
         self.model.views.push(view);
         Ok(())
     }
@@ -6246,6 +6328,7 @@ impl Builder<'_> {
             self.check_vias(&view)?;
             self.check_anchors(&mut view);
             self.check_bundles(&mut view);
+            self.check_bridges(&mut view);
         }
         self.model.views.push(view);
         Ok(())
@@ -7011,6 +7094,7 @@ impl Builder<'_> {
                     span: head.span(1),
                 });
             }
+            "crossings" | "bridge" => self.bridges_view_line(head, view)?,
             "focus" => {
                 if head.len() < 2 {
                     return Err(self.missing(head, "element"));
@@ -7593,6 +7677,102 @@ impl Builder<'_> {
             kept.push(line);
         }
         view.bundles = kept;
+    }
+
+    /// A `crossings` (P4-500) or `bridge` (P4-501) line of `view`.
+    fn bridges_view_line(&mut self, head: &Head<'_>, view: &mut ViewSpec) -> Result<(), ModelError> {
+        if head.is_keyword(0, "crossings") {
+            self.overridden(view.crossings.map(|t| t.span), head);
+            let word = self.one_word(head)?;
+            let value = CrossingStyle::from_keyword(word).ok_or_else(|| self.invalid(head, "crossings", 1))?;
+            view.crossings = Some(Spanned {
+                value,
+                span: head.span(1),
+            });
+            return Ok(());
+        }
+        match self.bridge_line(head, view.kind == ViewKind::Dynamic) {
+            Ok(line) => view.bridges.push(line),
+            Err(why) => self.bridge_notice(view, head.span_of(0, head.len() - 1), &why),
+        }
+        Ok(())
+    }
+
+    /// `bridge [<n>:] <src> -> <dst> [<n>:] <src> -> <dst>` (P4-501):
+    /// exactly two lines, read as `bundle_line` reads its members. `Err`
+    /// holds why the whole line is ignored; unknown elements and lines the
+    /// view does not draw are refused in `check_bridges`.
+    fn bridge_line(&self, head: &Head<'_>, dynamic: bool) -> Result<BridgeLine, String> {
+        let BundleLine { mut members, span } = self.bundle_line(head, dynamic).map_err(|why| why.replace("`bundle`", "`bridge`"))?;
+        if members.len() != 2 {
+            return Err(format!("`bridge` names two lines, not {}", members.len()));
+        }
+        let other = members.pop().expect("two members");
+        let carrier = members.pop().expect("two members");
+        Ok(BridgeLine { carrier, other, span })
+    }
+
+    /// Records that the `bridge` line at `span` of `view` is ignored, and
+    /// `why` (P4-501).
+    fn bridge_notice(&mut self, view: &ViewSpec, span: Span, why: &str) {
+        let written = self.written(span).to_owned();
+        self.model.notices.push(Notice {
+            kind: NoticeKind::BridgeIgnored,
+            subject: format!("`{written}`: {why}"),
+            view: Some(view.key.clone()),
+            span: Some(span),
+            position: Some(self.position(span)),
+        });
+    }
+
+    /// Keeps the `bridge` lines of `view` whose two lines the view draws,
+    /// are not the same line, and whose pair no earlier `bridge` line
+    /// names; the rest is dropped with a notice (P4-501). A pair that does
+    /// not cross is kept: it is unused until the lines cross.
+    // DECISION: the first line per pair wins, as `check_bundles` keeps the
+    // first bundle naming a line; the pair is unordered, so `bridge a -> b
+    // c -> d` and `bridge c -> d a -> b` are the same pair.
+    fn check_bridges(&mut self, view: &mut ViewSpec) {
+        if view.bridges.is_empty() {
+            return;
+        }
+        let plan = crate::view::plan(&self.model, view);
+        let mut seen: BTreeMap<(crate::view::EdgeId, crate::view::EdgeId), Span> = BTreeMap::new();
+        let mut kept = Vec::new();
+        for line in std::mem::take(&mut view.bridges) {
+            let unknown = [&line.carrier, &line.other].into_iter().find_map(|m| {
+                if m.source.value.0 == u32::MAX {
+                    Some(m.source.span)
+                } else if m.destination.value.0 == u32::MAX {
+                    Some(m.destination.span)
+                } else {
+                    None
+                }
+            });
+            let why = if let Some(bad) = unknown {
+                Some(format!("no element `{}`", self.written(bad)))
+            } else {
+                match (crate::view::bundle_edge(&plan, &line.carrier), crate::view::bundle_edge(&plan, &line.other)) {
+                    (Some(a), Some(b)) if a == b => Some("it names the same line twice".to_owned()),
+                    (Some(a), Some(b)) => {
+                        let pair = (a.min(b), a.max(b));
+                        if let Some(&first) = seen.get(&pair) {
+                            let at = self.position(first);
+                            Some(format!("this pair is already decided at {}:{}", at.line, at.column))
+                        } else {
+                            seen.insert(pair, line.span);
+                            None
+                        }
+                    }
+                    _ => Some("the view draws no such line".to_owned()),
+                }
+            };
+            match why {
+                Some(why) => self.bridge_notice(view, line.span, &why),
+                None => kept.push(line),
+            }
+        }
+        view.bridges = kept;
     }
 
     /// Keeps the `anchor` lines of `view` that name a line the view draws,
@@ -8316,6 +8496,7 @@ const DYNAMIC_LINES: &[&str] = &[
     "via",
     "anchor",
     "bundle",
+    "bridge",
     "size",
     "papersize",
     "line",
@@ -8330,6 +8511,7 @@ const DYNAMIC_LINES: &[&str] = &[
     "maxcrossings",
     "bus",
     "labels",
+    "crossings",
 ];
 
 /// True for a relationship expression (P2-332): a relationship form, or
@@ -8384,6 +8566,7 @@ fn new_view(
         label_width: None,
         max_crossings: None,
         labels: None,
+        crossings: None,
         positions: Vec::new(),
         sizes: Vec::new(),
         span,
@@ -8397,6 +8580,7 @@ fn new_view(
         vias: Vec::new(),
         anchors: Vec::new(),
         bundles: Vec::new(),
+        bridges: Vec::new(),
     }
 }
 
@@ -9340,6 +9524,7 @@ mod tests {
                 label_width: 16,
                 max_crossings: 2,
                 labels: LabelMode::Line,
+                crossings: CrossingStyle::Gap,
             }
         );
         let focus: Vec<ElementId> = v.focus.iter().map(|f| f.value).collect();
@@ -9880,6 +10065,7 @@ mod tests {
                 label_width: 16,
                 max_crossings: 1,
                 labels: LabelMode::Line,
+                crossings: CrossingStyle::Gap,
             }
         );
         assert_eq!(serving.hide.len(), 2);

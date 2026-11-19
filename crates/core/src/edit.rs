@@ -140,7 +140,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::model::{
-    self, Colour, ElementId, ElementKind, ElementStyle, LabelMode, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
+    self, Colour, ElementId, ElementKind, ElementStyle, LabelMode, CrossingStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
 };
 use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 
@@ -570,6 +570,30 @@ pub enum Edit {
         /// The bundles, each its members.
         bundles: Vec<Vec<LineRef>>,
     },
+    /// Set how `view` marks its crossings: rewrite or add its `crossings`
+    /// line, or remove it with `None` (`crossings gap`, the default),
+    /// placed as `SetLabelMode` places `labels`. Serves P4-521.
+    // APPROVER: new pub item
+    SetCrossingStyle {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The style, `None` for no line.
+        style: Option<CrossingStyle>,
+    },
+    /// Set every `bridge` line of `view`: one per entry of `bridges`,
+    /// `(carrier, other)`, in order. Existing lines are rewritten in
+    /// place, extra ones removed, new ones added after the view's last
+    /// `bridge` line, else after its last `bundle`, `anchor`, `via`, `at`,
+    /// `size`, `paperSize` or `line` line, else before the closing brace.
+    /// The inverse is a `SetBridges` with the lines the view had. Serves
+    /// P4-522.
+    // APPROVER: new pub item
+    SetBridges {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The bridges, each `(carrier, other)`.
+        bridges: Vec<(LineRef, LineRef)>,
+    },
 }
 
 /// A drawn line of a view named by its ends' canonical element keys and,
@@ -884,6 +908,8 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             to,
         } => set_anchor(current, view, source, destination, order.as_deref(), (*from, *to)),
         Edit::SetBundles { view, bundles } => set_bundles(current, view, bundles),
+        Edit::SetCrossingStyle { view, style } => set_crossing_style(current, view, *style),
+        Edit::SetBridges { view, bridges } => set_bridges(current, view, bridges),
     }
 }
 
@@ -1454,7 +1480,7 @@ impl<'a> Ctx<'a> {
             }
             match words.first().map(|w| w.to_ascii_lowercase()).as_deref() {
                 Some("include") if words.len() == 2 && words[1] == "*" => includes += 1,
-                Some("at" | "size" | "papersize" | "line" | "labels") => {}
+                Some("at" | "size" | "papersize" | "line" | "labels" | "crossings") => {}
                 _ => return false,
             }
         }
@@ -2117,6 +2143,115 @@ fn set_bundles(current: &mut Parsed, view: &str, bundles: &[Vec<LineRef>]) -> Re
             return Ok(Plan::Patches(patches));
         }
         let anchors = [
+            spec.bundles.last().map(|b| b.span),
+            spec.anchors.last().map(|a| a.span),
+            spec.vias.last().map(|v| v.span),
+            spec.positions.last().map(|a| a.span),
+            spec.sizes.last().map(|s| s.span),
+            spec.paper_size.map(|p| p.span),
+            spec.lines.last().map(|l| l.span),
+        ];
+        Ok(match insert_after_first(cx, owner, block, &anchors, &extra) {
+            Plan::Patches(more) => {
+                patches.extend(more);
+                Plan::Patches(patches)
+            }
+            split @ Plan::Split(_) => split,
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// `SetCrossingStyle` (P4-521): the `crossings` line, placed as
+/// `set_label_mode` places `labels`.
+// DECISION: next to the other view options, as `labels`; a `labels`
+// line counts as one of them.
+fn set_crossing_style(current: &mut Parsed, view: &str, style: Option<CrossingStyle>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetCrossingStyle {
+        view: view.to_owned(),
+        style: spec.crossings.map(|c| c.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.crossings, style) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.keyword().to_owned(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("crossings {}", new.keyword()));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.max_crossings.map(|v| v.span),
+                    spec.labels.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// The text of a `bridge` line.
+fn bridge_text(carrier: &LineRef, other: &LineRef) -> String {
+    format!("bridge {} {}", carrier.written(), other.written())
+}
+
+/// `SetBridges` (P4-522): the view's `bridge` lines made `bridges`, one
+/// atomic step, as `set_bundles`.
+fn set_bridges(current: &mut Parsed, view: &str, bridges: &[(LineRef, LineRef)]) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let key = |id: ElementId| current.model.full_key(id).ok_or_else(|| gone(view));
+    let line_ref = |m: &model::BundleMember| -> Res<LineRef> {
+        Ok(LineRef::new(key(m.source.value)?, key(m.destination.value)?, m.order.as_ref().map(|o| o.value.clone())))
+    };
+    let mut old = Vec::with_capacity(spec.bridges.len());
+    for b in &spec.bridges {
+        old.push((line_ref(&b.carrier)?, line_ref(&b.other)?));
+    }
+    let inverse = vec![Edit::SetBridges {
+        view: view.to_owned(),
+        bridges: old,
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        let mut patches = Vec::new();
+        for (i, line) in spec.bridges.iter().enumerate() {
+            if let Some((c, o)) = bridges.get(i) {
+                let text = bridge_text(c, o);
+                if cx.src.get(line.span.range()) != Some(text.as_str()) {
+                    patches.push(Patch {
+                        range: line.span.range(),
+                        text,
+                    });
+                }
+            } else {
+                let statement = Ctx::child_holding(block, line.span).ok_or_else(|| gone(view))?;
+                patches.push(cx.remove_line(statement.span));
+            }
+        }
+        let extra: Lines = bridges.iter().skip(spec.bridges.len()).map(|(c, o)| (0, bridge_text(c, o))).collect();
+        if extra.is_empty() {
+            return Ok(Plan::Patches(patches));
+        }
+        let anchors = [
+            spec.bridges.last().map(|b| b.span),
             spec.bundles.last().map(|b| b.span),
             spec.anchors.last().map(|a| a.span),
             spec.vias.last().map(|v| v.span),

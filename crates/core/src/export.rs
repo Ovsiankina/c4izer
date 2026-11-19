@@ -189,19 +189,7 @@ pub fn svg(scene: &Scene) -> String {
         w.close();
     }
     for line in &scene.lines {
-        w.open_with("line", line.opacity);
-        w.route(&line.points, &line.jumps, &line.stroke);
-        // DECISION (scene): chevrons and the tip are solid on a dashed
-        // line (P2-420).
-        let solid = Stroke {
-            dash_px: None,
-            ..line.stroke
-        };
-        for chevron in &line.chevrons {
-            w.polyline(&chevron.points, &solid);
-        }
-        w.tip(&line.tip, line.stroke.colour);
-        w.close();
+        w.line(line);
     }
     for item in &scene.boxes {
         w.open_with("box", item.opacity);
@@ -525,6 +513,35 @@ impl Writer {
         // DECISION: round joins, as the prototype's lines, so a
         // 45° bend and a chevron apex show no mitre spike.
         self.raw(" stroke-linejoin=\"round\"/>");
+    }
+
+    /// One line group: route (or its runs and T bars, P4-519), chevrons,
+    /// tip.
+    fn line(&mut self, line: &crate::scene::SceneLine) {
+        self.open_with("line", line.opacity);
+        // DECISION (scene): chevrons and the tip are solid on a dashed
+        // line (P2-420).
+        let solid = Stroke {
+            dash_px: None,
+            ..line.stroke
+        };
+        // P4-519: a bridged line's runs, then its T bars (solid, as the
+        // chevrons); an unbridged line is written exactly as before.
+        if line.runs.is_empty() {
+            self.route(&line.points, &line.jumps, &line.stroke);
+        } else {
+            for run in &line.runs {
+                self.route(run, &line.jumps, &line.stroke);
+            }
+            for bar in &line.bars {
+                self.polyline(bar, &solid);
+            }
+        }
+        for chevron in &line.chevrons {
+            self.polyline(&chevron.points, &solid);
+        }
+        self.tip(&line.tip, line.stroke.colour);
+        self.close();
     }
 
     /// A line's route: its polyline, with a 6px half-circle hop at each of

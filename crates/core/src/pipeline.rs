@@ -787,6 +787,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         label_width: None,
         max_crossings: None,
         labels: None,
+        crossings: None,
         positions: Vec::new(),
         sizes: Vec::new(),
         span: none,
@@ -800,6 +801,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         vias: Vec::new(),
         anchors: Vec::new(),
         bundles: Vec::new(),
+        bridges: Vec::new(),
     })
 }
 

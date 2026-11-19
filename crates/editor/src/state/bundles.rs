@@ -144,7 +144,7 @@ impl State {
     }
 
     /// `edge` of the shown build named by its ends' keys and step number.
-    fn line_ref(&self, edge: EdgeId) -> Option<LineRef> {
+    pub(super) fn line_ref(&self, edge: EdgeId) -> Option<LineRef> {
         let (_, build) = self.shown.as_ref()?;
         let model = self.scene_model()?;
         let e = build.plan.edges.get(edge.0 as usize)?;

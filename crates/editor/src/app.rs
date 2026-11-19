@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, LabelMode, Mode, ViewKind};
+use c4rizer_core::model::{Colour, CrossingStyle, LabelMode, Mode, ViewKind};
 use eframe::egui;
 
 use crate::camera::ScreenPoint;
@@ -420,6 +420,21 @@ impl App {
             {
                 command(Command::SetLabelMode(if callout { LabelMode::Callout } else { LabelMode::Line }));
             }
+        }
+        // P4-521: how the view marks its crossings.
+        if let Some(style) = self.state.crossing_style() {
+            ui.horizontal(|ui| {
+                ui.label("Crossings");
+                for (choice, name, hint) in [
+                    (CrossingStyle::Gap, "Gap", "Cut one line with a T bar on each side (one undo step)"),
+                    (CrossingStyle::Jump, "Jump", "One line hops over the other (one undo step)"),
+                    (CrossingStyle::Plain, "Plain", "Lines cross unmarked (one undo step)"),
+                ] {
+                    if ui.selectable_label(style == choice, name).on_hover_text(hint).clicked() && style != choice {
+                        command(Command::SetCrossingStyle(choice));
+                    }
+                }
+            });
         }
         // P4-424, P4-425: the bus actions of the selection.
         let bus = self.state.bus_entries();
