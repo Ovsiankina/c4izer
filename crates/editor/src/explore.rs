@@ -41,6 +41,7 @@
 pub mod docs;
 pub mod markdown;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,7 +49,7 @@ use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::explore::{self, Drawn, RelationshipRow, TreeNode, Usage};
 use c4rizer_core::geom::{Point, Rect};
-use c4rizer_core::model::{Asset, Colour, ElementId, ElementKind, Mode, Model, Parsed};
+use c4rizer_core::model::{Asset, Colour, ElementId, ElementKind, Mode, Model, Parsed, ResolvedStyle};
 use c4rizer_core::pipeline::ViewBuild;
 use c4rizer_core::place::Keep;
 use c4rizer_core::text::Span;
@@ -381,6 +382,49 @@ struct Derived {
     embeds: BTreeMap<(String, bool), Option<Arc<ViewBuild>>>,
     /// Images read from docs folders, with their size.
     images: BTreeMap<PathBuf, Option<(Asset, i32, i32)>>,
+    /// Each drawn element's style as the canvas draws it, for one mode;
+    /// built on first use and again when the mode changes.
+    styles: Option<DrawnStyles>,
+}
+
+/// The style each element is drawn in, in `mode`: the house palette
+/// where the file sets no colour, as on the canvas (redesign 2026-11-19).
+// DECISION: read from `view::plan_in`, one plan per drawable view, as the
+// house palette is applied there privately in core; it depends on the
+// element and mode only, so any view drawing an element gives its style.
+#[derive(Debug)]
+struct DrawnStyles {
+    /// The mode the styles were built in.
+    mode: Mode,
+    /// The style by element, for every element some view draws.
+    by_element: BTreeMap<ElementId, ResolvedStyle>,
+}
+
+impl DrawnStyles {
+    /// Plans every drawable view of `model` in `mode` and keeps each
+    /// box's style.
+    fn build(model: &Model, mode: Mode) -> Self {
+        let mut by_element = BTreeMap::new();
+        for view in model.views.iter().filter(|v| v.kind.drawable()) {
+            for b in c4rizer_core::view::plan_in(model, view, mode).boxes {
+                by_element.entry(b.element).or_insert(b.style);
+            }
+        }
+        Self { mode, by_element }
+    }
+}
+
+/// The style `element` is drawn in, in `mode`, from `styles` when they
+/// were built in that mode.
+// DECISION: an element no view draws (or styles not built yet) falls back
+// to `Model::style_of_in`, the file's own colours without the house
+// palette: there is no drawn box to match, and core keeps the palette
+// private.
+fn drawn_style<'a>(styles: Option<&'a DrawnStyles>, model: &Model, element: ElementId, mode: Mode) -> Cow<'a, ResolvedStyle> {
+    styles
+        .filter(|s| s.mode == mode)
+        .and_then(|s| s.by_element.get(&element))
+        .map_or_else(|| Cow::Owned(model.style_of_in(element, mode)), Cow::Borrowed)
 }
 
 /// The canonical key of `element`, empty when it has none.
@@ -435,6 +479,7 @@ impl Explore {
             decisions: docs::decisions(parsed),
             embeds: BTreeMap::new(),
             images: BTreeMap::new(),
+            styles: None,
         });
         self.memo = Memo::default();
         self.textures = Textures::default();
@@ -452,6 +497,22 @@ impl Explore {
         let decisions = self.decisions().len();
         self.section = self.section.min(sections.saturating_sub(1));
         self.decision = self.decision.min(decisions.saturating_sub(1));
+    }
+
+    /// Brings the drawn styles up to date with the parse and the mode;
+    /// they are rebuilt only when either changed (a new parse clears
+    /// them in `sync`).
+    fn refresh_styles(&mut self) {
+        let mode = self.mode;
+        let Some(cache) = &mut self.cache else { return };
+        if cache.styles.as_ref().is_none_or(|s| s.mode != mode) {
+            cache.styles = Some(DrawnStyles::build(&cache.parsed.model, mode));
+        }
+    }
+
+    /// The drawn styles of the last parse, if built.
+    fn styles(&self) -> Option<&DrawnStyles> {
+        self.cache.as_ref().and_then(|c| c.styles.as_ref())
     }
 
     /// The relationship rows of the last parse.
@@ -888,6 +949,7 @@ impl Explore {
     pub fn show(&mut self, ui: &mut egui::Ui, model: &Model) -> Vec<Action> {
         let mut out = Vec::new();
         self.drawn_embeds.clear();
+        self.refresh_styles();
         ui.spacing_mut().item_spacing.y = 0.0;
         self.bar(ui, model);
         match self.page.clone() {
@@ -1155,7 +1217,7 @@ impl Explore {
                 self.expanded.insert(row.element);
             }
         }
-        let style = model.style_of_in(row.element, self.mode);
+        let style = drawn_style(self.styles(), model, row.element, self.mode);
         let swatch = egui::Rect::from_center_size(egui::pos2(x0 + 16.0 + 8.0 + 5.0, cy), egui::vec2(10.0, 10.0));
         ui.painter().rect_filled(swatch, 1.0, colour(style.background, if row.matched { 255 } else { 110 }));
         let copy = egui::Rect::from_min_size(egui::pos2(right - PAD - SIZE_CONTROL, cy - SIZE_CONTROL / 2.0), egui::vec2(SIZE_CONTROL, SIZE_CONTROL));
@@ -1543,10 +1605,11 @@ impl Explore {
         let fg = ui.visuals().text_color();
         let bg = ui.visuals().panel_fill;
         let font = egui::FontId::proportional((13.0 * cam.zoom).clamp(8.0, 22.0));
+        let styles = self.cache.as_ref().and_then(|c| c.styles.as_ref());
         for s in &t.spots {
             let c = at(s.at);
             let (fill, stroke) = s.element.map_or((egui::Color32::from_gray(0x77), egui::Color32::BLACK), |e| {
-                let st = model.style_of_in(e, self.mode);
+                let st = drawn_style(styles, model, e, self.mode);
                 (colour(st.background, 255), colour(st.stroke.unwrap_or_else(|| darker(st.background)), 255))
             });
             painter.circle(c, 6.0 * cam.zoom.max(0.6), fill, egui::Stroke::new(1.5, stroke));

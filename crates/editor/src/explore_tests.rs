@@ -1247,3 +1247,39 @@ fn p3_517_embed_draws_view_unknown_key_placeholder() {
     // is not checked: that inspection is not built (deferred row
     // "explore embed inspection").
 }
+
+/// The fills of the model page's 10x10 element swatches.
+fn swatch_fills(shapes: &[egui::Shape]) -> Vec<egui::Color32> {
+    shapes
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::Rect(r) if (r.rect.size() - egui::vec2(10.0, 10.0)).length() < 0.01 => Some(r.fill),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn model_page_swatches_in_the_drawn_house_palette() {
+    // Unstyled systems: the canvas draws them in the house palette
+    // (redesign 2026-11-19), not the keyword default #dddddd, and the
+    // swatches show what the canvas draws, in either mode.
+    let p = big_model(3);
+    let m = &p.model;
+    let mut e = Explore::default();
+    e.sync(&p);
+    let ctx = context();
+    let view = m.view("all").expect("view");
+    for (i, mode) in [model::Mode::Light, model::Mode::Dark].into_iter().enumerate() {
+        e.mode = mode;
+        let plan = c4rizer_core::view::plan_in(m, view, mode);
+        let want = plan.boxes[0].style.background;
+        let want = egui::Color32::from_rgb(want.r, want.g, want.b);
+        assert_ne!(want, egui::Color32::from_gray(0xdd), "the plan draws the house palette");
+        #[expect(clippy::cast_precision_loss, reason = "tiny index")]
+        let shapes = frame_shapes(&ctx, &mut e, m, egui::vec2(1280.0, 800.0), i as f64);
+        let fills = swatch_fills(&shapes);
+        assert_eq!(fills.len(), 3, "one swatch per element: {fills:?}");
+        assert!(fills.iter().all(|&f| f == want), "{mode:?}: {fills:?} vs {want:?}");
+    }
+}
