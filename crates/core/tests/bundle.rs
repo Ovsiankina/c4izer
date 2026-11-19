@@ -544,10 +544,19 @@ fn p4_420_scene_lists_bundles_and_svg_draws_the_scene() {
     let svg = export::svg(&b.scene);
     for l in &b.scene.lines {
         let runs = if l.runs.is_empty() { vec![l.points.clone()] } else { l.runs.clone() };
+        // redesign 2026-11-19: a run is drawn from its first point with
+        // each turn rounded (the vertex is the corner's control point),
+        // not as a plain polyline.
         for run in runs {
-            let rest: Vec<String> = run[1..].iter().map(|p| format!("L{},{}", p.x, p.y)).collect();
-            let d = format!("M{},{} {}", run[0].x, run[0].y, rest.join(" "));
-            assert!(svg.contains(&format!("d=\"{d}\"")), "{d}");
+            let start = format!("d=\"M{} {} ", run[0].x, run[0].y);
+            assert!(svg.contains(&start), "{start}");
+            for w in run.windows(3) {
+                let turns = (w[1].x - w[0].x) * (w[2].y - w[1].y) != (w[1].y - w[0].y) * (w[2].x - w[1].x);
+                if turns {
+                    let corner = format!("Q{} {} ", w[1].x, w[1].y);
+                    assert!(svg.contains(&corner), "{corner} of {run:?}");
+                }
+            }
         }
     }
 }

@@ -356,5 +356,7 @@ fn core_1_key_box_entry_named_by_styled_tag() {
         .filter(|e| matches!(e.swatch, Swatch::Box { .. }))
         .map(|e| e.text.lines.join(" "))
         .collect();
-    assert_eq!(entries, ["Person", "Software System"]);
+    // redesign 2026-11-19: unstyled External systems draw in the house
+    // slate, a look of their own, so they get an `External` entry.
+    assert_eq!(entries, ["Person", "External", "Software System"]);
 }

@@ -601,14 +601,18 @@ fn p4_214_drag_preview_rebuild() {
 fn p4_219_export_draws_scene_lines() {
     let (m, b) = c2_build("            anchor web -> db from left to bottomLeft");
     let l = line(&m, &b, "Web", "Db");
-    let d: Vec<String> = l
-        .points
-        .iter()
-        .enumerate()
-        .map(|(i, p)| format!("{}{},{}", if i == 0 { 'M' } else { 'L' }, p.x, p.y))
-        .collect();
+    // redesign 2026-11-19: the route is drawn with rounded corners, so
+    // the SVG holds its start and each turn as a corner's control point
+    // (was the plain polyline).
     let svg = export::svg(&b.scene);
-    assert!(svg.contains(&format!("d=\"{}\"", d.join(" "))), "the SVG draws the scene's line: {d:?}");
+    let start = l.points[0];
+    let mut want = vec![format!("d=\"M{} {} ", start.x, start.y)];
+    want.extend(l.points.windows(3).filter(|w| {
+        (w[1].x - w[0].x) * (w[2].y - w[1].y) != (w[1].y - w[0].y) * (w[2].x - w[1].x)
+    }).map(|w| format!("Q{} {} ", w[1].x, w[1].y)));
+    for w in &want {
+        assert!(svg.contains(w.as_str()), "the SVG draws the scene's line: {w} of {:?}", l.points);
+    }
 }
 
 #[test]
