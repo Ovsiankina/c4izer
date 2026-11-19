@@ -428,7 +428,7 @@ impl ViewMapPanel {
     /// The header and, while open, the map filling `ui` (P4-100,
     /// P4-108..P4-111). Returns the view a click picked. Redesign
     /// 2026-11-19 (`components/ViewMap`): a Section header; mono keys;
-    /// each row's level tag in a left gutter, a node repeating its tag
+    /// each row's level label in a left gutter, a node showing its tag
     /// only where it differs from its row's; square links in
     /// `line-strong`.
     #[expect(clippy::too_many_lines, reason = "header, measure, then paint")]
@@ -468,17 +468,26 @@ impl ViewMapPanel {
             (!n.key.eq_ignore_ascii_case(&n.tag) && !n.tag.eq_ignore_ascii_case(&row_tag[n.row])).then(|| n.tag.clone())
         };
         let two_lines = map.nodes.iter().any(|n| inner_tag(n).is_some());
-        let widest = |tags_only: bool| {
-            map.nodes
-                .iter()
-                .map(|n| if tags_only { measure(ui, &n.tag).x } else { measure(ui, &n.key).x.max(measure(ui, &n.tag).x) })
-                .fold(0.0_f32, f32::max)
-        };
+        // DECISION: node widths come from what a node draws, its key and
+        // its inner tag; a tag the gutter says is no longer in the node,
+        // so it neither widens nor floors it (P4-111 "down to the widest
+        // tag" is the widest tag a node shows).
+        let tag_w = map.nodes.iter().filter_map(|n| inner_tag(n).map(|t| measure(ui, &t).x)).fold(0.0_f32, f32::max);
+        let text_w = map.nodes.iter().map(|n| measure(ui, &n.key).x).fold(tag_w, f32::max);
         let columns = map.nodes.iter().map(|n| n.column).fold(0.0_f32, f32::max) + 1.0;
-        let gutter = row_tag.iter().map(|t| measure(ui, t).x).fold(0.0_f32, f32::max) + 12.0 + 8.0;
+        // Each row's gutter label, measured in the font it is painted in.
+        let gutter_font = egui::FontId::monospace(9.0);
+        let row_label: Vec<&str> = (0..rows)
+            .map(|r| map.nodes.iter().find(|n| n.row == r).map_or("", |n| level_label(n.level)))
+            .collect();
+        let gutter = row_label
+            .iter()
+            .map(|t| ui.fonts_mut(|f| f.layout_no_wrap((*t).to_owned(), gutter_font.clone(), egui::Color32::WHITE).size().x))
+            .fold(0.0_f32, f32::max)
+            + 12.0
+            + 8.0;
         // P4-111: solid scroll bars, so a cut map always shows its bar;
         // the vertical bar's room is kept whether shown or not.
-        let (text_w, tag_w) = (widest(false), widest(true));
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let room = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
         let lines_in = if two_lines { 2.0 } else { 1.0 };
@@ -507,14 +516,14 @@ impl ViewMapPanel {
                     egui::Rect::from_min_size(min, node)
                 };
                 let painter = ui.painter().clone();
-                for (r, tag) in row_tag.iter().enumerate() {
+                for (r, label) in row_label.iter().enumerate() {
                     #[expect(clippy::cast_precision_loss, reason = "a few rows")]
                     let y = origin.y + r as f32 * (node.y + GAP_Y) + node.y / 2.0;
                     painter.text(
                         egui::pos2(rect.min.x + 12.0, y),
                         egui::Align2::LEFT_CENTER,
-                        tag,
-                        egui::FontId::monospace(9.0),
+                        label,
+                        gutter_font.clone(),
                         theme::INK_3,
                     );
                 }
@@ -546,6 +555,21 @@ impl ViewMapPanel {
             });
         self.drawn = drawn;
         picked
+    }
+}
+
+/// The gutter label of a row at `level` (redesign 2026-11-19,
+/// `components/ViewMap`): `LS`, `C1`..`C3`, `—` for views with no level.
+// DECISION: the design pack's short labels rather than the row's first
+// tag: `Landscape` or `C2 · deployment` in the gutter would take the
+// width the nodes need to fit the panel (P4-111).
+fn level_label(level: u8) -> &'static str {
+    match level {
+        0 => "LS",
+        1 => "C1",
+        2 => "C2",
+        3 => "C3",
+        _ => "—",
     }
 }
 
