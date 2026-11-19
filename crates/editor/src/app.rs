@@ -654,6 +654,8 @@ impl App {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let painter = painter.with_clip_rect(response.rect);
         let list = self.state.draw_list();
+        // While the zoom moves, text is drawn from a few cached sizes.
+        canvas::track_zoom(ui.ctx(), list.camera.zoom);
         // EDIT-31: the page in the export background first; outside it
         // the central panel keeps the app's panel colour.
         // P2-701: the paper of a view with a canvas size, under the page.

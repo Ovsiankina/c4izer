@@ -960,9 +960,91 @@ fn paint_primitive(painter: &eframe::egui::Painter, primitive: &Primitive, opaci
             };
             let top = Pos2::new(origin.x + anchor.x, origin.y + anchor.y - ASCENT_EM * size);
             let align = if *centred { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
-            painter.text(top, align, text, FontId::new(*size, family), colour(*c));
+            // While the zoom moves, the text is laid out (and its glyphs
+            // rasterized) as at the rung zoom of `raster_zoom` and the
+            // galley scaled to the exact size, as egui's own scene zoom does.
+            // DECISION: the scene size is recovered rounded to a quarter
+            // px, so float noise in `size / zoom` never makes a new font
+            // size (a cache miss) at each notch.
+            let raster = moving_zoom(painter.ctx())
+                .map(|zoom| ((size / zoom) * 4.0).round() / 4.0 * raster_zoom(zoom))
+                .filter(|r| *r >= 1.0);
+            let Some(raster) = raster else {
+                painter.text(top, align, text, FontId::new(*size, family), colour(*c));
+                return;
+            };
+            let galley = painter.layout_no_wrap(text.clone(), FontId::new(raster, family), colour(*c));
+            let mut shape = eframe::epaint::TextShape::new(Pos2::ZERO, galley, colour(*c));
+            shape.transform(eframe::emath::TSTransform::from_scaling(size / raster));
+            shape.pos = align.anchor_size(top, shape.galley.size()).min;
+            painter.add(shape);
         }
     }
+}
+
+/// How long after the last zoom change text is still drawn from the
+/// rungs of `raster_zoom`; the next frame draws it at its exact size.
+const ZOOM_SETTLE_S: f64 = 0.25;
+
+/// Rungs per doubling of the zoom in `raster_zoom`.
+const RUNGS_PER_OCTAVE: f32 = 2.0;
+
+/// The zoom text is laid out at while the zoom moves: the smallest rung
+/// `2^(k / RUNGS_PER_OCTAVE)` at or above `zoom`.
+// DECISION: egui lays out and rasterizes every glyph again at each new
+// font size (its glyph and galley caches key on the exact size), which is
+// what made each wheel notch cost 140-740 ms in a dev build. Rungs on the
+// zoom (not on each font size) switch every text at the same notch, so a
+// gesture lays out and rasterizes at a few sizes only, once each; half
+// an octave, rounded up, scales a galley down by at most 1/sqrt 2, which
+// keeps it crisp while it moves.
+pub(crate) fn raster_zoom(zoom: f32) -> f32 {
+    ((zoom.log2() * RUNGS_PER_OCTAVE).ceil() / RUNGS_PER_OCTAVE).exp2()
+}
+
+/// When the zoom last changed, kept in egui's temp data.
+#[derive(Clone, Copy)]
+struct ZoomMotion {
+    /// The zoom of the last frame.
+    zoom: f32,
+    /// `egui::InputState::time` when it last differed.
+    changed_at: f64,
+}
+
+/// The id of the `ZoomMotion` in egui's temp data.
+fn zoom_motion_id() -> eframe::egui::Id {
+    eframe::egui::Id::unique("c4rizer-zoom-motion")
+}
+
+/// Records this frame's camera `zoom` before the canvas is painted; while
+/// it changed less than `ZOOM_SETTLE_S` ago, text is drawn from the rungs
+/// of `raster_zoom` and a repaint is asked for when it settles.
+pub(crate) fn track_zoom(ctx: &eframe::egui::Context, zoom: f32) {
+    let now = ctx.input(|i| i.time);
+    let id = zoom_motion_id();
+    let motion = ctx.data_mut(|d| {
+        let m = d.get_temp_mut_or_insert_with(id, || ZoomMotion {
+            zoom,
+            changed_at: f64::NEG_INFINITY,
+        });
+        if m.zoom.to_bits() != zoom.to_bits() {
+            *m = ZoomMotion { zoom, changed_at: now };
+        }
+        *m
+    });
+    let left = motion.changed_at + ZOOM_SETTLE_S - now;
+    if left > 0.0 {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+    }
+}
+
+/// The camera zoom while it changed less than `ZOOM_SETTLE_S` ago (by
+/// `track_zoom`); `None` at rest.
+fn moving_zoom(ctx: &eframe::egui::Context) -> Option<f32> {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.get_temp::<ZoomMotion>(zoom_motion_id()))
+        .filter(|m| now - m.changed_at < ZOOM_SETTLE_S)
+        .map(|m| m.zoom)
 }
 
 /// `asset` as an egui image of `width` x `height` px (rounded, at least
@@ -1593,6 +1675,93 @@ mod tests {
             Primitive::Text { at, size, .. } => vec![at.x, at.y, *size],
             Primitive::Image { min, max, .. } => vec![min.x, min.y, max.x, max.y],
         }
+    }
+
+    /// zoom-perf: the rung zoom is at or above the zoom and less than
+    /// sqrt 2 above it, so a galley is only scaled down, by at most
+    /// 1/sqrt 2; a wheel sweep over the whole zoom range lays text out at
+    /// one size per half octave, not one per notch.
+    #[test]
+    fn zoom_perf_raster_zoom_rungs() {
+        use crate::camera::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP};
+        let mut zoom = MIN_ZOOM;
+        let mut rungs = Vec::new();
+        let mut notches = 0;
+        while zoom <= MAX_ZOOM {
+            let rung = super::raster_zoom(zoom);
+            assert!(rung >= zoom && rung < zoom * std::f32::consts::SQRT_2 + 1e-4, "{zoom} -> {rung}");
+            if rungs.last() != Some(&rung) {
+                rungs.push(rung);
+            }
+            zoom *= ZOOM_STEP;
+            notches += 1;
+        }
+        assert!(notches > 40, "{notches}");
+        assert!(rungs.len() <= 14, "{} rungs over {notches} notches", rungs.len());
+    }
+
+    /// One egui frame at `time` s painting `text` at scene size 14 under
+    /// camera `zoom` after `track_zoom`; returns the width of the painted
+    /// text and the font size it was laid out at.
+    fn zoom_frame(ctx: &eframe::egui::Context, time: f64, zoom: f32, text: &str) -> (f32, f32) {
+        use eframe::egui::{Pos2, RawInput, Rect as ERect, vec2};
+        let input = RawInput {
+            screen_rect: Some(ERect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        let mut got = (0.0, 0.0);
+        let mut output = ctx.run_ui(input, |ui| {
+            super::track_zoom(ui.ctx(), zoom);
+            let painter = ui.painter().clone();
+            let item = PaintItem {
+                source: Source::RubberBand,
+                opacity: 100,
+                primitive: Primitive::Text {
+                    at: ScreenPoint { x: 10.0, y: 40.0 },
+                    text: text.to_owned(),
+                    size: 14.0 * zoom,
+                    bold: false,
+                    centred: false,
+                    colour: [0, 0, 0],
+                },
+            };
+            super::paint(&painter, std::slice::from_ref(&item));
+        });
+        for c in &output.shapes {
+            if let eframe::epaint::Shape::Text(t) = &c.shape {
+                got.0 = t.galley.size().x;
+                got.1 = t.galley.job.sections[0].format.font_id.size;
+            }
+        }
+        output.textures_delta.clear();
+        got
+    }
+
+    /// zoom-perf: while the wheel zooms within one rung, the text is laid
+    /// out at one font size (egui's cached galley, its glyphs rasterized
+    /// once) and keeps its exact on-screen size; once the zoom rests it is laid out at its
+    /// exact size again.
+    #[test]
+    fn zoom_perf_no_relayout_while_zooming() {
+        let ctx = eframe::egui::Context::default();
+        let text = "Internet Banking System";
+        let (rest_width, rest_size) = zoom_frame(&ctx, 0.0, 1.0, text);
+        assert!((rest_size - 14.0).abs() < 1e-4, "{rest_size}");
+        // 1.05 .. 1.4 share the rung sqrt 2.
+        let (first, laid_out) = zoom_frame(&ctx, 1.0, 1.05, text);
+        assert!((laid_out - 14.0 * std::f32::consts::SQRT_2).abs() < 1e-3, "{laid_out}");
+        assert!((first / rest_width - 1.05).abs() < 0.03, "{first} vs {rest_width}");
+        for (i, zoom) in [1.1_f32, 1.2, 1.3, 1.4].into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let time = 1.05 + 0.05 * i as f64;
+            let (width, size) = zoom_frame(&ctx, time, zoom, text);
+            assert!(size.to_bits() == laid_out.to_bits(), "zoom {zoom} laid out at {size}, not {laid_out}");
+            assert!((width / rest_width - zoom).abs() < 0.03 * zoom, "zoom {zoom}: {width} vs {rest_width}");
+        }
+        // At rest: laid out at the exact size again.
+        let (_, settled) = zoom_frame(&ctx, 2.0, 1.4, text);
+        assert!((settled - 14.0 * 1.4).abs() < 1e-4, "{settled}");
     }
 
     /// EDIT-9: zoom 2 doubles every screen distance between painted
