@@ -1077,6 +1077,37 @@ pub struct ViewSpec {
     /// dynamic view), in file order, at most one per drawn line: the
     /// hand-added vertices of each line. Serves P3-4, P3-300..P3-302.
     pub vias: Vec<Via>,
+    /// `anchor <src> -> <dst> [from <point>] [to <point>]` lines (c4rizer
+    /// extension; `anchor <n>: ...` in a dynamic view), in file order, at
+    /// most one per drawn line, each naming a line the view draws: a
+    /// refused one is left out with a notice (P4-203). Serves
+    /// P4-200..P4-203.
+    // APPROVER: new pub item
+    pub anchors: Vec<AnchorLine>,
+}
+
+/// One `anchor` line: the drawn line from `source` to `destination` (in
+/// a dynamic view, the step numbered `order`, else the lowest-numbered
+/// step between those ends, as `via` names it) has its source end pinned
+/// to `from` and/or its destination end pinned to `to`, each a point of
+/// its box (`anchor::Anchor`). At least one of them is set. Serves
+/// P4-200, P4-201.
+// APPROVER: new pub item
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnchorLine {
+    /// The line's source element, as written.
+    pub source: Spanned<ElementId>,
+    /// The line's destination element, as written.
+    pub destination: Spanned<ElementId>,
+    /// `<n>:` of a dynamic view's `anchor <n>: ...`, without the colon.
+    pub order: Option<Spanned<String>>,
+    /// The source end's point (`from <point>`).
+    pub from: Option<Spanned<crate::anchor::Anchor>>,
+    /// The destination end's point (`to <point>`).
+    pub to: Option<Spanned<crate::anchor::Anchor>>,
+    /// The whole `anchor` line, line ending excluded; `edit` rewrites this.
+    pub span: Span,
 }
 
 /// One `via` line: the drawn line from `source` to `destination` (in a
@@ -1748,6 +1779,11 @@ pub enum NoticeKind {
     /// `vertices`, `routing`, `position`; view `paperSize`,
     /// `dimensions`; `themes`), named once per view (P2-510).
     NotImported,
+    /// An `anchor` line c4rizer ignores (P4-203): malformed, naming an
+    /// unknown element, a line the view does not draw, or a line that
+    /// already has one. `subject` says which and why.
+    // APPROVER: new pub item
+    AnchorIgnored,
 }
 
 /// Something the file says that c4rizer accepts with no effect: one per
@@ -1816,6 +1852,7 @@ impl fmt::Display for Notice {
             NoticeKind::NotImported => {
                 write!(f, "view {view}: `{subject}` not imported — c4rizer cannot hold it")
             }
+            NoticeKind::AnchorIgnored => write!(f, "view {view}: {subject} — the anchor line is ignored"),
         }
     }
 }
@@ -6015,6 +6052,7 @@ impl Builder<'_> {
         self.view_body(statement, head, &mut view)?;
         self.check_positions(&view)?;
         self.check_vias(&view)?;
+        self.check_anchors(&mut view);
         self.model.views.push(view);
         Ok(())
     }
@@ -6120,6 +6158,7 @@ impl Builder<'_> {
         if kind.drawable() {
             self.check_positions(&view)?;
             self.check_vias(&view)?;
+            self.check_anchors(&mut view);
         }
         self.model.views.push(view);
         Ok(())
@@ -6904,6 +6943,10 @@ impl Builder<'_> {
                 let via = self.via_line(head, view.kind == ViewKind::Dynamic)?;
                 view.vias.push(via);
             }
+            "anchor" => match self.anchor_line(head, view.kind == ViewKind::Dynamic) {
+                Ok(line) => view.anchors.push(line),
+                Err(why) => self.anchor_notice(view, head.span_of(0, head.len() - 1), &why),
+            },
             "size" => {
                 let (element, width, height) = self.box_line(head, true)?;
                 view.sizes.push(Size {
@@ -7260,6 +7303,114 @@ impl Builder<'_> {
             seen.insert(edge, via.span);
         }
         Ok(())
+    }
+
+    /// `anchor [<n>:] <src> -> <dst> [from <point>] [to <point>]`
+    /// (P4-200, P4-201): the ends as written, then `from` and/or `to`, each
+    /// once, each followed by a corner keyword or a side keyword and an
+    /// optional whole percent. `Err` holds why the line is ignored
+    /// (P4-203); nothing here fails the file.
+    // DECISION: the ends resolve like `via`'s (any declared element);
+    // whether the view draws the line is checked once the view is parsed
+    // (`check_anchors`), as for `via`.
+    fn anchor_line(&self, head: &Head<'_>, dynamic: bool) -> Result<AnchorLine, String> {
+        let ordered = head.len() > 1 && head.kind(1) == Some(TokenKind::Word) && head.text(1).ends_with(':');
+        if ordered && !dynamic {
+            return Err(format!("`{}` names a step outside a dynamic view", head.text(1)));
+        }
+        let o = 1 + usize::from(ordered);
+        if head.len() < o + 3 || head.kind(o + 1) != Some(TokenKind::Arrow) {
+            return Err("`anchor` needs `<source> -> <destination>`".to_owned());
+        }
+        let element = |i: usize| self.view_element(head, i).map_err(|_| format!("no element `{}`", head.text(i)));
+        let source = element(o)?;
+        let destination = element(o + 2)?;
+        let mut from = None;
+        let mut to = None;
+        let mut i = o + 3;
+        while i < head.len() {
+            let word = head.text(i).to_ascii_lowercase();
+            let slot = match (head.kind(i), word.as_str()) {
+                (Some(TokenKind::Word), "from") => &mut from,
+                (Some(TokenKind::Word), "to") => &mut to,
+                _ => return Err(format!("`{}` is not `from` or `to`", head.text(i))),
+            };
+            if slot.is_some() {
+                return Err(format!("`{word}` is given twice"));
+            }
+            let Some(point) = (i + 1 < head.len()).then(|| head.text(i + 1)) else {
+                return Err(format!("`{word}` needs a point"));
+            };
+            let percent = (i + 2 < head.len() && head.kind(i + 2) == Some(TokenKind::Word))
+                .then(|| head.text(i + 2).parse::<u32>().ok())
+                .flatten();
+            let last = i + 1 + usize::from(percent.is_some());
+            let anchor = crate::anchor::Anchor::parse(point, percent).ok_or_else(|| {
+                let written = self.written(head.span_of(i + 1, last));
+                format!("`{written}` is not a point (a corner, or a side and a percent 0..100)")
+            })?;
+            *slot = Some(Spanned {
+                value: anchor,
+                span: head.span_of(i + 1, last),
+            });
+            i = last + 1;
+        }
+        if from.is_none() && to.is_none() {
+            return Err("`anchor` needs `from <point>` or `to <point>`".to_owned());
+        }
+        Ok(AnchorLine {
+            source,
+            destination,
+            order: ordered.then(|| Spanned {
+                value: head.text(1).trim_end_matches(':').to_owned(),
+                span: head.span(1),
+            }),
+            from,
+            to,
+            span: head.span_of(0, head.len() - 1),
+        })
+    }
+
+    /// Records that the `anchor` line at `span` of `view` is ignored,
+    /// and `why` (P4-203).
+    fn anchor_notice(&mut self, view: &ViewSpec, span: Span, why: &str) {
+        let written = self.written(span).to_owned();
+        self.model.notices.push(Notice {
+            kind: NoticeKind::AnchorIgnored,
+            subject: format!("`{written}`: {why}"),
+            view: Some(view.key.clone()),
+            span: Some(span),
+            position: Some(self.position(span)),
+        });
+    }
+
+    /// Keeps the `anchor` lines of `view` that name a line the view draws,
+    /// the first per line; the others are dropped with a notice (P4-203).
+    fn check_anchors(&mut self, view: &mut ViewSpec) {
+        if view.anchors.is_empty() {
+            return;
+        }
+        let plan = crate::view::plan(&self.model, view);
+        let mut seen: BTreeMap<crate::view::EdgeId, Span> = BTreeMap::new();
+        let mut kept = Vec::new();
+        for line in std::mem::take(&mut view.anchors) {
+            let why = if let Some(edge) = crate::view::anchor_edge(&plan, &line) {
+                if let Some(&first) = seen.get(&edge) {
+                    let at = self.position(first);
+                    Some(format!("this line already has an anchor line at {}:{}", at.line, at.column))
+                } else {
+                    seen.insert(edge, line.span);
+                    None
+                }
+            } else {
+                Some("the view draws no such line".to_owned())
+            };
+            match why {
+                Some(why) => self.anchor_notice(view, line.span, &why),
+                None => kept.push(line),
+            }
+        }
+        view.anchors = kept;
     }
 
     /// `at <id> <x> <y>` or, with `size`, `size <id> <w> <h>` (both `> 0`).
@@ -7952,6 +8103,7 @@ impl SequenceCounter {
 const DYNAMIC_LINES: &[&str] = &[
     "at",
     "via",
+    "anchor",
     "size",
     "papersize",
     "line",
@@ -8029,6 +8181,7 @@ fn new_view(
         paper_size: None,
         lines: Vec::new(),
         vias: Vec::new(),
+        anchors: Vec::new(),
     }
 }
 

@@ -47,7 +47,7 @@ use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
 use crate::export_files;
 use c4rizer_core::pipeline::{
     BuildError, PREVIEW_ROUTE, ViewBuild, build_spec_in, build_view_in, default_view, rebuild_after_move,
-    rebuild_with_vertices,
+    rebuild_with_anchors, rebuild_with_vertices,
 };
 use c4rizer_core::place::Keep;
 use c4rizer_core::view::BoxId;
@@ -248,6 +248,22 @@ pub enum Job {
         /// Its vertices, grid units.
         vertices: Vec<Point>,
     },
+    /// A line-end drag preview (`pipeline::rebuild_with_anchors` with
+    /// `pipeline::PREVIEW_ROUTE`), dropped and stopped like `Drag`
+    /// (P4-214, EDIT-25).
+    // APPROVER: new pub item
+    DragAnchor {
+        /// The parse `previous` was built from.
+        parsed: Arc<Parsed>,
+        /// The last full build of the view.
+        previous: Arc<ViewBuild>,
+        /// The line.
+        edge: c4rizer_core::view::EdgeId,
+        /// Its source end's anchor.
+        source: Option<c4rizer_core::anchor::Anchor>,
+        /// Its destination end's anchor.
+        destination: Option<c4rizer_core::anchor::Anchor>,
+    },
     /// Write SVG or PNG files (EDIT-7); never dropped as stale and never
     /// stopped.
     Export {
@@ -436,7 +452,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
     // time, the newest of either kind.
     let last_drag = queued
         .iter()
-        .rposition(|r| matches!(r.job, Job::Drag { .. } | Job::DragVertex { .. }));
+        .rposition(|r| matches!(r.job, Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. }));
     let keep_drag = match (last_drag, last_shown) {
         (Some(d), Some(b)) => (d > b).then_some(d),
         (d, _) => d,
@@ -465,7 +481,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
         .filter(|(i, r)| match &r.job {
             Job::Export { .. } => true,
             Job::Build { shown: true, .. } => Some(*i) == last_shown,
-            Job::Drag { .. } | Job::DragVertex { .. } => Some(*i) == keep_drag,
+            Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } => Some(*i) == keep_drag,
             Job::Build { view, shown: false, .. } => background.get(view) == Some(i),
         })
         .map(|(_, r)| r)
@@ -481,7 +497,7 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
 /// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
 #[must_use]
 pub fn stops(running: &Job, incoming: &Job) -> bool {
-    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. }) {
+    if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. }) {
         return false;
     }
     if matches!(running, Job::Export { .. }) {
@@ -513,6 +529,18 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
 pub fn serve(request: Request, stop: &AtomicBool) -> Option<Reply> {
     let generation = request.generation;
     match request.job {
+        Job::DragAnchor {
+            parsed,
+            previous,
+            edge,
+            source,
+            destination,
+        } => rebuild_with_anchors(&parsed.model, &previous, edge, source, destination, &PREVIEW_ROUTE, stop)
+            .ok()
+            .map(|build| Reply::Dragged {
+                generation,
+                build: Arc::new(build),
+            }),
         Job::DragVertex {
             parsed,
             previous,

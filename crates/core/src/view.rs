@@ -209,6 +209,16 @@ pub struct PlanEdge {
     /// when it has none (the router then routes it alone). Serves P3-4,
     /// P3-303..P3-308.
     pub vertices: Vec<Point>,
+    /// The point of the source box the line's source end is pinned to
+    /// (`from` of the view's `anchor` line for it), `None` when the router
+    /// picks the port. Serves P4-204, P4-206.
+    // APPROVER: new pub item
+    pub source_anchor: Option<crate::anchor::Anchor>,
+    /// The point of the destination box the line's destination end is
+    /// pinned to (`to` of its `anchor` line), `None` when the router picks
+    /// the port. Serves P4-204, P4-206.
+    // APPROVER: new pub item
+    pub destination_anchor: Option<crate::anchor::Anchor>,
 }
 
 impl PlanEdge {
@@ -463,7 +473,25 @@ pub fn plan_in(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 .collect();
         }
     }
+    // P4-204: each `anchor` line's points on the line it names.
+    for line in &view.anchors {
+        if let Some(edge) = anchor_edge(&plan, line) {
+            let e = &mut plan.edges[edge.0 as usize];
+            e.source_anchor = line.from.map(|a| a.value);
+            e.destination_anchor = line.to.map(|a| a.value);
+        }
+    }
     plan
+}
+
+/// The drawn line an `anchor` line names (P4-200): as `via_edge`.
+pub(crate) fn anchor_edge(plan: &ViewPlan, line: &crate::model::AnchorLine) -> Option<EdgeId> {
+    line_edge(
+        plan,
+        line.source.value,
+        line.destination.value,
+        line.order.as_ref().map(|o| o.value.as_str()),
+    )
 }
 
 /// The drawn line a `via` line names (P3-300, P3-301): the first edge
@@ -610,6 +638,8 @@ fn dynamic_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 style_tag: style_tag(model, r.id, mode),
                 order: Some(step.order.clone()),
                 vertices: Vec::new(),
+                source_anchor: None,
+                destination_anchor: None,
             }
         })
         .collect();
@@ -769,6 +799,8 @@ fn filtered_plan(model: &Model, view: &ViewSpec, mode: Mode) -> ViewPlan {
                 style_tag: style_tag(model, winner, mode),
                 order: None,
                 vertices: Vec::new(),
+                source_anchor: None,
+                destination_anchor: None,
             })
         })
         .collect();
@@ -1278,6 +1310,8 @@ fn plan_edges(model: &Model, boxes: &[PlanBox]) -> Vec<PlanEdge> {
         style_tag: None,
         order: None,
         vertices: Vec::new(),
+        source_anchor: None,
+        destination_anchor: None,
     };
     let mut edges: Vec<PlanEdge> = Vec::new();
     // Lifted relationships per ordered box pair, in relationship order.

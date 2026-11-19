@@ -624,6 +624,8 @@ impl App {
         canvas::paint(&painter, &canvas::paint_items(&list));
         // P3-311: the selected line's vertex handles.
         canvas::paint(&painter, &canvas::vertex_handle_items(&list, &self.state.vertex_handles()));
+        // P4-213, P4-214: its end handles, and the snap points while one is dragged.
+        canvas::paint(&painter, &canvas::anchor_items(&list, &self.state.end_handles(), &self.state.snap_marks()));
         let mut out: Vec<Event> = canvas::inputs(ui.ctx(), &response).into_iter().map(Event::Input).collect();
         // P2-723: the tooltip overlay, below the item's bottom-right corner.
         if let (Some(tip), Some(scene)) = (&list.tooltip, list.scene)

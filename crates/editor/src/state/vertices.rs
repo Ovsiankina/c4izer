@@ -75,8 +75,8 @@ impl State {
 
     /// The line being edited: the one a handle drag holds, else the only
     /// line of a selection of one line.
-    fn selected_edge(&self) -> Option<EdgeId> {
-        if let Gesture::DraggingVertex { edge, .. } = &self.gesture {
+    pub(super) fn selected_edge(&self) -> Option<EdgeId> {
+        if let Gesture::DraggingVertex { edge, .. } | Gesture::DraggingEnd { edge, .. } = &self.gesture {
             return Some(*edge);
         }
         if self.selection.len() != 1 {

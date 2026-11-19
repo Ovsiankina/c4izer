@@ -65,7 +65,8 @@ use crate::geom::{CLEARANCE_UNITS, Dir, Point, Rect, Segment, crossings};
 // already a `model::ResolvedStyle`, so route reads model data either way,
 // and a re-export from `view` would change view's frozen pub surface.
 use crate::model::Shape;
-use crate::view::{BoxId, EdgeId, PlanBox, ViewPlan};
+use crate::anchor::{Anchor, AnchorSide};
+use crate::view::{BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
 
 /// A side of a box: where a port sits and which way the line leaves it,
 /// square to the side (CORE-9). Discriminants are fixed so a port can be
@@ -670,6 +671,51 @@ fn spots(b: &PlanBox, centre: Point) -> Vec<Spot> {
     out
 }
 
+/// The router's side for an anchor's side.
+const fn anchor_side(side: AnchorSide) -> Side {
+    match side {
+        AnchorSide::Top => Side::N,
+        AnchorSide::Right => Side::E,
+        AnchorSide::Bottom => Side::S,
+        AnchorSide::Left => Side::W,
+    }
+}
+
+/// True when `e` has a pinned end (P4-204).
+const fn anchored(e: &PlanEdge) -> bool {
+    e.source_anchor.is_some() || e.destination_anchor.is_some()
+}
+
+/// The ports `anchor` offers on `b` at `centre` (P4-206, P4-207): its
+/// point, square to each side it lies on (two for a corner), at offset 0
+/// so no start cost is added.
+// DECISION: a corner offers both its sides and the search takes the
+// cheaper one (P4-207): the line still leaves square to a side, and the
+// side facing the other end wins without a rule of its own.
+fn anchor_spots(b: &PlanBox, centre: Point, anchor: Anchor) -> Vec<Spot> {
+    let at = anchor.point(b.rect_at(centre));
+    anchor
+        .sides()
+        .into_iter()
+        .map(|side| Spot {
+            port: Port {
+                at,
+                side: anchor_side(side),
+            },
+            off: 0,
+        })
+        .collect()
+}
+
+/// The ports a line end may use on `b` at `centre`: the anchor's when the
+/// end is pinned, else every port of the box (CORE-9).
+fn end_spots(b: &PlanBox, centre: Point, anchor: Option<Anchor>) -> Vec<Spot> {
+    match anchor {
+        Some(a) => anchor_spots(b, centre, a),
+        None => spots(b, centre),
+    }
+}
+
 /// The routing area in grid units.
 #[derive(Debug, Clone, Copy)]
 struct Grid {
@@ -798,7 +844,8 @@ struct Board {
     /// Per edge: its source and destination boxes.
     ends: Vec<(BoxId, BoxId)>,
     /// Per edge: true when it has hand-added vertices (P3-308: never a
-    /// trunk); all false on a view without `via` lines.
+    /// trunk) or a pinned end (P4-209); all false on a view without `via`
+    /// or `anchor` lines.
     pinned: Vec<bool>,
 }
 
@@ -840,7 +887,7 @@ impl Board {
             .enumerate()
             .map(|(i, e)| {
                 let i = u32::try_from(i).expect("edge index fits u32");
-                if bus && e.vertices.is_empty() {
+                if bus && e.vertices.is_empty() && !anchored(e) {
                     e.destination.0
                 } else if bus {
                     boxes + i
@@ -867,7 +914,7 @@ impl Board {
             arrives: vec![None; plan.edges.len()],
             fences,
             ends: plan.edges.iter().map(|e| (e.source, e.destination)).collect(),
-            pinned: plan.edges.iter().map(|e| !e.vertices.is_empty()).collect(),
+            pinned: plan.edges.iter().map(|e| !e.vertices.is_empty() || anchored(e)).collect(),
         }
     }
 
@@ -1423,7 +1470,7 @@ fn search(ctx: &Ctx<'_>, board: &Board, sc: &mut Scratch, edge: usize) -> Option
     sc.reset();
 
     // Goals: the first free cell outside each free destination port.
-    let dspots = spots(dbox, ctx.centres[e.destination.0 as usize]);
+    let dspots = end_spots(dbox, ctx.centres[e.destination.0 as usize], e.destination_anchor);
     let mut targets: Vec<usize> = Vec::new();
     // DECISION: a destination port whose arrival stub runs 10px or 30px
     // beside a same-way line is left out while any other port is free
@@ -1463,7 +1510,7 @@ fn search(ctx: &Ctx<'_>, board: &Board, sc: &mut Scratch, edge: usize) -> Option
         };
         beyond.then_some(t)
     };
-    if bus {
+    if bus && !anchored(e) {
         for i in 0..g.len() {
             if trunk_at(i).is_some() {
                 targets.push(i);
@@ -1479,7 +1526,7 @@ fn search(ctx: &Ctx<'_>, board: &Board, sc: &mut Scratch, edge: usize) -> Option
         lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
         hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
     }
-    let sspots = spots(sbox, ctx.centres[e.source.0 as usize]);
+    let sspots = end_spots(sbox, ctx.centres[e.source.0 as usize], e.source_anchor);
     // DECISION: a search that runs past POP_LIMIT states is usually one
     // whose targets are walled in by other lines, where the CROSS and
     // NEAR costs make A* exhaust everything cheaper first. It restarts
@@ -2121,8 +2168,15 @@ fn solve(
     let grid = Grid::new(plan, centres, &kept);
     let mut sc = Scratch::new(grid.len());
     let mut best: Option<Pass> = None;
-    for order in orders(plan, centres, set, config.orders) {
+    let any_anchor = set.iter().any(|&e| anchored(&plan.edges[e]));
+    for mut order in orders(plan, centres, set, config.orders) {
         check(stop)?;
+        // P4-209: anchored lines first, each group in the order's own
+        // order (stable), so a pinned port is not taken by a free line.
+        // A view without anchors keeps its orders untouched (P4-210).
+        if any_anchor {
+            order.sort_by_key(|&e| !anchored(&plan.edges[e]));
+        }
         // DECISION: once an order is within the view's budget with nothing
         // unroutable, later orders get their plain pass only, no rip-up:
         // rip-up exists to reach that bar, and the rounds are the
@@ -2138,8 +2192,19 @@ fn solve(
             best = Some(p);
         }
     }
-    let (lines, crossings) = if let Some(b) = best {
-        (b.lines, b.score.crossings)
+    let (lines, crossings) = if let Some(mut b) = best {
+        // P4-212: a pinned end walled in by other lines is still honoured,
+        // crossing them, as a vertex line is (`route_pinned`).
+        if any_anchor && set.iter().any(|&e| b.lines[e].is_none() && anchored(&plan.edges[e])) {
+            let walled: Vec<usize> = set.iter().copied().filter(|&e| b.lines[e].is_none() && anchored(&plan.edges[e])).collect();
+            for e in walled {
+                b.lines[e] = pinned_line(&ctx, &Board::new(plan, centres, grid, &[]), e);
+            }
+            let crossings = count_crossings(&b.lines);
+            (b.lines, crossings)
+        } else {
+            (b.lines, b.score.crossings)
+        }
     } else {
         let crossings = count_crossings(&kept);
         (kept, crossings)
@@ -2253,7 +2318,21 @@ fn facing_ports(board: &Board, b: &PlanBox, centre: Point, v: Point) -> Vec<(Spo
     if facing.is_empty() { all } else { facing }
 }
 
-/// Routes the vertex line of `edge` on `board` (P3-303..P3-306).
+/// The free ports a line end may use on `b` at `centre`, each with the
+/// first free cell outside it: the anchor's when the end is pinned
+/// (P4-206), else those facing `v` (P3-306).
+fn end_ports(board: &Board, b: &PlanBox, centre: Point, anchor: Option<Anchor>, v: Point) -> Vec<(Spot, usize)> {
+    match anchor {
+        Some(a) => anchor_spots(b, centre, a)
+            .into_iter()
+            .filter_map(|s| Some((s, board.port_free(s.port.at, side_dir(s.port.side))?)))
+            .collect(),
+        None => facing_ports(board, b, centre, v),
+    }
+}
+
+/// Routes the vertex line of `edge` on `board` (P3-303..P3-306), or an
+/// anchored line without vertices (P4-212).
 fn pinned_line(ctx: &Ctx<'_>, board: &Board, edge: usize) -> Option<Line> {
     let e = &ctx.plan.edges[edge];
     if e.source == e.destination {
@@ -2262,9 +2341,12 @@ fn pinned_line(ctx: &Ctx<'_>, board: &Board, edge: usize) -> Option<Line> {
     let g = board.grid;
     let sbox = &ctx.plan.boxes[e.source.0 as usize];
     let dbox = &ctx.plan.boxes[e.destination.0 as usize];
-    let first = *e.vertices.first()?;
-    let last = *e.vertices.last()?;
-    let starts: Vec<Start> = facing_ports(board, sbox, ctx.centres[e.source.0 as usize], first)
+    let (scentre, dcentre) = (ctx.centres[e.source.0 as usize], ctx.centres[e.destination.0 as usize]);
+    // With no vertex (an anchored line routed past other lines, P4-212),
+    // each free end faces the other box.
+    let first = e.vertices.first().copied().unwrap_or(dcentre);
+    let last = e.vertices.last().copied().unwrap_or(scentre);
+    let starts: Vec<Start> = end_ports(board, sbox, scentre, e.source_anchor, first)
         .into_iter()
         .map(|(s, c)| {
             let d = side_dir(s.port.side);
@@ -2317,14 +2399,24 @@ fn pinned_line(ctx: &Ctx<'_>, board: &Board, edge: usize) -> Option<Line> {
             port: None,
         };
     }
-    let mut goals: Vec<(usize, Port)> = facing_ports(board, dbox, ctx.centres[e.destination.0 as usize], last)
+    let mut goals: Vec<(usize, Port)> = end_ports(board, dbox, dcentre, e.destination_anchor, last)
         .into_iter()
         .map(|(s, c)| (c, s.port))
         .collect();
     goals.sort_unstable_by_key(|&(c, _)| c);
-    let found = leg(board, edge, &[at], true, &Goal::Ports(&goals), &own)?;
-    let port = found.end?;
-    cells.extend_from_slice(&found.cells[1..]);
+    let port = if e.vertices.is_empty() {
+        let found = leg(board, edge, &starts, false, &Goal::Ports(&goals), &own)?;
+        let p = found.start?;
+        source = Some(p);
+        cells.push(p.at);
+        cells.push(p.at.step(side_dir(p.side)));
+        cells.extend_from_slice(&found.cells);
+        found.end?
+    } else {
+        let found = leg(board, edge, &[at], true, &Goal::Ports(&goals), &own)?;
+        cells.extend_from_slice(&found.cells[1..]);
+        found.end?
+    };
     cells.push(port.at.step(side_dir(port.side)));
     cells.push(port.at);
     Some(Line {

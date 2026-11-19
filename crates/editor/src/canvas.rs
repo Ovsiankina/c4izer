@@ -348,6 +348,53 @@ pub(crate) fn vertex_handle_items(list: &DrawList<'_>, handles: &[ScreenPoint]) 
         .collect()
 }
 
+/// The end handles of the selected line (P4-213), round so they read
+/// apart from the square vertex handles, and during an end drag the snap
+/// points of the dragged end's box (P4-214): small rings, the snapped one
+/// large and filled. `ends` and `snaps` come from `State::end_handles`
+/// and `State::snap_marks`.
+pub(crate) fn anchor_items(list: &DrawList<'_>, ends: &[ScreenPoint], snaps: &[crate::state::SnapMark]) -> Vec<PaintItem> {
+    let Some(item) = list.marks.iter().map(|m| m.item).find(|i| matches!(i, ItemKey::Line(_))) else {
+        return Vec::new();
+    };
+    let dot = |centre: ScreenPoint, radius: f32, fill: [u8; 3]| {
+        [
+            PaintItem {
+                source: Source::Mark(item, MarkKind::Selected),
+                primitive: Primitive::Circle {
+                    centre,
+                    radius: radius + 1.5,
+                    fill: [0xff, 0xff, 0xff],
+                },
+                opacity: 100,
+            },
+            PaintItem {
+                source: Source::Mark(item, MarkKind::Selected),
+                primitive: Primitive::Circle { centre, radius, fill },
+                opacity: 100,
+            },
+        ]
+    };
+    let mut out = Vec::new();
+    for m in snaps.iter().filter(|m| !m.snapped) {
+        out.extend(dot(m.at, SNAP_RADIUS, SNAP));
+    }
+    for &e in ends {
+        out.extend(dot(e, END_RADIUS, SELECTION));
+    }
+    for m in snaps.iter().filter(|m| m.snapped) {
+        out.extend(dot(m.at, END_RADIUS + 2.0, SELECTION));
+    }
+    out
+}
+
+/// Radius of an end handle, screen px (P4-213).
+const END_RADIUS: f32 = 5.0;
+/// Radius of a snap point, screen px (P4-214).
+const SNAP_RADIUS: f32 = 3.5;
+/// Snap point colour: the hover grey, 5.3:1 on white (EDIT-31).
+const SNAP: [u8; 3] = HOVER;
+
 // DECISION: mark colours are dark enough for 4.5:1 against the white
 // page (EDIT-31): 2px strokes need more than the 3:1 WCAG floor for
 // graphics to read at a glance. Selection 6.4:1, hover 5.3:1,

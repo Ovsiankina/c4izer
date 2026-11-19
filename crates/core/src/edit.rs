@@ -521,6 +521,28 @@ pub enum Edit {
         /// them to the 10 px grid); `None` or empty removes the line.
         points: Option<Vec<(i32, i32)>>,
     },
+    /// Set the pinned ends of one drawn line of `view`: rewrite its
+    /// `anchor` line, add one after the view's last `anchor` line (else its
+    /// last `via`, `at`, `size`, `paperSize` or `line` line, else before
+    /// the closing brace), or remove it when both ends are `None`, which
+    /// gives the line back to the router. The inverse is a `SetAnchor`
+    /// with the ends the line had. Serves P4-215..P4-218.
+    // APPROVER: new pub item
+    SetAnchor {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The line's source, a canonical element key.
+        source: String,
+        /// The line's destination, a canonical element key.
+        destination: String,
+        /// In a dynamic view, the step's number (`anchor <n>: ...`), as
+        /// for `SetVia`.
+        order: Option<String>,
+        /// The source end's point (`from`), `None` for the router's.
+        from: Option<crate::anchor::Anchor>,
+        /// The destination end's point (`to`), `None` for the router's.
+        to: Option<crate::anchor::Anchor>,
+    },
 }
 
 /// The result of `apply`: the new text and the edits that undo it.
@@ -792,6 +814,14 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
             order,
             points,
         } => set_via(current, view, source, destination, order.as_deref(), points.as_deref()),
+        Edit::SetAnchor {
+            view,
+            source,
+            destination,
+            order,
+            from,
+            to,
+        } => set_anchor(current, view, source, destination, order.as_deref(), (*from, *to)),
     }
 }
 
@@ -842,9 +872,15 @@ fn swap_steps(current: &mut Parsed, view: &str, first: u32) -> Res<Vec<Edit>> {
         // steps, so the number alone would also catch another step's line.
         if upper_order != lower_order {
             let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
-            for via in &spec.vias {
-                let Some(order) = &via.order else { continue };
-                let ends = (via.source.value, via.destination.value);
+            // P4-200: an `anchor <n>:` line follows its step the same way.
+            let numbered = spec
+                .vias
+                .iter()
+                .map(|v| (&v.order, v.source.value, v.destination.value))
+                .chain(spec.anchors.iter().map(|a| (&a.order, a.source.value, a.destination.value)));
+            for (order, source, destination) in numbered {
+                let Some(order) = order else { continue };
+                let ends = (source, destination);
                 let new = if order.value == upper_order && ends == upper_ends {
                     &lower_order
                 } else if order.value == lower_order && ends == lower_ends {
@@ -1824,6 +1860,93 @@ fn set_via(
                 let step = order.map_or_else(String::new, |n| format!("{n}: "));
                 let text = one_line(format!("via {step}{source} -> {destination}{}", via_points(points)));
                 let anchors = [
+                    spec.vias.last().map(|v| v.span),
+                    spec.positions.last().map(|a| a.span),
+                    spec.sizes.last().map(|s| s.span),
+                    spec.paper_size.map(|p| p.span),
+                    spec.lines.last().map(|l| l.span),
+                ];
+                insert_after_first(cx, owner, block, &anchors, &text)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// The ends of an `anchor` line as written after the line's ends:
+/// ` from <point> to <point>`, each part only when set.
+fn anchor_ends(from: Option<crate::anchor::Anchor>, to: Option<crate::anchor::Anchor>) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if let Some(a) = from {
+        let _ = write!(out, " from {a}");
+    }
+    if let Some(a) = to {
+        let _ = write!(out, " to {a}");
+    }
+    out
+}
+
+/// `SetAnchor` (P4-215..P4-218): the view's `anchor` line for the drawn
+/// line from `source` to `destination` (step `order` in a dynamic view),
+/// rewritten after its ends, added after the view's last `anchor` line
+/// (else its last `via`, `at`, `size`, `paperSize` or `line` line, else
+/// before the closing brace), or removed when both ends are `None`.
+// DECISION: as `set_via`: a rewrite keeps the ends as written and
+// replaces only what follows them; a new line goes with the view's other
+// `anchor` lines, the first one after the `via` lines, so the layout
+// lines of a view stay together.
+#[allow(clippy::too_many_arguments)]
+fn set_anchor(
+    current: &mut Parsed,
+    view: &str,
+    source: &str,
+    destination: &str,
+    order: Option<&str>,
+    (from, to): (Option<crate::anchor::Anchor>, Option<crate::anchor::Anchor>),
+) -> Res<Vec<Edit>> {
+    let line = |cx_model: &model::Model| -> Res<Option<usize>> {
+        let spec = cx_model.view(view).ok_or_else(|| gone(view))?;
+        let s = find_element(cx_model, source)?;
+        let d = find_element(cx_model, destination)?;
+        let plan = crate::view::plan(cx_model, spec);
+        let named = format!("{source} -> {destination}");
+        let edge = crate::view::line_edge(&plan, s, d, order).ok_or_else(|| gone(&named))?;
+        Ok(spec.anchors.iter().position(|a| crate::view::anchor_edge(&plan, a) == Some(edge)))
+    };
+    let existing = line(&current.model)?;
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let old = existing.map(|i| &spec.anchors[i]);
+    let inverse = vec![Edit::SetAnchor {
+        view: view.to_owned(),
+        source: source.to_owned(),
+        destination: destination.to_owned(),
+        order: order.map(str::to_owned),
+        from: old.and_then(|a| a.from.map(|p| p.value)),
+        to: old.and_then(|a| a.to.map(|p| p.value)),
+    }];
+    let set = from.is_some() || to.is_some();
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let existing = line(cx.model)?;
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        let existing = existing.map(|i| &spec.anchors[i]);
+        Ok(match (existing, set) {
+            (None, false) => Plan::Patches(Vec::new()),
+            (Some(a), false) => {
+                let statement = Ctx::child_holding(block, a.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(statement.span)])
+            }
+            (Some(a), true) => Plan::Patches(vec![Patch {
+                range: a.destination.span.range().end..a.span.range().end,
+                text: anchor_ends(from, to),
+            }]),
+            (None, true) => {
+                let step = order.map_or_else(String::new, |n| format!("{n}: "));
+                let text = one_line(format!("anchor {step}{source} -> {destination}{}", anchor_ends(from, to)));
+                let anchors = [
+                    spec.anchors.last().map(|a| a.span),
                     spec.vias.last().map(|v| v.span),
                     spec.positions.last().map(|a| a.span),
                     spec.sizes.last().map(|s| s.span),

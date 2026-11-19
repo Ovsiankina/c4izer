@@ -106,8 +106,10 @@ use crate::files::{self, ContentHash, FileEvent, FileMemory, UiState, WriteReque
 use crate::history::{History, Step};
 use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request, ViewRef};
 
+mod anchors;
 mod steps;
 mod vertices;
+pub use anchors::SnapMark;
 pub use steps::StepDetails;
 
 /// Pointer travel below which a press and release is a click, in screen
@@ -623,6 +625,18 @@ pub enum Gesture {
         /// current snapped position (the last sent to the worker).
         vertices: Vec<Point>,
     },
+    /// Left drag on an end handle of the selected line (P4-214).
+    // APPROVER: new pub item
+    DraggingEnd {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+        /// True for the destination end, false for the source end.
+        destination: bool,
+        /// The snap point the end sits on, `None` away from every one.
+        snapped: Option<c4rizer_core::anchor::Anchor>,
+        /// The pointer, screen px.
+        at: ScreenPoint,
+    },
     /// Middle drag or Space+drag (EDIT-9, EDIT-28).
     Panning {
         /// The last pointer position, screen px.
@@ -774,10 +788,37 @@ pub enum Action {
         /// Every box of `view` at its centre, px (EDIT-26 first write).
         layout: BTreeMap<String, (i32, i32)>,
     },
+    /// Pin or release the ends of one line (P4-215..P4-218).
+    // APPROVER: new pub item
+    Anchor {
+        /// The view.
+        view: ViewRef,
+        /// The line's whole `anchor` line.
+        change: AnchorChange,
+        /// Every box of `view` at its centre, px (EDIT-26 first write).
+        layout: BTreeMap<String, (i32, i32)>,
+    },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
     /// Apply a redo step (EDIT-19).
     Redo(Step),
+}
+
+/// One line's pinned ends, as `edit::Edit::SetAnchor` names them
+/// (P4-215..P4-218).
+// APPROVER: new pub item
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorChange {
+    /// The line's source, canonical element key.
+    pub source: String,
+    /// The line's destination, canonical element key.
+    pub destination: String,
+    /// The dynamic step number, `None` in other views.
+    pub order: Option<String>,
+    /// The source end's point, `None` for the router's.
+    pub from: Option<c4rizer_core::anchor::Anchor>,
+    /// The destination end's point, `None` for the router's.
+    pub to: Option<c4rizer_core::anchor::Anchor>,
 }
 
 /// One line's new vertex list, as `edit::Edit::SetVia` names it
@@ -991,6 +1032,14 @@ pub enum MenuAction {
         name: String,
         /// The URL as written.
         url: String,
+    },
+    /// Remove the pin of one end of a line (P4-217).
+    // APPROVER: new pub item
+    ReleaseAnchor {
+        /// The line, by its plan edge in the scene shown.
+        edge: c4rizer_core::view::EdgeId,
+        /// True for the destination end.
+        destination: bool,
     },
 }
 
@@ -2328,6 +2377,18 @@ impl State {
                 }));
                 layout_batch(model, view, layout, Some(boxes), own)
             }
+            Action::Anchor { view, change, layout } => {
+                let view = &layout_view(model, view);
+                let own = vec![Edit::SetAnchor {
+                    view: view.key(),
+                    source: change.source.clone(),
+                    destination: change.destination.clone(),
+                    order: change.order.clone(),
+                    from: change.from,
+                    to: change.to,
+                }];
+                layout_batch(model, view, layout, None, own)
+            }
             Action::Undo(step) | Action::Redo(step) => rebuild_first_write(parsed, &step.edits),
             Action::SwapSteps { view, first } => vec![Edit::SwapSteps {
                 view: view.key(),
@@ -3052,6 +3113,7 @@ impl State {
                 | Gesture::RubberBand { .. }
                 | Gesture::Pressed { .. }
                 | Gesture::DraggingVertex { .. }
+                | Gesture::DraggingEnd { .. }
         ) {
             self.gesture = Gesture::Idle;
         }
@@ -3493,6 +3555,7 @@ impl State {
     fn pointer_move(&mut self, at: ScreenPoint) -> Vec<Effect> {
         match self.gesture.clone() {
             Gesture::DraggingVertex { .. } => self.vertex_drag_to(at),
+            Gesture::DraggingEnd { .. } => self.end_drag_to(at),
             Gesture::Idle => {
                 self.hover = self.hit(at);
                 Vec::new()
@@ -3553,13 +3616,20 @@ impl State {
     ) -> Vec<Effect> {
         // P3-420: a move or resize on a workspace JSON says why it is
         // refused, and starts nothing else (no rubber band).
-        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some() || self.vertex_under(from).is_some()) && self.refuse_json() {
+        if (matches!(hit, Some(ItemKey::Box(_))) || handle.is_some() || self.vertex_under(from).is_some() || self.end_under(from).is_some())
+            && self.refuse_json()
+        {
             self.gesture = Gesture::Idle;
             return Vec::new();
         }
         let read_only = self.read_only();
         if !read_only && let Some((edge, index)) = self.vertex_under(from) {
             return self.start_vertex_drag(edge, index, at);
+        }
+        // P4-214: an end handle of the selected line wins over the box
+        // under it and its resize handles.
+        if !read_only && let Some((edge, destination)) = self.end_under(from) {
+            return self.start_end_drag(edge, destination, at);
         }
         if let Some((id, handle)) = handle
             && !read_only
@@ -3746,6 +3816,12 @@ impl State {
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
             Gesture::DraggingVertex { edge, vertices, .. } => self.finish_vertex_drag(edge, &vertices),
+            Gesture::DraggingEnd {
+                edge,
+                destination,
+                snapped,
+                ..
+            } => self.finish_end_drag(edge, destination, snapped),
             Gesture::Pressed {
                 at: from,
                 button: b,
@@ -4241,6 +4317,10 @@ impl State {
                 el.url.as_ref().map(|u| (el.name.value.clone(), u.value.clone()))
             }
             (ItemKey::Line(_) | ItemKey::Label(_), Some(ModelId::Relationship(r))) => {
+                // P4-217: "Release start" / "Release end" of a pinned line.
+                if let ItemKey::Line(edge) = hit {
+                    entries.extend(self.anchor_entries(edge));
+                }
                 let rel = model.relationship(r);
                 let name = format!(
                     "{} -> {}",
@@ -4345,6 +4425,7 @@ impl State {
                 match action {
                     MenuAction::Show(view) => self.show(view),
                     MenuAction::OpenUrl { name, url } => self.open_url(&name, Some(url)),
+                    MenuAction::ReleaseAnchor { edge, destination } => self.release_anchor(edge, destination),
                 }
             }
             Command::ShowView(view) => {
@@ -5152,7 +5233,7 @@ impl State {
                 if let Gesture::Dragging { to, .. } = self.gesture.clone() {
                     self.dragged = Some(build);
                     self.refresh_preview(&to);
-                } else if matches!(self.gesture, Gesture::DraggingVertex { .. }) {
+                } else if matches!(self.gesture, Gesture::DraggingVertex { .. } | Gesture::DraggingEnd { .. }) {
                     self.preview = Some(build.scene.clone());
                     self.dragged = Some(build);
                 }

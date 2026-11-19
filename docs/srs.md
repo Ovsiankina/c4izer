@@ -3390,8 +3390,12 @@ Navigation the owner asked for beyond Structurizr (2026-11-18): "a small
 node graph outside the C4 diagrams, in a little side panel that can be
 collapsed, showing which diagram links to which diagram and at which C4
 level it is, read from top to bottom. Click any node to go to that
-diagram. Also a go-back button." One testable sentence each; ids are
-allocated per row: view-map P4-100..
+diagram. Also a go-back button." And (OR-5): "when there are many
+relationships it gets messy and I have little control. Like draw.io:
+each box has snap points, at the four corners, the middle of each side,
+and a few more on the long sides. I drag the end of an arrow near a box
+and it snaps to one of them." One testable sentence each; ids are
+allocated per row: view-map P4-100.., anchors P4-200..
 
 view-map
 
@@ -3452,6 +3456,98 @@ view-map
 - **P4-116** A reload of the file keeps the view history, less the views
   the new parse no longer has (a default view written since counts as
   its declared view); opening another file starts an empty history.
+
+anchors
+
+Authority: OR-5; approver rulings 1..6 (2026-11-19): a c4rizer-extension
+view line in the style of `via` (P3-300), the point stored relative to
+its box, additive core API, unchanged routing without anchors, notices
+instead of errors. Structurizr has no line anchors (jointjs `Vertices`
+only), so plain Structurizr files never hold one and stay valid.
+
+**File and plan**
+
+- **P4-200** In a view block, `anchor [<n>:] <src> -> <dst> [from
+  <point>] [to <point>]` pins the source end (`from`) and/or the
+  destination end (`to`) of the drawn line from `<src>` to `<dst>`, named
+  as `via` names it (P3-300, P3-301); one `anchor` line holds both ends
+  of its line, so an edit rewrites a single line.
+- **P4-201** A `<point>` is a corner, `topLeft`, `topRight`,
+  `bottomRight` or `bottomLeft`, or a side, `top`, `right`, `bottom` or
+  `left`, with an optional whole percent `0..100` along it (from the left
+  on `top` and `bottom`, from the top on `left` and `right`; 50 when
+  left out). Keywords ignore case.
+- **P4-202** A point resolves on the box rectangle at its current centre
+  and size: a corner is that corner; a side point lies `round(length ×
+  percent / 100)` grid units from the side's start. Moving or resizing
+  the box moves the point with it.
+- **P4-203** An `anchor` line that is malformed (no end, an unknown
+  word, a percent out of range, an end given twice), that names an
+  unknown element, a line the view does not draw, or a line that already
+  has an `anchor` line, is ignored with a notice naming it (P2-3 style,
+  `NoticeKind::AnchorIgnored`); the file still parses and every other
+  line keeps working.
+- **P4-204** The plan edge of an anchored line carries its anchors
+  (`PlanEdge::source_anchor`, `PlanEdge::destination_anchor`); every
+  other edge carries none.
+
+**Snap points**
+
+- **P4-205** The snap points of a box are its four corners and, on each
+  side of length `L` px, `n - 1` points at `k L / n` (`k = 1..n-1`),
+  with `n = 2 × max(1, floor(L / 120))`: the middle of every side
+  always, quarters from 240 px, sixths from 360 px, and so on. Each is
+  written with the whole percent that resolves nearest to it (P4-202),
+  so on a side up to 1000 px no two are closer than 50 px.
+
+**Routing**
+
+- **P4-206** A pinned end leaves (or arrives at) exactly its point,
+  square to its side for its first (last) 20 px, and an arrow-ended
+  destination's arrowhead points into the box along that side's normal.
+- **P4-207** A corner offers both sides that meet there; the router
+  takes the cheaper, so the line leaves the corner straight up or down
+  (top or bottom side) or straight left or right (left or right side).
+- **P4-208** The other end and the middle of an anchored line stay the
+  router's choice (CORE-6..CORE-13), unless also pinned or given
+  vertices (P3-303); a line with both vertices and anchors passes through
+  its vertices and leaves and arrives at its anchors.
+- **P4-209** Anchored lines are routed before the other lines of each
+  edge order; an anchored line never joins a trunk and is never a trunk
+  (as P3-308).
+- **P4-210** With no `anchor` line in a view, its routes are those of
+  the router without this row: the goldens stay byte-identical (P3-5).
+- **P4-211** Lines pinned to neighbouring snap points of one side,
+  heading to boxes in the same order along that side, are routed without
+  crossing each other and without sharing a segment.
+- **P4-212** A pinned end whose point is walled in by other lines is
+  still honoured (crossing them, as P3-304's fallback); with no way even
+  then the line is unroutable (CORE-13, L1).
+
+**Editor**
+
+- **P4-213** A selected line shows a round handle at each end, while
+  the file is editable.
+- **P4-214** Dragging an end handle shows the snap points of the box
+  that end belongs to (an end never moves to another box); the handle
+  snaps to the nearest one within 20 screen px, and the line is
+  re-routed off the UI thread (EDIT-25) each time the snapped point
+  changes.
+- **P4-215** Release on a snap point writes the line's `anchor` line
+  with that end pinned there (DSL-9 placement: rewrite the existing
+  `anchor` line, else add it after the view's last `anchor`, `via` or
+  `at` line), keeping the other end's pin.
+- **P4-216** Release away from every snap point removes that end's pin;
+  the last pin removed deletes the `anchor` line and the line is the
+  router's again.
+- **P4-217** The right-click menu of a line with a pinned end offers
+  "Release start" and/or "Release end", which remove that pin.
+- **P4-218** Every anchor edit is atomic, checked against the file on
+  disk (EDIT-22, EDIT-24), and one undo step (as P3-315).
+- **P4-219** SVG and PNG export draw anchored lines exactly as the
+  canvas does (EDIT-12, one scene).
+- **P4-220** The workspace JSON (P3-413) carries no anchors: Structurizr
+  has no field for them (deferred, `docs/deferred.md`).
 
 ## 5. Cross-cutting
 

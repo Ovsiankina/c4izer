@@ -4,6 +4,7 @@
 //! Depends on: its modules only.
 
 pub mod geom;
+pub mod anchor;
 pub mod text;
 pub mod model;
 pub mod edit;

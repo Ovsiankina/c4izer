@@ -609,6 +609,55 @@ pub fn rebuild_with_vertices(
     Ok(finish(model, plan, routes))
 }
 
+/// The line-end drag preview (P4-214, EDIT-25): `previous` with the
+/// anchors of `edge` set to `source` and `destination` (`None` gives that
+/// end back to the router), every box where `previous` had it, the line
+/// re-routed with `config`, labels re-placed, the scene rebuilt and
+/// re-linted. After release the editor runs a full build of the saved
+/// file instead. Deterministic (CORE-25). An `edge` out of range, or the
+/// anchors it already has, give `previous` unchanged.
+///
+/// # Errors
+///
+/// `Stopped` when `stop` was set while re-routing (EDIT-25).
+///
+/// # Panics
+///
+/// As `rebuild_after_move`.
+// APPROVER: new pub item
+#[allow(clippy::too_many_arguments)]
+pub fn rebuild_with_anchors(
+    model: &Model,
+    previous: &ViewBuild,
+    edge: crate::view::EdgeId,
+    source: Option<crate::anchor::Anchor>,
+    destination: Option<crate::anchor::Anchor>,
+    config: &RouteConfig,
+    stop: &AtomicBool,
+) -> Result<ViewBuild, Stopped> {
+    let i = edge.0 as usize;
+    // DECISION: as `rebuild_with_vertices`, nothing changed returns
+    // `previous` (after the stop check).
+    if previous
+        .plan
+        .edges
+        .get(i)
+        .is_none_or(|e| e.source_anchor == source && e.destination_anchor == destination)
+    {
+        if stop.load(Ordering::Relaxed) {
+            return Err(Stopped);
+        }
+        return Ok(previous.clone());
+    }
+    let mut plan = previous.plan.clone();
+    plan.edges[i].source_anchor = source;
+    plan.edges[i].destination_anchor = destination;
+    // DECISION: only the dragged line is re-routed, the others kept, as
+    // for the vertex preview (CORE-24).
+    let routes = route::reroute_with(&plan, &previous.routes.centres, &previous.routes, &[i], *config, stop)?;
+    Ok(finish(model, plan, routes))
+}
+
 /// The `Keep` for building the same view from `new_model` after a
 /// re-parse (EDIT-1 reload, EDIT-3 release, EDIT-24 re-apply): every box
 /// of `old_plan` (built from `old_model`) at `old_centres[box]` (the
@@ -748,6 +797,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         paper_size: None,
         lines: Vec::new(),
         vias: Vec::new(),
+        anchors: Vec::new(),
     })
 }
 

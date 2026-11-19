@@ -6,6 +6,8 @@
 // Items are `pub` inside private modules so they are visible across the
 // crate and nothing outside it.
 
+#[cfg(test)]
+mod anchors_tests;
 mod app;
 mod camera;
 mod canvas;
