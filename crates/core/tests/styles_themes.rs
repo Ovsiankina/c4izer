@@ -2248,8 +2248,8 @@ fn p2_411_boundary_tags_styled() {
     assert_eq!(b.fill, Some(rgb(0xee, 0xee, 0xee)));
 }
 
-/// With no boundary style the boundary is the phase-1 one (dashed 8/6, 1px,
-/// #666666, no fill).
+/// With no boundary style the boundary is the default one (dashed 6/4, 1px,
+/// no fill).
 #[test]
 fn p2_411_boundary_default_unchanged() {
     for key in ["c2", "c3"] {
@@ -2260,9 +2260,11 @@ fn p2_411_boundary_default_unchanged() {
         // (was #666666 for both); dash, width and size unchanged.
         assert_eq!(b.stroke.colour, rgb(0x7b, 0x84, 0x8b));
         assert_eq!(b.stroke.width_px, 1);
-        assert_eq!(b.stroke.dash_px, Some([8, 6]));
+        // owner decision 2026-11-19: design values over P2-411 / CORE-1
+        // (`.dg-boundary` dash 6 4, was 8/6).
+        assert_eq!(b.stroke.dash_px, Some([6, 4]));
         // redesign 2026-11-19: the tag is 11px (`.dg-boundary-t`), was
-        // 12px; the 8/6 dash stays as P2-411 pins it.
+        // 12px.
         assert_eq!((b.tag.colour, b.tag.size_px), (rgb(0x5a, 0x62, 0x68), 11));
         assert!(b.tag.lines[0].ends_with(']'));
         assert!(b.icon.is_none());
@@ -3095,7 +3097,8 @@ fn p2_437_no_phase_2_construct_same_scene() {
         // Every box and line keeps its phase-1 look.
         assert!(v.scene.boxes.iter().all(|b| b.opacity == 100 && b.stroke.width_px == 1 && b.stroke.dash_px.is_none() && b.icon.is_none()));
         assert!(v.scene.lines.iter().all(|l| l.opacity == 100 && l.stroke.width_px == 2 && l.stroke.dash_px.is_none() && l.jumps.is_empty()));
-        assert!(v.scene.boundaries.iter().all(|b| b.fill.is_none() && b.stroke.dash_px == Some([8, 6])));
+        // owner decision 2026-11-19: design values over P2-411 / CORE-1
+        assert!(v.scene.boundaries.iter().all(|b| b.fill.is_none() && b.stroke.dash_px == Some([6, 4])));
     }
     // Without the `routing` block the scenes are the same.
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/example.dsl")).unwrap();

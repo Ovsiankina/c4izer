@@ -516,12 +516,14 @@ Views and rendering
   bottom left). The canvas and the exporters draw only what the scene
   holds. The name tag reads the scope's name followed by its type in
   brackets (`[Software System]` on a container view, `[Container]` on
-  a component view), in bold. The title (18px Inter Bold) and subtitle
-  (12px Inter Regular) sit at the bottom left below the drawing, the
-  key below them. Each key entry is one distinct box look (shape,
-  fill, text colour) or line look (colour, end), labelled with the
-  most specific tag of the boxes drawn that way (several tags joined
-  by commas); line entries read `Relationship`.
+  a component view), in bold. The title (15px Inter Bold) and subtitle
+  (11px Inter Regular) sit at the bottom left below the drawing, the
+  key below them (owner decision 2026-11-19: the redesign's values, were
+  18px Bold and 12px; the design's semibold title is Bold, as the
+  bundled Inter has no 600 weight). Each key entry is one distinct
+  box look (shape, fill, text colour) or line look (colour, end),
+  labelled with the most specific tag of the boxes drawn that way
+  (several tags joined by commas); line entries read `Relationship`.
 - **CORE-2** People draw as the person shape and `Cylinder` elements as
   cylinders; every box shows name, `[type: technology]` (type
   `External Software System` for a software system tagged `External`)
@@ -1770,7 +1772,8 @@ are split into P2-400..P2-439 and P2-440, one testable sentence each.
   `background` (fill), `stroke`, `strokeWidth`, `color` and `fontSize`
   (name tag), `border`, `opacity` and `metadata` (`false` drops the
   bracketed type from the name tag), and a property no such block sets
-  keeps its phase-1 value (dashed 8/6, 1px, #666666, no fill). `shape`,
+  keeps its default value (dashed 6/4, 1px, #666666, no fill; owner
+  decision 2026-11-19: the redesign's 6/4 dash, was 8/6). `shape`,
   `width`, `height` and `description` are ignored. `TODO(srs)`: a
   boundary `icon` (the reference puts it in the bottom-left corner).
 - **P2-412** Element styles for `Group` and then `Group:<name>` apply to

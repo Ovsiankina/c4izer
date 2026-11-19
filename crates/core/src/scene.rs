@@ -69,9 +69,9 @@
 // skips that geometry for it and L1 names it.
 // CORE-1, CORE-2: box name 14px Inter Bold; type line and description
 // 11px Inter Regular on a 14px pitch; 10px padding; lines 2px wide,
-// arrowheads 10px, chevrons 6px, join dot radius 4px; title 18px bold
-// and subtitle 12px regular at the bottom left below the drawing, the
-// key below them. The values live in the scene items (`size_px`,
+// arrowheads 10px, chevrons 6px, join dot radius 4px; title 15px bold
+// and subtitle 11px regular at the bottom left below the drawing, the
+// key below them (owner decision 2026-11-19: the redesign's values). The values live in the scene items (`size_px`,
 // `Stroke::width_px`, `Outline`), never as pub constants. Person and
 // cylinder proportions are not in the SRS; they follow the prototype
 // golden SVGs (a step-5 choice that changes no signature).
@@ -1299,10 +1299,12 @@ fn svg_size(text: &str) -> Option<(f64, f64)> {
 // corner radius 6, person head radius 30 with the body from 50px below
 // the top (corner radius 22; redesign 2026-11-19: head 24, body from
 // 30px, corners 14, see `HEAD_RADIUS_PX`), cylinder caps 12px tall, box outline 1px
-// in the fill darkened to 72%, boundary 1px dashed 8/6 in #666666,
-// label backing white, label text in the destination fill darkened to
-// 62%. Line pitches the SRS leaves open: box name 18px, title 22px,
-// subtitle 16px, boundary tag 15px, key text 14px.
+// in the fill darkened to 72%, boundary 1px dashed 8/6 in #666666
+// (redesign 2026-11-19: 6/4, see `BOUNDARY_DASH_PX`), label backing
+// white, label text in the destination fill darkened to 62%. Line
+// pitches the SRS leaves open: box name 18px, title 22px, subtitle 16px
+// (redesign 2026-11-19: 20px and 14px, see `TITLE_FONT`), boundary tag
+// 15px, key text 14px.
 
 /// The colours a scene draws with where no style gives one (P2-431).
 #[derive(Clone, Copy)]
@@ -2061,8 +2063,12 @@ fn icon_rect(shape: Shape, rect: Rect) -> Rect {
 
 /// The dash array of a box outline or line drawn `border` (P2-405,
 /// P2-420); `None` for solid.
-// DECISION: dashed is the boundary's 8/6, dotted 2/4: shorter than the
-// dash, and still visible as dots at the 1px default stroke width.
+// DECISION: dashed is 8/6 (the phase-1 boundary dash), dotted 2/4:
+// shorter than the dash, and still visible as dots at the 1px default
+// stroke width.
+// DECISION (redesign 2026-11-19): a styled `border dashed` keeps 8/6 on
+// boxes, lines and boundaries alike (P2-405, P2-420 test it); only the
+// unstyled boundary takes the design's 6/4 (`BOUNDARY_DASH_PX`).
 const fn dash_of(border: Border) -> Option<[i32; 2]> {
     match border {
         Border::Dashed => Some(DASHED_PX),
@@ -2572,10 +2578,10 @@ fn contrast(a: Colour, b: Colour) -> f64 {
 
 // ------------------------------------------------------------ boundary
 
-// DECISION (redesign 2026-11-19): kept 8/6 although the design system's
-// `.dg-boundary` dashes 6 4: SRS P2-411 pins the unstyled boundary's
-// "dashed 8/6" (docs/deferred.md D-R6).
-const BOUNDARY_DASH_PX: [i32; 2] = [8, 6];
+// DECISION (redesign 2026-11-19): the design system's `.dg-boundary`
+// dash 6 4 (was 8/6); owner decision 2026-11-19: design values over
+// P2-411, which now states 6/4.
+const BOUNDARY_DASH_PX: [i32; 2] = [6, 4];
 // The tag text as `label::boundary_tag` sizes it (label.rs DECISION):
 // bold, from `TAG_INSET_PX` right of the boundary's left edge, baseline
 // `TAG_BASELINE_PX` above its bottom edge.
@@ -2677,14 +2683,22 @@ fn scene_boundary(
 
 // ------------------------------------------------- title, subtitle, key
 
+// DECISION (redesign 2026-11-19): the title is `.dgh-title` 15px on a
+// 20px line; the design says semibold (600), but the bundled Inter has
+// no 600 weight (`Weight` is Regular or Bold), so it is Bold. Owner
+// decision 2026-11-19: design values over CORE-1 (was 18px on 22px).
 const TITLE_FONT: Font = Font {
-    size_px: 18,
-    line_px: 22,
+    size_px: 15,
+    line_px: 20,
     weight: Weight::Bold,
 };
+// DECISION (redesign 2026-11-19): the subtitle is `.dg-sub` 11px Regular
+// (was 12px on 16px); the design gives it no line height, so it takes
+// the 14px pitch of the other 11px texts and sits right under the title
+// line, as the Legend README orders them (title, subtitle, key).
 const SUBTITLE_FONT: Font = Font {
-    size_px: 12,
-    line_px: 16,
+    size_px: SMALL_PX,
+    line_px: SMALL_LINE_PX,
     weight: Weight::Regular,
 };
 const KEY_FONT: Font = Font {
@@ -2697,10 +2711,11 @@ const KEY_FONT: Font = Font {
 // key's text line 14px below the title's (or subtitle's) line, which is
 // `KEY_GAP_PX` plus the row's half-leading (26 - 14) / 2 (was 16 + 6);
 // 6px from swatch to text (`.dgh-key span` gap, was 8) and 16px between
-// entries (`space-16`, was 24). Sizes stay as CORE-1 pins them: title
-// 18px Bold, subtitle 12px Regular (the design's 15px semibold and 11px
-// are not taken); key text 11px, the integer px nearest the design's
-// 10.5px (`TextBlock::size_px` is whole px).
+// entries (`space-16`, was 24). Main.html: drawing bottom 604, title
+// line 620..640, key line from 654; with the 20px title line those gaps
+// hold unchanged (16 below the drawing, 14 below the title line). Key
+// text 11px, the integer px nearest the design's 10.5px
+// (`TextBlock::size_px` is whole px).
 /// Space between the drawing and the title (CORE-14: clear of it).
 const TITLE_GAP_PX: i32 = 16;
 const KEY_GAP_PX: i32 = 8;
@@ -3266,10 +3281,12 @@ mod tests {
 
         let title = scene.title.as_ref().expect("title");
         assert_eq!(title.lines, vec!["Shop containers"]);
-        assert_eq!((title.size_px, title.weight), (18, Weight::Bold));
+        // owner decision 2026-11-19: design values over P2-411 / CORE-1
+        // (15px; the design's semibold is Bold, Inter ships no 600).
+        assert_eq!((title.size_px, title.weight), (15, Weight::Bold));
         let subtitle = scene.subtitle.as_ref().expect("subtitle");
         assert_eq!(subtitle.lines, vec!["The running parts of the shop."]);
-        assert_eq!((subtitle.size_px, subtitle.weight), (12, Weight::Regular));
+        assert_eq!((subtitle.size_px, subtitle.weight), (11, Weight::Regular));
         // Bottom left below the drawing, subtitle under the title, key
         // under both.
         assert_eq!(title.align, Align::Start);
