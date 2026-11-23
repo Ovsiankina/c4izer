@@ -20,3 +20,5 @@ pub mod export;
 pub mod pipeline;
 pub mod import;
 pub mod explore;
+#[cfg(test)]
+mod bench_util;

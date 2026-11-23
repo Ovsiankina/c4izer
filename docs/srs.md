@@ -533,8 +533,10 @@ Views and rendering
   description 11px Inter Regular on a 14px pitch, with 10px padding;
   lines are 2px wide, arrowheads 10px, chevrons 6px, and join dots
   have a 4px radius.
-- **CORE-3** Every line takes the colour of the box it points to,
-  unless a relationship style sets its colour (P2-12).
+- **CORE-3** Every line is drawn in the plain line colour (`dg-line`,
+  redesign 2026-11-19), unless a relationship style sets its colour
+  (P2-12); a view opts in to the colour of the box a line points to
+  with `lineColours box` (P5-300).
 - **CORE-4** With `technology off`, no technology appears on any line
   of that view.
 - **CORE-5** A relationship between two elements not both in the view
@@ -4046,6 +4048,60 @@ editor-groups
 editor-tags
 
 line-colour
+
+- **P5-300** A view body line `lineColours box` (also spelt
+  `lineColors`, keyword and value in any case) draws every line of
+  that view that no relationship style colours in the fill of the box
+  it points to; `lineColours plain`, or no such line, draws them in
+  the plain line colour (CORE-3).
+- **P5-301** A `lineColours` line with a value other than `plain` or
+  `box`, with no value or with more than one is a parse error naming
+  `lineColours`; a second `lineColours` line in one view wins over the
+  first, with a notice naming the earlier line.
+- **P5-302** `lineColours` is accepted in every view kind that draws
+  lines (system landscape, system context, container, component,
+  dynamic, deployment, custom) and refused in an image view.
+- **P5-303** In a `lineColours box` view a colour from a relationship
+  style still wins over the end box's fill.
+- **P5-304** In a `lineColours box` view a line whose end box's fill
+  has a contrast ratio under 1.3 against the page is drawn in the plain
+  line colour.
+- **P5-305** In a `lineColours box` view, when the lines A->B and B->A
+  are both drawn, both take the fill of the more connected of A and B:
+  the one more drawn lines of the view touch (in plus out); on a tie
+  the one more lines end at; then the one whose element is declared
+  first.
+- **P5-306** A line's colour does not depend on box positions: moving
+  a box (`Scene::move_box`, the drag preview's rebuild after a move, a
+  full build) leaves every line's colour as it was.
+- **P5-307** In a `lineColours box` view label texts keep their colour
+  rule, a callout's leader and shelf take their line's colour, and the
+  key keeps one `Relationship` entry per line look, its swatch in the
+  plain line colour when the lines of that entry differ in colour.
+- **P5-308** `Edit::SetLineColours` rewrites the value of the view's
+  `lineColours` line in place (keeping the keyword's spelling), adds a
+  `lineColours <mode>` line after the view's last `labelWidth`, `bus`,
+  `technology`, `maxCrossings`, `labels` or `crossings` line, else its
+  last `include` line, else before the closing brace, or removes the
+  line for `None`; its inverse gives the text back byte for byte when
+  the line was where an added line goes.
+- **P5-309** The editor's Settings menu shows, under "Max crossings"
+  and its count, a "Line colours" row with the choices `Plain` and
+  `From box` for the open view; choosing the other mode writes it as
+  one undo step (`From box` adds `lineColours box`, `Plain` removes
+  the line), choosing the current one writes nothing.
+- **P5-310** A view whose `lineColours` is `plain` or absent draws
+  exactly as before this row: the four goldens (CLI-5) are unchanged
+  with `lineColours plain` written in every view.
+- **P5-311** The text exporters (PlantUML, Mermaid,
+  WebSequenceDiagrams, DOT, Ilograph, theme JSON) give the same output
+  for a model with `lineColours box` in every view as without it, and
+  the workspace JSON export runs on it.
+- **P5-312** The end-box colour pass runs once per scene build, only in
+  a `lineColours box` view, in O(n log n) time for n drawn lines; its
+  benchmarks (P5-900) time the scene build of `C3-serving` of
+  `example.dsl` plain and `box`, and the pass alone on generated views
+  of 40 boxes / 60 lines and 1000 boxes / 3000 lines.
 
 lint-resolve
 

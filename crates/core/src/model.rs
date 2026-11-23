@@ -714,8 +714,9 @@ pub struct ResolvedRelationshipStyle {
     // arrowhead and join dot scale by thickness/2, never below the
     // phase-1 size; the 20px lane pitch does not change.
     pub thickness: u32,
-    /// `None`: the destination box's fill (CORE-3); `Some` overrides it
-    /// for line, chevrons, tip and label text (P2-419).
+    /// `None`: the plain line colour (CORE-3), or in a `lineColours box`
+    /// view the end box's fill (P5-300); `Some` overrides both for line,
+    /// chevrons, tip and label text (P2-419, P5-303).
     pub color: Option<Colour>,
     /// Polyline dash (P2-420).
     pub style: Border,
@@ -1048,6 +1049,47 @@ pub struct ViewOptions {
     /// where two lines cross. Serves P4-500.
     // APPROVER: new pub item
     pub crossings: CrossingStyle,
+    /// `lineColours plain|box` (c4rizer extension): unstyled lines in the
+    /// plain line colour, or in the fill of the box they point to.
+    /// Serves P5-300.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    pub line_colours: LineColours,
+}
+
+/// What colour a view gives its unstyled lines: `lineColours plain|box`
+/// (or `lineColors`; c4rizer extension). A relationship style colour
+/// wins over both. Serves P5-300..P5-305.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13, OR-14)
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LineColours {
+    /// Every unstyled line in the plain line colour (`dg-line`): the
+    /// default.
+    #[default]
+    Plain,
+    /// Every unstyled line in the fill of the box it points to (P5-300),
+    /// both lines of a two-way pair in the fill of the more connected box
+    /// (P5-305).
+    Box,
+}
+
+impl LineColours {
+    /// The written keyword: `plain` or `box`. Serves P5-300, P5-308.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            LineColours::Plain => "plain",
+            LineColours::Box => "box",
+        }
+    }
+
+    /// The mode written `word`, ignoring case.
+    fn from_keyword(word: &str) -> Option<LineColours> {
+        [LineColours::Plain, LineColours::Box]
+            .into_iter()
+            .find(|m| m.keyword().eq_ignore_ascii_case(word))
+    }
 }
 
 /// How a view marks line crossings: `crossings gap|jump|plain` (c4rizer
@@ -1129,6 +1171,7 @@ impl ViewOptions {
         max_crossings: 0,
         labels: LabelMode::Line,
         crossings: CrossingStyle::Gap,
+        line_colours: LineColours::Plain,
     };
 }
 
@@ -1178,6 +1221,10 @@ pub struct ViewSpec {
     /// `crossings gap|jump|plain` (c4rizer extension). Serves P4-500.
     // APPROVER: new pub item
     pub crossings: Option<Spanned<CrossingStyle>>,
+    /// `lineColours plain|box` (or `lineColors`; c4rizer extension): the
+    /// value as written. Serves P5-300.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    pub line_colours: Option<Spanned<LineColours>>,
     /// `at` lines, in file order; at most one per element.
     pub positions: Vec<At>,
     /// `size` lines, in file order; at most one per element.
@@ -1678,6 +1725,10 @@ impl ViewSpec {
             crossings: match self.crossings {
                 Some(v) => v.value,
                 None => d.crossings,
+            },
+            line_colours: match self.line_colours {
+                Some(v) => v.value,
+                None => d.line_colours,
             },
         }
     }
@@ -7186,6 +7237,7 @@ impl Builder<'_> {
                 });
             }
             "crossings" | "bridge" => self.bridges_view_line(head, view)?,
+            "linecolours" | "linecolors" => self.line_colours_view_line(head, view)?,
             "focus" => {
                 if head.len() < 2 {
                     return Err(self.missing(head, "element"));
@@ -7768,6 +7820,18 @@ impl Builder<'_> {
             kept.push(line);
         }
         view.bundles = kept;
+    }
+
+    /// A `lineColours` (or `lineColors`) line of `view` (P5-300, P5-301).
+    fn line_colours_view_line(&mut self, head: &Head<'_>, view: &mut ViewSpec) -> Result<(), ModelError> {
+        self.overridden(view.line_colours.map(|t| t.span), head);
+        let word = self.one_word(head)?;
+        let value = LineColours::from_keyword(word).ok_or_else(|| self.invalid(head, head.text(0), 1))?;
+        view.line_colours = Some(Spanned {
+            value,
+            span: head.span(1),
+        });
+        Ok(())
     }
 
     /// A `crossings` (P4-500) or `bridge` (P4-501) line of `view`.
@@ -8603,6 +8667,8 @@ const DYNAMIC_LINES: &[&str] = &[
     "bus",
     "labels",
     "crossings",
+    "linecolours",
+    "linecolors",
 ];
 
 /// True for a relationship expression (P2-332): a relationship form, or
@@ -8658,6 +8724,7 @@ fn new_view(
         max_crossings: None,
         labels: None,
         crossings: None,
+        line_colours: None,
         positions: Vec::new(),
         sizes: Vec::new(),
         span,
@@ -9635,6 +9702,7 @@ mod tests {
                 max_crossings: 2,
                 labels: LabelMode::Line,
                 crossings: CrossingStyle::Gap,
+                line_colours: LineColours::Plain,
             }
         );
         let focus: Vec<ElementId> = v.focus.iter().map(|f| f.value).collect();
@@ -10176,6 +10244,7 @@ mod tests {
                 max_crossings: 1,
                 labels: LabelMode::Line,
                 crossings: CrossingStyle::Gap,
+                line_colours: LineColours::Plain,
             }
         );
         assert_eq!(serving.hide.len(), 2);

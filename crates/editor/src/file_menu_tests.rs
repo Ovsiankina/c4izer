@@ -221,3 +221,45 @@ fn settings_without_a_file_do_nothing() {
     assert_eq!(s.max_crossings(), None);
     assert!(s.handle(Event::Command(Command::SetMaxCrossings(2))).is_empty());
 }
+
+/// P5-309: the Settings menu's "Line colours" writes the open view's
+/// `lineColours` line as one undo step, the same mode again writes
+/// nothing, undo gives the file back byte for byte, and plain (the
+/// default) removes the line. The scene follows.
+#[test]
+fn p5_309_settings_line_colours_writes_the_view_line() {
+    use c4rizer_core::model::LineColours;
+    let (_dir, path, mut h) = shop("settings-line-colours");
+    let text = || std::fs::read_to_string(&path).expect("read back");
+    assert_eq!(h.s.line_colours(), Some(LineColours::Plain));
+    h.cmd(Command::SetLineColours(LineColours::Box));
+    assert_eq!(h.writes, 1);
+    assert_eq!(text().matches("lineColours box").count(), 1, "{}", text());
+    assert_eq!(h.s.line_colours(), Some(LineColours::Box));
+    assert_eq!(h.s.scene().expect("scene").options.line_colours, LineColours::Box);
+    // The same mode again writes nothing.
+    h.cmd(Command::SetLineColours(LineColours::Box));
+    assert_eq!(h.writes, 1);
+    // One undo step gives the file back.
+    h.cmd(Command::Undo);
+    assert_eq!(text(), SHOP);
+    assert_eq!(h.s.line_colours(), Some(LineColours::Plain));
+    // Plain removes the line.
+    h.cmd(Command::SetLineColours(LineColours::Box));
+    let boxed = text();
+    h.cmd(Command::SetLineColours(LineColours::Plain));
+    assert_eq!(text(), SHOP);
+    assert_eq!(h.s.scene().expect("scene").options.line_colours, LineColours::Plain);
+    // And its undo brings the line back where it was.
+    h.cmd(Command::Undo);
+    assert_eq!(text(), boxed);
+}
+
+/// P5-309: without a file there is no view to set: nothing is written.
+#[test]
+fn p5_309_line_colours_without_a_file_do_nothing() {
+    use c4rizer_core::model::LineColours;
+    let mut s = State::new(UiState::default());
+    assert_eq!(s.line_colours(), None);
+    assert!(s.handle(Event::Command(Command::SetLineColours(LineColours::Box))).is_empty());
+}

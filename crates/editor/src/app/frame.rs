@@ -898,8 +898,9 @@ pub(super) fn file_menu(ui: &mut egui::Ui, state: &crate::state::State, events: 
 }
 
 /// The `Settings` button beside `File` and its menu (owner request
-/// 2026-11-23): the open view's settings, for now its crossing budget
-/// (`maxCrossings`, CORE-17) with the count the view draws.
+/// 2026-11-23): the open view's settings: its crossing budget
+/// (`maxCrossings`, CORE-17) with the count the view draws, then its line
+/// colours (`lineColours`, P5-309).
 // DECISION: per view, as the DSL writes the budget (owner, 2026-11-23:
 // a budget shared by the file makes no sense across views). The popup
 // stays open on clicks inside, so the budget can be stepped and its
@@ -910,6 +911,7 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
     kit::focus_ring(ui, &r);
     let budget = state.max_crossings();
     let drawn = state.scene().map(|s| s.crossings);
+    let line_colours = state.line_colours();
     egui::Popup::menu(&r)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
@@ -948,6 +950,26 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
                 };
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                     ui.label(egui::RichText::new(text).color(ink));
+                });
+            }
+            // P5-309: under "Max crossings" and its count (design section 8).
+            if let Some(mode) = line_colours {
+                use c4rizer_core::model::LineColours;
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    kit::form_row(ui, "Line colours", |ui| {
+                        let choices = [LineColours::Plain, LineColours::Box];
+                        let items = [
+                            Segment::text("Plain", "Every line in the plain line colour (one undo step)")
+                                .on(mode == LineColours::Plain),
+                            Segment::text("From box", "Each line in the colour of the box it points to (one undo step)")
+                                .on(mode == LineColours::Box),
+                        ];
+                        if let Some(i) = kit::segmented(ui, &items, true)
+                            && choices[i] != mode
+                        {
+                            events.push(Event::Command(Command::SetLineColours(choices[i])));
+                        }
+                    });
                 });
             }
         });
@@ -1254,6 +1276,72 @@ mod tests {
         assert!(matches!(events.as_slice(), [Event::Command(Command::SetMaxCrossings(0))]), "{events:?}");
         let (shown, _) = frame(Vec::new());
         at(&shown, "MAX CROSSINGS");
+    }
+
+    /// P5-309: "Line colours" sits in the Settings menu's view settings
+    /// under "Max crossings", shows the view's mode, and a click on the
+    /// other choice asks for it.
+    #[test]
+    fn p5_309_settings_menu_shows_line_colours() {
+        use c4rizer_core::model::LineColours;
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+        fn texts(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, h) = crate::file_menu_tests::shop("settings-line-colours-popup");
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                let mut t = Vec::new();
+                texts(&c.shape, &mut t);
+                shown.extend(t.into_iter().map(|t| (t, c.shape.visual_bounding_rect())));
+            }
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Rect {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| *r)
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        frame(click(at(&shown, "Settings").center()));
+        let (shown, _) = frame(Vec::new());
+        let budget = at(&shown, "MAX CROSSINGS");
+        let colours = at(&shown, "LINE COLOURS");
+        assert!(colours.min.y > budget.max.y, "under Max crossings: {colours:?} {budget:?}");
+        // Plain is the mode: a click on it asks nothing.
+        let (_, events) = frame(click(at(&shown, "Plain").center()));
+        assert!(events.is_empty(), "{events:?}");
+        let (shown, _) = frame(Vec::new());
+        let (_, events) = frame(click(at(&shown, "From box").center()));
+        assert!(
+            matches!(events.as_slice(), [Event::Command(Command::SetLineColours(LineColours::Box))]),
+            "{events:?}"
+        );
     }
 
     fn entry(label: &str) -> MenuEntry {

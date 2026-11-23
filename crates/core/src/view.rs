@@ -119,7 +119,7 @@ pub struct PlanBox {
     /// tag, then declared tags): the CORE-1 key groups colours by them.
     pub tags: Vec<String>,
     /// The element's resolved style: fill, text colour, shape (DSL-15,
-    /// CORE-2, CORE-3 line colour, CORE-9 ports).
+    /// CORE-2, P5-300 line colour, CORE-9 ports).
     pub style: ResolvedStyle,
     /// Element name, unquoted.
     pub name: String,
@@ -175,7 +175,8 @@ pub struct PlanEdge {
     pub id: EdgeId,
     /// The box the line starts at.
     pub source: BoxId,
-    /// The box the line points to (CORE-3: the line takes its colour).
+    /// The box the line points to (P5-300: in a `lineColours box` view
+    /// the line takes its fill).
     pub destination: BoxId,
     /// Every relationship this line stands for, winner first, then the
     /// merged lifted ones in source order; never empty (CORE-21

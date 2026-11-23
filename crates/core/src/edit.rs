@@ -34,6 +34,8 @@
 // - the c4rizer view extension lines `paperSize` and `line` (P2-701,
 //   P2-708..P2-710, P2-733);
 // - `title` and `subtitle` lines in a view;
+// - the c4rizer view option line `lineColours` (P5-308): added, its
+//   value rewritten, or removed;
 // - a default view block (EDIT-15, `Edit::AddDefaultView`): a view, not
 //   an element, appended as the last view in `views`, and removed again
 //   by `Edit::RemoveDefaultView` (inverse only, EDIT-19) while it holds
@@ -583,6 +585,17 @@ pub enum Edit {
         /// The budget, `None` for no line.
         budget: Option<u32>,
     },
+    /// Set what colour `view` gives its unstyled lines: rewrite the value
+    /// of its `lineColours` (or `lineColors`) line in place, add a
+    /// `lineColours` line, or remove it with `None` (`plain`, the
+    /// default), placed as `SetLabelMode` places `labels`. Serves P5-308.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The mode, `None` for no line.
+        mode: Option<model::LineColours>,
+    },
     /// Set every `bridge` line of `view`: one per entry of `bridges`,
     /// `(carrier, other)`, in order. Existing lines are rewritten in
     /// place, extra ones removed, new ones added after the view's last
@@ -880,6 +893,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::SetCanvasSize { view, size } => set_canvas_size(current, view, *size),
         Edit::SetLabelMode { view, mode } => set_label_mode(current, view, *mode),
         Edit::SetMaxCrossings { view, budget } => set_max_crossings(current, view, *budget),
+        Edit::SetLineColours { view, mode } => set_line_colours(current, view, *mode),
         Edit::SetLinePosition {
             view,
             relationship,
@@ -2238,6 +2252,52 @@ fn set_max_crossings(current: &mut Parsed, view: &str, budget: Option<u32>) -> R
                     spec.label_width.map(|v| v.span),
                     spec.bus.map(|v| v.span),
                     spec.technology.map(|v| v.span),
+                    spec.labels.map(|v| v.span),
+                    spec.crossings.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// `SetLineColours` (P5-308): the `lineColours` line, placed as
+/// `set_max_crossings` places `maxCrossings`.
+// DECISION: a new line is spelt `lineColours` (the British spelling the
+// design names first); a rewrite replaces only the value, so a written
+// `lineColors` keeps its spelling.
+fn set_line_colours(current: &mut Parsed, view: &str, mode: Option<model::LineColours>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetLineColours {
+        view: view.to_owned(),
+        mode: spec.line_colours.map(|c| c.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.line_colours, mode) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.keyword().to_owned(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("lineColours {}", new.keyword()));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.max_crossings.map(|v| v.span),
                     spec.labels.map(|v| v.span),
                     spec.crossings.map(|v| v.span),
                 ]

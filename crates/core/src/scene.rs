@@ -57,8 +57,10 @@
 // DECISION: the CORE-30 width table is `label::text_advance`; scene
 // wraps and sizes every box text, the title, the boundary tag and the
 // key with it and never keeps a second table.
-// DECISION: the line colour is the destination box's fill (CORE-3);
-// phase 2 relationship styles (P2-12) override it.
+// DECISION: an unstyled line is `dg-line` (CORE-3, redesign
+// 2026-11-19); a view written `lineColours box` gives it the fill of the
+// box it points to instead (P5-300, `line_colour`); phase 2 relationship
+// styles (P2-12) override both.
 // DECISION: a joined line (CORE-8) ends in `Tip::Dot`, never an arrow;
 // its trunk is `SceneLine::joins`.
 //
@@ -89,11 +91,13 @@ use crate::label::{
     boundary_tag_text, boundary_tag_with, text_advance,
 };
 use crate::model::{
-    Asset, Border, Colour, ElementId, ElementKind, ImageSource, Mime, Mode, RelationshipId, Shape,
-    ViewKind, ViewOptions, ViewImage, ViewScope,
+    Asset, Border, Colour, ElementId, ElementKind, ImageSource, LineColours, Mime, Mode, RelationshipId,
+    Shape, ViewKind, ViewOptions, ViewImage, ViewScope,
 };
 use crate::route::{Line, Routes};
 use crate::view::{BoundaryOf, BoxId, EdgeId, PlanBox, PlanEdge, ViewPlan};
+
+mod line_colour;
 
 /// The bundled font's family name (Inter, SIL OFL 1.1): the SVG names
 /// it first in `font-family` (with a `sans-serif` fallback), the canvas
@@ -456,8 +460,8 @@ pub enum Tip {
     },
 }
 
-/// One drawn line (CORE-3, CORE-10): a solid polyline in its
-/// destination's colour, its chevrons and its tip. Serves CORE-1,
+/// One drawn line (CORE-3, CORE-10): a solid polyline in its colour
+/// (CORE-3, P5-300), its chevrons and its tip. Serves CORE-1,
 /// CORE-3, CORE-5, CORE-8, CORE-10, CORE-13.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -471,12 +475,15 @@ pub struct SceneLine {
     pub relationships: Vec<RelationshipId>,
     /// The box it starts at.
     pub source: BoxId,
-    /// The box it points to (CORE-3: it takes that box's fill).
+    /// The box it points to (P5-300: in a `lineColours box` view it takes
+    /// that box's fill).
     pub destination: BoxId,
     /// Vertices in px, source to destination: `Line::points` times
     /// `GRID_PX`, or the straight fallback when `routed` is false.
     pub points: Vec<Point>,
-    /// Solid, in the destination box's fill colour (CORE-3).
+    /// Solid; its colour is the relationship style's, else, in a
+    /// `lineColours box` view, its end box's fill (P5-300..P5-305), else
+    /// the plain line colour (CORE-3).
     pub stroke: Stroke,
     /// Direction chevrons, in segment order (CORE-10); none within 8px
     /// of a label.
@@ -1018,7 +1025,7 @@ pub fn texts_fit(plan_box: &PlanBox, half_width: i32, half_height: i32) -> bool 
 /// Builds the scene of `plan` with every box at `routes.centres[box]`,
 /// the lines of `routes` and the labels of `labels`: boxes with their
 /// outline, fill and wrapped texts (CORE-2, CORE-30); one line per edge
-/// in its destination's colour with chevrons and tip (CORE-3, CORE-8,
+/// in its colour with chevrons and tip (CORE-3, P5-300, CORE-8,
 /// CORE-10; unroutable ones as a straight fallback, CORE-13); labels in
 /// px with their fit (CORE-14, CORE-15; technology per
 /// `PlanEdge::shown_technology`, CORE-4); boundaries with their tags,
@@ -1064,17 +1071,22 @@ pub(crate) fn build_with(plan: &ViewPlan, routes: &Routes, labels: &Labels, word
     let boundaries: Vec<SceneBoundary> = (0..plan.boundaries.len())
         .filter_map(|i| scene_boundary(plan, i, &centres, pal, words))
         .collect();
+    // P5-300: the colour pass runs only in a `lineColours box` view, so a
+    // plain view costs nothing extra.
+    let end_colours = (plan.options.line_colours == LineColours::Box)
+        .then(|| line_colour::end_box_colours(plan, |b| boxes[b.0 as usize].fill, pal.page));
+    let end_of = |e: EdgeId| end_colours.as_ref().and_then(|c| c[e.0 as usize]);
     let labels: Vec<SceneLabel> = labels
         .labels
         .iter()
         .flatten()
-        .map(|l| scene_label(plan, l, &boundaries, pal))
+        .map(|l| scene_label(plan, l, &boundaries, pal, end_of(l.edge)))
         .collect();
     let label_rects = chevron_keepouts(&labels);
     let mut lines: Vec<SceneLine> = plan
         .edges
         .iter()
-        .map(|e| scene_line(e, routes, &boxes, &label_rects, pal))
+        .map(|e| scene_line(e, routes, &boxes, &label_rects, end_of(e.id).unwrap_or(pal.line)))
         .collect();
     add_jumps(plan, &mut lines);
     let bridges = crate::bridge::add(
@@ -2260,13 +2272,15 @@ fn edge_toward(rect: &Rect, toward: Point) -> Point {
 }
 
 /// The drawn line of `edge`: its routed polyline in px, or the CORE-13
-/// straight fallback between its boxes' edges.
+/// straight fallback between its boxes' edges. `unstyled` is its colour
+/// when no relationship style colours it: the end-box colour in a
+/// `lineColours box` view (P5-300), else the plain line colour.
 fn scene_line(
     edge: &PlanEdge,
     routes: &Routes,
     boxes: &[SceneBox],
     labels: &[Rect],
-    pal: Palette,
+    unstyled: Colour,
 ) -> SceneLine {
     let source = &boxes[edge.source.0 as usize];
     let destination = &boxes[edge.destination.0 as usize];
@@ -2301,12 +2315,13 @@ fn scene_line(
         source: edge.source,
         destination: edge.destination,
         points,
-        // P2-419: a style colour replaces the destination's fill (CORE-3).
+        // P2-419: a style colour wins over the end-box colour (P5-303),
+        // which wins over the plain line colour (CORE-3, P5-300).
         // DECISION: the dash sits on the line's stroke; painters draw the
         // chevrons and the tip solid with the same colour and width, so a
         // dashed line still shows whole direction marks (P2-420).
         stroke: Stroke {
-            colour: style.color.unwrap_or(pal.line),
+            colour: style.color.unwrap_or(unstyled),
             width_px: thickness,
             dash_px: dash_of(style.style),
         },
@@ -2445,6 +2460,7 @@ fn scene_label(
     label: &Label,
     boundaries: &[SceneBoundary],
     pal: Palette,
+    end: Option<Colour>,
 ) -> SceneLabel {
     let edge = &plan.edges[label.edge.0 as usize];
     let (centre, rect) = if let Some(c) = &label.callout {
@@ -2487,7 +2503,8 @@ fn scene_label(
         line_px: label.line_px,
         weight: Weight::Regular,
     };
-    // P4-307: the line's own colour and half its width.
+    // P4-307: the line's own colour (P5-300: its end-box colour in a
+    // `lineColours box` view) and half its width.
     let callout = label.callout.as_ref().map(|c| {
         let thickness = i32::try_from(edge.style.thickness).unwrap_or(i32::MAX).clamp(1, 100);
         SceneCallout {
@@ -2496,7 +2513,7 @@ fn scene_label(
             dot: c.leader[1],
             dot_radius_px: CALLOUT_DOT_RADIUS_PX,
             stroke: Stroke {
-                colour: edge.style.color.unwrap_or(pal.line),
+                colour: edge.style.color.or(end).unwrap_or(pal.line),
                 width_px: (thickness / 2).max(1),
                 dash_px: None,
             },

@@ -431,6 +431,10 @@ pub enum Command {
     /// crossings"), one undo step (CORE-17).
     // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
     SetMaxCrossings(u32),
+    /// Set the open view's line colours (the Settings menu's "Line
+    /// colours": `Plain | From box`), one undo step (P5-309).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours(c4rizer_core::model::LineColours),
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -856,6 +860,14 @@ pub enum Action {
         view: ViewRef,
         /// The budget written, `None` for no line (budget 0).
         budget: Option<u32>,
+    },
+    /// Set the view's `lineColours` line, `None` to remove it (P5-309).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours {
+        /// The view.
+        view: ViewRef,
+        /// The mode written, `None` for no line (`lineColours plain`).
+        mode: Option<c4rizer_core::model::LineColours>,
     },
     /// Set the view's `crossings` line, `None` to remove it (P4-521).
     // APPROVER: new pub item
@@ -2593,6 +2605,15 @@ impl State {
                 out.push(Edit::SetMaxCrossings {
                     view: view.key(),
                     budget: *budget,
+                });
+                out
+            }
+            Action::SetLineColours { view, mode } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetLineColours {
+                    view: view.key(),
+                    mode: *mode,
                 });
                 out
             }
@@ -5123,6 +5144,7 @@ impl State {
             Command::SetLabelMode(mode) => self.set_label_mode(mode),
             Command::SetCrossingStyle(style) => self.set_crossing_style(style),
             Command::SetMaxCrossings(budget) => self.set_max_crossings(budget),
+            Command::SetLineColours(mode) => self.set_line_colours(mode),
         }
     }
 
@@ -5321,6 +5343,26 @@ impl State {
         }
         let budget = (budget != c4rizer_core::model::ViewOptions::DEFAULT.max_crossings).then_some(budget);
         self.write(Action::SetMaxCrossings { view, budget })
+    }
+
+    /// The line colours of the open view (P5-309), `None` when it has no
+    /// layout to edit.
+    pub(crate) fn line_colours(&self) -> Option<c4rizer_core::model::LineColours> {
+        self.layout_spec().map(|(_, spec)| spec.options().line_colours)
+    }
+
+    /// The Settings menu's "Line colours": `lineColours box` written, or
+    /// the line removed for plain; nothing when the view already has that
+    /// mode.
+    // DECISION: plain removes the line, as 0 does for `maxCrossings`: the
+    // default needs no line.
+    fn set_line_colours(&mut self, mode: c4rizer_core::model::LineColours) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        if spec.options().line_colours == mode || self.refuse_json() || self.read_only() {
+            return Vec::new();
+        }
+        let mode = (mode != c4rizer_core::model::ViewOptions::DEFAULT.line_colours).then_some(mode);
+        self.write(Action::SetLineColours { view, mode })
     }
 
     fn bring_onto_canvas(&mut self) -> Vec<Effect> {
