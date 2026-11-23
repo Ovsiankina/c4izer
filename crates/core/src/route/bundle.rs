@@ -41,6 +41,12 @@ const GAP: i32 = 1;
 const SPINE_BEND: u32 = 4 * BEND;
 /// States a spine search pops before it gives up (CORE-32).
 const SPINE_POPS: usize = 400_000;
+/// The stop flag of the member legs: never set.
+// DECISION: a bundle's member legs keep reading no stop flag (they never
+// did): threading it would change every bundle helper's return type, and
+// bundled views are small; `solve_bundled` still reads the real flag per
+// bundle and passes it to the lines routed after the bundles.
+static NEVER: AtomicBool = AtomicBool::new(false);
 
 /// `route` and `reroute` for a view with bundles (P4-404): each bundle in
 /// plan order on the board left by the ones before it, then every other
@@ -100,9 +106,9 @@ pub(super) fn solve_bundled(plan: &ViewPlan, centres: &[Point], config: RouteCon
     }
     let rest: Vec<usize> = (0..n).filter(|&e| kept[e].is_none()).collect();
     let mut routes = if pinned_any(plan) {
-        solve_pinned(plan, centres, config, stop, kept, &rest, &corridor)?
+        solve_pinned(plan, centres, config, stop, kept, &rest, &corridor, None, None)?
     } else {
-        solve(plan, centres, config, stop, kept, &rest, &corridor)?
+        solve(plan, centres, config, stop, kept, &rest, &corridor, None, None)?
     };
     routes.bundles = infos;
     Ok(routes)
@@ -499,6 +505,8 @@ fn route_bundle(
         plan,
         centres,
         corridor: &all_cor,
+        preview: false,
+        previous: None,
     };
     let mut board = ctx.board(grid, &[]);
     for line in kept.iter().flatten() {
@@ -839,8 +847,8 @@ fn member_line(ctx: &Ctx<'_>, board: &Board, e: usize, t: &[Point], nsrc: usize)
     }
     for goal in &goals {
         let found = match at {
-            None => leg(board, e, &starts, false, goal, &own)?,
-            Some(s) => leg(board, e, &[s], true, goal, &own)?,
+            None => leg(board, e, &starts, false, goal, &own, &NEVER).ok()??,
+            Some(s) => leg(board, e, &[s], true, goal, &own, &NEVER).ok()??,
         };
         if at.is_none() {
             let p = found.start?;
@@ -872,7 +880,7 @@ fn member_line(ctx: &Ctx<'_>, board: &Board, e: usize, t: &[Point], nsrc: usize)
     };
     let mut first = true;
     for &v in dv {
-        let found = leg(board, e, &[at], !first, &Goal::Cell(g.index(v)?), &own)?;
+        let found = leg(board, e, &[at], !first, &Goal::Cell(g.index(v)?), &own, &NEVER).ok()??;
         cells.extend_from_slice(&found.cells[1..]);
         mark(&cells, &mut own);
         at = Start {
@@ -899,7 +907,7 @@ fn member_line(ctx: &Ctx<'_>, board: &Board, e: usize, t: &[Point], nsrc: usize)
         .map(|(s, c)| (c, s.port))
         .collect();
     ports.sort_unstable_by_key(|&(c, _)| c);
-    let found = leg(board, e, &[at], !first, &Goal::Ports(&ports), &own)?;
+    let found = leg(board, e, &[at], !first, &Goal::Ports(&ports), &own, &NEVER).ok()??;
     cells.extend_from_slice(&found.cells[1..]);
     let port = found.end?;
     cells.push(port.at.step(side_dir(port.side)));

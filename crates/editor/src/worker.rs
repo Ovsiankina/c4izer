@@ -33,6 +33,17 @@
 // takes the newer request without waiting for the stale build to finish.
 // An `Export` is never stopped: it is never dropped by `latest`, so its
 // flag is never set.
+//
+// A running shown `Build` also stops on a `Drag`, but it is not stale: the
+// thread parks it (`run_thread`), serves the drags, and runs it again,
+// from the start and with its own generation, as soon as no drag is
+// queued; a newer shown `Build` drops it, as `latest` would. So a drag
+// started while the release's build runs is answered at once, and the
+// view still ends on that build (or a newer one).
+// DECISION: park and re-run on the one thread, not a second thread for
+// drags: the stop flag and `Running` stay single, the full build's output
+// is unchanged (it is re-run whole, never resumed), and a drag never
+// shares the CPU with a full build.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -413,17 +424,23 @@ impl Worker {
     /// Queues `request`; never blocks (EDIT-25). When `request` is a
     /// shown `Build` or a `Drag` and `stops(running job, request)` holds,
     /// it first sets the running job's stop flag, so the thread serves
-    /// `request` without waiting for the stale job to finish; an `Export`
-    /// is never stopped. A closed thread is ignored: the status bar
-    /// learns it from the missing replies.
+    /// `request` without waiting for the stopped job to finish; an
+    /// `Export` is never stopped. A closed thread is ignored: the status
+    /// bar learns it from the missing replies.
     pub fn send(&self, request: Request) {
-        if let Ok(running) = self.running.lock()
-            && let Some(running) = running.as_ref()
-            && stops(&running.job, &request.job)
+        // DECISION: the `running` lock is held until `request` is queued,
+        // so the thread, which takes that lock when a stopped job returns,
+        // always finds the request that stopped it and never re-runs a
+        // parked build ahead of it (the channel send does not block).
+        let running = self.running.lock();
+        if let Ok(slot) = &running
+            && let Some(job) = slot.as_ref()
+            && stops(&job.job, &request.job)
         {
-            running.stop.store(true, Ordering::Relaxed);
+            job.stop.store(true, Ordering::Relaxed);
         }
         let _ = self.requests.send(request);
+        drop(running);
     }
 
     /// Every reply received since the last call, in arrival order; never
@@ -508,11 +525,13 @@ pub fn latest(queued: Vec<Request>) -> Vec<Request> {
 
 /// True when a newly arrived `incoming` job must stop the `running` one
 /// (EDIT-25): `incoming` is a shown `Build` or a `Drag`, and
-/// `latest(vec![running, incoming])` would drop `running`. So a running
-/// `Build` stops on a shown `Build`; a running `Drag` on a shown `Build`
-/// or a `Drag`; a running background `Build` on a `Drag`. A running
-/// shown `Build` keeps going on a `Drag`, and a running `Export` is never
-/// stopped. Serves EDIT-25, EDIT-14, EDIT-7.
+/// `latest(vec![running, incoming])` would drop `running`, or `running`
+/// is a shown `Build` and `incoming` a `Drag`. So a running `Build` stops
+/// on a shown `Build`; a running `Drag` on a shown `Build` or a `Drag`; a
+/// running background `Build` on a `Drag`; a running shown `Build` on a
+/// `Drag` too, and the thread runs it again once no drag is queued
+/// (`run_thread`). A running `Export` is never stopped. Serves EDIT-25,
+/// EDIT-14, EDIT-7.
 #[must_use]
 pub fn stops(running: &Job, incoming: &Job) -> bool {
     if !matches!(incoming, Job::Build { shown: true, .. } | Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } | Job::DragLabel { .. }) {
@@ -520,6 +539,9 @@ pub fn stops(running: &Job, incoming: &Job) -> bool {
     }
     if matches!(running, Job::Export { .. }) {
         return false;
+    }
+    if is_drag(incoming) && matches!(running, Job::Build { shown: true, .. }) {
+        return true;
     }
     // DECISION: the rule is `latest` itself on the pair, so the two never
     // disagree; the clones are `Arc` copies.
@@ -862,9 +884,32 @@ fn refuse_inputs(parsed: &Parsed, outputs: &[PathBuf]) -> Result<(), String> {
     }
 }
 
+/// True for the drag previews (`Drag`, `DragVertex`, `DragAnchor`,
+/// `DragLabel`).
+fn is_drag(job: &Job) -> bool {
+    matches!(job, Job::Drag { .. } | Job::DragVertex { .. } | Job::DragAnchor { .. } | Job::DragLabel { .. })
+}
+
+/// The next request to run, from `pending` (already through `latest`)
+/// and the `parked` shown build a drag stopped (EDIT-25): a newer shown
+/// `Build` in `pending` drops the parked one; a queued drag runs before
+/// it; otherwise the parked build runs before anything queued after it;
+/// else the first of `pending`. `None` when both are empty.
+fn take_next(pending: &mut Vec<Request>, parked: &mut Option<Request>) -> Option<Request> {
+    if pending.iter().any(|r| matches!(r.job, Job::Build { shown: true, .. })) {
+        *parked = None;
+    }
+    if parked.is_some() && !pending.iter().any(|r| is_drag(&r.job)) {
+        return parked.take();
+    }
+    (!pending.is_empty()).then(|| pending.remove(0))
+}
+
 /// The worker thread's loop: wait for a request, take every queued one,
-/// keep `latest` of them, run the first with a fresh stop flag published
-/// in `running`, send its reply, repeat until the request channel closes.
+/// keep `latest` of them, run the one `take_next` picks with a fresh stop
+/// flag published in `running`, send its reply, repeat until the request
+/// channel closes. A shown `Build` stopped by a drag is parked and run
+/// again by `take_next` (EDIT-25).
 fn run_thread(
     inbox: &Receiver<Request>,
     outbox: &Sender<Reply>,
@@ -872,22 +917,35 @@ fn run_thread(
     wake: &Wake,
 ) {
     let mut pending: Vec<Request> = Vec::new();
+    let mut parked: Option<Request> = None;
     loop {
-        if pending.is_empty() {
+        if pending.is_empty() && parked.is_none() {
             match inbox.recv() {
                 Ok(r) => pending.push(r),
                 Err(_) => return,
             }
         }
-        pending.extend(inbox.try_iter());
+        loop {
+            match inbox.try_recv() {
+                Ok(r) => pending.push(r),
+                Err(mpsc::TryRecvError::Empty) => break,
+                // DECISION: a closed channel (the `Worker` dropped) drops
+                // the parked build, so `Drop` never waits for it to re-run;
+                // queued requests still run, as before parking existed.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    parked = None;
+                    break;
+                }
+            }
+        }
         // DECISION: `latest` runs again before every job, so a request
         // that arrived while the previous job ran can still drop the
         // queued ones it supersedes.
         pending = latest(std::mem::take(&mut pending));
-        if pending.is_empty() {
+        let Some(request) = take_next(&mut pending, &mut parked) else {
             continue;
-        }
-        let request = pending.remove(0);
+        };
+        let again = matches!(request.job, Job::Build { shown: true, .. }).then(|| request.clone());
         let stop = Arc::new(AtomicBool::new(false));
         if let Ok(mut slot) = running.lock() {
             *slot = Some(Running {
@@ -900,12 +958,19 @@ fn run_thread(
         if let Ok(mut slot) = running.lock() {
             *slot = None;
         }
-        if let Some(reply) = reply {
-            if outbox.send(reply).is_err() {
-                return;
-            }
-            wake();
+        let Some(reply) = reply else {
+            // A stopped shown build waits for the drags; a newer shown
+            // build, when that is what stopped it, drops it in `take_next`.
+            // DECISION: parked only when its flag was set, so a build that
+            // gives no reply for another reason is never re-run in a loop:
+            // every re-run follows a request that stopped it.
+            parked = again.filter(|_| stop.load(Ordering::Relaxed));
+            continue;
+        };
+        if outbox.send(reply).is_err() {
+            return;
         }
+        wake();
     }
 }
 
@@ -1065,8 +1130,12 @@ mod tests {
         assert!(stops(&bg, &drag_job(&parsed, &previous, 30)));
         assert!(stops(&bg, &build_job(&parsed, "containers", true)));
         assert!(!stops(&bg, &build_job(&parsed, "containers", false)));
+        // A running shown build stops for a drag too (it is parked and run
+        // again, `take_next`), never for a background build.
         let shown = build_job(&parsed, "containers", true);
-        assert!(!stops(&shown, &drag_job(&parsed, &previous, 30)));
+        assert!(stops(&shown, &drag_job(&parsed, &previous, 30)));
+        assert!(stops(&shown, &vertex_job(&parsed, &previous, 30)));
+        assert!(!stops(&shown, &build_job(&parsed, "context", false)));
         assert!(stops(&shown, &build_job(&parsed, "context", true)));
         let drag = drag_job(&parsed, &previous, 30);
         assert!(stops(&drag, &drag_job(&parsed, &previous, 40)));
@@ -1203,6 +1272,132 @@ mod tests {
             replies.iter().all(|r| matches!(r, Reply::Dragged { generation: Generation(2), .. })),
             "{replies:?}"
         );
+    }
+
+    /// EDIT-25: with a shown build of a heavy view running on the thread
+    /// (the build a release asks for), a drag request sent after it is
+    /// answered before that build ends; the build is not lost: once no
+    /// drag is queued it runs again and replies `Built` with its own
+    /// generation, equal to a build never interrupted (same output).
+    #[test]
+    fn edit_25_drag_served_without_waiting_for_shown_build() {
+        let heavy = Arc::new(parse(&heavy(12)).expect("heavy parses"));
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let job = Job::Build {
+            parsed: Arc::clone(&heavy),
+            view: declared("heavy"),
+            keep: Keep::default(),
+            shown: true,
+            mode: c4rizer_core::model::Mode::Light,
+        };
+        let worker = Worker::spawn(Arc::new(|| {}));
+        worker.send(req(1, job.clone()));
+        let start = Instant::now();
+        loop {
+            if worker.running.lock().unwrap().as_ref().is_some_and(|r| r.generation == Generation(1)) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "shown build never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        worker.send(req(2, drag_job(&parsed, &previous, previous.routes.centres[0].x + 30)));
+        let mut replies = Vec::new();
+        while !replies.iter().any(|r| matches!(r, Reply::Built { .. })) {
+            assert!(start.elapsed() < Duration::from_mins(2), "build never replied: {replies:?}");
+            replies.extend(worker.drain());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let order: Vec<&str> = replies
+            .iter()
+            .map(|r| match r {
+                Reply::Dragged { .. } => "Dragged",
+                Reply::Built { .. } => "Built",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(order, ["Dragged", "Built"], "the drag waited for the shown build");
+        assert!(matches!(replies[0], Reply::Dragged { generation: Generation(2), .. }), "{replies:?}");
+        let Reply::Built { generation, build, shown, .. } = &replies[1] else { unreachable!() };
+        assert_eq!((*generation, *shown), (Generation(1), true));
+        let Some(Reply::Built { build: whole, .. }) = serve(req(1, job), &AtomicBool::new(false)) else {
+            panic!("uninterrupted build");
+        };
+        assert_eq!(**build, *whole, "the re-run build equals an uninterrupted one");
+    }
+
+    /// EDIT-25: the order the thread runs a parked shown build in
+    /// (`take_next`): after every queued drag, before anything else queued
+    /// after it, and never once a newer shown build is queued.
+    #[test]
+    fn edit_25_parked_shown_build_runs_after_drags() {
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let stopped_build = || Some(req(1, build_job(&parsed, "containers", true)));
+        // A drag queued: the drag first, the build stays held.
+        let mut held = stopped_build();
+        let mut pending = vec![req(2, drag_job(&parsed, &previous, 30))];
+        assert_eq!(super::take_next(&mut pending, &mut held).map(|r| r.generation.0), Some(2));
+        assert_eq!(held.as_ref().map(|r| r.generation.0), Some(1));
+        // No drag left: the held build, then what is queued.
+        let mut pending = vec![req(3, build_job(&parsed, "context", false)), req(4, export_job(&parsed))];
+        assert_eq!(super::take_next(&mut pending, &mut held).map(|r| r.generation.0), Some(1));
+        assert!(held.is_none());
+        assert_eq!(super::take_next(&mut pending, &mut held).map(|r| r.generation.0), Some(3));
+        // A newer shown build drops it, whatever else is queued.
+        let mut held = stopped_build();
+        let mut pending = vec![req(5, build_job(&parsed, "containers", true)), req(6, drag_job(&parsed, &previous, 40))];
+        assert_eq!(super::take_next(&mut pending, &mut held).map(|r| r.generation.0), Some(5));
+        assert!(held.is_none());
+        // Nothing at all: nothing to run.
+        assert!(super::take_next(&mut Vec::new(), &mut None).is_none());
+    }
+
+    /// EDIT-25: drags keep stopping the parked build while they come; a
+    /// newer shown build sent after them replaces it, so only that build
+    /// replies `Built`, after the drags'.
+    #[test]
+    fn edit_25_newer_shown_build_replaces_parked_one() {
+        let heavy = Arc::new(parse(&heavy(12)).expect("heavy parses"));
+        let parsed = shop();
+        let previous = built(&parsed, "containers");
+        let heavy_build = |generation| {
+            req(generation, Job::Build {
+                parsed: Arc::clone(&heavy),
+                view: declared("heavy"),
+                keep: Keep::default(),
+                shown: true,
+                mode: c4rizer_core::model::Mode::Light,
+            })
+        };
+        let worker = Worker::spawn(Arc::new(|| {}));
+        worker.send(heavy_build(1));
+        let start = Instant::now();
+        while worker.running.lock().unwrap().as_ref().is_none_or(|r| r.generation != Generation(1)) {
+            assert!(start.elapsed() < Duration::from_secs(5), "shown build never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for g in 2..=4 {
+            worker.send(req(g, drag_job(&parsed, &previous, previous.routes.centres[0].x + 10 * i32::try_from(g).unwrap())));
+        }
+        worker.send(req(5, build_job(&parsed, "containers", true)));
+        let mut replies = Vec::new();
+        while !replies.iter().any(|r| matches!(r, Reply::Built { .. })) {
+            assert!(start.elapsed() < Duration::from_mins(2), "no build replied: {replies:?}");
+            replies.extend(worker.drain());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        replies.extend(worker.drain());
+        let built: Vec<u64> = replies
+            .iter()
+            .filter_map(|r| match r {
+                Reply::Built { generation, .. } => Some(generation.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(built, [5], "{replies:?}");
+        assert!(matches!(replies.last(), Some(Reply::Built { .. })), "{replies:?}");
     }
 
     /// EDIT-7, EDIT-25: an `Export` is never stopped: `stops` is false for

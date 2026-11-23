@@ -1321,6 +1321,8 @@ struct Obstacles {
     strokes: Vec<Rect>,
     /// Per edge, ascending, the segments drawn for it, in px.
     lines: Vec<(EdgeId, Vec<Segment>)>,
+    /// Per entry of `lines`, the closed px box of its segments.
+    line_boxes: Vec<Rect>,
 }
 
 impl Obstacles {
@@ -1339,7 +1341,7 @@ impl Obstacles {
         // on the line between its box centres), so labels keep clear of
         // it like any other line; the part of that segment inside its two
         // boxes changes nothing, as no chosen spot overlaps a box.
-        let lines = plan
+        let lines: Vec<(EdgeId, Vec<Segment>)> = plan
             .edges
             .iter()
             .map(|e| {
@@ -1375,11 +1377,23 @@ impl Obstacles {
         } else {
             Vec::new()
         };
+        let line_boxes = lines
+            .iter()
+            .map(|(_, segs)| {
+                let pts: Vec<Point> = segs.iter().flat_map(|s| [s.a, s.b]).collect();
+                if pts.is_empty() {
+                    return Rect::default();
+                }
+                let (lo, hi) = crate::geom::bounds_of(&pts);
+                Rect::from_corners(lo, hi)
+            })
+            .collect();
         Self {
             boxes,
             tags,
             strokes,
             lines,
+            line_boxes,
         }
     }
 
@@ -1403,10 +1417,21 @@ impl Obstacles {
     // touching it at one point, is not covered (`Segment::passes_through`
     // on px coordinates): it at most grazes the label's edge.
     fn covered(&self, rect: &Rect, own: EdgeId) -> Vec<EdgeId> {
+        // DECISION: a line whose box has no x or no y overlap with the
+        // open `rect` has no segment through it: skipped before the
+        // segment tests (the same lines, CORE-24).
         self.lines
             .iter()
-            .filter(|(e, segs)| *e != own && segs.iter().any(|s| s.passes_through(rect)))
-            .map(|(e, _)| *e)
+            .zip(&self.line_boxes)
+            .filter(|((e, segs), b)| {
+                *e != own
+                    && b.max.x > rect.min.x
+                    && b.min.x < rect.max.x
+                    && b.max.y > rect.min.y
+                    && b.min.y < rect.max.y
+                    && segs.iter().any(|s| s.passes_through(rect))
+            })
+            .map(|((e, _), _)| *e)
             .collect()
     }
 }

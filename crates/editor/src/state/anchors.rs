@@ -266,7 +266,7 @@ impl State {
         let e = build.plan.edges.get(edge.0 as usize)?;
         let key = |b: c4rizer_core::view::BoxId| -> Option<String> {
             let element = build.plan.boxes.get(b.0 as usize)?.element;
-            model.element(element).key.as_ref().map(|k| k.value.clone())
+            super::edit_key(model, element)
         };
         Some(AnchorChange {
             source: key(e.source)?,

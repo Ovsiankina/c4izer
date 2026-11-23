@@ -383,6 +383,15 @@ impl Segment {
     #[must_use]
     pub fn contact(&self, other: &Segment) -> Contact {
         let (s, t) = (self, other);
+        // DECISION: closed bounding boxes apart share no point, so the
+        // answer is `Disjoint` before any orientation test (CORE-24).
+        if s.a.x.max(s.b.x) < t.a.x.min(t.b.x)
+            || t.a.x.max(t.b.x) < s.a.x.min(s.b.x)
+            || s.a.y.max(s.b.y) < t.a.y.min(t.b.y)
+            || t.a.y.max(t.b.y) < s.a.y.min(s.b.y)
+        {
+            return Contact::Disjoint;
+        }
         if s.a == s.b {
             return if on_segment(s.a, t) {
                 Contact::Touch
@@ -475,16 +484,48 @@ impl Segment {
 // touch, and the prototype's lint (c4.py seg_cross loop) counts every
 // such pair, which CORE-11 compares against.
 #[must_use]
+// DECISION: no segment lists, and two bounding-box tests before the
+// exact one: two polylines (or a segment and a polyline) whose closed
+// boxes are apart share no point, so they add nothing; the count is the
+// same, and the router, scene and lint call this for every pair of lines
+// (CORE-24, measured: a third of a drag preview's time).
 pub fn crossings(a: &[Point], b: &[Point]) -> u32 {
-    let segs =
-        |p: &[Point]| -> Vec<Segment> { p.windows(2).map(|w| Segment::new(w[0], w[1])).collect() };
-    let (sa, sb) = (segs(a), segs(b));
-    let pairs = sa
-        .iter()
-        .flat_map(|s| sb.iter().map(move |t| s.contact(t)))
-        .filter(|&c| c != Contact::Disjoint)
-        .count();
+    if a.len() < 2 || b.len() < 2 {
+        return 0;
+    }
+    let (bb, a_box) = (bounds_of(b), bounds_of(a));
+    if !boxes_meet(a_box, bb) {
+        return 0;
+    }
+    let mut pairs = 0usize;
+    for wa in a.windows(2) {
+        let s = Segment::new(wa[0], wa[1]);
+        if !boxes_meet(bounds_of(wa), bb) {
+            continue;
+        }
+        for wb in b.windows(2) {
+            if s.contact(&Segment::new(wb[0], wb[1])) != Contact::Disjoint {
+                pairs += 1;
+            }
+        }
+    }
     u32::try_from(pairs).unwrap_or(u32::MAX)
+}
+
+/// The closed bounding box of a non-empty point list: (min, max).
+pub(crate) fn bounds_of(p: &[Point]) -> (Point, Point) {
+    let mut lo = p[0];
+    let mut hi = p[0];
+    for q in &p[1..] {
+        lo = Point::new(lo.x.min(q.x), lo.y.min(q.y));
+        hi = Point::new(hi.x.max(q.x), hi.y.max(q.y));
+    }
+    (lo, hi)
+}
+
+/// True when two closed boxes (min, max) share a point.
+pub(crate) const fn boxes_meet(a: (Point, Point), b: (Point, Point)) -> bool {
+    a.0.x <= b.1.x && b.0.x <= a.1.x && a.0.y <= b.1.y && b.0.y <= a.1.y
 }
 
 /// Sign of the turn `p -> q -> r`: positive, negative or zero when
@@ -1147,5 +1188,73 @@ mod tests {
         assert_eq!(std::mem::size_of::<Point>(), 8);
         assert_eq!(std::mem::size_of::<Segment>(), 16);
         assert_eq!(std::mem::size_of::<Dir>(), 1);
+    }
+
+    /// `Segment::contact` as it was before the bounding-box cut.
+    fn contact_reference(s: &Segment, t: &Segment) -> Contact {
+        if s.a == s.b {
+            return if on_segment(s.a, t) { Contact::Touch } else { Contact::Disjoint };
+        }
+        if t.a == t.b {
+            return if on_segment(t.a, s) { Contact::Touch } else { Contact::Disjoint };
+        }
+        let o1 = orient(s.a, s.b, t.a);
+        let o2 = orient(s.a, s.b, t.b);
+        if o1 == 0 && o2 == 0 {
+            let lo = s.a.min(s.b).max(t.a.min(t.b));
+            let hi = s.a.max(s.b).min(t.a.max(t.b));
+            return match lo.cmp(&hi) {
+                Ordering::Less => Contact::Overlap,
+                Ordering::Equal => Contact::Touch,
+                Ordering::Greater => Contact::Disjoint,
+            };
+        }
+        let o3 = orient(t.a, t.b, s.a);
+        let o4 = orient(t.a, t.b, s.b);
+        if o1 * o2 < 0 && o3 * o4 < 0 {
+            return Contact::Cross;
+        }
+        if (o1 == 0 && on_segment(t.a, s)) || (o2 == 0 && on_segment(t.b, s)) || (o3 == 0 && on_segment(s.a, t)) || (o4 == 0 && on_segment(s.b, t)) {
+            Contact::Touch
+        } else {
+            Contact::Disjoint
+        }
+    }
+
+    fn xorshift(s: &mut u64) -> i32 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        i32::try_from(*s % 9).expect("small")
+    }
+
+    #[test]
+    fn core_25_contact_box_cut_matches_the_exact_test() {
+        // The bounding-box cut answers `Disjoint` only where the exact
+        // orientation tests do, on every segment pair of a small grid
+        // (degenerate, collinear, touching and crossing ones included).
+        let mut s = 0x00C4_D4A6_u64;
+        for _ in 0..20_000 {
+            let mut p = || Point::new(xorshift(&mut s), xorshift(&mut s));
+            let (a, b) = (Segment::new(p(), p()), Segment::new(p(), p()));
+            assert_eq!(a.contact(&b), contact_reference(&a, &b), "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn core_25_crossings_box_cut_matches_every_segment_pair() {
+        // `crossings` with its polyline and segment box cuts counts what
+        // the plain pair loop counts.
+        let mut s = 0x5EED_u64;
+        for _ in 0..2_000 {
+            let mut line = |n: i32| -> Vec<Point> {
+                let k = 1 + n;
+                (0..k).map(|_| Point::new(xorshift(&mut s) * 2, xorshift(&mut s) * 2)).collect()
+            };
+            let (a, b) = (line(4), line(3));
+            let segs = |p: &[Point]| -> Vec<Segment> { p.windows(2).map(|w| Segment::new(w[0], w[1])).collect() };
+            let plain = segs(&a).iter().flat_map(|x| segs(&b).into_iter().map(move |y| contact_reference(x, &y))).filter(|&c| c != Contact::Disjoint).count();
+            assert_eq!(crossings(&a, &b) as usize, plain, "{a:?} {b:?}");
+        }
     }
 }

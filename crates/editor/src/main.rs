@@ -20,6 +20,8 @@ mod canvas;
 #[cfg(test)]
 mod deployment_view_tests;
 #[cfg(test)]
+mod drag_e2e_tests;
+#[cfg(test)]
 mod dsl_breadth_tests;
 #[cfg(test)]
 mod dynamic_view_tests;

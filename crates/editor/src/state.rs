@@ -1418,6 +1418,14 @@ pub struct State {
     nav_query: String,
     /// Auto-place wrote; fit the camera when its build is shown (P2-700).
     after_place: AfterPlace,
+    /// The boxes moved by released drags since the shown build, at their
+    /// written centres, with the build they are relative to: a drag or
+    /// resize started before the saved file's build lands is previewed
+    /// with them, so the boxes stay where they were dropped (EDIT-25).
+    // DECISION: tied to the shown build by `Arc::ptr_eq` (`unbuilt_moves`)
+    // rather than cleared at every place `shown` changes: any new shown
+    // build, view switch or reload makes the moves void by itself.
+    unbuilt: Option<(Arc<ViewBuild>, BTreeMap<BoxId, Point>)>,
 }
 
 impl State {
@@ -1467,6 +1475,7 @@ impl State {
             pointer: None,
             nav_query: String::new(),
             after_place: AfterPlace::Nothing,
+            unbuilt: None,
         }
     }
 
@@ -2059,7 +2068,7 @@ impl State {
             let e = model.element(id);
             out.push(Crumb {
                 label: e.name.value.clone(),
-                scope: e.key.as_ref().map(|k| k.value.clone()),
+                scope: edit_key(model, id),
             });
         }
         out
@@ -2985,7 +2994,7 @@ pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
     }
     let kind = counting?;
     Some(ViewRef::Default {
-        scope: e.key.as_ref()?.value.clone(),
+        scope: edit_key(model, e.id)?,
         kind,
     })
 }
@@ -3147,7 +3156,7 @@ pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewR
         .find(|e| e.kind == ElementKind::SoftwareSystem)?;
     default_view(model, system.id, ViewKind::SystemContext)?;
     Some(ViewRef::Default {
-        scope: system.key.as_ref()?.value.clone(),
+        scope: edit_key(model, system.id)?,
         kind: ViewKind::SystemContext,
     })
 }
@@ -3342,8 +3351,8 @@ impl State {
         let scene = &build.scene;
         let carry = |id: BoxId| -> Option<BoxId> {
             let element = old_scene.boxes.get(id.0 as usize)?.element;
-            let key = &old_model.element(element).key.as_ref()?.value;
-            scene.boxes_of(model.find(key)?).first().copied()
+            let key = edit_key(old_model, element)?;
+            scene.boxes_of(model.find(&key)?).first().copied()
         };
         // DECISION: in a multi-box drag, boxes whose element is gone are
         // left out and the rest still move (EDIT-19 skips gone targets the
@@ -3618,7 +3627,7 @@ impl State {
             .boxes
             .iter()
             .filter_map(|b| {
-                let key = model.element(b.element).key.as_ref()?.value.clone();
+                let key = edit_key(model, b.element)?;
                 let c = scene.centres[b.id.0 as usize];
                 Some((key, (c.x * GRID_PX, c.y * GRID_PX)))
             })
@@ -3637,8 +3646,8 @@ impl State {
         let mut boxes = BTreeMap::new();
         for (id, c) in to {
             let Some(b) = scene.boxes.get(id.0 as usize) else { continue };
-            if let Some(key) = &model.element(b.element).key {
-                boxes.insert(key.value.clone(), (c.x * GRID_PX, c.y * GRID_PX));
+            if let Some(key) = edit_key(model, b.element) {
+                boxes.insert(key, (c.x * GRID_PX, c.y * GRID_PX));
             }
         }
         if boxes.is_empty() {
@@ -3876,8 +3885,7 @@ impl State {
                 let Some(key) = scene
                     .boxes
                     .get(id.0 as usize)
-                    .and_then(|b| model.element(b.element).key.as_ref())
-                    .map(|k| k.value.clone())
+                    .and_then(|b| edit_key(model, b.element))
                 else {
                     return Vec::new();
                 };
@@ -3959,20 +3967,31 @@ impl State {
         let Some((parsed, previous)) = self.shown.clone() else {
             return Vec::new();
         };
+        // The boxes a release moved whose build has not landed move in the
+        // preview too, so they and their lines stay where they were
+        // dropped (EDIT-25).
+        let mut moved = self.unbuilt_moves();
+        moved.extend(next);
         let generation = self.next_generation();
         self.awaited_drag = Some(generation);
         vec![Effect::Work(Request {
             generation,
-            job: Job::Drag {
-                parsed,
-                previous,
-                moved: next,
-            },
+            job: Job::Drag { parsed, previous, moved },
         })]
     }
 
+    /// The boxes moved by released drags since the shown build
+    /// (`unbuilt`), empty once another build is shown (EDIT-25).
+    fn unbuilt_moves(&self) -> BTreeMap<BoxId, Point> {
+        match (&self.unbuilt, &self.shown) {
+            (Some((of, moves)), Some((_, shown))) if Arc::ptr_eq(of, shown) => moves.clone(),
+            _ => BTreeMap::new(),
+        }
+    }
+
     /// The preview: the last drag reply's scene (else the shown one) with
-    /// every dragged box at its current centre (EDIT-25).
+    /// the boxes moved since the shown build (`unbuilt_moves`) and every
+    /// dragged box at its current centre (EDIT-25).
     fn refresh_preview(&mut self, to: &BTreeMap<BoxId, Point>) {
         let base = match (&self.dragged, &self.shown) {
             (Some(d), _) => d.scene.clone(),
@@ -3980,7 +3999,9 @@ impl State {
             (None, None) => return,
         };
         let mut scene = base;
-        for (&id, &c) in to {
+        let mut moves = self.unbuilt_moves();
+        moves.extend(to);
+        for (id, c) in moves {
             if (id.0 as usize) < scene.boxes.len() {
                 scene.move_box(id, c);
             }
@@ -4060,9 +4081,14 @@ impl State {
             return Vec::new();
         };
         let i = id.0 as usize;
-        let (Some(&centre), true) = (shown.routes.centres.get(i), i < shown.plan.boxes.len()) else {
+        let (Some(&built_at), true) = (shown.routes.centres.get(i), i < shown.plan.boxes.len()) else {
             return Vec::new();
         };
+        // A box a release moved before its build landed is resized where it
+        // was dropped, the other such boxes stay there too (EDIT-25).
+        let mut moved = self.unbuilt_moves();
+        let centre = moved.get(&id).copied().unwrap_or(built_at);
+        moved.insert(id, centre);
         let mut previous = (*shown).clone();
         // Half sizes as `view::plan` reads the `size` line release writes
         // (multiples of 20px, so whole grid units).
@@ -4081,7 +4107,7 @@ impl State {
             job: Job::Drag {
                 parsed,
                 previous: Arc::new(previous),
-                moved: BTreeMap::from([(id, centre)]),
+                moved,
             },
         })]
     }
@@ -4121,12 +4147,32 @@ impl State {
             Gesture::Dragging { boxes, to, .. } => {
                 self.dragged = None;
                 self.awaited_drag = None;
+                let earlier = self.unbuilt_moves();
                 if to == boxes {
-                    self.preview = None;
+                    // Boxes an earlier release moved stay where they were
+                    // dropped until their build lands (EDIT-25).
+                    if earlier.is_empty() {
+                        self.preview = None;
+                    } else {
+                        self.refresh_preview(&to);
+                    }
                     return Vec::new();
                 }
                 // The preview stays until the saved file's build arrives.
-                self.write_moves(&to, Some(&boxes))
+                let busy = self.pending.is_some();
+                let effects = self.write_moves(&to, Some(&boxes));
+                // DECISION: the moves are kept only when this release's write
+                // went out (not refused, not empty); the drag's next preview
+                // before the build lands starts from them (EDIT-25).
+                if !busy
+                    && self.pending.is_some()
+                    && let Some((_, shown)) = &self.shown
+                {
+                    let mut moves = earlier;
+                    moves.extend(to);
+                    self.unbuilt = Some((Arc::clone(shown), moves));
+                }
+                effects
             }
             Gesture::Resizing { id, size, .. } => {
                 self.dragged = None;
@@ -4141,7 +4187,7 @@ impl State {
                     self.preview = None;
                     return Vec::new();
                 };
-                let Some(element) = model.element(b.element).key.as_ref().map(|k| k.value.clone()) else {
+                let Some(element) = edit_key(model, b.element) else {
                     self.preview = None;
                     return Vec::new();
                 };
@@ -4220,7 +4266,7 @@ impl State {
             .boxes
             .iter()
             .filter(|bx| band.contains(bx.rect.min) && band.contains(bx.rect.max))
-            .filter_map(|bx| model.element(bx.element).key.as_ref().map(|k| Selected::Element(k.value.clone())))
+            .filter_map(|bx| edit_key(model, bx.element).map(Selected::Element))
             .collect();
         if !add {
             self.selection.clear();
@@ -5429,6 +5475,7 @@ impl State {
                 // The canvas goes back to the file's state (EDIT-27).
                 self.preview = None;
                 self.dragged = None;
+                self.unbuilt = None;
                 Vec::new()
             }
         }
@@ -5588,6 +5635,7 @@ impl State {
                 }
                 self.preview = None;
                 self.dragged = None;
+                self.unbuilt = None;
                 Vec::new()
             }
             _ => Vec::new(),
@@ -5609,6 +5657,8 @@ impl State {
                     let Some(parsed) = self.parsed() else { return Vec::new() };
                     self.cache.insert(view, Arc::clone(&build));
                     let old = self.shown.replace((Arc::clone(&parsed), build));
+                    // The moves of `unbuilt` are relative to the old build.
+                    self.unbuilt = None;
                     // P2-731: a reload of the same view drops stale aids.
                     // DECISION: only a new parse of the view on screen drops
                     // them; a view switch keeps the filter and perspective
@@ -5705,6 +5755,18 @@ fn distance(a: ScreenPoint, b: ScreenPoint) -> f32 {
     (a.x - b.x).hypot(a.y - b.y)
 }
 
+/// The key the editor names `id` by in selections and edits: the one
+/// `Model::find` gives `id` back for (the dotted full id under
+/// `!identifiers hierarchical`); `None` for an element declared without
+/// an id, which the editor never selects or moves (P2-145).
+// DECISION: `full_key`, not `Element::key`: the bare id of a nested
+// element does not resolve under hierarchical ids, so its box could be
+// neither selected nor dragged.
+fn edit_key(model: &Model, id: ElementId) -> Option<String> {
+    model.element(id).key.as_ref()?;
+    model.full_key(id)
+}
+
 /// The scene items standing for `selected`.
 fn items_of(scene: &Scene, model: &Model, selected: &Selected) -> Vec<ItemKey> {
     match selected {
@@ -5753,14 +5815,14 @@ fn selected_of(scene: &Scene, model: &Model, item: ItemKey) -> Option<Selected> 
     }
     match item {
         ItemKey::Box(_) | ItemKey::Line(_) | ItemKey::Label(_) => match scene.model_id(item)? {
-            ModelId::Element(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),
+            ModelId::Element(e) => edit_key(model, e).map(Selected::Element),
             ModelId::Relationship(r) => Some(Selected::Relationship(RelationshipRef::of(model, r))),
             _ => None,
         },
         ItemKey::Title | ItemKey::Subtitle => Some(Selected::Title),
         // P3-131: a click on a deployment node's boundary selects the node.
         ItemKey::Boundary(i) => match scene.boundaries.get(i as usize)?.of {
-            BoundaryOf::DeploymentNode(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),
+            BoundaryOf::DeploymentNode(e) => edit_key(model, e).map(Selected::Element),
             _ => None,
         },
         _ => None,
@@ -5952,9 +6014,9 @@ fn rebuild_first_write(parsed: &Parsed, edits: &[Edit]) -> Vec<Edit> {
             if placed.contains(&b.element) || moved.contains(&b.element) {
                 continue;
             }
-            if let Some(k) = &model.element(b.element).key {
+            if let Some(k) = edit_key(model, b.element) {
                 let c = centres[b.id.0 as usize];
-                entries.entry(b.element).or_insert((k.value.clone(), (c.x * GRID_PX, c.y * GRID_PX)));
+                entries.entry(b.element).or_insert((k, (c.x * GRID_PX, c.y * GRID_PX)));
             }
         }
         out.extend(entries.into_values().map(|(element, c)| Edit::Move {
@@ -6490,6 +6552,30 @@ mod tests {
         // A move that snaps to the same centre sends nothing.
         h.move_to(pt(from.x + 38.0, from.y + 22.0));
         assert_eq!(h.work[sent..].iter().filter(|r| matches!(r.job, Job::Drag { .. })).count(), 2);
+    }
+
+    /// EDIT-2, P2-142: under `!identifiers hierarchical` a nested box is
+    /// selected and dragged by its dotted full id, and the move is written
+    /// as `at <full id>`.
+    #[test]
+    fn edit_2_drag_nested_box_hierarchical_ids() {
+        let mut h = H::with_file(
+            "workspace {\n    !identifiers hierarchical\n    model {\n        user = person \"User\"\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\"\n            db = container \"Db\"\n        }\n        user -> shop.web \"Uses\"\n        shop.web -> shop.db \"Reads\"\n    }\n    views {\n        container shop \"C\" {\n            include *\n        }\n    }\n}\n",
+        );
+        let id = h.box_id("shop.web");
+        let (cx, cy) = h.centre_px("shop.web");
+        let from = h.screen("shop.web");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x + 40.0, from.y + 20.0));
+        let want = Point::new((cx + 40) / GRID_PX, (cy + 20) / GRID_PX);
+        match &h.s.gesture {
+            Gesture::Dragging { to, .. } => assert_eq!(to.get(&id), Some(&want), "the nested box is in the drag"),
+            g => panic!("not dragging: {g:?}"),
+        }
+        assert!(h.s.selection.contains(&Selected::Element("shop.web".to_owned())));
+        h.up(pt(from.x + 40.0, from.y + 20.0), Button::Left);
+        let text = h.text();
+        assert!(text.contains(&format!("at shop.web {} {}", cx + 40, cy + 20)), "{text}");
     }
 
     /// EDIT-3 (plan editor-04): release writes the box's `at` line
@@ -7476,6 +7562,33 @@ mod tests {
         }
     }
 
+    /// EDIT-18, EDIT-25: a box resized right after a release moved it,
+    /// before the saved file's build lands, is previewed where it was
+    /// dropped, at its new size.
+    #[test]
+    fn edit_18_resize_before_release_build_keeps_released_box() {
+        let mut h = H::with_file(&shop_at());
+        let (cx, cy) = h.centre_px("customer");
+        h.stall = true;
+        h.drag_box("customer", 200.0, 0.0);
+        assert_eq!(h.writes.len(), 1, "written on release");
+        let start = h.rect("customer");
+        let (_, size) = resize_drag(&mut h, "customer", 63.0, 47.0);
+        let resize = h
+            .held_work
+            .iter()
+            .rev()
+            .find(|r| matches!(r.job, Job::Drag { .. }))
+            .cloned()
+            .expect("a resize preview was requested");
+        let effects = h.serve(resize);
+        h.run(effects);
+        let live = h.rect("customer");
+        assert_eq!((live.width(), live.height()), size);
+        assert_eq!(live.centre(), start.centre());
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy), "resized where it was dropped");
+    }
+
     /// EDIT-18 (live-resize): Escape during a resize drag restores the
     /// old size and writes nothing, also on the release after it.
     #[test]
@@ -7982,6 +8095,105 @@ mod tests {
         let expected = build_view(&parsed.model, "context", &Keep::default(), &AtomicBool::new(false)).expect("builds");
         assert_eq!(h.scene(), &expected.scene);
         assert_eq!(h.centre_px("customer"), (cx + 300, cy));
+    }
+
+    /// EDIT-25: a drag started after a release, while the saved file's
+    /// build is still on the worker, is drawn against the boxes where
+    /// they are now: the box moved by the release stays where it was
+    /// dropped, in the preview and in the drag's routed reply (its lines
+    /// with it), and the scene finally shown equals the build of the
+    /// saved file.
+    #[test]
+    fn edit_25_drag_before_release_build_keeps_released_box() {
+        let mut h = H::with_file(&shop_at());
+        let (cx, cy) = h.centre_px("customer");
+        let bank = h.centre_px("bank");
+        h.stall = true;
+        h.drag_box("customer", 200.0, 0.0);
+        assert_eq!(h.writes.len(), 1, "written on release");
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy), "the preview stays after release");
+        let release_build = h
+            .held_work
+            .iter()
+            .rev()
+            .find(|r| matches!(r.job, Job::Build { shown: true, .. }))
+            .cloned()
+            .expect("the saved file's build was requested");
+        // A second drag, of another box, before that build lands.
+        let from = h.screen("bank");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x, from.y + 100.0));
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy), "the released box stays where it was dropped");
+        assert_eq!(h.centre_px("bank"), (bank.0, bank.1 + 100));
+        let drag = h
+            .held_work
+            .iter()
+            .rev()
+            .find(|r| matches!(r.job, Job::Drag { .. }))
+            .cloned()
+            .expect("a drag preview was requested");
+        let effects = h.serve(drag);
+        h.run(effects);
+        assert!(h.s.dragged.is_some(), "the drag's reply is shown");
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy), "the routed preview keeps the released box");
+        let customer = h.box_id("customer");
+        let d = h.s.dragged.clone().expect("reply");
+        let lines_at = |scene: &Scene| -> Vec<Vec<Point>> {
+            scene
+                .lines
+                .iter()
+                .filter(|l| l.source == customer || l.destination == customer)
+                .map(|l| l.points.clone())
+                .collect()
+        };
+        // Its lines leave the box where it was dropped: the same lines as
+        // the preview build of both moves together.
+        let parsed = h.s.shown.as_ref().map(|(p, _)| std::sync::Arc::clone(p)).expect("shown");
+        let previous = h.s.shown.as_ref().map(|(_, b)| std::sync::Arc::clone(b)).expect("shown");
+        let both = BTreeMap::from([
+            (customer, Point::new((cx + 200) / GRID_PX, cy / GRID_PX)),
+            (h.box_id("bank"), Point::new(bank.0 / GRID_PX, (bank.1 + 100) / GRID_PX)),
+        ]);
+        let expected = c4rizer_core::pipeline::rebuild_after_move(
+            &parsed.model,
+            &previous,
+            &both,
+            &c4rizer_core::pipeline::PREVIEW_ROUTE,
+            &AtomicBool::new(false),
+        )
+        .expect("preview builds");
+        assert_eq!(lines_at(&d.scene), lines_at(&expected.scene));
+        // The release's build lands mid-drag, then the second release.
+        let effects = h.serve(release_build);
+        h.run(effects);
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy));
+        h.stall = false;
+        h.up(pt(from.x, from.y + 100.0), Button::Left);
+        assert_eq!(h.writes.len(), 2, "written on the second release");
+        assert!(h.s.preview.is_none());
+        let saved = h.on_disk();
+        let expected = build_view(&saved.model, "context", &Keep::default(), &AtomicBool::new(false)).expect("builds");
+        assert_eq!(h.scene(), &expected.scene);
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy));
+        assert_eq!(h.centre_px("bank"), (bank.0, bank.1 + 100));
+    }
+
+    /// EDIT-25: a second drag released where it started, before the first
+    /// release's build lands, writes nothing and leaves the first box
+    /// where it was dropped.
+    #[test]
+    fn edit_25_drag_back_before_release_build_keeps_released_box() {
+        let mut h = H::with_file(&shop_at());
+        let (cx, cy) = h.centre_px("customer");
+        h.stall = true;
+        h.drag_box("customer", 200.0, 0.0);
+        let from = h.screen("bank");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x, from.y + 100.0));
+        h.move_to(from);
+        h.up(from, Button::Left);
+        assert_eq!(h.writes.len(), 1, "nothing written by the second drag");
+        assert_eq!(h.centre_px("customer"), (cx + 200, cy), "the released box stays where it was dropped");
     }
 
     /// EDIT-26: the first move in a view writes an `at` line for every box
