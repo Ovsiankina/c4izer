@@ -403,6 +403,61 @@ fn body_p5_107_name_popup_refuses_empty_and_escape_cancels(ids: Ids) {
     assert!(sh.text().contains("            group \"Group\" {\n"), "{}", sh.text());
 }
 
+/// P5-107, P5-205: opened from its Details control (the Group select's
+/// "New group…", the Tags row's `+`) a popup sits beside that control,
+/// left of the right panel, its top within 8 px of the control's row,
+/// wholly inside the 1280 x 800 window, also when the control is near
+/// the bottom; opened by Ctrl+G or the context menu it stays at the
+/// canvas's top right.
+#[test]
+fn p5_107_p5_205_popup_opens_beside_its_details_control() {
+    use crate::app::{Anchored, PopupAnchors, draw_detail_popup};
+
+    let mut sh = Shell::open(Ids::Flat);
+    sh.click_box("a", NONE);
+    for (open, anchored) in [(Command::GroupPopup, Anchored::Group), (Command::TagPopup, Anchored::Tags)] {
+        sh.command(open.clone());
+        assert!(sh.s.overlay.is_some(), "{open:?} opens");
+        for above in [200.0_f32, 740.0] {
+            let drawn = draw_detail_popup(&sh.s, Some(anchored), above, 4);
+            let control = drawn.control.expect("the control is drawn");
+            let window = drawn.window.expect("the popup is drawn");
+            let gap = (window.min.y - control.max.y).max(control.min.y - window.max.y).max(0.0);
+            assert!(gap <= 8.0, "{anchored:?} at {above}: popup {window:?}, control {control:?}");
+            assert!(drawn.screen.contains_rect(window), "{anchored:?} at {above}: {window:?} leaves the window");
+            assert!(window.max.x <= drawn.canvas.max.x, "{anchored:?}: left of the right panel, {window:?}");
+            if above < 400.0 {
+                assert!((window.min.y - control.min.y).abs() <= 1.0, "{anchored:?}: top aligned, {window:?} {control:?}");
+            }
+        }
+        // Keyboard or context menu: the canvas's top right.
+        let drawn = draw_detail_popup(&sh.s, None, 400.0, 4);
+        let window = drawn.window.expect("the popup is drawn");
+        assert!((window.min.y - drawn.canvas.min.y - crate::theme::PAD).abs() <= 1.0, "{window:?}");
+        // The window is 280 px wide inside its 1 px frame.
+        assert!((drawn.canvas.max.x - crate::theme::PAD - (window.min.x + 280.0)).abs() <= 1.0, "{window:?}");
+        sh.command(open);
+        assert!(sh.s.overlay.is_none());
+    }
+    // The anchor is kept while its popup is open and forgotten once it
+    // closes, so Ctrl+G later opens at the canvas's top right.
+    let mut anchors = PopupAnchors {
+        tags: Some(eframe::egui::Rect::from_min_size(eframe::egui::pos2(1100.0, 300.0), eframe::egui::vec2(100.0, 18.0))),
+        opened: Some(Anchored::Tags),
+        ..PopupAnchors::default()
+    };
+    sh.command(Command::TagPopup);
+    anchors.settle(sh.s.overlay.as_ref());
+    assert_eq!(anchors.anchor(sh.s.overlay.as_ref()), anchors.tags);
+    sh.key(Key::Escape, NONE);
+    anchors.settle(sh.s.overlay.as_ref());
+    sh.key(Key::G, CTRL);
+    anchors.settle(sh.s.overlay.as_ref());
+    assert!(matches!(sh.s.overlay, Some(Overlay::GroupName { .. })));
+    assert_eq!(anchors.opened, None);
+    assert_eq!(anchors.anchor(sh.s.overlay.as_ref()), None);
+}
+
 #[test]
 fn p5_107_typed_name_replaces_the_prefill() {
     body_p5_107_typed_name_replaces_the_prefill(Ids::Flat);

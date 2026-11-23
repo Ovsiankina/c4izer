@@ -614,30 +614,14 @@ impl App {
             }
             // Drawn over the canvas at the pointer (`App::canvas`).
             Overlay::ContextMenu { .. } => {}
-            // P5-205: the add-tag popup.
-            Overlay::AddTag { query, .. } => {
-                small_window(ctx, canvas, "Add tag", &mut out, &Command::TagPopup, |ui, out| {
-                    let rows = self.state.tag_popup_rows();
-                    let pick = kit::tag_picker(ui, &query, &rows);
-                    if let Some(typed) = pick.typed {
-                        out.push(Event::Text(typed));
-                    }
-                    if let Some(tag) = pick.picked {
-                        out.push(Event::Command(Command::AddTag(tag)));
-                    }
-                    (!query.trim().is_empty()).then(|| ("Add", Command::AddTag(query.clone())))
-                });
-            }
-            // P5-107: the group-name popup.
-            Overlay::GroupName { name } => {
-                small_window(ctx, canvas, "Group", &mut out, &Command::GroupPopup, |ui, out| {
-                    group_name_field(ui, &name, out);
-                    ui.label(egui::RichText::new("Enter groups the selected boxes, Esc cancels").color(INK_3));
-                    Some(("Group", Command::SetGroup(Some(name.clone()))))
-                });
+            // P5-205, P5-107: the add-tag and group-name popups, beside
+            // the Details control that opened them.
+            Overlay::AddTag { .. } | Overlay::GroupName { .. } => {
+                let anchor = self.popup_anchors.get().anchor(Some(&overlay));
+                detail_popup(ctx, &self.state, window_pos(canvas, anchor), &mut out);
             }
             Overlay::TagFilter => {
-                small_window(ctx, canvas, "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
                     let chosen = &self.state.aids.tags;
                     let choices = self.state.tag_choices();
                     if choices.is_empty() {
@@ -657,7 +641,7 @@ impl App {
                 });
             }
             Overlay::Perspectives => {
-                small_window(ctx, canvas, "Perspectives", &mut out, &Command::PerspectivePanel, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Perspectives", &mut out, &Command::PerspectivePanel, |ui, out| {
                     let current = self.state.aids.perspective.clone();
                     if kit::menu_row(ui, None, "none", current.is_none(), true).clicked() {
                         out.push(Event::Command(Command::Perspective(None)));
@@ -672,7 +656,7 @@ impl App {
                 });
             }
             Overlay::Navigator => {
-                small_window(ctx, canvas, "Diagram navigator", &mut out, &Command::Navigator, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Diagram navigator", &mut out, &Command::Navigator, |ui, out| {
                     // P2-729: the search field filters all three groups.
                     // DECISION: it takes focus like quick navigation's, so
                     // typing searches at once; Escape still closes.
@@ -826,22 +810,122 @@ pub(crate) fn group_name_field(ui: &mut egui::Ui, name: &str, out: &mut Vec<Even
     }
 }
 
-/// A small window over the canvas, top right, 12 px in (`components/
+/// A popup a Details panel control opens beside itself (P5-107, P5-205).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Anchored {
+    /// The add-tag popup, from the `+` chip of the Tags row.
+    Tags,
+    /// The group-name popup, from the Group select's "New group…".
+    Group,
+}
+
+/// The Details panel controls that open a popup, as drawn this frame, and
+/// which popup one of them opened (P5-107, P5-205).
+// DECISION: kept in the shell (`App`), not in `State`: the rects are
+// egui's, and where a popup sits changes nothing the state machine does.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PopupAnchors {
+    /// The Tags row's value (its chips and `+`), screen px.
+    pub(crate) tags: Option<Rect>,
+    /// The Group row's select, screen px.
+    pub(crate) group: Option<Rect>,
+    /// The popup a panel control opened, until that popup closes.
+    pub(crate) opened: Option<Anchored>,
+}
+
+impl PopupAnchors {
+    /// The control the popup `overlay` opens beside: the one that opened
+    /// it, when a Details control did and was drawn this frame; `None`
+    /// (the canvas's top right) when the keyboard (Ctrl+G) or the
+    /// context menu opened it.
+    pub(crate) fn anchor(&self, overlay: Option<&Overlay>) -> Option<Rect> {
+        match (overlay, self.opened) {
+            (Some(Overlay::AddTag { .. }), Some(Anchored::Tags)) => self.tags,
+            (Some(Overlay::GroupName { .. }), Some(Anchored::Group)) => self.group,
+            _ => None,
+        }
+    }
+
+    /// Forgets which control opened a popup once `overlay` is no longer
+    /// that popup (closed, or replaced by another).
+    pub(crate) fn settle(&mut self, overlay: Option<&Overlay>) {
+        let open = match overlay {
+            Some(Overlay::AddTag { .. }) => Some(Anchored::Tags),
+            Some(Overlay::GroupName { .. }) => Some(Anchored::Group),
+            _ => None,
+        };
+        if self.opened != open {
+            self.opened = None;
+        }
+    }
+}
+
+/// The add-tag (P5-205) or group-name (P5-107) popup of `state`'s
+/// overlay, at `at`.
+pub(crate) fn detail_popup(ctx: &egui::Context, state: &crate::state::State, at: Pos2, out: &mut Vec<Event>) {
+    match state.overlay.clone() {
+        Some(Overlay::AddTag { query, .. }) => {
+            small_window(ctx, at, "Add tag", out, &Command::TagPopup, |ui, out| {
+                let rows = state.tag_popup_rows();
+                let pick = kit::tag_picker(ui, &query, &rows);
+                if let Some(typed) = pick.typed {
+                    out.push(Event::Text(typed));
+                }
+                if let Some(tag) = pick.picked {
+                    out.push(Event::Command(Command::AddTag(tag)));
+                }
+                (!query.trim().is_empty()).then(|| ("Add", Command::AddTag(query.clone())))
+            });
+        }
+        Some(Overlay::GroupName { name }) => {
+            small_window(ctx, at, "Group", out, &Command::GroupPopup, |ui, out| {
+                group_name_field(ui, &name, out);
+                ui.label(egui::RichText::new("Enter groups the selected boxes, Esc cancels").color(INK_3));
+                Some(("Group", Command::SetGroup(Some(name.clone()))))
+            });
+        }
+        _ => {}
+    }
+}
+
+/// The width of a small window, px (`components/Window`).
+const WINDOW_W: f32 = 280.0;
+
+/// Where a small window opens: beside `anchor`, a Details panel control
+/// (its right edge `PAD` left of the canvas's right edge, which is the
+/// right panel's left; its top at the control's top, P5-107, P5-205);
+/// without one, the canvas's top right, `PAD` in. The window's `Area`
+/// keeps it inside the screen.
+pub(crate) fn window_pos(canvas: Rect, anchor: Option<Rect>) -> Pos2 {
+    match anchor {
+        Some(a) => egui::pos2(canvas.max.x.min(a.min.x) - PAD - WINDOW_W, a.min.y),
+        None => egui::pos2(canvas.max.x - PAD - WINDOW_W, canvas.min.y + PAD),
+    }
+}
+
+/// The id of the small window titled `title`, for its `Area`.
+pub(crate) fn window_id(title: &str) -> egui::Id {
+    egui::Id::unique(("c4rizer-window", title))
+}
+
+/// A small window over the canvas at `at` (`window_pos`; `components/
 /// Window`): a 28 px title bar with a close button, the body, and an
 /// optional footer button.
 #[expect(clippy::too_many_arguments, reason = "where, title, the close command, then the body")]
 fn small_window(
     ctx: &egui::Context,
-    canvas: Rect,
+    at: Pos2,
     title: &str,
     out: &mut Vec<Event>,
     close: &Command,
     body: impl FnOnce(&mut egui::Ui, &mut Vec<Event>) -> Option<(&'static str, Command)>,
 ) {
-    let width = 280.0;
-    let pos = egui::pos2(canvas.max.x - 12.0 - width, canvas.min.y + 12.0);
-    egui::Area::new(egui::Id::unique(("c4rizer-window", title)))
-        .fixed_pos(pos)
+    let width = WINDOW_W;
+    // DECISION: constrained to the whole window (egui's content rect), so
+    // a popup anchored low in the Details panel moves up to stay on screen.
+    egui::Area::new(window_id(title))
+        .fixed_pos(at)
+        .constrain_to(ctx.content_rect())
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             kit::overlay_frame(ui).inner_margin(egui::Margin::ZERO).show(ui, |ui| {

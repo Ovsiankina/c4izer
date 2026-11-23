@@ -202,6 +202,50 @@ fn p5_408_resolve_all_is_one_undo_step() {
     }
 }
 
+/// P5-408: from two resolvable findings "Resolve all" sits in the Lint
+/// section's 28 px header, right-aligned before the count; a click on
+/// it asks `ResolveAll` and does not fold the section; with one
+/// resolvable finding it is not shown.
+#[test]
+fn p5_408_resolve_all_sits_in_the_lint_header() {
+    use eframe::egui::{self, PointerButton};
+
+    let sh = Shell::open(&fixture(Ids::Flat, &[&Ids::Flat.refs_in("at c 755 205", S_NESTED)]));
+    assert!(sh.s.resolvable() >= 2);
+    let ctx = egui::Context::default();
+    let drawn = crate::app::draw_lint_section(&ctx, &sh.s, vec![Vec::new(), Vec::new()]);
+    let (_, button) = drawn.texts.iter().find(|(t, _)| t == "Resolve all").expect("Resolve all is drawn");
+    assert!(drawn.header.contains_rect(*button), "{button:?} lies in the header {:?}", drawn.header);
+    let n = sh.s.findings().len().to_string();
+    let (_, count) = drawn.texts.iter().find(|(t, r)| *t == n && drawn.header.contains_rect(*r)).expect("the count");
+    assert!(button.max.x < count.min.x, "the action stands before the count");
+    let message = sh.s.findings()[0].message.clone();
+    assert!(drawn.texts.iter().any(|(t, r)| message.starts_with(t.trim_end_matches('…')) && r.min.y >= drawn.header.max.y));
+    // A click on it: `ResolveAll`, and the findings stay shown.
+    let at = button.center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let clicked = crate::app::draw_lint_section(
+        &ctx,
+        &sh.s,
+        vec![vec![egui::Event::PointerMoved(at)], vec![press(true)], vec![press(false)], Vec::new()],
+    );
+    assert_eq!(clicked.events.iter().filter(|e| matches!(e, Event::Command(Command::ResolveAll))).count(), 1, "{:?}", clicked.events);
+    assert!(
+        clicked.texts.iter().any(|(t, r)| message.starts_with(t.trim_end_matches('…')) && r.min.y >= clicked.header.max.y),
+        "the section stayed open"
+    );
+    // One resolvable finding: no "Resolve all".
+    let one = Shell::open(&fixture(Ids::Flat, &[]));
+    assert_eq!(one.s.resolvable(), 1, "{:?}", one.s.findings());
+    let drawn = crate::app::draw_lint_section(&egui::Context::default(), &one.s, vec![Vec::new(), Vec::new()]);
+    assert!(drawn.texts.iter().all(|(t, _)| t != "Resolve all"));
+}
+
 /// P5-409: a resolve refused by the write path (here: the previous write
 /// still in flight) shows the usual notice and writes nothing.
 #[test]

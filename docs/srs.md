@@ -4088,7 +4088,10 @@ editor-groups
   a name popup prefilled "Group", the prefill selected so the first
   typed character replaces it: Enter writes the `SetGroup` with the
   trimmed name, Escape closes it writing nothing, and an empty name is
-  refused with a notice.
+  refused with a notice. Opened from "New group…" the popup sits beside
+  the Group select, left of the right panel, its top at the select's
+  top, moved up only as far as needed to stay inside the window; opened
+  by Ctrl+G or the context menu it sits at the canvas's top right.
 - **P5-108** The context menu of a box selection has, in one group
   after "Enter", "Group…" and, when a selected box is in a group,
   "Remove from group" (Ctrl+Shift+G), which writes `SetGroup` with no
@@ -4125,7 +4128,8 @@ editor-tags
   relationship, or named by an `element`, resp. `relationship`, style)
   that contain the typed text (any case), minus the tags every selected
   item carries; Enter adds the typed text, a click on a row adds that
-  tag, Escape closes.
+  tag, Escape closes. Opened from the Tags row's `+` it sits beside that
+  row as P5-107's popup sits beside the Group select.
 - **P5-206** With several boxes, or several lines, selected the Tags
   row shows the tags they all carry and "+" and the remove mark apply
   to every selected item as one undo step; a selection of boxes and
@@ -4269,9 +4273,11 @@ lint-resolve
 - **P5-407** Resolve writes through the move and resize write path
   (EDIT-26 first write included) as one undo step; Undo restores the
   file byte for byte.
-- **P5-408** With two or more resolvable findings the Lint section shows
-  "Resolve all" (tip "Resolves N of M findings"), which writes
-  `resolve_all` as one undo step; Undo restores the file byte for byte.
+- **P5-408** With two or more resolvable findings the Lint section's
+  header shows a ghost "Resolve all" button, right-aligned before the
+  count (tip "Resolves N of M findings"; left out when the header has no
+  room beside its title), which writes `resolve_all` as one undo step
+  and does not fold the section; Undo restores the file byte for byte.
 - **P5-409** A resolve the write path refuses (file read-only, a write
   still in flight, workspace JSON) writes nothing and shows that path's
   usual notice.
@@ -4322,7 +4328,11 @@ view-folders
   folder's view count right-aligned in `INK_3`; its view rows keep their
   key column, indented by one chevron width; at panel widths of 100, 120
   and 220 px every header and view row is one line and no text is
-  painted past the panel's right edge.
+  painted past the panel's right edge. The key column, at most 104 px,
+  is as wide as the widest folder key or key of a view with a title; a
+  view with no title of its own shows its key alone across its whole
+  row, cut with an ellipsis only at the row's edge, so twelve keys
+  `Components-service-0` .. `-11` read apart at 220 px.
 - **P5-603** A click on a folder header, or Enter or Space while it has
   keyboard focus, folds or unfolds the folder; a folded folder shows its
   header only; a folded folder holding the view on screen shows an

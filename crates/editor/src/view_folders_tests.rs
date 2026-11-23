@@ -311,6 +311,59 @@ fn p5_602_headers_and_rows_fit_narrow_panels() {
     assert_eq!(other.0, "▾ Other  Other  04");
 }
 
+/// Twelve component views keyed `Components-service-0` ..
+/// `Components-service-11` with no title, a titled container view `api`
+/// and a container view with a long key and no title.
+fn untitled_keys() -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("workspace {\n    model {\n        s = softwareSystem \"Service\" {\n");
+    for i in 0..12 {
+        let _ = writeln!(s, "            c{i} = container \"Part {i}\" {{\n                k{i} = component \"Piece {i}\"\n            }}");
+    }
+    s.push_str("        }\n    }\n    views {\n");
+    for i in 0..12 {
+        let _ = writeln!(s, "        component c{i} \"Components-service-{i}\" {{\n            include *\n        }}");
+    }
+    s.push_str("        container s \"api\" \"Service parts\" {\n            include *\n        }\n");
+    s.push_str("        container s \"a-container-view-key-long-enough-to-fill-the-row\" {\n            include *\n        }\n");
+    s.push_str("    }\n}\n");
+    s
+}
+
+/// P5-602: a view row with no title of its own gives its key the whole
+/// row: at 220 px the twelve `Components-service-N` rows each paint a
+/// distinct text holding their number; a long untitled key does not
+/// widen the key column, so a titled row keeps its title; at 100 and
+/// 120 px every row stays one line inside the panel.
+#[test]
+fn p5_602_untitled_view_key_takes_the_row() {
+    let sh = Shell::with(&untitled_keys());
+    let drawn = draw_view_list(&sh.s, 220.0, 6);
+    let rows: Vec<&str> = drawn.rows.iter().map(|(l, _)| l.trim_end()).filter(|l| l.starts_with("Components-service")).collect();
+    assert_eq!(rows.len(), 12, "{:?}", drawn.rows);
+    for i in 0..12 {
+        let number = format!("-{i}");
+        assert_eq!(rows.iter().filter(|l| l.ends_with(&number)).count(), 1, "row {i} reads its number: {rows:?}");
+    }
+    let mut distinct = rows.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 12, "{rows:?}");
+    let api = drawn.rows.iter().find(|(l, _)| l.starts_with("api")).expect("the api row");
+    assert!(api.0.contains("Service parts"), "the titled row keeps its title: {:?}", api.0);
+    let long = drawn.rows.iter().find(|(l, _)| l.starts_with("a-container")).expect("the long row");
+    assert!(!long.0.contains('\n'), "{:?}", long.0);
+    for width in [100.0_f32, 120.0, 220.0] {
+        let drawn = draw_view_list(&sh.s, width, 6);
+        for ((line, height), rect) in drawn.rows.iter().zip(&drawn.rects) {
+            assert!(*height <= drawn.row_height + 0.5, "{width}: {line:?} is {height}px high");
+            assert!(!line.contains('\n'), "{width}: {line:?}");
+            assert!(rect.max.x <= drawn.panel_width + 0.5, "{width}: {line:?} ends at {}", rect.max.x);
+        }
+        assert!(drawn.text_right <= drawn.panel_width + 0.5, "{width}: text runs to {} in a {} px panel", drawn.text_right, drawn.panel_width);
+    }
+}
+
 /// P5-603: a click on a header folds it (its rows go), another unfolds
 /// it; Enter on a focused header does the same; a folded folder holding
 /// the view on screen shows the dot.

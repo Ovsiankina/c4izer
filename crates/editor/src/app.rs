@@ -39,6 +39,8 @@ mod panels;
 
 #[cfg(test)]
 pub(crate) use frame::group_name_field;
+#[cfg(test)]
+pub(crate) use frame::{Anchored, PopupAnchors};
 pub(crate) use inplace::focus_keys;
 #[cfg(test)]
 pub(crate) use inplace::suppress as suppress_edited;
@@ -107,6 +109,10 @@ pub struct App {
     last_width: Option<f32>,
     /// The context menu on screen last frame (behaviour change 6).
     menu_rect: Cell<Option<egui::Rect>>,
+    /// The Details controls that open the add-tag and group-name popups,
+    /// this frame, and which one opened the popup on screen (P5-107,
+    /// P5-205).
+    popup_anchors: Cell<frame::PopupAnchors>,
 }
 
 /// Window width from which the side panels start open (EDIT-32).
@@ -187,6 +193,7 @@ impl App {
             canvas_size: Cell::new(ScreenPoint { x: 0.0, y: 0.0 }),
             last_width: None,
             menu_rect: Cell::new(None),
+            popup_anchors: Cell::new(frame::PopupAnchors::default()),
         };
         if let Some(path) = file {
             app.dispatch(&cc.egui_ctx, Event::Command(Command::Open(path)));
@@ -692,6 +699,146 @@ pub(crate) fn view_list_frame(ctx: &egui::Context, state: &State, width: f32, ca
     output.textures_delta.clear();
 }
 
+/// The headless window of the popup and Lint tests: 1280 x 800 px, the
+/// size the owner saw them in.
+#[cfg(test)]
+fn test_screen() -> egui::Rect {
+    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))
+}
+
+/// The right panel's width in `test_screen`, as `App::ui` sizes it.
+#[cfg(test)]
+fn test_right_width() -> f32 {
+    let (min, max) = side_panel_range(test_screen().width());
+    240.0_f32.clamp(min, max)
+}
+
+/// Every text shape of `shapes`, with its painted rect.
+#[cfg(test)]
+fn painted_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(t) if !t.galley.text().is_empty() => out.push((t.galley.text().to_owned(), t.visual_bounding_rect())),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
+/// The Lint section as drawn headless at the top of the right panel.
+#[cfg(test)]
+pub(crate) struct DrawnSection {
+    /// Every text painted in the last frame and its rect, screen px.
+    pub texts: Vec<(String, egui::Rect)>,
+    /// The section's 28 px header row, screen px.
+    pub header: egui::Rect,
+    /// The events of every frame's clicks.
+    pub events: Vec<Event>,
+}
+
+/// The Lint section of `state` (P5-406, P5-408) in a right panel of
+/// `test_screen`, one frame per entry of `inputs`, in `ctx` (which keeps
+/// the section's fold state).
+#[cfg(test)]
+pub(crate) fn draw_lint_section(ctx: &egui::Context, state: &State, inputs: Vec<Vec<egui::Event>>) -> DrawnSection {
+    let mut drawn = DrawnSection {
+        texts: Vec::new(),
+        header: egui::Rect::NOTHING,
+        events: Vec::new(),
+    };
+    let width = test_right_width();
+    for events in inputs {
+        let input = egui::RawInput {
+            screen_rect: Some(test_screen()),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::Panel::right("c4rizer-right").exact_size(width).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::new(4.0, 0.0);
+                let top = ui.cursor().min;
+                drawn.header = egui::Rect::from_min_size(top, egui::vec2(ui.available_width(), theme::SIZE_ROW));
+                panels::lint_section(ui, state, &mut drawn.events);
+            });
+        });
+        drawn.texts = painted_texts(&output.shapes);
+        output.textures_delta.clear();
+    }
+    drawn
+}
+
+/// The add-tag or group-name popup as drawn headless beside the Details
+/// panel's Group and Tags rows.
+#[cfg(test)]
+pub(crate) struct DrawnPopup {
+    /// The control of the open popup (the Tags row or the Group select),
+    /// screen px.
+    pub control: Option<egui::Rect>,
+    /// The popup's window, screen px.
+    pub window: Option<egui::Rect>,
+    /// The canvas left between the panels, screen px.
+    pub canvas: egui::Rect,
+    /// The whole window, screen px.
+    pub screen: egui::Rect,
+}
+
+/// `state`'s open popup (P5-107, P5-205) over `frames` frames of
+/// `test_screen`: the right panel draws the Group and Tags rows `above`
+/// px down, as `App::right_panel` does; `opened` is which Details control
+/// opened the popup (`None`: the keyboard or the context menu).
+#[cfg(test)]
+pub(crate) fn draw_detail_popup(state: &State, opened: Option<frame::Anchored>, above: f32, frames: usize) -> DrawnPopup {
+    let ctx = egui::Context::default();
+    let anchors = Cell::new(frame::PopupAnchors {
+        opened,
+        ..frame::PopupAnchors::default()
+    });
+    let mut drawn = DrawnPopup {
+        control: None,
+        window: None,
+        canvas: egui::Rect::NOTHING,
+        screen: test_screen(),
+    };
+    let width = test_right_width();
+    for _ in 0..frames {
+        let input = egui::RawInput {
+            screen_rect: Some(test_screen()),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::Panel::right("c4rizer-right").exact_size(width).show(ui, |ui| {
+                ui.add_space(above);
+                let mut out = Vec::new();
+                panels::group_and_tag_rows(ui, state, &anchors, &mut out);
+            });
+            drawn.canvas = egui::CentralPanel::default().show(ui, |_| {}).response.rect;
+            let a = anchors.get();
+            let mut out = Vec::new();
+            frame::detail_popup(ui.ctx(), state, frame::window_pos(drawn.canvas, a.anchor(state.overlay.as_ref())), &mut out);
+        });
+        output.textures_delta.clear();
+    }
+    let a = anchors.get();
+    let title = match &state.overlay {
+        Some(crate::state::Overlay::AddTag { .. }) => {
+            drawn.control = a.tags;
+            "Add tag"
+        }
+        Some(crate::state::Overlay::GroupName { .. }) => {
+            drawn.control = a.group;
+            "Group"
+        }
+        _ => return drawn,
+    };
+    drawn.window = ctx.memory(|m| m.area_rect(frame::window_id(title)));
+    drawn
+}
+
 /// The formats of the export panel, as `c4rizer export -f` names them
 /// (P3-400, P3-431), `svg` first (the default); animation is deferred
 /// (P3-432). PDF is not one of them: it is in File > Export only.
@@ -914,6 +1061,17 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        // P5-107, P5-205: a popup a Details control opened stays beside
+        // it until it closes; one opened otherwise sits at the canvas's
+        // top right.
+        // DECISION: settled once per frame, before the panels draw, so the
+        // click that opens a popup (in this frame's events) is kept.
+        let mut anchors = self.popup_anchors.get();
+        anchors.settle(self.state.overlay.as_ref());
+        // A control the panels do not draw this frame anchors nothing.
+        anchors.tags = None;
+        anchors.group = None;
+        self.popup_anchors.set(anchors);
         let mut events = file_shortcuts(&ctx);
         let width = ctx.content_rect().width();
         let narrow = !side_panels_start_open(width);

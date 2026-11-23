@@ -172,36 +172,63 @@ impl App {
     /// The Group row of a box selection (P5-106, P5-109) and the editable
     /// Tags row of boxes or lines (P5-204..P5-206).
     fn group_and_tag_rows(&self, ui: &mut egui::Ui, out: &mut Vec<Event>) {
-        if let Some(row) = self.state.group_row() {
-            kit::prop_row(ui, "group", |ui| {
-                let mut names = vec!["None".to_owned()];
-                names.extend(row.choices.iter().cloned());
-                names.push("New group…".to_owned());
-                let current = if row.mixed { "several" } else { row.current.as_deref().unwrap_or("None") };
-                let selected = if row.mixed { None } else { names.iter().position(|n| n == current) };
-                let shown = ui.add_enabled_ui(row.enabled, |ui| kit::select(ui, "group", current, &names, selected));
-                shown.response.on_disabled_hover_text("Boxes must share a parent");
-                match shown.inner {
-                    Some(i) if Some(i) == selected => {}
-                    Some(0) => cmd(out, Command::SetGroup(None)),
-                    Some(i) if i + 1 == names.len() => cmd(out, Command::GroupPopup),
-                    Some(i) => cmd(out, Command::SetGroup(Some(names[i].clone()))),
-                    None => {}
-                }
-                if !row.enabled {
-                    ui.label(egui::RichText::new("Boxes must share a parent").color(INK_3));
-                }
-            });
-        }
-        if let Some(row) = self.state.tag_row() {
-            kit::prop_row(ui, "tags", |ui| match kit::tag_row(ui, &row.tags, &row.removable, true) {
-                Some(kit::TagRowAction::Remove(tag)) => cmd(out, Command::RemoveTag(tag)),
-                Some(kit::TagRowAction::Add) => cmd(out, Command::TagPopup),
-                None => {}
-            });
-        }
+        group_and_tag_rows(ui, &self.state, &self.popup_anchors, out);
     }
+}
 
+/// The Group and Tags rows of `state`'s selection (P5-106, P5-109,
+/// P5-204..P5-206). Records in `anchors` where the Group select and the
+/// Tags row are drawn, and which popup a click here opened, so the popup
+/// opens beside its control (P5-107, P5-205).
+pub(super) fn group_and_tag_rows(ui: &mut egui::Ui, state: &State, anchors: &std::cell::Cell<super::frame::PopupAnchors>, out: &mut Vec<Event>) {
+    let mut drawn = anchors.get();
+    drawn.group = None;
+    drawn.tags = None;
+    if let Some(row) = state.group_row() {
+        kit::prop_row(ui, "group", |ui| {
+            let mut names = vec!["None".to_owned()];
+            names.extend(row.choices.iter().cloned());
+            names.push("New group…".to_owned());
+            let current = if row.mixed { "several" } else { row.current.as_deref().unwrap_or("None") };
+            let selected = if row.mixed { None } else { names.iter().position(|n| n == current) };
+            let shown = ui.add_enabled_ui(row.enabled, |ui| kit::select(ui, "group", current, &names, selected));
+            drawn.group = Some(shown.response.rect);
+            shown.response.on_disabled_hover_text("Boxes must share a parent");
+            match shown.inner {
+                Some(i) if Some(i) == selected => {}
+                Some(0) => cmd(out, Command::SetGroup(None)),
+                Some(i) if i + 1 == names.len() => {
+                    drawn.opened = Some(super::frame::Anchored::Group);
+                    cmd(out, Command::GroupPopup);
+                }
+                Some(i) => cmd(out, Command::SetGroup(Some(names[i].clone()))),
+                None => {}
+            }
+            if !row.enabled {
+                ui.label(egui::RichText::new("Boxes must share a parent").color(INK_3));
+            }
+        });
+    }
+    if let Some(row) = state.tag_row() {
+        kit::prop_row(ui, "tags", |ui| {
+            let action = kit::tag_row(ui, &row.tags, &row.removable, true);
+            // DECISION: the anchor is the row's chips, `+` included: the
+            // popup's top meets the row's top wherever the chips wrap.
+            drawn.tags = Some(ui.min_rect());
+            match action {
+                Some(kit::TagRowAction::Remove(tag)) => cmd(out, Command::RemoveTag(tag)),
+                Some(kit::TagRowAction::Add) => {
+                    drawn.opened = Some(super::frame::Anchored::Tags);
+                    cmd(out, Command::TagPopup);
+                }
+                None => {}
+            }
+        });
+    }
+    anchors.set(drawn);
+}
+
+impl App {
     /// The view as a whole: Auto-place, paper size, Magnet, Centre, Remove
     /// vertices, crossings, Callout labels (P2-700..P2-704, P3-313,
     /// P4-318, P4-521). Folded by default while boxes are selected.
@@ -653,33 +680,25 @@ fn steps_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
 
 /// The Lint section: findings (warn icon, text clamped to two lines),
 /// then notices; the list scrolls after five rows so Export stays in
-/// reach (behaviour change 13).
-fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
+/// reach (behaviour change 13). From two resolvable findings the header
+/// holds "Resolve all" before the count (P5-408).
+pub(super) fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
     if state.doc.is_none() {
         return;
     }
     let findings = state.findings();
     let notices = state.notices();
     let n = findings.len();
-    kit::section(ui, "lint", "Lint", Some((n.to_string(), n > 0)), true, |ui| {
+    // P5-408: "Resolve all" from two resolvable findings, in the header.
+    let resolvable = state.resolvable();
+    let tip = format!("Resolves {resolvable} of {n} findings");
+    let action = (resolvable >= 2).then_some(("Resolve all", tip.as_str()));
+    let (_, resolve_all) = kit::section_with_action(ui, "lint", "Lint", Some((n.to_string(), n > 0)), true, action, |ui| {
         if findings.is_empty() && notices.is_empty() {
             ui.label(egui::RichText::new("no findings").color(INK_2));
             return;
         }
         ui.spacing_mut().item_spacing.y = 0.0;
-        // P5-408: "Resolve all" from two resolvable findings.
-        // DECISION: the first row of the section body, right-aligned, not
-        // in the 28px header: `kit::section` has no header slot, and a
-        // button over the header would also fold the section.
-        let resolvable = state.resolvable();
-        if resolvable >= 2 {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = Button::new("Resolve all").look(Look::Ghost).show(ui);
-                if kit::tip(r, &format!("Resolves {resolvable} of {n} findings"), None).clicked() {
-                    cmd(out, Command::ResolveAll);
-                }
-            });
-        }
         let rows = findings.len() + notices.len();
         egui::ScrollArea::vertical()
             .id_salt("c4rizer-lint")
@@ -715,6 +734,9 @@ fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
             });
         let _ = rows;
     });
+    if resolve_all {
+        cmd(out, Command::ResolveAll);
+    }
 }
 
 /// One lint row: 32 px icon column, the text in two lines at most,
@@ -821,7 +843,8 @@ fn export_section(ui: &mut egui::Ui, out: &mut Vec<Event>) {
 /// the title cut to the room left; the full title and kind as tooltip
 /// (EDIT-8, P2-737, behaviour change 11). Indented `indent` px under its
 /// folder's header (P5-602); key and title never pass the row's right
-/// edge. Returns the row's text and response.
+/// edge. A view with no title of its own shows its key alone, cut to the
+/// row rather than to the key column. Returns the row's text and response.
 pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w: f32, indent: f32) -> (String, egui::Response) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_ROW), Sense::click());
@@ -849,16 +872,19 @@ pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w
     };
     let code = theme::code_font();
     let x0 = rect.min.x + 8.0 + indent;
+    let (_, title) = view_list_line(entry, entry.label.chars().count());
+    let untitled = title == key;
     // P5-602: a panel narrower than the key column cuts the key, never
-    // the panel's edge.
-    let key_w = key_w.min((rect.max.x - 8.0 - x0).max(0.0));
+    // the panel's edge; a view with no title of its own gives its key the
+    // whole row, so long keys that differ at their end stay apart.
+    let row_w = (rect.max.x - 8.0 - x0).max(0.0);
+    let key_w = if untitled { row_w } else { key_w.min(row_w) };
     let key_text = fit(ui, &key, &code, key_w);
     let p = ui.painter();
     p.text(egui::pos2(x0, rect.center().y), Align2::LEFT_CENTER, &key_text, code, key_ink);
-    let (_, title) = view_list_line(entry, entry.label.chars().count());
     let font = theme::ui_font();
     let room = (rect.max.x - 8.0 - (x0 + key_w + 8.0)).max(0.0);
-    let shown = if title == key { String::new() } else { fit(ui, &title, &font, room) };
+    let shown = if untitled { String::new() } else { fit(ui, &title, &font, room) };
     p.text(egui::pos2(x0 + key_w + 8.0, rect.center().y), Align2::LEFT_CENTER, &shown, font, title_ink);
     let tip = format!("{title}\n{}", view_label(entry));
     (format!("{key_text}  {shown}"), response.on_hover_text(tip))
@@ -872,14 +898,17 @@ fn fit(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> String {
     if width <= room { cut } else { String::new() }
 }
 
-/// The width of the key column: the widest view or folder key of
-/// `folders`, at most 104 px (P5-602).
+/// The width of the key column: the widest folder key, or key of a view
+/// with a title of its own, of `folders`, at most 104 px (P5-602). A
+/// view without a title draws its key over the whole row, so its key
+/// does not widen the column the titles start after.
 pub(super) fn key_column(ui: &egui::Ui, folders: &[crate::view_folders::Folder]) -> f32 {
     let code = theme::code_font();
     let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, code.clone(), INK).size().x);
+    let titled = |v: &&crate::state::ViewEntry| v.label != v.view.key();
     folders
         .iter()
-        .flat_map(|f| std::iter::once(f.folder.key().to_owned()).chain(f.views.iter().map(|v| v.view.key())))
+        .flat_map(|f| std::iter::once(f.folder.key().to_owned()).chain(f.views.iter().filter(titled).map(|v| v.view.key())))
         .map(width)
         .fold(0.0_f32, f32::max)
         .min(104.0)

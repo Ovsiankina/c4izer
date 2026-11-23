@@ -432,28 +432,62 @@ pub fn section<R>(
     default_open: bool,
     body: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    section_with_action(ui, id, title, count, default_open, None, body).0
+}
+
+/// A `section` whose header also holds `action`, `(label, tip)`: a ghost
+/// `Button` right-aligned in the header row, before the count (P5-408).
+/// A click on it does not fold the section. Returns the body's result
+/// and whether the action was clicked.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, UI coherence: Lint "Resolve all" in the header)
+// DECISION: a sibling of `section`, which keeps its signature and its six
+// callers; `section` is this with no action.
+#[expect(clippy::too_many_arguments, reason = "a section's id, title, count, fold and header action, then its body")]
+pub fn section_with_action<R>(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    count: Option<(String, bool)>,
+    default_open: bool,
+    action: Option<(&str, &str)>,
+    body: impl FnOnce(&mut Ui) -> R,
+) -> (Option<R>, bool) {
     let key = egui::Id::unique(("c4rizer-section", id));
     let mut open = ui.ctx().data(|d| d.get_temp::<bool>(key)).unwrap_or(default_open);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SIZE_ROW), Sense::click());
-    if response.clicked() {
+    let icon_rect = Rect::from_min_size(egui::pos2(rect.min.x + PAD, rect.center().y - 6.0), Vec2::splat(12.0));
+    let label = crate::theme::label(title);
+    let galley = egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
+    let title_x = icon_rect.max.x + 8.0;
+    let title_right = title_x + galley.size().x;
+    let count_font = FontId::monospace(10.0);
+    let count_room = count.as_ref().map_or(0.0, |(text, _)| text_width(ui, text, &count_font) + 8.0);
+    // DECISION: a header too narrow for the title and the action (a
+    // panel near its 120 px minimum) leaves the action out rather than
+    // drawing it over the title.
+    let action_rect = action.and_then(|(text, _)| {
+        let right = rect.max.x - 8.0 - count_room;
+        let left = right - button_width(ui, text);
+        (left >= title_right + 8.0).then(|| {
+            Rect::from_min_max(egui::pos2(left, rect.center().y - SIZE_CONTROL / 2.0), egui::pos2(right, rect.center().y + SIZE_CONTROL / 2.0))
+        })
+    });
+    let on_action = action_rect.is_some_and(|r| response.interact_pointer_pos().is_some_and(|at| r.contains(at)));
+    if response.clicked() && !on_action {
         open = !open;
         ui.ctx().data_mut(|d| d.insert_temp(key, open));
     }
     let p = ui.painter();
     let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
-    let icon_rect = Rect::from_min_size(egui::pos2(rect.min.x + PAD, rect.center().y - 6.0), Vec2::splat(12.0));
     icons::paint(p, chevron, icon_rect, INK_3);
-    let label = crate::theme::label(title);
-    let galley = egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
-    p.galley(egui::pos2(icon_rect.max.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, INK_3);
+    p.galley(egui::pos2(title_x, rect.center().y - galley.size().y / 2.0), galley, INK_3);
     if let Some((text, warn)) = count {
-        p.text(
-            egui::pos2(rect.max.x - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            text,
-            FontId::monospace(10.0),
-            if warn { WARN } else { INK_3 },
-        );
+        p.text(egui::pos2(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, text, count_font, if warn { WARN } else { INK_3 });
+    }
+    let mut clicked = false;
+    if let (Some((text, action_tip)), Some(r)) = (action, action_rect) {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        clicked = tip(Button::new(text).look(Look::Ghost).show(&mut child), action_tip, None).clicked();
     }
     let inner = if open {
         let inner = egui::Frame::new()
@@ -474,7 +508,7 @@ pub fn section<R>(
         None
     };
     hairline(ui);
-    inner
+    (inner, clicked)
 }
 
 /// A full-width 1 px `line` rule.
