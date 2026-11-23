@@ -405,9 +405,10 @@ fn p5_105_undo_refused_when_scope_changed() {
 
 // ------------------------------------------------------------ benchmarks
 
-// DECISION: budgets are about 4x the medians measured on 2026-11-23
-// (P5-200: 1129 us, P5-100: 1615 us), rounded up (design section 9);
-// both are dominated by the re-parse after each step.
+// DECISION: budgets are about 4x the highest of three medians measured
+// on a quiet machine 2026-11-23 (P5-200: 533 us, P5-100: 1723 us),
+// rounded up (design section 9); both are dominated by the re-parse
+// after each step.
 const EXAMPLE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/example/workspace.dsl"));
 
 #[test]
@@ -419,7 +420,7 @@ fn perf_p5_200_add_then_remove_tag() {
     let parsed = parse(EXAMPLE);
     let m = &parsed.model;
     let target = TagTarget::Element(m.full_key(m.elements.iter().find(|e| e.parent.is_some()).expect("a nested element").id).expect("key"));
-    bench_util::bench(["P5-200", "tags", "AddTag then RemoveTag apply", "example/workspace.dsl"], 4_600, || {
+    bench_util::bench(["P5-200", "tags", "AddTag then RemoveTag apply", "example/workspace.dsl"], 2_200, || {
         let added = edit::apply(&parsed, &[add(target.clone(), "Bench")]).expect("adds");
         let again = parse(&added.text);
         let removed = edit::apply(&again, &added.inverse).expect("removes");
@@ -446,7 +447,7 @@ fn perf_p5_100_set_group_create_in_out() {
     let create = Edit::SetGroup { elements: three[..2].to_vec(), group: Some("Bench".to_owned()) };
     let move_in = Edit::SetGroup { elements: three[2..].to_vec(), group: Some("Bench".to_owned()) };
     let move_out = Edit::SetGroup { elements: three.clone(), group: None };
-    bench_util::bench(["P5-100", "groups", "SetGroup create, move in, move out", "example/workspace.dsl, 3 boxes"], 6_500, || {
+    bench_util::bench(["P5-100", "groups", "SetGroup create, move in, move out", "example/workspace.dsl, 3 boxes"], 7_000, || {
         let a = edit::apply(&parsed, std::slice::from_ref(&create)).expect("creates");
         let a = parse(&a.text);
         let b = edit::apply(&a, std::slice::from_ref(&move_in)).expect("moves in");

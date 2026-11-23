@@ -450,7 +450,9 @@ fn perf_p5_360_set_line_style_this_line() {
     let m = &parsed.model;
     let r = RelationshipRef::of(m, m.relationships[0].id);
     let set = [this_line(r, Some(RED))];
-    bench_util::bench(["P5-360", "line style", "SetLineStyle this line, apply", "example/workspace.dsl"], 10_000, || {
+    // Budget: about 4x the highest of three medians, 531 us (2026-11-23,
+    // quiet machine); the re-parses inside `apply` dominate.
+    bench_util::bench(["P5-360", "line style", "SetLineStyle this line, apply", "example/workspace.dsl"], 2_200, || {
         let done = edit::apply(&parsed, &set).expect("applies");
         std::hint::black_box(done);
     });

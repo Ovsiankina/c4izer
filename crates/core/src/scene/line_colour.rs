@@ -259,8 +259,10 @@ mod tests {
         }
     }
 
-    // Budgets (P5-900: about 4x the measured median, at least 50 us).
+    // Budgets (P5-900): about 4x the highest of three medians measured on
+    // a quiet machine 2026-11-23 (1.5 us, 73 us, plain 63 us / box 53 us),
+    // rounded up, at least 50 us.
     const BUDGET_40_US: u64 = 50;
-    const BUDGET_1000_US: u64 = 400;
-    const BUDGET_SCENE_US: u64 = 500;
+    const BUDGET_1000_US: u64 = 300;
+    const BUDGET_SCENE_US: u64 = 260;
 }

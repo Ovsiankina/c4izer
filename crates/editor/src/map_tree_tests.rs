@@ -307,8 +307,9 @@ fn perf_p5_705_tree_rows_build() {
     if debug_build("perf_p5_705_tree_rows_build") {
         return;
     }
-    // Budgets: about 4x the medians measured 2026-11-23 (14 us, 163 us).
-    for (n, budget) in [(50, 60), (500, 700)] {
+    // Budgets: about 4x the highest of three medians measured 2026-11-23
+    // on a quiet machine (4 us, 49 us), at least 50 us.
+    for (n, budget) in [(50, 50), (500, 200)] {
         let map = ViewMap::build(&parsed(&many_views(n)).model);
         assert_eq!(map.nodes.len(), n);
         bench(["P5-705", "map tree", "tree rows build", &format!("{n} views")], budget, || {
@@ -335,8 +336,8 @@ fn perf_p5_705_map_tree_frame() {
         frame(&ctx, &mut panel, &p, Some(&current), size, Vec::new());
     }
     assert!(panel.tree);
-    // Budget: about 4x the 208 us median measured 2026-11-23.
-    bench(["P5-705", "map tree", "map panel frame, tree mode", "500 views"], 900, || {
+    // Budget: about 4x the highest of three medians, 84 us (2026-11-23).
+    bench(["P5-705", "map tree", "map panel frame, tree mode", "500 views"], 350, || {
         frame(&ctx, &mut panel, &p, Some(&current), size, Vec::new());
     });
     assert_eq!(panel.builds, 1, "no rebuild per frame");

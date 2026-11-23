@@ -491,8 +491,9 @@ fn perf_p5_606_folder_list_build() {
     if debug_build("perf_p5_606_folder_list_build") {
         return;
     }
-    // Budgets: about 4x the medians measured 2026-11-23 (22-25 us, 441-680 us).
-    for (n, budget) in [(50, 100), (500, 3_000)] {
+    // Budgets: about 4x the highest of three medians measured 2026-11-23
+    // on a quiet machine after the linear build (8 us, 100 us).
+    for (n, budget) in [(50, 50), (500, 450)] {
         let sh = Shell::with(&many_views(n));
         let model = sh.s.model().expect("a model").clone();
         let entries = sh.s.views();
@@ -519,8 +520,8 @@ fn perf_p5_606_view_list_frame() {
     for _ in 0..3 {
         crate::app::view_list_frame(&ctx, &sh.s, 220.0, &mut cache);
     }
-    // Budget: about 4x the 92 us median measured 2026-11-23.
-    bench(["P5-606", "view folders", "view list frame", "500 views"], 400, || {
+    // Budget: about 4x the highest of three medians, 53 us (2026-11-23).
+    bench(["P5-606", "view folders", "view list frame", "500 views"], 250, || {
         crate::app::view_list_frame(&ctx, &sh.s, 220.0, &mut cache);
     });
     assert_eq!(cache.builds, 1, "no rebuild per frame");

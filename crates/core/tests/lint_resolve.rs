@@ -360,7 +360,7 @@ fn perf_p5_400_resolve_40_boxes() {
     if bench_util::debug_build("perf_p5_400_resolve_40_boxes") {
         return;
     }
-    bench_resolve(8, 5, (50, 100));
+    bench_resolve(8, 5, (50, 50));
 }
 
 #[test]
@@ -369,5 +369,5 @@ fn perf_p5_400_resolve_400_boxes() {
     if bench_util::debug_build("perf_p5_400_resolve_400_boxes") {
         return;
     }
-    bench_resolve(20, 20, (50, 4_000));
+    bench_resolve(20, 20, (50, 2_500));
 }

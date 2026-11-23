@@ -419,7 +419,7 @@ fn perf_p5_500_guides_1000_boxes() {
     if debug_build("perf_p5_500_guides_1000_boxes") {
         return;
     }
-    bench_index(1000, (1_000, 50));
+    bench_index(1000, (450, 50));
 }
 
 /// `drag_to` (one pointer move during a box drag) on the example's c3,
@@ -431,7 +431,7 @@ fn perf_p5_501_drag_to_with_and_without_guides() {
     if debug_build("perf_p5_501_drag_to_with_and_without_guides") {
         return;
     }
-    for (guides, what, budget) in [(true, "drag_to with guides", 100), (false, "drag_to without guides", 100)] {
+    for (guides, what, budget) in [(true, "drag_to with guides", 60), (false, "drag_to without guides", 60)] {
         let mut sh = Shell::open(EXAMPLE, "C3-serving");
         let b = sh.scene().boxes[0].rect.centre();
         let from = sh.screen(b.x, b.y);
