@@ -1,7 +1,8 @@
 //! The File menu (owner request 2026-11-23): export of the current view
 //! or of the whole workspace as PDF, Save, Save as, and the commands
 //! that pass while Explore is open. SVG and PNG export are EDIT-7's and
-//! tested there.
+//! tested there. Also the Settings menu: the open view's crossing
+//! budget.
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -13,8 +14,8 @@ use crate::worker::{self, ExportFormat};
 
 /// The shell without a window: every effect at once, dialogs recorded,
 /// writes counted.
-struct Shell {
-    s: State,
+pub(crate) struct Shell {
+    pub(crate) s: State,
     dialogs: Vec<Dialog>,
     writes: usize,
 }
@@ -35,7 +36,7 @@ impl Shell {
         self.run(effects);
     }
 
-    fn run(&mut self, effects: Vec<Effect>) {
+    pub(crate) fn run(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             let next = match effect {
                 Effect::Read(path) => {
@@ -65,7 +66,7 @@ impl Shell {
     }
 }
 
-fn shop(tag: &str) -> (TempDir, std::path::PathBuf, Shell) {
+pub(crate) fn shop(tag: &str) -> (TempDir, std::path::PathBuf, Shell) {
     let dir = TempDir::new(tag);
     let path = dir.join("shop.dsl");
     std::fs::write(&path, SHOP).expect("written");
@@ -179,4 +180,44 @@ fn file_commands_pass_while_explore_is_open() {
     let (kept, leave) = crate::app::explore_gate(events);
     assert_eq!(kept.len(), 5);
     assert!(!leave, "Explore stays open");
+}
+
+// ------------------------------------------------------------- settings
+
+/// Owner request 2026-11-23, the Settings menu: "Max crossings" writes
+/// the open view's `maxCrossings` line as one undo step, rewrites it in
+/// place, and 0 (the default) removes it.
+#[test]
+fn settings_max_crossings_writes_the_view_line() {
+    let (_dir, path, mut h) = shop("settings-max-crossings");
+    let text = || std::fs::read_to_string(&path).expect("read back");
+    assert_eq!(h.s.max_crossings(), Some(0));
+    h.cmd(Command::SetMaxCrossings(2));
+    assert_eq!(h.writes, 1);
+    assert_eq!(text().matches("maxCrossings 2").count(), 1, "{}", text());
+    assert_eq!(h.s.max_crossings(), Some(2));
+    // The same budget again writes nothing.
+    h.cmd(Command::SetMaxCrossings(2));
+    assert_eq!(h.writes, 1);
+    // Rewritten in place.
+    h.cmd(Command::SetMaxCrossings(3));
+    assert!(text().contains("maxCrossings 3") && !text().contains("maxCrossings 2"), "{}", text());
+    // Undo steps back one change at a time.
+    h.cmd(Command::Undo);
+    assert_eq!(h.s.max_crossings(), Some(2));
+    h.cmd(Command::Undo);
+    assert_eq!(text(), SHOP);
+    // 0 removes the line.
+    h.cmd(Command::SetMaxCrossings(1));
+    h.cmd(Command::SetMaxCrossings(0));
+    assert_eq!(text(), SHOP);
+    assert_eq!(h.s.max_crossings(), Some(0));
+}
+
+/// Without a file there is no view to set: nothing is written.
+#[test]
+fn settings_without_a_file_do_nothing() {
+    let mut s = State::new(UiState::default());
+    assert_eq!(s.max_crossings(), None);
+    assert!(s.handle(Event::Command(Command::SetMaxCrossings(2))).is_empty());
 }

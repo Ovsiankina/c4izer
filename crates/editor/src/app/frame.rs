@@ -50,7 +50,7 @@ fn cell<R>(ui: &mut egui::Ui, bar: Rect, rtl: bool, add: impl FnOnce(&mut egui::
 }
 
 impl App {
-    /// The top bar: Views toggle · File menu · file · Back, Forward · breadcrumb ·
+    /// The top bar: Views toggle · File, Settings menus · file · Back, Forward · breadcrumb ·
     /// Undo, Redo · `Diagram / Explore` · Details toggle.
     pub(super) fn top_bar(&self, ui: &mut egui::Ui, narrow: bool, mut bar: BarState, events: &mut Vec<Event>) -> BarState {
         let rect = ui.max_rect();
@@ -62,7 +62,10 @@ impl App {
                     bar.left = !bar.left;
                 }
             });
-            cell(ui, rect, false, |ui| file_menu(ui, &self.state, events));
+            cell(ui, rect, false, |ui| {
+                file_menu(ui, &self.state, events);
+                settings_menu(ui, &self.state, events);
+            });
             cell(ui, rect, false, |ui| {
                 let name = self
                     .state
@@ -894,6 +897,62 @@ pub(super) fn file_menu(ui: &mut egui::Ui, state: &crate::state::State, events: 
     });
 }
 
+/// The `Settings` button beside `File` and its menu (owner request
+/// 2026-11-23): the open view's settings, for now its crossing budget
+/// (`maxCrossings`, CORE-17) with the count the view draws.
+// DECISION: per view, as the DSL writes the budget (owner, 2026-11-23:
+// a budget shared by the file makes no sense across views). The popup
+// stays open on clicks inside, so the budget can be stepped and its
+// effect read off the count below.
+pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    let r = Button::new("Settings").look(Look::Ghost).show(ui);
+    let r = kit::tip(r, "Settings of the open view", None);
+    kit::focus_ring(ui, &r);
+    let budget = state.max_crossings();
+    let drawn = state.scene().map(|s| s.crossings);
+    egui::Popup::menu(&r)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(260.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let Some(budget) = budget else {
+                menu_label(ui, "View settings");
+                file_row(ui, "Open a view to change its settings", None, false, false);
+                return;
+            };
+            menu_label(ui, "View settings");
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                kit::form_row(ui, "Max crossings", |ui| {
+                    let value = budget.to_string();
+                    let items = [
+                        Segment::icon(Icon::Minus, "One crossing fewer (one undo step)"),
+                        Segment::text(&value, "Back to the default, 0 (one undo step)"),
+                        Segment::icon(Icon::Plus, "One crossing more (one undo step)"),
+                    ];
+                    let next = match kit::segmented(ui, &items, true) {
+                        Some(0) => budget.saturating_sub(1),
+                        Some(1) => 0,
+                        Some(_) => budget.saturating_add(1),
+                        None => budget,
+                    };
+                    if next != budget {
+                        events.push(Event::Command(Command::SetMaxCrossings(next)));
+                    }
+                });
+            });
+            if let Some(drawn) = drawn {
+                let (text, ink) = if drawn > budget {
+                    (format!("This view draws {drawn}: above the limit (L4)"), DANGER)
+                } else {
+                    (format!("This view draws {drawn}"), INK_3)
+                };
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).color(ink));
+                });
+            }
+        });
+}
+
 /// One recent file (EDIT-13, behaviour change 10): its name in Geist
 /// Medium, then its folder in mono, the full path as tooltip. The start
 /// screen and File > Open recent draw it.
@@ -1132,6 +1191,69 @@ mod tests {
         // Open… asks the Open dialog.
         let (_, events) = frame(click(at(&shown, "Open…")));
         assert!(matches!(events.as_slice(), [Event::Command(Command::ShowOpenDialog)]), "{events:?}");
+    }
+
+    /// Owner request 2026-11-23: the Settings button opens the open
+    /// view's settings; the budget shows as written, a click on it resets
+    /// it to the default, and the popup stays open for the next step.
+    #[test]
+    fn settings_menu_shows_the_view_budget() {
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+        fn texts(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, mut h) = crate::file_menu_tests::shop("settings-popup");
+        let effects = h.s.handle(Event::Command(Command::SetMaxCrossings(2)));
+        h.run(effects);
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                let mut t = Vec::new();
+                texts(&c.shape, &mut t);
+                shown.extend(t.into_iter().map(|t| (t, c.shape.visual_bounding_rect())));
+            }
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Pos2 {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| r.center())
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        assert!(!shown.iter().any(|(t, _)| t == "MAX CROSSINGS"), "closed until clicked");
+        frame(click(at(&shown, "Settings")));
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "VIEW SETTINGS");
+        at(&shown, "MAX CROSSINGS");
+        assert!(shown.iter().any(|(t, _)| t.starts_with("This view draws ")), "{shown:?}");
+        let (_, events) = frame(click(at(&shown, "2")));
+        assert!(matches!(events.as_slice(), [Event::Command(Command::SetMaxCrossings(0))]), "{events:?}");
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "MAX CROSSINGS");
     }
 
     fn entry(label: &str) -> MenuEntry {

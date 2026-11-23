@@ -427,6 +427,10 @@ pub enum Command {
     /// choice), one undo step (P4-521).
     // APPROVER: new pub item
     SetCrossingStyle(c4rizer_core::model::CrossingStyle),
+    /// Set the open view's crossing budget (the Settings menu's "Max
+    /// crossings"), one undo step (CORE-17).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings(u32),
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -844,6 +848,14 @@ pub enum Action {
         view: ViewRef,
         /// The mode written, `None` for no line (`labels line`).
         mode: Option<LabelMode>,
+    },
+    /// Set the view's `maxCrossings` line, `None` to remove it (CORE-17).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings {
+        /// The view.
+        view: ViewRef,
+        /// The budget written, `None` for no line (budget 0).
+        budget: Option<u32>,
     },
     /// Set the view's `crossings` line, `None` to remove it (P4-521).
     // APPROVER: new pub item
@@ -2563,6 +2575,15 @@ impl State {
                 out.push(Edit::SetLabelMode {
                     view: view.key(),
                     mode: *mode,
+                });
+                out
+            }
+            Action::SetMaxCrossings { view, budget } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetMaxCrossings {
+                    view: view.key(),
+                    budget: *budget,
                 });
                 out
             }
@@ -5055,6 +5076,7 @@ impl State {
             Command::Centre => self.centre(),
             Command::SetLabelMode(mode) => self.set_label_mode(mode),
             Command::SetCrossingStyle(style) => self.set_crossing_style(style),
+            Command::SetMaxCrossings(budget) => self.set_max_crossings(budget),
         }
     }
 
@@ -5233,6 +5255,26 @@ impl State {
         }
         let mode = (mode != LabelMode::Line).then_some(mode);
         self.write(Action::SetLabelMode { view, mode })
+    }
+
+    /// The crossing budget of the open view (CORE-17), `None` when it has
+    /// no layout to edit.
+    pub(crate) fn max_crossings(&self) -> Option<u32> {
+        self.layout_spec().map(|(_, spec)| spec.options().max_crossings)
+    }
+
+    /// The Settings menu's "Max crossings": `maxCrossings <n>` written, or
+    /// the line removed for 0; nothing when the view already has that
+    /// budget.
+    // DECISION: 0 removes the line, as `crossings gap` and `labels line`
+    // do: the default needs no line.
+    fn set_max_crossings(&mut self, budget: u32) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        if spec.options().max_crossings == budget || self.refuse_json() || self.read_only() {
+            return Vec::new();
+        }
+        let budget = (budget != c4rizer_core::model::ViewOptions::DEFAULT.max_crossings).then_some(budget);
+        self.write(Action::SetMaxCrossings { view, budget })
     }
 
     fn bring_onto_canvas(&mut self) -> Vec<Effect> {

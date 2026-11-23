@@ -580,6 +580,16 @@ pub enum Edit {
         /// The style, `None` for no line.
         style: Option<CrossingStyle>,
     },
+    /// Set the crossing budget of `view`: rewrite or add its
+    /// `maxCrossings` line, or remove it with `None` (budget 0, the
+    /// default), placed as `SetLabelMode` places `labels`. Serves CORE-17.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The budget, `None` for no line.
+        budget: Option<u32>,
+    },
     /// Set every `bridge` line of `view`: one per entry of `bridges`,
     /// `(carrier, other)`, in order. Existing lines are rewritten in
     /// place, extra ones removed, new ones added after the view's last
@@ -876,6 +886,7 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::RemoveDefaultView { scope, kind } => remove_default_view(current, scope, *kind),
         Edit::SetCanvasSize { view, size } => set_canvas_size(current, view, *size),
         Edit::SetLabelMode { view, mode } => set_label_mode(current, view, *mode),
+        Edit::SetMaxCrossings { view, budget } => set_max_crossings(current, view, *budget),
         Edit::SetLinePosition {
             view,
             relationship,
@@ -2194,6 +2205,48 @@ fn set_crossing_style(current: &mut Parsed, view: &str, style: Option<CrossingSt
                     spec.technology.map(|v| v.span),
                     spec.max_crossings.map(|v| v.span),
                     spec.labels.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// `SetMaxCrossings` (CORE-17): the `maxCrossings` line, placed as
+/// `set_crossing_style` places `crossings`.
+fn set_max_crossings(current: &mut Parsed, view: &str, budget: Option<u32>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetMaxCrossings {
+        view: view.to_owned(),
+        budget: spec.max_crossings.map(|c| c.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.max_crossings, budget) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.to_string(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("maxCrossings {new}"));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.labels.map(|v| v.span),
+                    spec.crossings.map(|v| v.span),
                 ]
                 .into_iter()
                 .flatten()
