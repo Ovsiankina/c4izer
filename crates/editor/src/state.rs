@@ -2017,7 +2017,7 @@ impl State {
             let e = model.element(id);
             out.push(Crumb {
                 label: e.name.value.clone(),
-                scope: e.key.as_ref().map(|k| k.value.clone()),
+                scope: edit_key(model, id),
             });
         }
         out
@@ -2934,7 +2934,7 @@ pub fn view_into(model: &Model, element: ElementId) -> Option<ViewRef> {
     }
     let kind = counting?;
     Some(ViewRef::Default {
-        scope: e.key.as_ref()?.value.clone(),
+        scope: edit_key(model, e.id)?,
         kind,
     })
 }
@@ -3096,7 +3096,7 @@ pub fn initial_view(model: &Model, remembered: Option<&ViewRef>) -> Option<ViewR
         .find(|e| e.kind == ElementKind::SoftwareSystem)?;
     default_view(model, system.id, ViewKind::SystemContext)?;
     Some(ViewRef::Default {
-        scope: system.key.as_ref()?.value.clone(),
+        scope: edit_key(model, system.id)?,
         kind: ViewKind::SystemContext,
     })
 }
@@ -3291,8 +3291,8 @@ impl State {
         let scene = &build.scene;
         let carry = |id: BoxId| -> Option<BoxId> {
             let element = old_scene.boxes.get(id.0 as usize)?.element;
-            let key = &old_model.element(element).key.as_ref()?.value;
-            scene.boxes_of(model.find(key)?).first().copied()
+            let key = edit_key(old_model, element)?;
+            scene.boxes_of(model.find(&key)?).first().copied()
         };
         // DECISION: in a multi-box drag, boxes whose element is gone are
         // left out and the rest still move (EDIT-19 skips gone targets the
@@ -3567,7 +3567,7 @@ impl State {
             .boxes
             .iter()
             .filter_map(|b| {
-                let key = model.element(b.element).key.as_ref()?.value.clone();
+                let key = edit_key(model, b.element)?;
                 let c = scene.centres[b.id.0 as usize];
                 Some((key, (c.x * GRID_PX, c.y * GRID_PX)))
             })
@@ -3586,8 +3586,8 @@ impl State {
         let mut boxes = BTreeMap::new();
         for (id, c) in to {
             let Some(b) = scene.boxes.get(id.0 as usize) else { continue };
-            if let Some(key) = &model.element(b.element).key {
-                boxes.insert(key.value.clone(), (c.x * GRID_PX, c.y * GRID_PX));
+            if let Some(key) = edit_key(model, b.element) {
+                boxes.insert(key, (c.x * GRID_PX, c.y * GRID_PX));
             }
         }
         if boxes.is_empty() {
@@ -3825,8 +3825,7 @@ impl State {
                 let Some(key) = scene
                     .boxes
                     .get(id.0 as usize)
-                    .and_then(|b| model.element(b.element).key.as_ref())
-                    .map(|k| k.value.clone())
+                    .and_then(|b| edit_key(model, b.element))
                 else {
                     return Vec::new();
                 };
@@ -4090,7 +4089,7 @@ impl State {
                     self.preview = None;
                     return Vec::new();
                 };
-                let Some(element) = model.element(b.element).key.as_ref().map(|k| k.value.clone()) else {
+                let Some(element) = edit_key(model, b.element) else {
                     self.preview = None;
                     return Vec::new();
                 };
@@ -4169,7 +4168,7 @@ impl State {
             .boxes
             .iter()
             .filter(|bx| band.contains(bx.rect.min) && band.contains(bx.rect.max))
-            .filter_map(|bx| model.element(bx.element).key.as_ref().map(|k| Selected::Element(k.value.clone())))
+            .filter_map(|bx| edit_key(model, bx.element).map(Selected::Element))
             .collect();
         if !add {
             self.selection.clear();
@@ -5599,6 +5598,18 @@ fn distance(a: ScreenPoint, b: ScreenPoint) -> f32 {
     (a.x - b.x).hypot(a.y - b.y)
 }
 
+/// The key the editor names `id` by in selections and edits: the one
+/// `Model::find` gives `id` back for (the dotted full id under
+/// `!identifiers hierarchical`); `None` for an element declared without
+/// an id, which the editor never selects or moves (P2-145).
+// DECISION: `full_key`, not `Element::key`: the bare id of a nested
+// element does not resolve under hierarchical ids, so its box could be
+// neither selected nor dragged.
+fn edit_key(model: &Model, id: ElementId) -> Option<String> {
+    model.element(id).key.as_ref()?;
+    model.full_key(id)
+}
+
 /// The scene items standing for `selected`.
 fn items_of(scene: &Scene, model: &Model, selected: &Selected) -> Vec<ItemKey> {
     match selected {
@@ -5647,14 +5658,14 @@ fn selected_of(scene: &Scene, model: &Model, item: ItemKey) -> Option<Selected> 
     }
     match item {
         ItemKey::Box(_) | ItemKey::Line(_) | ItemKey::Label(_) => match scene.model_id(item)? {
-            ModelId::Element(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),
+            ModelId::Element(e) => edit_key(model, e).map(Selected::Element),
             ModelId::Relationship(r) => Some(Selected::Relationship(RelationshipRef::of(model, r))),
             _ => None,
         },
         ItemKey::Title | ItemKey::Subtitle => Some(Selected::Title),
         // P3-131: a click on a deployment node's boundary selects the node.
         ItemKey::Boundary(i) => match scene.boundaries.get(i as usize)?.of {
-            BoundaryOf::DeploymentNode(e) => model.element(e).key.as_ref().map(|k| Selected::Element(k.value.clone())),
+            BoundaryOf::DeploymentNode(e) => edit_key(model, e).map(Selected::Element),
             _ => None,
         },
         _ => None,
@@ -5846,9 +5857,9 @@ fn rebuild_first_write(parsed: &Parsed, edits: &[Edit]) -> Vec<Edit> {
             if placed.contains(&b.element) || moved.contains(&b.element) {
                 continue;
             }
-            if let Some(k) = &model.element(b.element).key {
+            if let Some(k) = edit_key(model, b.element) {
                 let c = centres[b.id.0 as usize];
-                entries.entry(b.element).or_insert((k.value.clone(), (c.x * GRID_PX, c.y * GRID_PX)));
+                entries.entry(b.element).or_insert((k, (c.x * GRID_PX, c.y * GRID_PX)));
             }
         }
         out.extend(entries.into_values().map(|(element, c)| Edit::Move {
@@ -6384,6 +6395,30 @@ mod tests {
         // A move that snaps to the same centre sends nothing.
         h.move_to(pt(from.x + 38.0, from.y + 22.0));
         assert_eq!(h.work[sent..].iter().filter(|r| matches!(r.job, Job::Drag { .. })).count(), 2);
+    }
+
+    /// EDIT-2, P2-142: under `!identifiers hierarchical` a nested box is
+    /// selected and dragged by its dotted full id, and the move is written
+    /// as `at <full id>`.
+    #[test]
+    fn edit_2_drag_nested_box_hierarchical_ids() {
+        let mut h = H::with_file(
+            "workspace {\n    !identifiers hierarchical\n    model {\n        user = person \"User\"\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\"\n            db = container \"Db\"\n        }\n        user -> shop.web \"Uses\"\n        shop.web -> shop.db \"Reads\"\n    }\n    views {\n        container shop \"C\" {\n            include *\n        }\n    }\n}\n",
+        );
+        let id = h.box_id("shop.web");
+        let (cx, cy) = h.centre_px("shop.web");
+        let from = h.screen("shop.web");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x + 40.0, from.y + 20.0));
+        let want = Point::new((cx + 40) / GRID_PX, (cy + 20) / GRID_PX);
+        match &h.s.gesture {
+            Gesture::Dragging { to, .. } => assert_eq!(to.get(&id), Some(&want), "the nested box is in the drag"),
+            g => panic!("not dragging: {g:?}"),
+        }
+        assert!(h.s.selection.contains(&Selected::Element("shop.web".to_owned())));
+        h.up(pt(from.x + 40.0, from.y + 20.0), Button::Left);
+        let text = h.text();
+        assert!(text.contains(&format!("at shop.web {} {}", cx + 40, cy + 20)), "{text}");
     }
 
     /// EDIT-3 (plan editor-04): release writes the box's `at` line
