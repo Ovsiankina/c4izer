@@ -4105,7 +4105,75 @@ line-colour
 
 lint-resolve
 
+- **P5-400** `resolve::resolve` of an L6 finding moves its two boxes
+  apart, centres on the 10px grid, so that once the moves are written
+  and the view rebuilt the two boxes are at least 60px apart edge to
+  edge; label "Move apart".
+- **P5-401** The L6 move is the first of these candidates that brings
+  no other box closer than 60px to a moved box than it was, else the
+  first: both boxes half each along the axis needing the smaller push
+  (x on a tie), both half each along the other axis, only the second
+  box, only the first box (the last two along the smaller-push axis).
+- **P5-402** `resolve` of an L5 finding snaps the line it points at:
+  the `at` line to the centre the scene draws (10px grid), or the
+  `size` line to the size the scene draws (20px steps); label "Snap to
+  grid"; rebuilt, that L5 finding is gone.
+- **P5-403** `resolve` of an L25 finding on a box sets its size to the
+  smallest-area size in 20px steps, no side smaller than now, at which
+  `scene::texts_fit` holds; label "Fit text"; rebuilt, the box has no
+  L25 finding.
+- **P5-404** `resolve` of a finding of any other rule, of an L25
+  finding on a label or boundary, or of an L25 box no size up to 1200px
+  fits, gives `None`; `resolve_all` gives `None` when no finding has a
+  resolution.
+- **P5-405** `resolve_all` gives one resolution ("Resolve all") for
+  every finding of a report: the L5 snaps, the L25 boxes grown, then
+  every box moved by at most 32 relaxation passes until no two boxes
+  are closer than 60px; on a crowded 40-box view, written and rebuilt,
+  no L5 or L6 finding is left.
+- **P5-406** The editor knows which findings of the shown build have a
+  resolution as soon as the build is shown (not per frame); a Lint row
+  of such a finding has a ghost "Resolve" button at its right whose tip
+  is the resolution's label, and a click on the rest of the row still
+  selects the finding's items.
+- **P5-407** Resolve writes through the move and resize write path
+  (EDIT-26 first write included) as one undo step; Undo restores the
+  file byte for byte.
+- **P5-408** With two or more resolvable findings the Lint section shows
+  "Resolve all" (tip "Resolves N of M findings"), which writes
+  `resolve_all` as one undo step; Undo restores the file byte for byte.
+- **P5-409** A resolve the write path refuses (file read-only, a write
+  still in flight, workspace JSON) writes nothing and shows that path's
+  usual notice.
+
 align-guides
+
+- **P5-500** When a box drag starts, the editor builds once an index of
+  the left, centre and right (x) and top, centre and bottom (y) lines of
+  every box not being dragged, sorted per axis, with the dragged boxes'
+  bounding rect; a drag of several boxes uses that bounding rect.
+- **P5-501** On each pointer move, after the 10px grid snap, the dragged
+  rect is pulled onto the nearest index line within 6 screen px (divided
+  by the zoom) of one of its three lines per axis; the release writes
+  the pulled centres.
+- **P5-502** A pull is taken only when it is a whole number of 10px
+  steps, so every dragged centre stays on the grid (no L5); a nearer
+  line off that step is skipped for a farther one on it.
+- **P5-503** While dragging, for each axis, every index line equal to a
+  line of the dragged rect at its final position draws one guide
+  segment, spanning the dragged rect and every box on that line, plus
+  12px at each end.
+- **P5-504** A drag of several boxes is pulled and guided by their
+  bounding rect.
+- **P5-505** Settings > Editor > "Snap to alignment guides" (a
+  checkbox, on by default) turns the pull off: guides still show on
+  exact alignment; the choice is saved in the UI state file as
+  `pref\tsnap-guides\toff` (absent: on) and read back.
+- **P5-506** Guides clear on pointer up and when the drag is cancelled
+  (view switch, reload dropping it).
+- **P5-507** Guides are painted as marks (`Source::Guide`): 1px solid
+  paths in the mark colour, after the selection marks and the resize
+  outline, before the rubber band (EDIT-12).
 
 view-folders
 

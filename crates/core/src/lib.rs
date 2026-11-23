@@ -15,6 +15,7 @@ pub mod label;
 pub mod scene;
 pub mod bridge;
 pub mod lint;
+pub mod resolve;
 pub mod inspect;
 pub mod export;
 pub mod pipeline;

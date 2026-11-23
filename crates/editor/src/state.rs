@@ -109,8 +109,10 @@ use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request,
 mod anchors;
 mod bridges;
 mod bundles;
+pub(crate) mod guides;
 pub(crate) mod inplace;
 mod label_drag;
+mod lint_resolve;
 mod steps;
 mod vertices;
 pub use anchors::SnapMark;
@@ -405,6 +407,14 @@ pub enum Command {
     /// Select the items of the `n`-th finding of `State::findings`
     /// (EDIT-6).
     PickFinding(usize),
+    /// Write the resolution of the `n`-th finding of `State::findings`,
+    /// one undo step (P5-407).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Resolve(usize),
+    /// Write the resolution of every resolvable finding at once, one undo
+    /// step (P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    ResolveAll,
     /// "Auto-place view": every box placed afresh and written, one undo
     /// step (P2-700).
     AutoPlace,
@@ -442,6 +452,11 @@ pub enum Command {
     Fit(Fit),
     /// Toggle fullscreen (P2-706).
     Fullscreen,
+    /// Settings > Editor > "Snap to alignment guides": on pulls a dragged
+    /// box onto a guide, off only shows guides (P5-505); saved in the UI
+    /// state.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    SetSnapGuides(bool),
     /// Open the previous view of the view list (P2-713).
     PreviousView,
     /// Open the next view of the view list (P2-713).
@@ -792,6 +807,21 @@ pub enum Action {
         /// gesture ended: the `at` lines of an EDIT-26 first write.
         layout: BTreeMap<ElementKey, (i32, i32)>,
     },
+    /// Move and resize boxes, one batch: a lint resolve with sizes
+    /// (P5-407, P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Arrange {
+        /// The view the boxes were changed in.
+        view: ViewRef,
+        /// Canonical element key to new centre `(x, y)` px.
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Canonical element key to new size `(width, height)` px,
+        /// multiples of 20.
+        sizes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Every box of `view` at its centre, px, as shown: the `at` lines
+        /// of an EDIT-26 first write.
+        layout: BTreeMap<ElementKey, (i32, i32)>,
+    },
     /// Write text fields, one batch (EDIT-5).
     SetText {
         /// Target, new value, value expected now (EDIT-24).
@@ -1067,6 +1097,10 @@ pub struct DrawList<'a> {
     // the crate), so no pub item is added; empty paints every 2px line
     // 1.5px, the default look.
     pub(crate) written_thickness: Vec<c4rizer_core::view::EdgeId>,
+    /// While a box drag is under way, the alignment guides, scene px
+    /// (P5-503): marks, never scene items.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    pub guides: &'a [guides::Guide],
 }
 
 /// The tooltip overlay (P2-723): the hovered item's details, at the
@@ -1438,6 +1472,15 @@ pub struct State {
     // rather than cleared at every place `shown` changes: any new shown
     // build, view switch or reload makes the moves void by itself.
     unbuilt: Option<(Arc<ViewBuild>, BTreeMap<BoxId, Point>)>,
+    /// The resolutions of the shown build's findings, computed when it
+    /// is shown (P5-406).
+    resolutions: Option<lint_resolve::Resolutions>,
+    /// The alignment guide index of the box drag under way, built when
+    /// it starts (P5-500).
+    guide_index: Option<guides::GuideIndex>,
+    /// The guides of the box drag under way, refilled per pointer move
+    /// (P5-503); drawn only while dragging.
+    guides: Vec<guides::Guide>,
 }
 
 impl State {
@@ -1488,6 +1531,9 @@ impl State {
             nav_query: String::new(),
             after_place: AfterPlace::Nothing,
             unbuilt: None,
+            resolutions: None,
+            guide_index: None,
+            guides: Vec::new(),
         }
     }
 
@@ -2025,6 +2071,7 @@ impl State {
                 (Some(scene), Some(model)) => crate::canvas::thickness_written(model, scene),
                 _ => Vec::new(),
             },
+            guides: if matches!(self.gesture, Gesture::Dragging { .. }) { &self.guides } else { &[] },
         }
     }
 
@@ -2499,6 +2546,28 @@ impl State {
                     size: Some(*size),
                 }];
                 layout_batch(model, view, layout, None, own)
+            }
+            Action::Arrange {
+                view,
+                boxes,
+                sizes,
+                layout,
+            } => {
+                let view = &layout_view(model, view);
+                let mut own: Vec<Edit> = boxes
+                    .iter()
+                    .map(|(element, &centre)| Edit::Move {
+                        view: view.key(),
+                        element: element.clone(),
+                        centre: Some(centre),
+                    })
+                    .collect();
+                own.extend(sizes.iter().map(|(element, &size)| Edit::Resize {
+                    view: view.key(),
+                    element: element.clone(),
+                    size: Some(size),
+                }));
+                layout_batch(model, view, layout, Some(boxes), own)
             }
             Action::SetText { fields } => {
                 let mut out = Vec::new();
@@ -3358,6 +3427,7 @@ impl State {
         ) {
             self.gesture = Gesture::Idle;
         }
+        self.drop_guides();
         self.dragged = None;
         self.preview = None;
         self.awaited_drag = None;
@@ -3393,6 +3463,8 @@ impl State {
             self.notice = Some("move dropped: the dragged element is no longer in the file".to_owned());
             return;
         }
+        // P5-500: the index again, against the new build's boxes.
+        self.guide_index = self.shown.as_ref().and_then(|(_, b)| guides::GuideIndex::build(&b.scene, &new_boxes));
         self.gesture = Gesture::Dragging {
             from,
             boxes: new_boxes,
@@ -3494,6 +3566,7 @@ impl State {
         let mut effects = vec![Effect::SaveUiState(self.ui.clone())];
         if let (Some(build), Some(parsed)) = (cached, self.parsed()) {
             self.shown = Some((parsed, build));
+            self.refresh_resolutions();
             // A build in flight for the previous view is now stale.
             self.awaited_build = Some(self.next_generation());
         } else {
@@ -3930,6 +4003,8 @@ impl State {
                         _ => None,
                     })
                     .collect();
+                // P5-500: the guide index, once per drag.
+                self.guide_index = guides::GuideIndex::build(scene, &boxes);
                 self.text_edit = None;
                 self.gesture = Gesture::Dragging {
                     from,
@@ -3965,7 +4040,7 @@ impl State {
         at: ScreenPoint,
     ) -> Vec<Effect> {
         let (dx, dy) = ((at.x - from.x) / self.camera.zoom, (at.y - from.y) / self.camera.zoom);
-        let next: BTreeMap<BoxId, Point> = boxes
+        let mut next: BTreeMap<BoxId, Point> = boxes
             .iter()
             .map(|(&id, &c)| {
                 #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
@@ -3973,6 +4048,7 @@ impl State {
                 (id, snap_centre(ScenePoint { x, y }))
             })
             .collect();
+        self.pull_to_guides(boxes, &mut next);
         self.gesture = Gesture::Dragging {
             from,
             boxes: boxes.clone(),
@@ -4166,6 +4242,7 @@ impl State {
                 effects
             }
             Gesture::Dragging { boxes, to, .. } => {
+                self.drop_guides();
                 self.dragged = None;
                 self.awaited_drag = None;
                 let earlier = self.unbuilt_moves();
@@ -5009,6 +5086,8 @@ impl State {
                     },
                 })]
             }
+            Command::Resolve(n) => self.resolve_finding(n),
+            Command::ResolveAll => self.resolve_every_finding(),
             Command::PickFinding(n) => {
                 let (Some(scene), Some(model)) = (self.scene(), self.model()) else { return Vec::new() };
                 let Some(finding) = self.findings().get(n) else { return Vec::new() };
@@ -5034,6 +5113,10 @@ impl State {
                 };
                 self.nav_query.clear();
                 Vec::new()
+            }
+            Command::SetSnapGuides(on) => {
+                self.ui.snap_guides_off = !on;
+                vec![Effect::SaveUiState(self.ui.clone())]
             }
             Command::Fullscreen => {
                 // P2-706: the view, camera and selection are untouched.
@@ -5699,6 +5782,7 @@ impl State {
                     let Some(parsed) = self.parsed() else { return Vec::new() };
                     self.cache.insert(view, Arc::clone(&build));
                     let old = self.shown.replace((Arc::clone(&parsed), build));
+                    self.refresh_resolutions();
                     // The moves of `unbuilt` are relative to the old build.
                     self.unbuilt = None;
                     // P2-731: a reload of the same view drops stale aids.

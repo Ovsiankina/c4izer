@@ -2456,6 +2456,7 @@ fn embedded_view(ui: &mut egui::Ui, model: &Model, build: &ViewBuild) -> Option<
         faded: Vec::new(),
         tooltip: None,
         written_thickness: crate::canvas::thickness_written(model, scene),
+        guides: &[],
     };
     crate::canvas::paint_page(&painter, &list, None);
     crate::canvas::paint(&painter, &crate::canvas::paint_items(&list));

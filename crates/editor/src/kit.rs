@@ -248,6 +248,12 @@ impl<'a> Button<'a> {
     }
 }
 
+/// The width `Button::new(text)` takes at rest (its natural width), so
+/// a row can keep room for it (P5-406).
+pub fn button_width(ui: &Ui, text: &str) -> f32 {
+    text_width(ui, text, &crate::theme::ui_font()) + 16.0
+}
+
 /// A tooltip naming the action, then its key as a key cap (behaviour
 /// change 14).
 pub fn tip(response: Response, action: &str, key: Option<&str>) -> Response {
