@@ -4031,6 +4031,39 @@ included; lines still cross a boundary square or at 45°.
   the length P4-600 and P4-601 measure is 0, and the four goldens
   (CLI-5) are unchanged.
 
+### 4.9 Phase 5
+
+Owner requests of 2026-11-23 (GitHub issues #1 to #11, OR-11 to OR-21):
+groups and tags from the editor, line colour, lint resolve, alignment
+guides, C-level folders in the view list, a tree fallback for the view
+map. One testable sentence each; ids are allocated per row:
+editor-groups P5-100.., editor-tags P5-200.., line-colour P5-300..,
+lint-resolve P5-400.., align-guides P5-500.., view-folders P5-600..,
+map-tree P5-700.., benchmarks P5-900..
+
+editor-groups
+
+editor-tags
+
+line-colour
+
+lint-resolve
+
+align-guides
+
+view-folders
+
+map-tree
+
+benchmarks
+
+- **P5-900** Every row of this phase has timing tests named
+  `perf_p5_*`, `#[ignore]`d and skipped in debug, each printing one
+  tab-separated `BENCH` line (id, feature, what, input, median, min,
+  max, runs, budget, in microseconds) and failing when its median is
+  over its budget; `docs/benchmarks.md` is the datasheet of the last
+  run.
+
 ## 5. Cross-cutting
 
 ### 5.1 Errors
