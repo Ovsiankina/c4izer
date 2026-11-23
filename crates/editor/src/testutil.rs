@@ -203,3 +203,85 @@ pub fn heavy(n: usize) -> String {
     s.push_str("        }\n    }\n}\n");
     s
 }
+
+/// A workspace of `n` views (benchmarks, P5-900): systems of three
+/// containers with a component each, every system a context view, a
+/// container view and three component views, every tenth system's third
+/// component view a dynamic view instead; cut at `n` views.
+pub fn many_views(n: usize) -> String {
+    use std::fmt::Write as _;
+    let systems = n.div_ceil(5).max(1);
+    let mut s = String::from("workspace {\n    model {\n");
+    for i in 0..systems {
+        let _ = writeln!(s, "        s{i} = softwareSystem \"System {i}\" {{");
+        for c in ["a", "b", "c"] {
+            let _ = writeln!(s, "            c{i}{c} = container \"Part {i}{c}\" {{\n                k{i}{c} = component \"Piece {i}{c}\"\n            }}");
+        }
+        s.push_str("        }\n");
+        let _ = writeln!(s, "        c{i}a -> c{i}b \"Calls\"\n        k{i}b -> k{i}c \"Uses\"");
+        let _ = writeln!(s, "        c{i}c -> c{}a \"Sends to\"", (i + 1) % systems);
+    }
+    s.push_str("    }\n    views {\n");
+    let mut count = 0;
+    'outer: for i in 0..systems {
+        let views = [
+            format!("systemContext s{i} \"ctx{i}\" {{\n            include *\n        }}"),
+            format!("container s{i} \"con{i}\" {{\n            include *\n        }}"),
+            format!("component c{i}a \"cmp{i}a\" {{\n            include *\n        }}"),
+            format!("component c{i}b \"cmp{i}b\" {{\n            include *\n        }}"),
+            if i % 10 == 9 {
+                format!("dynamic s{i} \"dyn{i}\" {{\n            c{i}a -> c{i}b \"Calls\"\n        }}")
+            } else {
+                format!("component c{i}c \"cmp{i}c\" {{\n            include *\n        }}")
+            },
+        ];
+        for v in views {
+            if count == n {
+                break 'outer;
+            }
+            let _ = writeln!(s, "        {v}");
+            count += 1;
+        }
+    }
+    s.push_str("    }\n}\n");
+    s
+}
+
+/// Times `body` (design section 9), labelled `[id, feature, what, input]`:
+/// one warm-up, then `runs` runs (at
+/// least 11), each looping `body` until a run takes over 1 ms and
+/// dividing; prints one `BENCH` line (microseconds) and fails when the
+/// median is over `budget_us`. Returns the median, microseconds.
+pub fn bench([id, feature, what, input]: [&str; 4], runs: usize, budget_us: f64, mut body: impl FnMut()) -> f64 {
+    use std::time::Instant;
+    body();
+    let mut inner = 1_u32;
+    loop {
+        let began = Instant::now();
+        for _ in 0..inner {
+            body();
+        }
+        if began.elapsed().as_secs_f64() > 1e-3 || inner >= 1 << 20 {
+            break;
+        }
+        inner *= 2;
+    }
+    let mut times: Vec<f64> = (0..runs.max(11))
+        .map(|_| {
+            let began = Instant::now();
+            for _ in 0..inner {
+                body();
+            }
+            began.elapsed().as_secs_f64() * 1e6 / f64::from(inner)
+        })
+        .collect();
+    times.sort_by(f64::total_cmp);
+    let median = times[times.len() / 2];
+    let (min, max) = (times[0], times[times.len() - 1]);
+    println!(
+        "BENCH\t{id}\t{feature}\t{what}\t{input}\t{median:.1}\t{min:.1}\t{max:.1}\t{}\t{budget_us:.0}",
+        times.len()
+    );
+    assert!(median <= budget_us, "{id} {what} on {input}: median {median:.1} us over the {budget_us:.0} us budget");
+    median
+}

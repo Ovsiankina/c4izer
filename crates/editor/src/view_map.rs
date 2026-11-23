@@ -92,7 +92,7 @@ pub struct ViewMap {
 // components C3; a deployment view on C2, as its boxes are container
 // instances; a filtered view on its base's row. Each keeps its kind in
 // the tag so it is never mistaken for the plain view of that level.
-fn level_of(model: &Model, spec: &ViewSpec) -> (u8, String) {
+pub(crate) fn level_of(model: &Model, spec: &ViewSpec) -> (u8, String) {
     let level = |n: u8| format!("C{n}");
     match spec.kind {
         ViewKind::SystemLandscape => (0, "Landscape".to_owned()),

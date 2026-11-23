@@ -428,7 +428,9 @@ fn p2_712_pointer_off_canvas_hovers_nothing() {
     sh.key(Key::J, NONE);
     assert_eq!(sh.writes.len(), 1, "j did not touch the line");
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")), "Down opened the next view");
+    // P5-605: the next view of the list as displayed, C1's `estate`
+    // before C2's `containers`.
+    assert_eq!(sh.s.view, Some(declared("estate")), "Down opened the next view");
     assert_eq!(sh.writes.len(), 1);
 }
 
@@ -446,7 +448,8 @@ fn p2_712_pointer_left_survives_a_rebuild() {
     sh.external(&text);
     assert_eq!(sh.s.hover, None);
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    // P5-605: the list as displayed, `estate` (C1) next.
+    assert_eq!(sh.s.view, Some(declared("estate")));
 }
 
 /// With one box selected, `l c r t m b h v` keep their viewer meaning
@@ -617,15 +620,17 @@ fn p2_713_previous_next_follow_view_list() {
     let mut sh = Shell::with(SHOP);
     assert_eq!(sh.s.view, Some(declared("context")));
     // Fix round: the SRS sentence as written, Up or Right previous, Down
-    // or Left next.
+    // or Left next. P5-605 (owner request 2026-11-23) supersedes the
+    // order: the list as displayed in its C-level folders, so C1's
+    // `context` and `estate` come before C2's `containers`.
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    assert_eq!(sh.s.view, Some(declared("estate")));
     sh.key(Key::ArrowLeft, NONE);
-    assert_eq!(sh.s.view, Some(declared("estate")), "Left opens the next view");
+    assert_eq!(sh.s.view, Some(declared("containers")), "Left opens the next view");
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("estate")), "stops at the end");
+    assert_eq!(sh.s.view, Some(declared("containers")), "stops at the end");
     sh.key(Key::ArrowRight, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")), "Right opens the previous view");
+    assert_eq!(sh.s.view, Some(declared("estate")), "Right opens the previous view");
     sh.key(Key::ArrowUp, NONE);
     assert_eq!(sh.s.view, Some(declared("context")));
     sh.cmd(Command::NextView);
@@ -634,7 +639,7 @@ fn p2_713_previous_next_follow_view_list() {
     sh.cmd(Command::PreviousView);
     assert_eq!(sh.s.view, Some(declared("context")), "stops at the start");
     sh.cmd(Command::NextView);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    assert_eq!(sh.s.view, Some(declared("estate")));
     assert!(sh.writes.is_empty());
 }
 
@@ -2035,7 +2040,10 @@ fn p2_737_rendered_view_list_one_row_per_view() {
         let sh = Shell::with(text);
         for width in [100.0_f32, 120.0, 220.0] {
             let drawn = crate::app::draw_view_list(&sh.s, width, 6);
-            assert_eq!(drawn.rows.len(), sh.s.views().len(), "{name} {width}");
+            // P5-602 supersedes "one row per view": one row per view plus
+            // one header per C-level folder.
+            assert_eq!(drawn.rows.len(), sh.s.views().len() + drawn.headers, "{name} {width}");
+            assert_eq!(drawn.headers, sh.s.view_folders().len(), "{name} {width}");
             for (line, height) in &drawn.rows {
                 assert!(*height <= drawn.row_height + 0.5, "{name} {width}: {line:?} is {height}px high");
             }

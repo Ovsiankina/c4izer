@@ -53,6 +53,9 @@ mod testutil;
 mod theme;
 #[cfg(test)]
 mod vertices_tests;
+mod view_folders;
+#[cfg(test)]
+mod view_folders_tests;
 mod view_map;
 #[cfg(test)]
 mod view_map_tests;

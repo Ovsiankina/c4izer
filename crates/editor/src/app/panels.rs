@@ -261,14 +261,12 @@ impl App {
             });
             return out;
         }
-        let views = self.state.views();
-        let count = format!("{:02}", views.len());
+        // P5-606: the folders `left_side` synced this frame, not a rebuild.
+        let folders = self.view_folders.folders();
+        let count = format!("{:02}", folders.iter().map(|f| f.views.len()).sum::<usize>());
         kit::section(ui, "views", "Views", Some((count, false)), true, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            egui::ScrollArea::vertical()
-                .id_salt("c4rizer-view-list")
-                .auto_shrink([false, true])
-                .show(ui, |ui| super::view_list(ui, &self.state, &mut out));
+            super::view_list(ui, &self.state, &folders, self.view_folders.key_w, &mut out);
         });
         out
     }
@@ -702,9 +700,10 @@ fn export_section(ui: &mut egui::Ui, out: &mut Vec<Event>) {
 
 /// One row of the view list: the key (mono, `accent` when current), then
 /// the title cut to the room left; the full title and kind as tooltip
-/// (EDIT-8, P2-737, behaviour change 11). Returns the row's text and
-/// response.
-pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w: f32) -> (String, egui::Response) {
+/// (EDIT-8, P2-737, behaviour change 11). Indented `indent` px under its
+/// folder's header (P5-602); key and title never pass the row's right
+/// edge. Returns the row's text and response.
+pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w: f32, indent: f32) -> (String, egui::Response) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_ROW), Sense::click());
     let p = ui.painter();
@@ -730,25 +729,95 @@ pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w
         INK_2
     };
     let code = theme::code_font();
-    let x0 = rect.min.x + 8.0;
-    let key_text = kit::elide(ui, &key, &code, key_w);
+    let x0 = rect.min.x + 8.0 + indent;
+    // P5-602: a panel narrower than the key column cuts the key, never
+    // the panel's edge.
+    let key_w = key_w.min((rect.max.x - 8.0 - x0).max(0.0));
+    let key_text = fit(ui, &key, &code, key_w);
+    let p = ui.painter();
     p.text(egui::pos2(x0, rect.center().y), Align2::LEFT_CENTER, &key_text, code, key_ink);
     let (_, title) = view_list_line(entry, entry.label.chars().count());
     let font = theme::ui_font();
     let room = (rect.max.x - 8.0 - (x0 + key_w + 8.0)).max(0.0);
-    let shown = if title == key { String::new() } else { kit::elide(ui, &title, &font, room) };
+    let shown = if title == key { String::new() } else { fit(ui, &title, &font, room) };
     p.text(egui::pos2(x0 + key_w + 8.0, rect.center().y), Align2::LEFT_CENTER, &shown, font, title_ink);
     let tip = format!("{title}\n{}", view_label(entry));
     (format!("{key_text}  {shown}"), response.on_hover_text(tip))
 }
 
-/// The width of the key column: the widest key, at most 104 px.
-pub(super) fn key_column(ui: &egui::Ui, state: &State) -> f32 {
+/// `kit::elide` of `text` to `room` px, or nothing when not even the
+/// ellipsis fits (P5-602: no text past a row's edge).
+fn fit(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> String {
+    let cut = kit::elide(ui, text, font, room);
+    let width = ui.fonts_mut(|f| f.layout_no_wrap(cut.clone(), font.clone(), INK).size().x);
+    if width <= room { cut } else { String::new() }
+}
+
+/// The width of the key column: the widest view or folder key of
+/// `folders`, at most 104 px (P5-602).
+pub(super) fn key_column(ui: &egui::Ui, folders: &[crate::view_folders::Folder]) -> f32 {
     let code = theme::code_font();
-    state
-        .views()
+    let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, code.clone(), INK).size().x);
+    folders
         .iter()
-        .map(|v| ui.fonts_mut(|f| f.layout_no_wrap(v.view.key(), code.clone(), INK).size().x))
+        .flat_map(|f| std::iter::once(f.folder.key().to_owned()).chain(f.views.iter().map(|v| v.view.key())))
+        .map(width)
         .fold(0.0_f32, f32::max)
         .min(104.0)
+}
+
+/// Room for the fold dot (P5-603) beside a header's count, px.
+const DOT_ROOM: f32 = 10.0;
+/// The recap card's widest line, px (P5-607).
+const RECAP_W: f32 = 260.0;
+
+/// One folder header of the view list (P5-602, P5-603, P5-607): a
+/// chevron, the folder key in the key column's font and colour, the
+/// label, the view count right-aligned in `ink-3`; folded and holding the
+/// view on screen, an `accent` dot left of the count. Hovering shows the
+/// recap card. Returns the row's text (`▾`/`▸`, key, label, count, `•`
+/// for the dot) and response; the caller folds on a click (pointer, or
+/// Enter or Space while focused).
+pub(super) fn folder_header(ui: &mut egui::Ui, group: &crate::view_folders::Folder, folded: bool, key_w: f32) -> (String, egui::Response) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_ROW), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(2), BG_RAISED);
+    }
+    let cy = rect.center().y;
+    let x0 = rect.min.x + 8.0;
+    let chevron = Rect::from_center_size(egui::pos2(x0 + theme::SIZE_ICON / 2.0, cy), Vec2::splat(theme::SIZE_ICON));
+    icons::paint(ui.painter(), if folded { Icon::ChevronRight } else { Icon::ChevronDown }, chevron, INK_3);
+    let code = theme::code_font();
+    let count = format!("{:02}", group.views.len());
+    let count_w = ui.fonts_mut(|f| f.layout_no_wrap(count.clone(), code.clone(), INK_3).size().x);
+    let count_x = rect.max.x - 8.0;
+    ui.painter().text(egui::pos2(count_x, cy), Align2::RIGHT_CENTER, &count, code.clone(), INK_3);
+    let dot = folded && group.holds_current();
+    let mut right = count_x - count_w - 6.0;
+    if dot {
+        ui.painter().circle_filled(egui::pos2(right - DOT_ROOM / 2.0, cy), 3.0, ACCENT);
+        right -= DOT_ROOM;
+    }
+    let key_x = x0 + theme::SIZE_ICON;
+    let key_w = key_w.min((right - key_x).max(0.0));
+    let key = fit(ui, group.folder.key(), &code, key_w);
+    let key_rect = ui.painter().text(egui::pos2(key_x, cy), Align2::LEFT_CENTER, &key, code, INK);
+    let font = theme::ui_font();
+    // DECISION: the label follows the short folder key rather than the
+    // key column, so it keeps its whole word in a narrow panel.
+    let label_x = key_rect.max.x + 8.0;
+    let label = fit(ui, group.folder.label(), &font, (right - label_x).max(0.0));
+    ui.painter().text(egui::pos2(label_x, cy), Align2::LEFT_CENTER, &label, font, INK_2);
+    kit::focus_ring(ui, &response);
+    let which = group.folder;
+    let response = response.on_hover_ui(move |ui| {
+        ui.set_max_width(RECAP_W);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.label(egui::RichText::new(which.recap_title()).font(theme::strong_font()).color(INK));
+        ui.label(egui::RichText::new(which.recap()).color(INK_2));
+    });
+    let chev = if folded { '▸' } else { '▾' };
+    let mark = if dot { " •" } else { "" };
+    (format!("{chev} {key}  {label}  {count}{mark}"), response)
 }
