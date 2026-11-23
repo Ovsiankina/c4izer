@@ -159,18 +159,33 @@ impl Keep {
 /// are ignored. Serves CORE-22, CORE-23, CORE-25, CORE-29, EDIT-4,
 /// EDIT-20, EDIT-25, P2-26, P2-100..P2-114.
 pub fn place(plan: &ViewPlan, keep: &Keep) -> Vec<Point> {
+    // A flag never set never stops it: the `Err` arm cannot happen.
+    place_or_stop(plan, keep, &AtomicBool::new(false)).unwrap_or_default()
+}
+
+/// `place`, reading `stop` while it searches: every `STOP_EVERY` moves
+/// of a layout search, between candidates and in each candidate's routed
+/// score, so a superseded full build gives up its placement promptly
+/// (EDIT-25). Never stopped, it gives what `place` gives.
+// DECISION: a crate-private sibling of `place` (its pub signature stays):
+// the pipeline's builds call it with their stop flag; auto-placement of a
+// view without `at` lines took up to 0.9 s with no read of the flag.
+pub(crate) fn place_or_stop(plan: &ViewPlan, keep: &Keep, stop: &AtomicBool) -> Result<Vec<Point>, route::Stopped> {
     let kept = kept_centres(plan, keep);
     if kept.iter().all(Option::is_some) {
-        return kept.into_iter().flatten().collect();
+        return Ok(kept.into_iter().flatten().collect());
     }
     if kept.iter().all(Option::is_none) {
-        return layered(plan);
+        return layered(plan, stop);
     }
     let mut layout = Layout::new(plan, &kept);
     layout.seed();
-    layout.search();
-    layout.finish()
+    layout.search(stop)?;
+    Ok(layout.finish())
 }
+
+/// Moves of a layout search between two reads of the stop flag.
+const STOP_EVERY: i64 = 1024;
 
 // Layered placement (SRS 4.6 P2-26, P2-100..P2-114), used when no box of
 // the view is kept. Stages: ranks (rows), a seed order per row, the
@@ -289,7 +304,7 @@ const SCORE_CROSSING_PX: i64 = 10_000;
 const SCORE_OVER_LINE_PX: i64 = 3_000;
 
 /// Centres of every box of a plan with no kept box (P2-100..P2-114).
-fn layered(plan: &ViewPlan) -> Vec<Point> {
+fn layered(plan: &ViewPlan, stop: &AtomicBool) -> Result<Vec<Point>, route::Stopped> {
     let rank = ranks(plan);
     let mut sunk = rank.clone();
     lower_outside_sinks(plan, &mut sunk);
@@ -304,12 +319,9 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
     }
     base.ranked.top_row = i32::from(plan.boxes.iter().any(|b| b.kind == ElementKind::Person));
     base.ranked.pinned = outward_facing(plan);
-    let never = AtomicBool::new(false);
-    let mut best: Option<((usize, usize, i64), Vec<Point>)> = None;
-    for &(fam, k, extra_cols) in &CANDIDATES {
-        if fam.sink && sunk == rank {
-            continue;
-        }
+    let candidates: Vec<(Family, u64, i32)> = CANDIDATES.iter().copied().filter(|(fam, _, _)| !(fam.sink && sunk == rank)).collect();
+    // One candidate: its layout and how well it routes.
+    let one = |&(fam, k, extra_cols): &(Family, u64, i32)| -> Result<Scored, route::Stopped> {
         let mut l = base.clone();
         l.tune.cross = fam.cross;
         l.tune.through = fam.through;
@@ -321,21 +333,58 @@ fn layered(plan: &ViewPlan) -> Vec<Point> {
             fam.spare_rows,
             fam.spare_cols + extra_cols,
         );
-        l.search();
+        l.search(stop)?;
         let centres = l.finish_layered();
-        let score = routed_score(plan, &centres, &never);
+        let score = routed_score(plan, &centres, stop)?;
+        Ok((score, centres))
+    };
+    // DECISION: the candidates are independent (each its own layout,
+    // seed and probe route), so they run on up to `available_parallelism`
+    // scoped threads and the winner is chosen in candidate order exactly
+    // as the sequential loop chose it (the first strictly lower score):
+    // the same centres, in a fraction of the time (P2-111).
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get).min(candidates.len());
+    let scored: Vec<Result<Scored, route::Stopped>> = if threads > 1 {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let mut done: Vec<(usize, Result<Scored, route::Stopped>)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut out = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(c) = candidates.get(k) else { break };
+                            out.push((k, one(c)));
+                        }
+                        out
+                    })
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        });
+        done.sort_by_key(|(k, _)| *k);
+        done.into_iter().map(|(_, r)| r).collect()
+    } else {
+        candidates.iter().map(one).collect()
+    };
+    let mut best: Option<((usize, usize, i64), Vec<Point>)> = None;
+    for r in scored {
+        let (score, centres) = r?;
         if best.as_ref().is_none_or(|(bs, _)| score < *bs) {
             best = Some((score, centres));
         }
     }
-    best.map(|(_, c)| c).unwrap_or_default()
+    Ok(best.map(|(_, c)| c).unwrap_or_default())
 }
+
+/// A candidate's `routed_score` and centres.
+type Scored = ((usize, usize, i64), Vec<Point>);
 
 /// How well candidate centres route with `PROBE`, lower is better:
 /// unroutable lines, then labels with no room (P2-107), then one weighted
 /// sum of routed crossings, labels over lines and total line length in px
 /// (P2-108).
-fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usize, usize, i64) {
+fn routed_score(plan: &ViewPlan, centres: &[Point], stop: &AtomicBool) -> Result<(usize, usize, i64), route::Stopped> {
     // DECISION: candidates are scored as if the view had no bundles
     // (P4-402): grouping lines as a bus must not move the boxes, so a view
     // keeps the layout it had before its lines were bundled.
@@ -348,9 +397,7 @@ fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usiz
         unbundled = p;
         &unbundled
     };
-    let Ok(routes) = route::route(plan, centres, &PROBE, never) else {
-        return (usize::MAX, usize::MAX, i64::MAX);
-    };
+    let routes = route::route(plan, centres, &PROBE, stop)?;
     let labels = label::place_labels(plan, &routes);
     let mut length = 0_i64;
     for line in routes.lines.iter().flatten() {
@@ -369,7 +416,7 @@ fn routed_score(plan: &ViewPlan, centres: &[Point], never: &AtomicBool) -> (usiz
     let weighted = SCORE_CROSSING_PX * i64::from(routes.crossings)
         + SCORE_OVER_LINE_PX * over
         + length;
-    (routes.unroutable().len(), labels.no_room().len(), weighted)
+    Ok((routes.unroutable().len(), labels.no_room().len(), weighted))
 }
 
 /// Moves every box outside a boundary that has no edge to a non-person
@@ -1038,7 +1085,7 @@ impl<'a> Layout<'a> {
 
     /// Threshold-accepting local search over slot moves and swaps,
     /// keeping the best layout seen.
-    fn search(&mut self) {
+    fn search(&mut self, stop: &AtomicBool) -> Result<(), route::Stopped> {
         let autos: Vec<usize> = (0..self.pos.len()).filter(|&b| !self.fixed[b]).collect();
         let slots = self.slots();
         let moves = (self.tune.moves_per_box * autos.len()).min(MAX_MOVES);
@@ -1047,6 +1094,9 @@ impl<'a> Layout<'a> {
         let mut best = (cur, self.slot_of.clone());
         let total = i64::try_from(moves).unwrap_or(i64::MAX);
         for step in 0..total {
+            if step % STOP_EVERY == 0 && stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(route::Stopped);
+            }
             let threshold = self.tune.threshold * (total - step) / total;
             let b = autos[rng.below(autos.len())];
             let Some(from) = self.slot_of[b] else {
@@ -1093,6 +1143,7 @@ impl<'a> Layout<'a> {
                 self.put(b, s);
             }
         }
+        Ok(())
     }
 
     /// Layered mode: the rows box `b` may take without breaking the rank
@@ -2089,6 +2140,20 @@ mod tests {
         assert_eq!(centres.len(), p.boxes.len());
         for (i, a) in centres.iter().enumerate() {
             assert!(!centres[i + 1..].contains(a), "two boxes share {a:?}");
+        }
+    }
+
+    #[test]
+    fn edit_25_stopped_placement_yields_nothing() {
+        // A flag already set: a placement that has to search (no box
+        // kept, or some) gives up with `Stopped`; never set, it gives
+        // what `place` gives.
+        let set = AtomicBool::new(true);
+        let never = AtomicBool::new(false);
+        for extra in ["", "            at api 600 500\n"] {
+            let (_, p) = small(extra);
+            assert_eq!(place_or_stop(&p, &Keep::default(), &set), Err(route::Stopped), "{extra:?}");
+            assert_eq!(place_or_stop(&p, &Keep::default(), &never), Ok(place(&p, &Keep::default())), "{extra:?}");
         }
     }
 

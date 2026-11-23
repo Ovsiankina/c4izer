@@ -214,12 +214,20 @@ fn find_sites(written: &[(EdgeId, EdgeId)], lines: &[SceneLine], group: &dyn Fn(
         }
     };
     let mut out = Vec::new();
+    // DECISION: lines whose boxes are apart have no crossing: skipped
+    // (same sites, CORE-24).
+    let boxes: Vec<Option<(Point, Point)>> = lines.iter().map(|l| (!l.points.is_empty()).then(|| crate::geom::bounds_of(&l.points))).collect();
     for i in 0..lines.len() {
         if !lines[i].routed {
             continue;
         }
         for j in i + 1..lines.len() {
             if !lines[j].routed {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (boxes[i], boxes[j])
+                && !crate::geom::boxes_meet(x, y)
+            {
                 continue;
             }
             let (a, b) = (&lines[i], &lines[j]);
@@ -420,6 +428,8 @@ struct Obstacles {
     /// Segments of chevrons, with their line.
     chevrons: Vec<(usize, V, V)>,
     dots: Vec<(V, f64)>,
+    /// Per line, the box of its points.
+    line_boxes: Vec<Bbox>,
 }
 
 impl Obstacles {
@@ -450,7 +460,11 @@ impl Obstacles {
                 Tip::Dot { at, radius_px } => dots.push((v(at), f64::from(radius_px))),
             }
         }
-        Obstacles { rects, marks, chevrons, dots }
+        let line_boxes = lines
+            .iter()
+            .map(|l| Bbox::of_segments(&l.points.iter().map(|&p| (v(p), v(p))).collect::<Vec<_>>()))
+            .collect();
+        Obstacles { rects, marks, chevrons, dots, line_boxes }
     }
 }
 
@@ -479,11 +493,28 @@ fn legal(
     let mut all = marks.clone();
     all.push(core);
     let clear = f64::from(CLEAR_PX) + 1.0;
+    // Every mark lies in `zone`: an obstacle whose box keeps `clear` (and
+    // a margin) away from it is clear of every mark, as the full test
+    // would find, so the full test runs only on the near ones.
+    // DECISION: a box cut before the exact distance tests, not a spatial
+    // index: every candidate place tested every segment, box, mark and dot
+    // of the view with four distance tests each (23-45 ms a scene with
+    // 150-230 crossings, measured); the cut leaves the answer and so every
+    // byte of the scene as it was, and takes it to about 2.7 ms.
+    let zone = Bbox::of_segments(&all);
     // The passing lines: the segments crossed keep clear of the marks
     // (a hop's top crosses them), their other segments of the gap too.
+    // DECISION: a line whose box is apart from `zone` has every segment
+    // apart too: skipped whole (the same answer, CORE-24).
     for &(p, _) in passing {
+        if zone.apart(&obstacles.line_boxes[p], clear) {
+            continue;
+        }
         for (k, w) in lines[p].points.windows(2).enumerate() {
             let s = (v(w[0]), v(w[1]));
+            if zone.apart(&Bbox::of_segment(s), clear) {
+                continue;
+            }
             let crossed = passing.contains(&(p, k));
             let hit = all.iter().enumerate().any(|(n, &m)| {
                 let top = style == CrossingStyle::Jump && n == 1;
@@ -497,22 +528,31 @@ fn legal(
     }
     // Every other line keeps clear.
     for (i, l) in lines.iter().enumerate() {
-        if i == carrier || passing.iter().any(|&(p, _)| p == i) {
+        if i == carrier || passing.iter().any(|&(p, _)| p == i) || zone.apart(&obstacles.line_boxes[i], clear) {
             continue;
         }
         for w in l.points.windows(2) {
             let s = (v(w[0]), v(w[1]));
+            if zone.apart(&Bbox::of_segment(s), clear) {
+                continue;
+            }
             if all.iter().any(|&m| seg_seg(m, s) < clear) {
                 return false;
             }
         }
     }
     for r in &obstacles.rects {
+        if zone.apart(&Bbox::of_rect(r), clear) {
+            continue;
+        }
         if all.iter().any(|&m| seg_rect(m, r) < clear) {
             return false;
         }
     }
     for &(_, p, q) in &obstacles.marks {
+        if zone.apart(&Bbox::of_segment((p, q)), clear) {
+            continue;
+        }
         if all.iter().any(|&m| seg_seg(m, (p, q)) < clear) {
             return false;
         }
@@ -523,16 +563,75 @@ fn legal(
         if i == carrier || passing.iter().any(|&(l, _)| l == i) {
             continue;
         }
+        if zone.apart(&Bbox::of_segment((p, q)), clear) {
+            continue;
+        }
         if all.iter().any(|&m| seg_seg(m, (p, q)) < clear) {
             return false;
         }
     }
     for &(c, r) in &obstacles.dots {
+        if zone.apart(&Bbox::of_segment((c, c)), r + clear) {
+            continue;
+        }
         if all.iter().any(|&m| seg_point(m, c) < r + clear) {
             return false;
         }
     }
     true
+}
+
+/// An axis-aligned box round some px geometry, for cheap distance cuts.
+#[derive(Debug, Clone, Copy)]
+struct Bbox {
+    min: V,
+    max: V,
+}
+
+/// The margin, px, by which `Bbox::apart` overshoots its distance: far
+/// more than any rounding in `seg_seg`, `seg_rect` and `seg_point`, so a
+/// pair it calls apart is one those tests also find at `d` or more.
+const APART_MARGIN_PX: f64 = 0.5;
+
+impl Bbox {
+    fn of_segment(s: (V, V)) -> Bbox {
+        Bbox {
+            min: (s.0.0.min(s.1.0), s.0.1.min(s.1.1)),
+            max: (s.0.0.max(s.1.0), s.0.1.max(s.1.1)),
+        }
+    }
+
+    fn of_segments(all: &[(V, V)]) -> Bbox {
+        let mut b = Bbox {
+            min: (f64::INFINITY, f64::INFINITY),
+            max: (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        };
+        for &s in all {
+            b = b.union(&Bbox::of_segment(s));
+        }
+        b
+    }
+
+    fn of_rect(r: &Rect) -> Bbox {
+        Bbox {
+            min: (f64::from(r.min.x), f64::from(r.min.y)),
+            max: (f64::from(r.max.x), f64::from(r.max.y)),
+        }
+    }
+
+    fn union(&self, o: &Bbox) -> Bbox {
+        Bbox {
+            min: (self.min.0.min(o.min.0), self.min.1.min(o.min.1)),
+            max: (self.max.0.max(o.max.0), self.max.1.max(o.max.1)),
+        }
+    }
+
+    /// True when everything in `self` is at least `d` (plus the margin)
+    /// from everything in `o`: the boxes are that far apart on one axis.
+    fn apart(&self, o: &Bbox, d: f64) -> bool {
+        let gap = (o.min.0 - self.max.0).max(self.min.0 - o.max.0).max(o.min.1 - self.max.1).max(self.min.1 - o.max.1);
+        gap >= d + APART_MARGIN_PX
+    }
 }
 
 /// Least distance, px, from a slid chevron's point to either end of its
@@ -567,9 +666,14 @@ fn clear_chevrons(style: CrossingStyle, around: &Around<'_>, lines: &mut [SceneL
         return;
     }
     let clear = CHEVRON_LABEL_PX;
-    let blocked = |pts: &[Point; 3]| {
+    let boxes: Vec<Bbox> = zones.iter().map(|&z| Bbox::of_segment(z)).collect();
+    // A chevron slid along its segment stays within its line's box grown
+    // by the chevron's reach from its point: the zones apart from that
+    // are clear of every place it may take, and are left out per line.
+    let blocked = |near: &[usize], pts: &[Point; 3]| {
         let segs = [(v(pts[0]), v(pts[1])), (v(pts[1]), v(pts[2]))];
-        segs.iter().any(|&s| zones.iter().any(|&z| seg_seg(s, z) < clear))
+        let b = Bbox::of_segments(&segs);
+        near.iter().any(|&k| !boxes[k].apart(&b, clear) && segs.iter().any(|&s| seg_seg(s, zones[k]) < clear))
     };
     let near_label = |pts: &[Point; 3]| {
         around.labels.iter().any(|l| pts.iter().any(|&p| seg_rect((v(p), v(p)), &l.rect) < CHEVRON_LABEL_PX))
@@ -580,9 +684,28 @@ fn clear_chevrons(style: CrossingStyle, around: &Around<'_>, lines: &mut [SceneL
             continue;
         }
         let route = l.points.clone();
+        let reach = l
+            .chevrons
+            .iter()
+            .flat_map(|ch| ch.points.iter().map(move |p| (p.x - ch.at.x).abs().max((p.y - ch.at.y).abs())))
+            .max()
+            .unwrap_or(0);
+        // The route's box, and the chevrons where they stand now (one off
+        // the route would be tested in place before it is dropped).
+        let route_box = route
+            .windows(2)
+            .map(|w| Bbox::of_segment((v(w[0]), v(w[1]))))
+            .chain(l.chevrons.iter().flat_map(|ch| ch.points.iter().map(|&p| Bbox::of_segment((v(p), v(p))))))
+            .fold(Bbox::of_segment((v(route[0]), v(route[0]))), |b, o| b.union(&o));
+        let reach = f64::from(reach);
+        let grown = Bbox {
+            min: (route_box.min.0 - reach, route_box.min.1 - reach),
+            max: (route_box.max.0 + reach, route_box.max.1 + reach),
+        };
+        let near: Vec<usize> = (0..zones.len()).filter(|&k| !boxes[k].apart(&grown, clear)).collect();
         let mut kept = Vec::with_capacity(l.chevrons.len());
         for ch in std::mem::take(&mut l.chevrons) {
-            if !blocked(&ch.points) {
+            if !blocked(&near, &ch.points) {
                 kept.push(ch);
                 continue;
             }
@@ -600,7 +723,7 @@ fn clear_chevrons(style: CrossingStyle, around: &Around<'_>, lines: &mut [SceneL
                     return None;
                 }
                 let pts = ch.points.map(|p| Point::new(p.x + sx * k, p.y + sy * k));
-                (!blocked(&pts) && !near_label(&pts)).then_some((k, pts))
+                (!blocked(&near, &pts) && !near_label(&pts)).then_some((k, pts))
             });
             if let Some((k, pts)) = moved {
                 let mut ch = ch;
@@ -907,6 +1030,50 @@ mod tests {
         ];
         let b = run(&mut lines);
         assert!(!b[0].drawn, "{b:?}");
+    }
+
+    #[test]
+    fn p4_516_box_cut_never_skips_a_near_obstacle() {
+        // `Bbox::apart` only skips what the full tests also find clear:
+        // over many segments, rects and points, whole px and on the
+        // diagonals as the scene draws them, at and around the distances
+        // `legal` and `clear_chevrons` use, a pair called apart is never
+        // nearer than the distance by `seg_seg`, `seg_rect` or `seg_point`.
+        let mut x = 0x5EED_u64;
+        let mut next = |n: i32| {
+            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            i32::try_from((z ^ (z >> 31)) % u64::try_from(2 * n + 1).expect("n")).expect("fits") - n
+        };
+        let mut checked = 0;
+        for _ in 0..20_000 {
+            let a = (f64::from(next(40)), f64::from(next(40)));
+            let k = f64::from(next(12));
+            let m = match next(2) {
+                -1 => (a, (a.0 + k, a.1)),
+                0 => (a, (a.0, a.1 + k)),
+                _ => (a, (a.0 + k, a.1 + k)),
+            };
+            let b = (f64::from(next(40)), f64::from(next(40)));
+            let s = (b, (b.0 + f64::from(next(15)), b.1 + f64::from(next(15))));
+            let r = Rect::from_corners(Point::new(next(40), next(40)), Point::new(next(40), next(40)));
+            for d in [f64::from(CLEAR_PX) + 1.0, CHEVRON_LABEL_PX, 4.5, 11.0] {
+                let zone = Bbox::of_segments(&[m]);
+                if zone.apart(&Bbox::of_segment(s), d) {
+                    assert!(seg_seg(m, s) >= d, "{m:?} {s:?} {d}");
+                    checked += 1;
+                }
+                if zone.apart(&Bbox::of_rect(&r), d) {
+                    assert!(seg_rect(m, &r) >= d, "{m:?} {r:?} {d}");
+                }
+                if zone.apart(&Bbox::of_segment((b, b)), d) {
+                    assert!(seg_point(m, b) >= d, "{m:?} {b:?} {d}");
+                }
+            }
+        }
+        assert!(checked > 10_000, "enough pairs called apart ({checked})");
     }
 
     #[test]

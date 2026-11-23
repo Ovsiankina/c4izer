@@ -927,9 +927,17 @@ impl Scene {
     pub fn crossing_pairs(&self) -> Vec<(EdgeId, EdgeId, u32)> {
         let mut routed: Vec<&SceneLine> = self.lines.iter().filter(|l| l.routed).collect();
         routed.sort_by_key(|l| l.edge);
+        // DECISION: lines whose boxes are apart cross nowhere: skipped
+        // before `crossings` (same pairs, CORE-24).
+        let boxes: Vec<Option<(Point, Point)>> = routed.iter().map(|l| (!l.points.is_empty()).then(|| crate::geom::bounds_of(&l.points))).collect();
         let mut out = Vec::new();
         for (i, a) in routed.iter().enumerate() {
-            for b in &routed[i + 1..] {
+            for (j, b) in routed.iter().enumerate().skip(i + 1) {
+                if let (Some(x), Some(y)) = (boxes[i], boxes[j])
+                    && !crate::geom::boxes_meet(x, y)
+                {
+                    continue;
+                }
                 // The rule of `Routes::crossings`: a joined line's last
                 // segment does not count against its own trunk.
                 let n = if a.joins == Some(b.edge) {

@@ -347,19 +347,30 @@ pub fn build_spec(
 }
 
 /// Labels, scene and lint report of a routed plan: the stages after
-/// routing, shared by full builds and the drag preview.
-fn finish(model: &Model, plan: ViewPlan, routes: Routes) -> ViewBuild {
+/// routing, shared by full builds and the drag previews, with `stop` read
+/// before each, so a superseded build frees the worker after routing
+/// instead of placing labels, building and linting a scene nobody will
+/// see (EDIT-25). A run never stopped gives the same build as before the
+/// reads existed.
+// DECISION: full builds read it too, not only the previews: the editor's
+// worker stops a running full build when a drag arrives and re-runs it
+// later, so its stages after routing are as stale as a preview's.
+fn finish_or_stop(model: &Model, plan: ViewPlan, routes: Routes, stop: &AtomicBool) -> Result<ViewBuild, Stopped> {
+    let stopped = || if stop.load(Ordering::Relaxed) { Err(Stopped) } else { Ok(()) };
+    stopped()?;
     let words = label::Words::of(&model.terminology);
     let labels = label::place_labels_with(&plan, &routes, &words);
+    stopped()?;
     let scene = scene::build_with(&plan, &routes, &labels, &words);
+    stopped()?;
     let report = lint::lint(model, &scene);
-    ViewBuild {
+    Ok(ViewBuild {
         plan,
         routes,
         labels,
         scene,
         report,
-    }
+    })
 }
 
 /// Builds every drawable view of `model.views` in declaration order, each
@@ -461,10 +472,10 @@ fn build_in(
     stop: &AtomicBool,
 ) -> Result<ViewBuild, Stopped> {
     let plan = view::plan_in(model, view, mode);
-    let shared = shared_layout(model, view, keep, mode);
-    let centres = place::place(&plan, shared.as_ref().unwrap_or(keep));
+    let shared = shared_layout(model, view, keep, mode, stop)?;
+    let centres = place::place_or_stop(&plan, shared.as_ref().unwrap_or(keep), stop)?;
     let routes = route::route(&plan, &centres, &RouteConfig::DEFAULT, stop)?;
-    Ok(finish(model, plan, routes))
+    finish_or_stop(model, plan, routes, stop)
 }
 
 /// For a `filtered` view, the `Keep` that puts every box where its base
@@ -475,16 +486,18 @@ fn build_in(
 // reading taken (B landscape-filtered 1): it takes the centre the base
 // view's build gives it with nothing kept (`Keep::default()`, as `render`
 // builds the base), so the filtered view and the base view agree.
-fn shared_layout(model: &Model, view: &ViewSpec, keep: &Keep, mode: Mode) -> Option<Keep> {
-    let base = model.base_view(view)?;
+fn shared_layout(model: &Model, view: &ViewSpec, keep: &Keep, mode: Mode, stop: &AtomicBool) -> Result<Option<Keep>, Stopped> {
+    let Some(base) = model.base_view(view) else {
+        return Ok(None);
+    };
     let base_plan = view::plan_in(model, base, mode);
-    let centres = place::place(&base_plan, &Keep::default());
+    let centres = place::place_or_stop(&base_plan, &Keep::default(), stop)?;
     let mut shared = Keep::default();
     for b in &base_plan.boxes {
         shared.previous.entry(b.element).or_insert(centres[b.id.0 as usize]);
     }
     shared.moved.clone_from(&keep.moved);
-    Some(shared)
+    Ok(Some(shared))
 }
 
 /// True when `view` is drawn: its kind is drawable and, for a filtered
@@ -563,7 +576,7 @@ pub fn rebuild_after_move(
         return Ok(previous.clone());
     }
     let routes = route::reroute(&previous.plan, &centres, &previous.routes, config, stop)?;
-    Ok(finish(model, previous.plan.clone(), routes))
+    finish_or_stop(model, previous.plan.clone(), routes, stop)
 }
 
 /// The vertex drag preview (P3-311, EDIT-25): `previous` with the
@@ -606,7 +619,7 @@ pub fn rebuild_with_vertices(
     // cost stays one line's (CORE-24); the build after release routes the
     // whole view again.
     let routes = route::reroute_with(&plan, &previous.routes.centres, &previous.routes, &[i], *config, stop)?;
-    Ok(finish(model, plan, routes))
+    finish_or_stop(model, plan, routes, stop)
 }
 
 /// The line-end drag preview (P4-214, EDIT-25): `previous` with the
@@ -655,7 +668,7 @@ pub fn rebuild_with_anchors(
     // DECISION: only the dragged line is re-routed, the others kept, as
     // for the vertex preview (CORE-24).
     let routes = route::reroute_with(&plan, &previous.routes.centres, &previous.routes, &[i], *config, stop)?;
-    Ok(finish(model, plan, routes))
+    finish_or_stop(model, plan, routes, stop)
 }
 
 /// The `Keep` for building the same view from `new_model` after a
@@ -1149,6 +1162,19 @@ mod tests {
         );
         assert!(next.routes.line(c_to_d).is_some());
         assert_ne!(next.scene, prev.scene);
+    }
+
+    #[test]
+    fn edit_25_stopped_build_skips_labels_scene_and_lint() {
+        // A flag set once routing is done: a preview or full build yields
+        // nothing and does not place labels, build the scene or lint it
+        // (EDIT-25: the worker is free for the newer request at once).
+        // Never set: the build `build_view` gave.
+        let m = model(PLACED);
+        let prev = build(&m, "ctx");
+        let set = AtomicBool::new(true);
+        assert_eq!(finish_or_stop(&m, prev.plan.clone(), prev.routes.clone(), &set), Err(Stopped));
+        assert_eq!(finish_or_stop(&m, prev.plan.clone(), prev.routes.clone(), &go()), Ok(prev));
     }
 
     #[test]
