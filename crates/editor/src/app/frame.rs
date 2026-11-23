@@ -10,6 +10,7 @@ use super::{App, crumb_label, problem_text, view_label};
 use crate::icons::{self, Icon};
 use crate::kit::{self, Button, Look, Segment};
 use crate::state::{Command, Event, MenuEntry, NavLevel, Overlay, Problem};
+use crate::worker::ExportFormat;
 use crate::theme::{
     self, ACCENT, BG_CANVAS, BG_OVERLAY, BG_RAISED, DANGER, INK, INK_2, INK_3, INK_DISABLED, LINE, LINE_2, OK, PAD,
     SIZE_BAR, SIZE_CONTROL, SIZE_ROW, WARN,
@@ -49,7 +50,7 @@ fn cell<R>(ui: &mut egui::Ui, bar: Rect, rtl: bool, add: impl FnOnce(&mut egui::
 }
 
 impl App {
-    /// The top bar: Views toggle · file · Back, Forward · breadcrumb ·
+    /// The top bar: Views toggle · File menu · file · Back, Forward · breadcrumb ·
     /// Undo, Redo · `Diagram / Explore` · Details toggle.
     pub(super) fn top_bar(&self, ui: &mut egui::Ui, narrow: bool, mut bar: BarState, events: &mut Vec<Event>) -> BarState {
         let rect = ui.max_rect();
@@ -61,6 +62,7 @@ impl App {
                     bar.left = !bar.left;
                 }
             });
+            cell(ui, rect, false, |ui| file_menu(ui, &self.state, events));
             cell(ui, rect, false, |ui| {
                 let name = self
                     .state
@@ -445,31 +447,7 @@ impl App {
             kit_rule(&mut ui, LINE_2);
         }
         for path in recent {
-            let (r, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
-            if response.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::ZERO, BG_RAISED);
-            }
-            let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            // DECISION: a path opened by bare name has an empty parent;
-            // show it as `./`, not as the root `/`.
-            let folder = path.parent().map_or_else(String::new, |p| {
-                if p.as_os_str().is_empty() { "./".to_owned() } else { format!("{}/", p.display()) }
-            });
-            let name_font = egui::FontId::new(12.0, egui::FontFamily::Name(theme::MEDIUM.into()));
-            let g = ui.painter().layout_no_wrap(name, name_font, INK);
-            let nx = r.min.x + 8.0;
-            let name_w = g.size().x;
-            ui.painter().galley(egui::pos2(nx, r.center().y - g.size().y / 2.0), g, INK);
-            let code = theme::code_font();
-            let room = r.max.x - 8.0 - (nx + name_w + 12.0);
-            ui.painter().text(
-                egui::pos2(nx + name_w + 12.0, r.center().y),
-                Align2::LEFT_CENTER,
-                kit::elide(&ui, &folder, &code, room),
-                code,
-                INK_3,
-            );
-            if response.on_hover_text(path.display().to_string()).clicked() {
+            if recent_row(&mut ui, path).clicked() {
                 out.push(Event::Command(Command::Open(path.clone())));
             }
             kit_rule(&mut ui, LINE_2);
@@ -844,6 +822,137 @@ fn small_window(
 
 /// A breadcrumb item: level label then name; hover lifts it unless it is
 /// where you are.
+/// The `File` button and its menu (owner request 2026-11-23): Export ▸
+/// (the current view or the whole workspace, as SVG, PNG or PDF),
+/// Print (not yet), Save, Save as…, Open…, Open recent ▸ (the start
+/// screen's recent-file rows).
+pub(super) fn file_menu(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    let r = Button::new("File").look(Look::Ghost).show(ui);
+    let r = kit::tip(r, "File menu", None);
+    kit::focus_ring(ui, &r);
+    let doc = state.doc.is_some();
+    let view = doc && state.view.is_some() && state.doc.as_ref().is_some_and(|d| d.parsed.is_some());
+    let parsed = state.doc.as_ref().is_some_and(|d| d.parsed.is_some());
+    let svg = super::panels::svg_choice(ui.ctx());
+    egui::Popup::menu(&r).show(|ui| {
+        ui.set_min_width(240.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let export = file_row(ui, "Export", None, true, parsed);
+        // Nothing to export without a parsed file: the row is greyed and
+        // opens nothing.
+        if parsed {
+            egui::containers::menu::SubMenu::new().show(ui, &export, |ui| {
+                ui.set_min_width(240.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                menu_label(ui, "Current view");
+                for (text, format) in [("SVG", svg), ("PNG", ExportFormat::Png), ("PDF", ExportFormat::Pdf)] {
+                    if file_row(ui, text, None, false, view).clicked() {
+                        events.push(Event::Command(Command::ExportView(format)));
+                    }
+                }
+                menu_separator(ui);
+                menu_label(ui, "Whole workspace");
+                for (text, format) in [
+                    ("SVG, one file per view", svg),
+                    ("PNG, one file per view", ExportFormat::Png),
+                    ("PDF, one page per view", ExportFormat::Pdf),
+                ] {
+                    if file_row(ui, text, None, false, parsed).clicked() {
+                        events.push(Event::Command(Command::ExportAll(format)));
+                    }
+                }
+            });
+        }
+        // Not built yet: shown so the menu has its final shape.
+        file_row(ui, "Print… (coming soon)", None, false, false);
+        menu_separator(ui);
+        if file_row(ui, "Save", Some("Ctrl+S"), false, doc).clicked() {
+            events.push(Event::Command(Command::Save));
+        }
+        if file_row(ui, "Save as…", Some("Ctrl+Shift+S"), false, doc).clicked() {
+            events.push(Event::Command(Command::ShowSaveAsDialog));
+        }
+        menu_separator(ui);
+        if file_row(ui, "Open…", Some("Ctrl+O"), false, true).clicked() {
+            events.push(Event::Command(Command::ShowOpenDialog));
+        }
+        let recent = &state.ui.recent;
+        let open_recent = file_row(ui, "Open recent", None, true, true);
+        egui::containers::menu::SubMenu::new().show(ui, &open_recent, |ui| {
+            ui.set_min_width(320.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if recent.is_empty() {
+                file_row(ui, "none yet", None, false, false);
+            }
+            for path in recent {
+                if recent_row(ui, path).clicked() {
+                    events.push(Event::Command(Command::Open(path.clone())));
+                    ui.close();
+                }
+            }
+        });
+    });
+}
+
+/// One recent file (EDIT-13, behaviour change 10): its name in Geist
+/// Medium, then its folder in mono, the full path as tooltip. The start
+/// screen and File > Open recent draw it.
+fn recent_row(ui: &mut egui::Ui, path: &std::path::Path) -> egui::Response {
+    let (r, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::ZERO, BG_RAISED);
+    }
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    // DECISION: a path opened by bare name has an empty parent;
+    // show it as `./`, not as the root `/`.
+    let folder = path.parent().map_or_else(String::new, |p| {
+        if p.as_os_str().is_empty() { "./".to_owned() } else { format!("{}/", p.display()) }
+    });
+    let name_font = egui::FontId::new(12.0, egui::FontFamily::Name(theme::MEDIUM.into()));
+    let g = ui.painter().layout_no_wrap(name, name_font, INK);
+    let nx = r.min.x + 8.0;
+    let name_w = g.size().x;
+    ui.painter().galley(egui::pos2(nx, r.center().y - g.size().y / 2.0), g, INK);
+    let code = theme::code_font();
+    let room = r.max.x - 8.0 - (nx + name_w + 12.0);
+    ui.painter().text(
+        egui::pos2(nx + name_w + 12.0, r.center().y),
+        Align2::LEFT_CENTER,
+        kit::elide(ui, &folder, &code, room),
+        code,
+        INK_3,
+    );
+    response.on_hover_text(path.display().to_string())
+}
+
+/// A File menu row: `kit::menu_row`, then the shortcut in mono at the
+/// right, or a chevron when it opens a submenu.
+fn file_row(ui: &mut egui::Ui, text: &str, key: Option<&str>, submenu: bool, enabled: bool) -> egui::Response {
+    let r = kit::menu_row(ui, None, text, false, enabled);
+    let ink = if enabled { INK_3 } else { INK_DISABLED };
+    if submenu {
+        let at = Rect::from_min_size(egui::pos2(r.rect.max.x - 8.0 - 16.0, r.rect.center().y - 8.0), Vec2::splat(16.0));
+        icons::paint(ui.painter(), Icon::ChevronRight, at, ink);
+    } else if let Some(key) = key {
+        ui.painter().text(egui::pos2(r.rect.max.x - 8.0, r.rect.center().y), Align2::RIGHT_CENTER, key, theme::code_font(), ink);
+    }
+    r
+}
+
+/// A small label heading a group of menu rows.
+fn menu_label(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.label(theme::label(text));
+    });
+}
+
+/// A hairline between groups of menu rows.
+fn menu_separator(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    kit_rule(ui, LINE_2);
+    ui.add_space(4.0);
+}
+
 fn crumb(ui: &mut egui::Ui, level: Option<&str>, name: &str, here: bool) -> egui::Response {
     let font = theme::ui_font();
     let level_job = level.map(|l| {
@@ -949,6 +1058,81 @@ pub(super) const BAR_H: f32 = SIZE_BAR;
 mod tests {
     use super::menu_rows;
     use crate::state::{MenuAction, MenuEntry};
+
+    /// Owner request 2026-11-23: the File menu opens on a click and shows
+    /// every entry; Open recent lists the recent files as the start
+    /// screen does; Open… asks the Open dialog. Without a file, Save,
+    /// Save as and Export are greyed and do nothing.
+    #[test]
+    fn file_menu_opens_with_every_entry() {
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+
+        fn texts(shape: &Shape, out: &mut Vec<(String, Rect)>) {
+            match shape {
+                Shape::Text(t) => out.push((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let ui_state = crate::files::UiState {
+            recent: vec![std::path::PathBuf::from("/d/shop.dsl")],
+            ..Default::default()
+        };
+        let state = crate::state::State::new(ui_state);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::file_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            output.shapes.iter().for_each(|c| texts(&c.shape, &mut shown));
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Pos2 {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| r.center())
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        let file = at(&shown, "File");
+        assert!(!shown.iter().any(|(t, _)| t == "Save as…"), "closed until clicked");
+        frame(click(file));
+        let (shown, _) = frame(Vec::new());
+        for text in ["Export", "Print… (coming soon)", "Save", "Save as…", "Open…", "Open recent", "Ctrl+S", "Ctrl+Shift+S", "Ctrl+O"] {
+            at(&shown, text);
+        }
+        // Greyed without a file: a click on Save does nothing.
+        let (_, events) = frame(click(at(&shown, "Save")));
+        assert!(events.is_empty(), "{events:?}");
+        // Open recent: the start screen's rows.
+        let (mut shown, _) = frame(Vec::new());
+        if !shown.iter().any(|(t, _)| t == "Open recent") {
+            frame(click(file));
+            shown = frame(Vec::new()).0;
+        }
+        frame(vec![E::PointerMoved(at(&shown, "Open recent"))]);
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "shop.dsl");
+        at(&shown, "/d/");
+        // Open… asks the Open dialog.
+        let (_, events) = frame(click(at(&shown, "Open…")));
+        assert!(matches!(events.as_slice(), [Event::Command(Command::ShowOpenDialog)]), "{events:?}");
+    }
 
     fn entry(label: &str) -> MenuEntry {
         MenuEntry {

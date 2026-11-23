@@ -69,6 +69,8 @@ use crate::scene::{
 use crate::scene::{FONT_BOLD, FONT_REGULAR};
 
 mod json_out;
+#[cfg(feature = "outline")]
+mod pdf_out;
 mod static_out;
 mod structurizr;
 pub mod text;
@@ -348,22 +350,73 @@ fn faces_used(scene: &Scene) -> (bool, bool) {
 // precision 8) is kept: the output is no longer one item per line.
 #[cfg(feature = "outline")]
 pub fn svg_outlined(scene: &Scene) -> Result<String, OutlineError> {
-    let mut db = usvg::fontdb::Database::new();
-    db.load_font_data(crate::scene::FONT_REGULAR.to_vec());
-    db.load_font_data(crate::scene::FONT_BOLD.to_vec());
-    db.set_sans_serif_family(FONT_FAMILY);
-    let opt = usvg::Options {
-        font_family: FONT_FAMILY.to_owned(),
-        fontdb: std::sync::Arc::new(db),
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_str(&svg(scene), &opt)
+    let tree = usvg::Tree::from_str(&svg(scene), &outline_options())
         .map_err(|e| OutlineError::Parse(e.to_string()))?;
     Ok(plain_image_href(&tree.to_string(&usvg::WriteOptions {
         preserve_text: false,
         ..usvg::WriteOptions::default()
     })))
 }
+
+/// usvg's options with a font database holding only the two bundled
+/// faces, the regular one also as `sans-serif` (`svg_outlined`, `pdf`).
+#[cfg(feature = "outline")]
+fn outline_options() -> usvg::Options<'static> {
+    let mut db = usvg::fontdb::Database::new();
+    db.load_font_data(crate::scene::FONT_REGULAR.to_vec());
+    db.load_font_data(crate::scene::FONT_BOLD.to_vec());
+    db.set_sans_serif_family(FONT_FAMILY);
+    usvg::Options {
+        font_family: FONT_FAMILY.to_owned(),
+        fontdb: std::sync::Arc::new(db),
+        ..usvg::Options::default()
+    }
+}
+
+/// The scenes as one PDF document, one page per scene in order, each page
+/// the view's size at 96 px per inch (1 px = 0.75 pt). Shapes are vector
+/// paths and text is drawn as the bundled faces' glyph outlines, as
+/// `svg_outlined` draws it; PNG and JPEG icons are embedded as images
+/// (PNG only with feature `png`). Same scenes give the same bytes. The
+/// editor's File > Export writes one view, or every view as one
+/// document, with it (owner request 2026-11-23).
+///
+/// # Errors
+///
+/// `PdfError::NoPage` when `scenes` is empty; `PdfError::Parse` when
+/// usvg cannot read a scene's SVG (never expected).
+// PENDING SIGN-OFF: new pub item for the owner's PDF export request
+// (2026-11-23), not yet approved; see docs/deferred.md.
+#[cfg(feature = "outline")]
+pub fn pdf(scenes: &[&Scene]) -> Result<Vec<u8>, PdfError> {
+    pdf_out::pdf(scenes)
+}
+
+/// Why `pdf` produced no document.
+// PENDING SIGN-OFF: new pub item, with `pdf`.
+#[cfg(feature = "outline")]
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum PdfError {
+    /// No scene was given: a PDF needs at least one page.
+    NoPage,
+    /// usvg refused a scene's SVG; the text says why.
+    Parse(String),
+}
+
+#[cfg(feature = "outline")]
+impl std::fmt::Display for PdfError {
+    /// One sentence saying what failed and what to do (SRS 5.1).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPage => write!(f, "There is no view to write; open a view and export again."),
+            Self::Parse(why) => write!(f, "The PDF could not be written ({why}); export as SVG or PNG instead."),
+        }
+    }
+}
+
+#[cfg(feature = "outline")]
+impl std::error::Error for PdfError {}
 
 /// usvg's writer output with each icon (P2-409) spelled as `svg` spells
 /// it, `<image href="data:image/<type>;base64,...">`, and without the

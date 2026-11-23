@@ -353,6 +353,15 @@ pub enum Command {
     Open(PathBuf),
     /// Show the Open dialog (EDIT-13).
     ShowOpenDialog,
+    /// File > Save (owner request 2026-11-23): every change is already
+    /// written to the file as it is made (EDIT-22), so Save writes
+    /// nothing and says so in the status bar.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    Save,
+    /// File > Save as… (owner request 2026-11-23): the save dialog for a
+    /// copy of the open file, which then opens in its place.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    ShowSaveAsDialog,
     /// Show a view from the view list (EDIT-8).
     ShowView(ViewRef),
     /// Pick an entry of the context menu (editor-ux-02).
@@ -516,6 +525,27 @@ pub enum Dialog {
         dir: PathBuf,
         /// SVG or PNG.
         format: ExportFormat,
+    },
+    /// Save every declared view as one PDF (File > Export, owner request
+    /// 2026-11-23): answered by `Command::Export` in `ExportFormat::Pdf`
+    /// with every view's target the chosen file.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    ExportDocument {
+        /// The diagram file's folder.
+        dir: PathBuf,
+        /// `<diagram file stem>.pdf`.
+        name: String,
+    },
+    /// File > Save as… (owner request 2026-11-23): the shell writes
+    /// `text` to the chosen file and answers `Command::Open` with it.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    SaveAs {
+        /// The diagram file's folder.
+        dir: PathBuf,
+        /// The diagram file's name.
+        name: String,
+        /// The open file's text as last read or written.
+        text: String,
     },
 }
 
@@ -4705,6 +4735,30 @@ impl State {
                 self.remember();
                 vec![Effect::Read(path)]
             }
+            Command::Save => {
+                let Some(doc) = &self.doc else { return Vec::new() };
+                let name = doc.path.file_name().map_or_else(|| doc.path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                // DECISION: Save writes nothing: the editor has no unsaved
+                // state, every edit is written as it is made (EDIT-22). It
+                // says so, or why the file cannot be written.
+                self.notice = Some(if self.json_doc() {
+                    "nothing to save: a workspace JSON is read-only".to_owned()
+                } else if doc.missing {
+                    format!("{name} is gone from disk; use Save as… to write it elsewhere")
+                } else {
+                    format!("saved: every change is written to {name} as you make it")
+                });
+                Vec::new()
+            }
+            Command::ShowSaveAsDialog => {
+                let (Some(doc), Some(text)) = (&self.doc, &self.root_text) else { return Vec::new() };
+                let name = doc.path.file_name().map_or_else(|| "workspace.dsl".to_owned(), |n| n.to_string_lossy().into_owned());
+                vec![Effect::Dialog(Dialog::SaveAs {
+                    dir: export_dir(&doc.path),
+                    name,
+                    text: text.clone(),
+                })]
+            }
             Command::ShowOpenDialog => vec![Effect::Dialog(Dialog::Open {
                 dir: self.doc.as_ref().map(|d| export_dir(&d.path)),
             })],
@@ -4809,6 +4863,16 @@ impl State {
                     dir: export_dir(&doc.path),
                     name: export_name(&view.key(), format),
                     format,
+                })]
+            }
+            // File > Export: every view as one PDF is one file, not a
+            // folder of files.
+            Command::ExportAll(ExportFormat::Pdf) => {
+                let Some(doc) = &self.doc else { return Vec::new() };
+                let stem = doc.path.file_stem().map_or_else(|| "workspace".to_owned(), |s| s.to_string_lossy().into_owned());
+                vec![Effect::Dialog(Dialog::ExportDocument {
+                    dir: export_dir(&doc.path),
+                    name: format!("{stem}.pdf"),
                 })]
             }
             Command::ExportAll(format) => {

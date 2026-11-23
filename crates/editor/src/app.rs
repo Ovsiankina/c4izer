@@ -273,7 +273,7 @@ impl App {
 
     /// Shows `dialog` (blocking, `rfd`) and turns its answer into a
     /// command; `None` on cancel (EDIT-7, EDIT-13).
-    fn ask(&self, dialog: Dialog) -> Option<Command> {
+    fn ask(&mut self, dialog: Dialog) -> Option<Command> {
         match dialog {
             Dialog::Open { dir } => files::open_dialog(dir.as_deref()).map(Command::Open),
             Dialog::ExportView {
@@ -289,6 +289,25 @@ impl App {
                 targets: export_all_targets(&self.state, &folder, format),
                 format,
             }),
+            Dialog::ExportDocument { dir, name } => files::export_document_dialog(&dir, &name).map(|path| Command::Export {
+                targets: export_document_targets(&self.state, &path),
+                format: ExportFormat::Pdf,
+            }),
+            Dialog::SaveAs { dir, name, text } => {
+                let path = files::save_as_dialog(&dir, &name)?;
+                // DECISION: Save as copies the open file's text and opens
+                // the copy; files it `!include`s are not copied, and a
+                // relative include then resolves from the copy's folder.
+                // A failed write is the shell's I/O sentence, as a failed
+                // watch is, since `FileEvent` has no variant for it.
+                match files::write_atomic(&path, &text) {
+                    Ok(_) => Some(Command::Open(path)),
+                    Err(e) => {
+                        self.state.io_error = Some(format!("cannot save as {}: {e}", path.display()));
+                        None
+                    }
+                }
+            }
         }
     }
 
@@ -416,6 +435,16 @@ pub(crate) fn export_all_targets(state: &State, folder: &Path, format: ExportFor
             let path = folder.join(files::export_name(&v.view.key(), format));
             (v.view, path)
         })
+        .collect()
+}
+
+/// Every view as one PDF (File > Export): the targets of
+/// `export_all_targets`, each naming `path`, so they become that file's
+/// pages in declaration order.
+pub(crate) fn export_document_targets(state: &State, path: &Path) -> Vec<(ViewRef, PathBuf)> {
+    export_all_targets(state, Path::new(""), ExportFormat::Pdf)
+        .into_iter()
+        .map(|(view, _)| (view, path.to_path_buf()))
         .collect()
 }
 
@@ -554,7 +583,7 @@ pub(crate) fn draw_view_list(state: &State, width: f32, frames: usize) -> DrawnV
 
 /// The formats of the export panel, as `c4rizer export -f` names them
 /// (P3-400, P3-431), `svg` first (the default); animation is deferred
-/// (P3-432).
+/// (P3-432). PDF is not one of them: it is in File > Export only.
 pub(crate) fn export_choices() -> [(&'static str, ExportFormat); 11] {
     [
         ("svg", ExportFormat::Svg),
@@ -774,7 +803,7 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        let mut events = Vec::new();
+        let mut events = file_shortcuts(&ctx);
         let width = ctx.content_rect().width();
         let narrow = !side_panels_start_open(width);
         let (_, mut right) = *self.panels.get_or_insert_with(|| {
@@ -897,6 +926,26 @@ impl eframe::App for App {
     }
 }
 
+/// The File menu's keys (owner request 2026-11-23): Ctrl+O opens, Ctrl+S
+/// saves, Ctrl+Shift+S saves as (Cmd on macOS). Consumed, so the canvas
+/// never sees them.
+fn file_shortcuts(ctx: &egui::Context) -> Vec<Event> {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+    ctx.input_mut(|i| {
+        // Ctrl+Shift+S first: Ctrl+S would also match it.
+        let commands = [
+            (Modifiers::COMMAND | Modifiers::SHIFT, Key::S, Command::ShowSaveAsDialog),
+            (Modifiers::COMMAND, Key::S, Command::Save),
+            (Modifiers::COMMAND, Key::O, Command::ShowOpenDialog),
+        ];
+        commands
+            .into_iter()
+            .filter(|(mods, key, _)| i.consume_shortcut(&KeyboardShortcut::new(*mods, *key)))
+            .map(|(_, _, command)| Event::Command(command))
+            .collect()
+    })
+}
+
 /// The panel and overlay events that pass while Explore is open (P3-507),
 /// and whether Explore closes: a view pick (view list, breadcrumb) passes
 /// and closes it, so that view opens; fitting, full screen and opening
@@ -913,7 +962,17 @@ pub(crate) fn explore_gate(events: Vec<Event>) -> (Vec<Event>, bool) {
                 leave = true;
                 true
             }
-            Event::Command(Command::Open(_) | Command::ShowOpenDialog | Command::Fit(_) | Command::Fullscreen) => true,
+            // File menu: saving, Save as and export write no diagram edit.
+            Event::Command(
+                Command::Open(_)
+                | Command::ShowOpenDialog
+                | Command::Fit(_)
+                | Command::Fullscreen
+                | Command::Save
+                | Command::ShowSaveAsDialog
+                | Command::ExportView(_)
+                | Command::ExportAll(_),
+            ) => true,
             _ => false,
         })
         .collect();

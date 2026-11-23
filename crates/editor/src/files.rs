@@ -577,6 +577,7 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
     let label = match format {
         ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "SVG image",
         ExportFormat::Png => "PNG image",
+        ExportFormat::Pdf => "PDF document",
         ExportFormat::PlantUml | ExportFormat::C4PlantUml => "PlantUML",
         ExportFormat::Mermaid => "Mermaid",
         ExportFormat::WebSequenceDiagrams => "WebSequenceDiagrams",
@@ -590,6 +591,33 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
         .set_directory(dir)
         .set_file_name(name)
         .add_filter(label, &[format.extension()])
+        .save_file()
+}
+
+/// The save dialog for "every view as one PDF" (File > Export, owner
+/// request 2026-11-23): starts in `dir` with the file name `name`;
+/// `None` on cancel.
+#[must_use]
+pub(crate) fn export_document_dialog(dir: &Path, name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export every view as one PDF")
+        .set_directory(dir)
+        .set_file_name(name)
+        .add_filter("PDF document", &["pdf"])
+        .save_file()
+}
+
+/// The save dialog for File > Save as… (owner request 2026-11-23):
+/// starts in `dir` with the file name `name`, filtered to `.dsl` files
+/// with an "all files" fallback; `None` on cancel.
+#[must_use]
+pub(crate) fn save_as_dialog(dir: &Path, name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Save diagram file as")
+        .set_directory(dir)
+        .set_file_name(name)
+        .add_filter("c4rizer diagram", &["dsl"])
+        .add_filter("All files", &["*"])
         .save_file()
 }
 

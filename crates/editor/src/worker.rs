@@ -148,6 +148,11 @@ pub enum ExportFormat {
     /// `export::static_site` (P3-423).
     // APPROVER: approved 2026-11-18
     Static,
+    /// `export::pdf`: one page per view; targets that share a file are
+    /// that file's pages, in order (File > Export, owner request
+    /// 2026-11-23).
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    Pdf,
 }
 
 impl ExportFormat {
@@ -159,6 +164,7 @@ impl ExportFormat {
         match self {
             ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "svg",
             ExportFormat::Png => "png",
+            ExportFormat::Pdf => "pdf",
             ExportFormat::PlantUml | ExportFormat::C4PlantUml => "puml",
             ExportFormat::Mermaid => "mmd",
             ExportFormat::WebSequenceDiagrams => "wsd",
@@ -684,6 +690,10 @@ fn export(
     // An export is never stopped: its flag is never set.
     let never = AtomicBool::new(false);
     let mut written = Vec::with_capacity(targets.len());
+    // DECISION: PDF targets that name the same file are that file's pages
+    // in target order, so "every view as one PDF" is one job of one file;
+    // the files are written after every view is built.
+    let mut documents: Vec<(PathBuf, Vec<c4rizer_core::scene::Scene>)> = Vec::new();
     for target in targets {
         let Built::Done(build) = build(model, &target.view, &target.keep, mode, &never) else {
             return Err(format!(
@@ -706,11 +716,24 @@ fn export(
                     format!("cannot export view \"{}\" as PNG: {e}", target.view.key())
                 })?
             }
+            ExportFormat::Pdf => {
+                match documents.iter_mut().find(|(path, _)| *path == target.path) {
+                    Some((_, pages)) => pages.push(build.scene),
+                    None => documents.push((target.path.clone(), vec![build.scene])),
+                }
+                continue;
+            }
             _ => unreachable!("text, JSON, theme and static go through `export_files`"),
         };
         export_files::replace_file(&target.path, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", target.path.display()))?;
         written.push(target.path.clone());
+    }
+    for (path, pages) in documents {
+        let pages: Vec<&c4rizer_core::scene::Scene> = pages.iter().collect();
+        let bytes = c4rizer_core::export::pdf(&pages).map_err(|e| format!("cannot export {} as PDF: {e}", path.display()))?;
+        export_files::replace_file(&path, &bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        written.push(path);
     }
     Ok(written)
 }
@@ -751,7 +774,11 @@ fn export_files(parsed: &Parsed, targets: &[ExportTarget], format: ExportFormat)
         ExportFormat::Json => "json",
         ExportFormat::Theme => "theme",
         ExportFormat::Static => "static",
-        ExportFormat::Svg | ExportFormat::Png | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => {
+        ExportFormat::Svg
+        | ExportFormat::Png
+        | ExportFormat::SvgEmbedded
+        | ExportFormat::SvgOutlined
+        | ExportFormat::Pdf => {
             unreachable!("image formats go through `export`")
         }
     };

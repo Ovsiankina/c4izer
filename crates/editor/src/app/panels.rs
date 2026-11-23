@@ -629,12 +629,23 @@ fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: 
     }
 }
 
+/// Where egui's memory keeps the export panel's SVG text choice.
+const SVG_TEXT_ID: &str = "c4rizer-svg-text";
+
+/// The SVG format the export panel's SVG text choice names (P2-663),
+/// plain `Svg` until one is made; File > Export uses it too.
+pub(super) fn svg_choice(ctx: &egui::Context) -> ExportFormat {
+    let choices = svg_text_choices();
+    let pick = ctx.data(|d| d.get_temp::<usize>(egui::Id::unique(SVG_TEXT_ID))).unwrap_or(0).min(choices.len() - 1);
+    choices[pick].1
+}
+
 /// The Export section, folded by default (EDIT-7, P2-663, P3-431).
 fn export_section(ui: &mut egui::Ui, out: &mut Vec<Event>) {
     kit::section(ui, "export", "Export", None, false, |ui| {
         // P2-663: the SVG text choice, `name` by default; it lives in
         // egui's memory and never reaches the diagram file (P2-665).
-        let id = egui::Id::unique("c4rizer-svg-text");
+        let id = egui::Id::unique(SVG_TEXT_ID);
         let choices = svg_text_choices();
         let mut pick = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(choices.len() - 1);
         let names: Vec<String> = choices.iter().map(|(l, _)| (*l).to_owned()).collect();
