@@ -6,6 +6,7 @@
 // Tests name the model `m`, the build `b`, a line `l`, as the router does.
 #![allow(clippy::many_single_char_names, clippy::similar_names)]
 
+use c4rizer_core::model::ElementKey;
 use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::edit;
@@ -608,7 +609,7 @@ fn p4_422_real_cases() {
 fn set_bundles(bundles: &[&[(&str, &str)]]) -> edit::Edit {
     edit::Edit::SetBundles {
         view: "g".to_owned(),
-        bundles: bundles.iter().map(|b| b.iter().map(|&(s, d)| edit::LineRef::new(s, d, None)).collect()).collect(),
+        bundles: bundles.iter().map(|b| b.iter().map(|&(s, d)| edit::LineRef::new(ElementKey::from_written(s), ElementKey::from_written(d), None)).collect()).collect(),
     }
 }
 

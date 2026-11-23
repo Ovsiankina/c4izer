@@ -7,6 +7,7 @@
 //! exporting the same DSL with the installed Structurizr
 //! (`~/.local/share/structurizr`).
 
+use c4rizer_core::model::ElementKey;
 use std::fmt::Write as _;
 use std::sync::atomic::AtomicBool;
 
@@ -46,12 +47,12 @@ fn build(m: &Model, key: &str) -> ViewBuild {
 
 /// The element `key` names.
 fn id(m: &Model, key: &str) -> ElementId {
-    m.find(key).unwrap_or_else(|| panic!("no element {key}"))
+    m.find_written(key).unwrap_or_else(|| panic!("no element {key}"))
 }
 
 /// The view-local key of `e` (`Model::full_key`).
 fn key(m: &Model, e: ElementId) -> String {
-    m.full_key(e).unwrap_or_default()
+    m.full_key(e).unwrap_or_default().into_string()
 }
 
 /// The keys of the boxes of `b`, in box order.
@@ -512,7 +513,7 @@ fn p3_109_hierarchical_deployment_ids() {
     let webi = id(&m, "live.aws.ec2.webi");
     assert_eq!(m.element(webi).kind, ElementKind::ContainerInstance);
     assert_eq!(key(&m, webi), "live.aws.ec2.webi");
-    assert_eq!(m.find("webi"), None);
+    assert_eq!(m.find_written("webi"), None);
     let lb = id(&m, "live.aws.ec2.lb");
     let written: Vec<_> = m
         .relationships
@@ -700,7 +701,7 @@ fn p3_117_view_local_keys() {
         &parsed,
         &[c4rizer_core::edit::Edit::Move {
             view: "staging".into(),
-            element: "db_1".into(),
+            element: ElementKey::from_written("db_1"),
             centre: Some((600, 800)),
         }],
     )

@@ -5,7 +5,7 @@
 //! dimmed (behaviour change 12).
 
 use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, CrossingStyle, LabelMode};
+use c4rizer_core::model::{Colour, CrossingStyle, ElementKey, LabelMode};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Vec2};
 
 use super::{App, editable_detail_fields, export_choices, svg_text_choices, view_label, view_list_line};
@@ -278,7 +278,7 @@ impl App {
 /// when the line is bundled (`components/Details`, P4-426).
 fn relationship_rows(ui: &mut egui::Ui, state: &State, r: &c4rizer_core::edit::RelationshipRef) {
     if let Some(model) = state.model() {
-        let name = |key: &str| model.find(key).map_or_else(|| key.to_owned(), |id| model.element(id).name.value.clone());
+        let name = |key: &ElementKey| model.find(key).map_or_else(|| key.to_string(), |id| model.element(id).name.value.clone());
         kit::prop_row(ui, "from", |ui| {
             ui.label(egui::RichText::new(name(&r.source)).color(INK));
         });

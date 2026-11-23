@@ -93,7 +93,7 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, LabelMode, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
+    Colour, ElementId, ElementKey, ElementKind, LabelMode, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
     ViewKind, parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
@@ -583,7 +583,7 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Selected {
     /// A box, by its element's canonical key.
-    Element(String),
+    Element(ElementKey),
     /// A line or its label, by its winning relationship.
     Relationship(RelationshipRef),
     /// The view title (EDIT-5).
@@ -771,22 +771,22 @@ pub enum Action {
         /// The view the boxes were moved in.
         view: ViewRef,
         /// Canonical element key to centre `(x, y)` px.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// Every box of `view` at its centre, px, as shown when the
         /// gesture ended: the `at` lines of an EDIT-26 first write.
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Resize one box, px `(width, height)` (EDIT-18).
     Resize {
         /// The view the box was resized in.
         view: ViewRef,
         /// Canonical element key.
-        element: String,
+        element: ElementKey,
         /// New size, px, multiples of 20.
         size: (i32, i32),
         /// Every box of `view` at its centre, px, as shown when the
         /// gesture ended: the `at` lines of an EDIT-26 first write.
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Write text fields, one batch (EDIT-5).
     SetText {
@@ -799,7 +799,7 @@ pub enum Action {
         /// written first).
         view: ViewRef,
         /// Canonical element keys.
-        elements: Vec<String>,
+        elements: Vec<ElementKey>,
         /// `all <tag>` or `this box only`.
         target: StyleTarget,
         /// Property and value.
@@ -810,7 +810,7 @@ pub enum Action {
         /// The view the change was made in (EDIT-15).
         view: ViewRef,
         /// Canonical element keys.
-        elements: Vec<String>,
+        elements: Vec<ElementKey>,
     },
     /// Set the canvas size, moving boxes to keep the drawing centred, one
     /// batch (P2-701, P2-702).
@@ -820,9 +820,9 @@ pub enum Action {
         /// The size, `None` for auto.
         size: Option<PaperSize>,
         /// Boxes moved, canonical key to centre px.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set one per-view line setting (P2-708..P2-710).
     SetLine {
@@ -873,7 +873,7 @@ pub enum Action {
         /// The bridges, each `(carrier, other)`.
         bridges: Vec<(c4rizer_core::edit::LineRef, c4rizer_core::edit::LineRef)>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set, move or remove line vertices, with the boxes moved by the
     /// same gesture, one batch (P3-310..P3-315).
@@ -883,11 +883,11 @@ pub enum Action {
         view: ViewRef,
         /// Boxes moved by the gesture, canonical key to centre px; empty
         /// for a vertex-only edit.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// The `via` lines to write, each one line's whole vertex list.
         vias: Vec<ViaChange>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Pin or release the ends of one line (P4-215..P4-218).
     // APPROVER: new pub item
@@ -897,7 +897,7 @@ pub enum Action {
         /// The line's whole `anchor` line.
         change: AnchorChange,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set every bus of the view: one `bundle` line each (P4-424..P4-427).
     // APPROVER: new pub item
@@ -907,7 +907,7 @@ pub enum Action {
         /// The bundles, each its members.
         bundles: Vec<Vec<c4rizer_core::edit::LineRef>>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
@@ -921,9 +921,9 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorChange {
     /// The line's source, canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// The dynamic step number, `None` in other views.
     pub order: Option<String>,
     /// The source end's point, `None` for the router's.
@@ -938,9 +938,9 @@ pub struct AnchorChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViaChange {
     /// The line's source, canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// The dynamic step number, `None` in other views.
     pub order: Option<String>,
     /// The vertices, px, on the 10 px grid; `None` removes the `via`
@@ -1228,7 +1228,7 @@ pub struct Crumb {
     /// The workspace name, or the element's name.
     pub label: String,
     /// The element's canonical key; `None` for the workspace.
-    pub scope: Option<String>,
+    pub scope: Option<ElementKey>,
 }
 
 /// The model details of the single selected item (EDIT-10, EDIT-5).
@@ -1694,12 +1694,12 @@ impl State {
     // DECISION: an element with no key (nothing to select by) opens the
     // view with nothing selected; the selection is replaced, as a click
     // on the box would replace it.
-    pub(crate) fn reveal(&mut self, view: ViewRef, element: String) -> Vec<Effect> {
+    pub(crate) fn reveal(&mut self, view: ViewRef, element: Option<ElementKey>) -> Vec<Effect> {
         self.overlay = None;
         let effects = self.show(view);
         self.selection.clear();
         self.selection_order.clear();
-        if !element.is_empty() {
+        if let Some(element) = element {
             let picked = Selected::Element(element);
             self.selection.insert(picked.clone());
             self.selection_order.push(picked);
@@ -2094,7 +2094,7 @@ impl State {
         }
         self.breadcrumb()
             .get(n)
-            .and_then(|c| c.scope.as_deref())
+            .and_then(|c| c.scope.as_ref())
             .and_then(|k| model.find(k))
             .and_then(|id| view_into(model, id))
     }
@@ -3287,7 +3287,7 @@ impl State {
     }
 
     /// The element keys of the selection, in selection order.
-    fn selected_elements(&self) -> Vec<String> {
+    fn selected_elements(&self) -> Vec<ElementKey> {
         self.selection
             .iter()
             .filter_map(|s| match s {
@@ -3619,7 +3619,7 @@ impl State {
 
     /// Every box of the scene on screen at its centre in px, by element
     /// key: the `layout` of a move or resize (EDIT-26).
-    fn layout(&self) -> BTreeMap<String, (i32, i32)> {
+    fn layout(&self) -> BTreeMap<ElementKey, (i32, i32)> {
         let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else {
             return BTreeMap::new();
         };
@@ -5159,7 +5159,7 @@ impl State {
             b.centre = None;
         }
         let centres = c4rizer_core::place::place(&plan, &Keep::default());
-        let boxes: BTreeMap<String, (i32, i32)> = plan
+        let boxes: BTreeMap<ElementKey, (i32, i32)> = plan
             .boxes
             .iter()
             .filter_map(|b| {
@@ -5755,14 +5755,15 @@ fn distance(a: ScreenPoint, b: ScreenPoint) -> f32 {
     (a.x - b.x).hypot(a.y - b.y)
 }
 
-/// The key the editor names `id` by in selections and edits: the one
-/// `Model::find` gives `id` back for (the dotted full id under
-/// `!identifiers hierarchical`); `None` for an element declared without
-/// an id, which the editor never selects or moves (P2-145).
-// DECISION: `full_key`, not `Element::key`: the bare id of a nested
-// element does not resolve under hierarchical ids, so its box could be
-// neither selected nor dragged.
-fn edit_key(model: &Model, id: ElementId) -> Option<String> {
+/// The key the editor names `id` by in selections and edits: its
+/// `Model::full_key`, or `None` for an element declared without an id,
+/// which the editor never selects or moves (P2-145), an instance without
+/// an id (`<key>_<n>`, P3-117) included.
+// DECISION: a thin wrapper kept over `full_key` for the P2-145 rule
+// alone: `full_key` names an instance without an id, the editor must not
+// select it. The key type (`ElementKey`) is what keeps a bare declaration
+// id out of selections and edits.
+fn edit_key(model: &Model, id: ElementId) -> Option<ElementKey> {
     model.element(id).key.as_ref()?;
     model.full_key(id)
 }
@@ -5886,9 +5887,11 @@ fn default_from_key(model: &Model, key: &str) -> Option<ViewRef> {
     let kind = [ViewKind::SystemContext, ViewKind::Container, ViewKind::Component]
         .into_iter()
         .find(|k| k.keyword() == kind)?;
-    model.find(scope)?;
+    // The key's scope is text from the file: resolved, then named by its
+    // canonical key.
+    let id = model.find_written(scope)?;
     Some(ViewRef::Default {
-        scope: scope.to_owned(),
+        scope: model.full_key(id)?,
         kind,
     })
 }
@@ -5927,8 +5930,8 @@ fn layout_view(model: &Model, view: &ViewRef) -> ViewRef {
 fn layout_batch(
     model: &Model,
     view: &ViewRef,
-    layout: &BTreeMap<String, (i32, i32)>,
-    moved: Option<&BTreeMap<String, (i32, i32)>>,
+    layout: &BTreeMap<ElementKey, (i32, i32)>,
+    moved: Option<&BTreeMap<ElementKey, (i32, i32)>>,
     own: Vec<Edit>,
 ) -> Vec<Edit> {
     let mut out = add_default(model, view);
@@ -5941,7 +5944,7 @@ fn layout_batch(
         .view(&view.key())
         .map(|v| v.positions.iter().map(|a| a.element.value).collect())
         .unwrap_or_default();
-    let mut entries: Vec<(ElementId, &String, (i32, i32))> = layout
+    let mut entries: Vec<(ElementId, &ElementKey, (i32, i32))> = layout
         .iter()
         .filter_map(|(k, &c)| {
             let c = moved.and_then(|m| m.get(k)).copied().unwrap_or(c);
@@ -6009,7 +6012,7 @@ fn rebuild_first_write(parsed: &Parsed, edits: &[Edit]) -> Vec<Edit> {
             continue;
         }
         let centres = c4rizer_core::place::place(&plan, &Keep::default());
-        let mut entries: BTreeMap<ElementId, (String, (i32, i32))> = BTreeMap::new();
+        let mut entries: BTreeMap<ElementId, (ElementKey, (i32, i32))> = BTreeMap::new();
         for b in &plan.boxes {
             if placed.contains(&b.element) || moved.contains(&b.element) {
                 continue;
@@ -6127,6 +6130,7 @@ mod tests {
     // the plan gives one). Each drives `State::handle` with a temp-dir
     // file, `files` and `worker::serve`, no window (HLD §6).
 
+    use c4rizer_core::model::ElementKey;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -6351,7 +6355,7 @@ mod tests {
         }
 
         fn box_id(&self, key: &str) -> BoxId {
-            let id = self.model().find(key).expect("element");
+            let id = self.model().find_written(key).expect("element");
             *self.scene().boxes_of(id).first().expect("box on screen")
         }
 
@@ -6453,7 +6457,7 @@ mod tests {
                 .positions
                 .iter()
                 .map(|a| {
-                    let key = model.full_key(a.element.value).expect("key");
+                    let key = model.full_key(a.element.value).expect("key").into_string();
                     (key, (a.x.value, a.y.value))
                 })
                 .collect()
@@ -6484,7 +6488,7 @@ mod tests {
     }
 
     fn el(key: &str) -> Selected {
-        Selected::Element(key.to_owned())
+        Selected::Element(ElementKey::from_written(key))
     }
 
     /// Lines of `b` not in `a`, and of `a` not in `b`.
@@ -6573,7 +6577,7 @@ mod tests {
             Gesture::Dragging { to, .. } => assert_eq!(to.get(&id), Some(&want), "the nested box is in the drag"),
             g => panic!("not dragging: {g:?}"),
         }
-        assert!(h.s.selection.contains(&Selected::Element("shop.web".to_owned())));
+        assert!(h.s.selection.contains(&Selected::Element(ElementKey::from_written("shop.web"))));
         h.up(pt(from.x + 40.0, from.y + 20.0), Button::Left);
         let text = h.text();
         assert!(text.contains(&format!("at shop.web {} {}", cx + 40, cy + 20)), "{text}");
@@ -6585,7 +6589,7 @@ mod tests {
     fn nested_shop() -> H {
         let mut h = H::with_file(&Ids::Hierarchical.workspace(SHOP));
         h.cmd(Command::ShowView(declared("containers")));
-        assert!(h.model().find("web").is_none(), "the fixture's bare nested ids do not resolve");
+        assert!(h.model().find_written("web").is_none(), "the fixture's bare nested ids do not resolve");
         h
     }
 
@@ -6622,7 +6626,7 @@ mod tests {
         let keys: Vec<String> = selected
             .iter()
             .map(|s| match s {
-                Selected::Element(k) => k.clone(),
+                Selected::Element(k) => k.to_string(),
                 other => panic!("only boxes: {other:?}"),
             })
             .collect();
@@ -6667,12 +6671,12 @@ mod tests {
         let mut h = nested_shop();
         h.enter("shop.web");
         let default = ViewRef::Default {
-            scope: "shop.web".to_owned(),
+            scope: ElementKey::from_written("shop.web"),
             kind: ViewKind::Component,
         };
         assert_eq!(h.s.view, Some(default.clone()));
         assert_eq!(h.scene().key, default.key(), "the scene is the view the editor names");
-        let crumbs: Vec<Option<String>> = h.s.breadcrumb().into_iter().map(|c| c.scope).collect();
+        let crumbs: Vec<Option<String>> = h.s.breadcrumb().into_iter().map(|c| c.scope.map(ElementKey::into_string)).collect();
         assert_eq!(crumbs, [None, Some("shop".to_owned()), Some("shop.web".to_owned())]);
 
         let (cx, cy) = h.centre_px("shop.web.cart");
@@ -6698,7 +6702,7 @@ mod tests {
     #[test]
     fn edit_26_first_write_writes_every_nested_box_hierarchical_ids() {
         let mut h = nested_shop();
-        let keys: Vec<String> = h.scene().boxes.iter().filter_map(|b| h.model().full_key(b.element)).collect();
+        let keys: Vec<String> = h.scene().boxes.iter().filter_map(|b| h.model().full_key(b.element).map(ElementKey::into_string)).collect();
         assert!(keys.contains(&"shop.db".to_owned()), "{keys:?}");
         let mut want: BTreeMap<String, (i32, i32)> = keys.iter().map(|k| (k.clone(), h.centre_px(k))).collect();
         h.drag_box("shop.web", 100.0, 0.0);
@@ -6768,7 +6772,7 @@ mod tests {
         assert_eq!(h.s.history.undo.len(), 1, "one step for both boxes");
         let style = |h: &H, key: &str| {
             let parsed = h.on_disk();
-            let id = parsed.model.find(key).expect("element");
+            let id = parsed.model.find_written(key).expect("element");
             parsed.model.style_of(id)
         };
         assert_eq!(style(&h, "shop.web").background, fill);
@@ -6849,7 +6853,7 @@ mod tests {
         // A lifted line edits the relationship it was lifted from.
         h.cmd(Command::ShowView(declared("context")));
         let model = h.model();
-        let (shop, bank) = (model.find("shop").expect("shop"), model.find("bank").expect("bank"));
+        let (shop, bank) = (model.find_written("shop").expect("shop"), model.find_written("bank").expect("bank"));
         let scene = h.scene();
         let line = scene
             .lines
@@ -7022,7 +7026,7 @@ mod tests {
     fn edit_5_lifted_line_details_name_relationship() {
         let mut h = H::with_file(SHOP);
         let model = h.model();
-        let (shop, bank) = (model.find("shop").expect("shop"), model.find("bank").expect("bank"));
+        let (shop, bank) = (model.find_written("shop").expect("shop"), model.find_written("bank").expect("bank"));
         let scene = h.scene();
         let line = scene
             .lines
@@ -7041,7 +7045,7 @@ mod tests {
         let lifted = name(line.relationship);
         let other: Vec<String> = line.relationships.iter().filter(|&&r| r != line.relationship).map(|&r| name(r)).collect();
         let lifted_ref = RelationshipRef::of(model, line.relationship);
-        let customer = model.find("customer").expect("customer");
+        let customer = model.find_written("customer").expect("customer");
         let direct = RelationshipRef::of(model, model.find_relationship(customer, shop)[0]);
         h.s.selection.insert(Selected::Relationship(lifted_ref));
 
@@ -7217,7 +7221,7 @@ mod tests {
         assert!(d.tags.contains(&"External".to_owned()));
         let panel = h.s.style_panel().expect("style panel");
         assert_eq!(panel.boxes, 1);
-        assert_eq!(panel.background, Some(h.model().style_of(h.model().find("bank").expect("bank")).background));
+        assert_eq!(panel.background, Some(h.model().style_of(h.model().find_written("bank").expect("bank")).background));
     }
 
     /// EDIT-11 (plan editor-06): a parse error keeps the last good scene,
@@ -7404,7 +7408,7 @@ mod tests {
         h.cmd(Command::ShowView(declared("containers")));
         h.enter("web");
         let default = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         assert_eq!(h.s.view, Some(default.clone()));
@@ -7416,7 +7420,7 @@ mod tests {
         let batch = h.s.edits_for(
             &Action::Move {
                 view: default.clone(),
-                boxes: BTreeMap::from([("cart".to_owned(), (cx + 100, cy))]),
+                boxes: BTreeMap::from([(ElementKey::from_written("cart"), (cx + 100, cy))]),
                 layout: BTreeMap::new(),
             },
             &parsed,
@@ -7424,7 +7428,7 @@ mod tests {
         assert_eq!(
             batch.first(),
             Some(&c4rizer_core::edit::Edit::AddDefaultView {
-                scope: "web".to_owned(),
+                scope: ElementKey::from_written("web"),
                 kind: ViewKind::Component
             })
         );
@@ -7457,9 +7461,9 @@ mod tests {
         assert_eq!(h.s.view, Some(declared("containers")));
         let listed: Vec<ViewRef> = h.s.views().into_iter().map(|v| v.view).collect();
         assert_eq!(listed, [declared("context"), declared("containers"), declared("again"), declared("lonely")]);
-        let lone = h.model().find("lone").expect("lone");
+        let lone = h.model().find_written("lone").expect("lone");
         assert!(!enterable(h.model(), lone));
-        let shop = h.model().find("shop").expect("shop");
+        let shop = h.model().find_written("shop").expect("shop");
         assert!(enterable(h.model(), shop));
     }
 
@@ -7511,7 +7515,7 @@ mod tests {
             },
             &parsed,
         );
-        assert!(matches!(batch.first(), Some(c4rizer_core::edit::Edit::AddDefaultView { scope, .. }) if scope == "web"));
+        assert!(matches!(batch.first(), Some(c4rizer_core::edit::Edit::AddDefaultView { scope, .. }) if scope.as_str() == "web"));
         assert!(matches!(batch.get(1), Some(c4rizer_core::edit::Edit::SetText { .. })));
 
         let bounds = h.scene().item_bounds(ItemKey::Title).expect("title bounds");
@@ -7540,7 +7544,7 @@ mod tests {
         assert_eq!(
             h.s.view,
             Some(ViewRef::Default {
-                scope: "shop".to_owned(),
+                scope: ElementKey::from_written("shop"),
                 kind: ViewKind::SystemContext
             })
         );
@@ -7554,7 +7558,7 @@ mod tests {
     #[test]
     fn edit_16_back_goes_up() {
         let mut h = H::with_file(SHOP);
-        let crumbs = |h: &H| -> Vec<Option<String>> { h.s.breadcrumb().into_iter().map(|c| c.scope).collect() };
+        let crumbs = |h: &H| -> Vec<Option<String>> { h.s.breadcrumb().into_iter().map(|c| c.scope.map(ElementKey::into_string)).collect() };
         assert_eq!(crumbs(&h), [None, Some("shop".to_owned())]);
         assert_eq!(h.s.breadcrumb()[0].label, "Shop");
         h.enter("shop");
@@ -7609,7 +7613,7 @@ mod tests {
         assert_eq!(h.s.history.undo.len(), 1, "one step for both boxes");
         let style = |h: &H, key: &str| {
             let parsed = h.on_disk();
-            let id = parsed.model.find(key).expect("element");
+            let id = parsed.model.find_written(key).expect("element");
             parsed.model.style_of(id)
         };
         assert_eq!(style(&h, "web").background, fill);
@@ -7854,7 +7858,7 @@ mod tests {
         // 100 steps through an external reload.
         h.click("customer", Button::Left, CTRL);
         let fill = |i: u8| colour(i, 0x40, 0x80);
-        let bg = |h: &H| h.model().style_of(h.model().find("customer").expect("customer")).background;
+        let bg = |h: &H| h.model().style_of(h.model().find_written("customer").expect("customer")).background;
         let original = bg(&h);
         h.s.history = crate::history::History::default();
         for i in 0..100_u8 {
@@ -8110,7 +8114,7 @@ mod tests {
         }
         // A default view is added by a move and removed only by its undo.
         step(&mut h, Event::Command(Command::ShowView(declared("containers"))));
-        step(&mut h, Event::Command(Command::ShowView(ViewRef::Default { scope: "web".to_owned(), kind: ViewKind::Component })));
+        step(&mut h, Event::Command(Command::ShowView(ViewRef::Default { scope: ElementKey::from_written("web"), kind: ViewKind::Component })));
         let at = h.screen("cart");
         step(&mut h, Event::Input(Input::PointerDown { at, button: Button::Left, mods: NONE }));
         step(&mut h, Event::Input(Input::PointerMove { at: pt(at.x + 60.0, at.y) }));
@@ -8195,7 +8199,7 @@ mod tests {
         assert_eq!(h.text(), without_bank);
         assert!(h.s.status().notice.is_some(), "the drop is reported");
         assert_eq!(h.s.history.undo.len(), 1);
-        assert!(h.model().find("bank").is_none(), "the new text is shown");
+        assert!(h.model().find_written("bank").is_none(), "the new text is shown");
     }
 
     /// EDIT-3, EDIT-24: an external save during a drag does not drop the

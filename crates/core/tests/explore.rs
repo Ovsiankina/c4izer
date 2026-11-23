@@ -3,6 +3,7 @@
 //! `tests/data/phase3/explore.dsl`. The editor tests are in
 //! `crates/editor/src/explore_tests.rs`.
 
+use c4rizer_core::model::ElementKey;
 use std::fmt::Write as _;
 
 use c4rizer_core::explore::{self, RelationshipRow};
@@ -21,7 +22,7 @@ fn parse(src: &str) -> Model {
 
 /// The element `key` names.
 fn id(m: &Model, key: &str) -> ElementId {
-    m.find(key).unwrap_or_else(|| panic!("no element {key}"))
+    m.find_written(key).unwrap_or_else(|| panic!("no element {key}"))
 }
 
 /// `source -> destination` by keys, with `(implied)` for implied rows.
@@ -94,7 +95,7 @@ fn p3_502_relationship_rows_include_implied_and_copied() {
 fn p3_503_search_matches_every_field_case_insensitively() {
     let m = parse(FIXTURE);
     let keys = |hits: &explore::Hits| -> Vec<String> {
-        hits.elements.iter().map(|&e| m.full_key(e).unwrap_or_default()).collect()
+        hits.elements.iter().map(|&e| m.full_key(e).unwrap_or_default().into_string()).collect()
     };
     // Name, id, description, technology, tag, property value; any case.
     assert_eq!(keys(&explore::search(&m, "payMENTS")), ["pay"]);
@@ -247,7 +248,7 @@ fn p3_508_graph_layout_is_deterministic() {
 fn p3_510_tree_static_and_deployment() {
     use c4rizer_core::explore::TreeNode;
     fn lines(m: &Model, n: &TreeNode, depth: usize, out: &mut Vec<String>) {
-        let key = n.element.and_then(|e| m.full_key(e)).unwrap_or_else(|| "-".to_owned());
+        let key = n.element.and_then(|e| m.full_key(e)).map_or_else(|| "-".to_owned(), ElementKey::into_string);
         out.push(format!("{}{} ({key})", "  ".repeat(depth), n.label));
         for c in &n.children {
             lines(m, c, depth + 1, out);

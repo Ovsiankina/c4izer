@@ -175,8 +175,8 @@ fn ids_rewrite_references_not_declarations() {
         "workspace {\n    !identifiers hierarchical\n    model {\n        web = container \"Web\"\n        shop.web -> shop.db \"Uses web\"\n    }\n    at shop.web 1 2\n    via shop.web -> shop.db 0 600\n}\n"
     );
     let parsed = c4rizer_core::model::parse(&Ids::Hierarchical.workspace(SHOP)).expect("hierarchical SHOP parses");
-    assert!(parsed.model.find("shop.web.cart").is_some());
-    assert!(parsed.model.find("cart").is_none(), "a bare nested id does not resolve");
+    assert!(parsed.model.find_written("shop.web.cart").is_some());
+    assert!(parsed.model.find_written("cart").is_none(), "a bare nested id does not resolve");
 }
 
 /// A container view with `n` components on a grid, every one with an

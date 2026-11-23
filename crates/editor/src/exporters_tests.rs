@@ -79,7 +79,7 @@ impl Shell {
     }
 
     fn box_centre(&self, key: &str) -> ScreenPoint {
-        let id = self.model().find(key).expect("element");
+        let id = self.model().find_written(key).expect("element");
         let b = self.scene().boxes_of(id)[0];
         self.s.camera.to_screen(self.scene().boxes[b.0 as usize].rect.centre())
     }
@@ -153,7 +153,7 @@ fn p3_420_json_workspace_is_read_only() {
     // no rubber band.
     h.click(h.box_centre("shop"));
     h.s.notice = None;
-    let shop = h.model().find("shop").expect("shop");
+    let shop = h.model().find_written("shop").expect("shop");
     let rect = h.scene().boxes[h.scene().boxes_of(shop)[0].0 as usize].rect;
     let ends = line_ends(h.scene(), &h.s.camera);
     // Just outside the box, still on its NW handle.

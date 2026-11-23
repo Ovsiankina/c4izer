@@ -2,6 +2,7 @@
 //! P2-126, P2-136, P2-141, P2-180), driven headlessly like `state`'s own
 //! tests: effects run synchronously with `files` and `worker::serve`.
 
+use c4rizer_core::model::ElementKey;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -127,7 +128,7 @@ impl Shell {
 
     fn name_of(&self, key: &str) -> String {
         let model = &self.s.doc.as_ref().unwrap().parsed.as_ref().unwrap().model;
-        model.element(model.find(key).unwrap()).name.value.clone()
+        model.element(model.find_written(key).unwrap()).name.value.clone()
     }
 }
 
@@ -262,7 +263,7 @@ fn p2_141_own_write_to_included_file_ignored() {
     let (tx, rx) = mpsc::channel();
     let _watcher = files::watch_files(&shell.s.included_files(), tx, Arc::new(|| {})).expect("watch");
     // A text edit of an element declared in the included file (P2-139).
-    shell.s.selection.insert(Selected::Element("customer".to_owned()));
+    shell.s.selection.insert(Selected::Element(ElementKey::from_written("customer")));
     shell.key(Key::Enter);
     shell.event(Event::Text("Shopper".to_owned()));
     shell.key(Key::Enter);

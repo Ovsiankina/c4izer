@@ -49,7 +49,7 @@ use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::explore::{self, Drawn, RelationshipRow, TreeNode, Usage};
 use c4rizer_core::geom::{Point, Rect};
-use c4rizer_core::model::{Asset, Colour, ElementId, ElementKind, Mode, Model, Parsed, ResolvedStyle};
+use c4rizer_core::model::{Asset, Colour, ElementId, ElementKey, ElementKind, Mode, Model, Parsed, ResolvedStyle};
 use c4rizer_core::pipeline::ViewBuild;
 use c4rizer_core::place::Keep;
 use c4rizer_core::text::Span;
@@ -217,8 +217,8 @@ pub enum Action {
     Open {
         /// The view.
         view: ViewRef,
-        /// The element's canonical key.
-        element: String,
+        /// The element's canonical key, `None` when it has none.
+        element: Option<ElementKey>,
     },
     /// Copy this text to the clipboard (P3-506).
     Copy(String),
@@ -427,15 +427,15 @@ fn drawn_style<'a>(styles: Option<&'a DrawnStyles>, model: &Model, element: Elem
         .map_or_else(|| Cow::Owned(model.style_of_in(element, mode)), Cow::Borrowed)
 }
 
-/// The canonical key of `element`, empty when it has none.
-fn key_of(model: &Model, element: ElementId) -> String {
-    model.full_key(element).unwrap_or_default()
+/// The canonical key of `element`, `None` when it has none.
+fn key_of(model: &Model, element: ElementId) -> Option<ElementKey> {
+    model.full_key(element)
 }
 
 /// The id shown for `element`: its full key, else its index (as
 /// `explore::search` matches it).
 fn element_id_text(model: &Model, element: ElementId) -> String {
-    model.full_key(element).unwrap_or_else(|| element.0.to_string())
+    model.full_key(element).map_or_else(|| element.0.to_string(), ElementKey::into_string)
 }
 
 /// The type line shown for `element`: `[Kind]` or `[Kind: technology]`;

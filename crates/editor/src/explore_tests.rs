@@ -6,6 +6,7 @@
 
 #![allow(clippy::many_single_char_names, reason = "short test bindings: e, p, m, g, t")]
 
+use c4rizer_core::model::ElementKey;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -42,7 +43,7 @@ fn explore() -> (Explore, Arc<Parsed>) {
 }
 
 fn id(m: &Model, key: &str) -> ElementId {
-    m.find(key).unwrap_or_else(|| panic!("no element {key}"))
+    m.find_written(key).unwrap_or_else(|| panic!("no element {key}"))
 }
 
 /// One headless frame of the explore pages in a 1600x900 window.
@@ -598,12 +599,12 @@ fn p3_504_usage_click_opens_view_with_box_selected() {
         action,
         Action::Open {
             view: ViewRef::Declared("containers".to_owned()),
-            element: "web".to_owned()
+            element: Some(ElementKey::from_written("web"))
         }
     );
     shell.act(action);
     assert_eq!(shell.s.view, Some(ViewRef::Declared("containers".to_owned())));
-    assert_eq!(shell.s.selection.iter().cloned().collect::<Vec<_>>(), [Selected::Element("web".to_owned())]);
+    assert_eq!(shell.s.selection.iter().cloned().collect::<Vec<_>>(), [Selected::Element(ElementKey::from_written("web"))]);
     assert_eq!(shell.s.draw_list().marks.len(), 1, "the web box is marked selected");
 }
 
@@ -710,7 +711,7 @@ fn p3_508_graph_page_draws_view_without_boundaries() {
     let g = e.graph.as_ref().expect("graph");
     let plan = c4rizer_core::view::plan(m, m.view("containers").expect("view"));
     assert!(!plan.boundaries.is_empty(), "the diagram has the shop boundary");
-    let keys: Vec<String> = g.plan.boxes.iter().map(|b| m.full_key(b.element).unwrap_or_default()).collect();
+    let keys: Vec<String> = g.plan.boxes.iter().map(|b| m.full_key(b.element).unwrap_or_default().into_string()).collect();
     assert_eq!(keys, ["customer", "web", "db", "bank"]);
     assert_eq!(g.plan.edges.len(), plan.edges.len());
     assert_eq!(g.positions, c4rizer_core::explore::graph_layout(&g.plan));
@@ -884,7 +885,7 @@ fn p3_512_pan_zoom_and_double_click_opens_view() {
     assert!(
         actions.contains(&Action::Open {
             view: ViewRef::Declared("containers".to_owned()),
-            element: "db".to_owned()
+            element: Some(ElementKey::from_written("db"))
         }),
         "{actions:?}"
     );
@@ -906,7 +907,7 @@ fn p3_512_pan_zoom_and_double_click_opens_view() {
     assert!(
         actions.contains(&Action::Open {
             view: ViewRef::Declared("live".to_owned()),
-            element: "gate".to_owned()
+            element: Some(ElementKey::from_written("gate"))
         }),
         "{actions:?}"
     );
@@ -922,7 +923,7 @@ fn p3_513_sections_in_file_name_order() {
         .sections()
         .iter()
         .map(|s| {
-            let owner = s.owner.and_then(|o| m.full_key(o)).unwrap_or_else(|| "workspace".to_owned());
+            let owner = s.owner.and_then(|o| m.full_key(o)).map_or_else(|| "workspace".to_owned(), ElementKey::into_string);
             format!("{owner}: {} ({})", s.title, s.path.file_name().unwrap_or_default().to_string_lossy())
         })
         .collect();

@@ -486,7 +486,7 @@ impl Builder<'_> {
             return key.to_owned();
         }
         let prefix = match parent {
-            Some(p) => self.model.full_key(p),
+            Some(p) => self.model.full_id(p),
             None => self
                 .deploy
                 .environment

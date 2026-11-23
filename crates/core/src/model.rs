@@ -36,9 +36,9 @@
 // `<id> =` (`Element::key` is `None`) and a relationship may have one
 // (`r = a -> b`). Element, relationship and deployment ids share one
 // register. Under flat ids (the default) a dotted `<id>` `a.b.c` names the
-// element keyed `c` whose parent is keyed `b` inside `a` (`Model::find`);
+// element keyed `c` whose parent is keyed `b` inside `a` (`Model::find_written`);
 // under `!identifiers hierarchical` an element's full id is its parent's
-// full id, `.`, its own id (`Model::full_key`), and relationship ids stay
+// full id, `.`, its own id (`Model::full_key`, an `ElementKey`), and relationship ids stay
 // global. A view with no key gets
 // `<Kind>-NNN` (`SystemContext-001`), numbered per kind in declaration
 // order. `relationship "<tag>" { ... }` blocks in `styles` are parsed
@@ -79,6 +79,54 @@ pub struct ElementId(pub u32);
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelationshipId(pub u32);
+
+/// The canonical key of an element, the one `Model::full_key` gives and
+/// `Model::find` resolves: the dotted full id under `!identifiers
+/// hierarchical` (`shop.web`), the id under flat ids. Edits and the
+/// editor's selection name an element by it, so the name still resolves
+/// in a newer text (EDIT-24). It is not the declaration id
+/// `Element::key`: under hierarchical ids a nested element's bare id does
+/// not resolve (P2-142). Text from a file, the command line or JSON is
+/// resolved with `Model::find_written`; `ElementKey::from_written` takes
+/// text that already is a canonical key. Serves P2-6, P2-142, EDIT-24.
+// APPROVER: new pub item (owner, 2026-11-23: a bare declaration id must
+// not compile where a canonical key is expected).
+// DECISION: a newtype over `String` with no `From<&str>` or
+// `From<String>`, so every conversion from text is the explicit,
+// greppable `from_written`; `Ord` is the string order, so sorted
+// selections and maps keep their order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ElementKey(String);
+
+impl ElementKey {
+    /// `text` taken as a canonical key as is, unchecked: a key read back
+    /// from text written from one (saved UI state, a line `edit` wrote),
+    /// or a test's literal. Text that still has to be resolved against a
+    /// model (a dotted path under flat ids, another case) goes through
+    /// `Model::find_written` and `Model::full_key`. Serves P2-142.
+    #[must_use]
+    pub fn from_written(text: impl Into<String>) -> ElementKey {
+        ElementKey(text.into())
+    }
+
+    /// The key as text, as written in the file.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The key as owned text.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for ElementKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// A parsed value and the bytes it was written as, so `edit` can rewrite
 /// exactly those bytes (DSL-9, DSL-10, DSL-13). For a string literal the
@@ -172,10 +220,11 @@ impl ElementKind {
 pub struct Element {
     /// Its own index in `Model::elements`.
     pub id: ElementId,
-    /// The identifier written in the file (`app` in `app = container
-    /// ...`), unique across the file (DSL-5). Always `Some` in phase 1:
-    /// an element without `<id> =` is a `LaterPhase` error (DSL-7);
-    /// phase 2 accepts it as `None`.
+    /// The declaration id as written (`app` in `app = container ...`),
+    /// without its parents: not a lookup key. Under `!identifiers
+    /// hierarchical` a nested element's bare id does not resolve; name an
+    /// element with `Model::full_key` (`ElementKey`). `None` for an
+    /// element declared without `<id> =` (P2-145). Serves DSL-5, DSL-7.
     pub key: Option<Spanned<String>>,
     /// Person, software system, container or component.
     pub kind: ElementKind,
@@ -1662,7 +1711,7 @@ impl ViewSpec {
         let base = |i: usize| -> Option<String> {
             let s = self.steps.get(i)?;
             let r = model.relationship(s.relationship);
-            let key = |e: ElementId| model.full_key(e).unwrap_or_else(|| model.element(e).name.value.clone());
+            let key = |e: ElementId| model.full_id(e).unwrap_or_else(|| model.element(e).name.value.clone());
             let name = if let Some(k) = &r.key {
                 k.value.clone()
             } else {
@@ -2321,18 +2370,31 @@ impl Model {
         &self.relationships[id.0 as usize]
     }
 
-    /// The element named by `key`, ignoring ASCII case: an identifier, or
-    /// a dotted path of identifiers from an ancestor down (`system.app`);
-    /// under `!identifiers hierarchical`, the full id (`full_key`).
-    /// Serves DSL-5, DSL-7, P2-6, P2-142, and `edit` re-finding an element
-    /// in a newer text (EDIT-24).
-    pub fn find(&self, key: &str) -> Option<ElementId> {
+    /// The element whose canonical key (`full_key`) is `key`, ignoring
+    /// ASCII case. `edit` re-finds an element in a newer text by it
+    /// (EDIT-24). Serves P2-6, P2-142, EDIT-24.
+    // DECISION: the same resolution as `find_written`, so a key whose
+    // case changed in the file still resolves as before; the parameter
+    // type, not the algorithm, says the key is canonical.
+    #[must_use]
+    pub fn find(&self, key: &ElementKey) -> Option<ElementId> {
+        self.find_written(key.as_str())
+    }
+
+    /// The element named by `written`, text from a file, the command line
+    /// or JSON, ignoring ASCII case: an identifier, or a dotted path of
+    /// identifiers from an ancestor down (`system.app`); under
+    /// `!identifiers hierarchical`, the full id (`full_key`). Its
+    /// canonical key is then `full_key`. Serves DSL-5, DSL-7, P2-6,
+    /// P2-142.
+    #[must_use]
+    pub fn find_written(&self, key: &str) -> Option<ElementId> {
         if self.identifiers == Identifiers::Hierarchical {
             return self
                 .elements
                 .iter()
                 .find(|e| {
-                    self.full_key(e.id)
+                    self.full_id(e.id)
                         .is_some_and(|k| k.eq_ignore_ascii_case(key))
                 })
                 .map(|e| e.id);
@@ -2355,7 +2417,7 @@ impl Model {
         self.elements
             .iter()
             .filter(|e| e.key.is_none() && e.instance_of.is_some())
-            .find(|e| self.full_key(e.id).is_some_and(|k| k.eq_ignore_ascii_case(key)))
+            .find(|e| self.full_id(e.id).is_some_and(|k| k.eq_ignore_ascii_case(key)))
             .map(|e| e.id)
     }
 
@@ -3086,7 +3148,13 @@ impl Model {
     // box. Reading taken (B dsl-breadth 10): never; it is auto-placed on
     // every build and the editor refuses moves, resizes and per-box style
     // edits on it, never adding an identifier (EDIT-21).
-    pub fn full_key(&self, id: ElementId) -> Option<String> {
+    #[must_use]
+    pub fn full_key(&self, id: ElementId) -> Option<ElementKey> {
+        self.full_id(id).map(ElementKey)
+    }
+
+    /// `full_key` as text.
+    fn full_id(&self, id: ElementId) -> Option<String> {
         let element = self.element(id);
         let Some(key) = element.key.as_ref() else {
             // P3-117: an instance without an id is `<element key>_<n>`.
@@ -3095,7 +3163,7 @@ impl Model {
             // without an id (P2-145): the editor cannot select or move it
             // (docs/deferred.md).
             let of = element.instance_of?;
-            return Some(format!("{}_{}", self.full_key(of)?, element.instance_number?));
+            return Some(format!("{}_{}", self.full_id(of)?, element.instance_number?));
         };
         if self.identifiers == Identifiers::Flat {
             return Some(key.value.clone());
@@ -5094,7 +5162,7 @@ impl<'t> Builder<'t> {
             // ancestor's, then as a full id.
             let mut scope = context;
             while let Some(c) = scope {
-                if let Some(prefix) = self.model.full_key(c) {
+                if let Some(prefix) = self.model.full_id(c) {
                     let key = format!("{prefix}.{path}").to_ascii_lowercase();
                     if let Some(&id) = self.keys.get(&key) {
                         return Some(id);
@@ -5727,7 +5795,7 @@ impl<'t> Builder<'t> {
     /// `key` under flat ids, `<parent's full id>.key` under hierarchical
     /// ids (P2-6).
     fn full_key_of(&self, parent: Option<ElementId>, key: &str) -> String {
-        match (self.model.identifiers, parent.and_then(|p| self.model.full_key(p))) {
+        match (self.model.identifiers, parent.and_then(|p| self.model.full_id(p))) {
             (Identifiers::Hierarchical, Some(prefix)) => format!("{prefix}.{key}"),
             _ => key.to_owned(),
         }
@@ -6995,7 +7063,7 @@ impl Builder<'_> {
                 .elements
                 .iter()
                 .filter(|e| e.environment == Some(env) && e.key.is_none() && e.instance_of.is_some())
-                .find(|e| self.model.full_key(e.id).is_some_and(|k| k.eq_ignore_ascii_case(t)))
+                .find(|e| self.model.full_id(e.id).is_some_and(|k| k.eq_ignore_ascii_case(t)))
                 .map(|e| e.id)
         })
     }
@@ -8905,6 +8973,25 @@ mod tests {
         assert_eq!(std::mem::size_of::<ElementId>(), 4);
     }
 
+    /// P2-142: `full_key` gives the canonical key `find` resolves; written
+    /// text resolves through `find_written`; the key is the text as
+    /// written, ordered as text.
+    #[test]
+    fn p2_142_element_key_round_trips_through_find() {
+        let m = model(
+            "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\"\n        }\n    }\n}\n",
+        );
+        let web = m.find_written("shop.web").expect("full id resolves");
+        assert_eq!(m.find_written("web"), None, "the bare id does not");
+        let key = m.full_key(web).expect("keyed");
+        assert_eq!(key.as_str(), "shop.web");
+        assert_eq!(key.to_string(), "shop.web");
+        assert_eq!(m.find(&key), Some(web));
+        assert_eq!(m.find(&ElementKey::from_written("SHOP.WEB")), Some(web), "ignoring case");
+        assert!(ElementKey::from_written("a.b") < ElementKey::from_written("a.c"));
+        assert_eq!(key.into_string(), "shop.web");
+    }
+
     #[test]
     fn relationship_id_size_is_pinned() {
         assert_eq!(std::mem::size_of::<RelationshipId>(), 4);
@@ -8960,7 +9047,7 @@ mod tests {
         for (i, e) in m.elements.iter().enumerate() {
             assert_eq!(e.id, ElementId(u32::try_from(i).unwrap()));
         }
-        let user = m.element(m.find("user").unwrap());
+        let user = m.element(m.find_written("user").unwrap());
         assert_eq!(user.kind, ElementKind::Person);
         assert_eq!(user.parent, None);
         assert_eq!(user.name.value, "Operator");
@@ -8971,13 +9058,13 @@ mod tests {
         assert_eq!(user.key.as_ref().unwrap().value, "user");
         assert!(text(&src, user.span).starts_with("user = person"));
 
-        let system = m.element(m.find("system").unwrap());
+        let system = m.element(m.find_written("system").unwrap());
         assert_eq!(system.kind, ElementKind::SoftwareSystem);
         assert_eq!(system.description.as_ref().unwrap().value, "Sells things.");
         assert_eq!(system.tags, ["Element", "Software System", "Core"]);
         assert!(text(&src, system.span).ends_with('}'));
 
-        let app = m.element(m.find("app").unwrap());
+        let app = m.element(m.find_written("app").unwrap());
         assert_eq!(app.kind, ElementKind::Container);
         assert_eq!(app.parent, Some(system.id));
         assert_eq!(app.description.as_ref().unwrap().value, "Serves pages.");
@@ -8985,7 +9072,7 @@ mod tests {
         assert_eq!(app.technology.as_ref().unwrap().value, "Rust, axum");
         assert_eq!(app.tags, ["Element", "Container", "Web"]);
 
-        let api = m.element(m.find("api").unwrap());
+        let api = m.element(m.find_written("api").unwrap());
         assert_eq!(api.kind, ElementKind::Component);
         assert_eq!(api.parent, Some(app.id));
         assert_eq!(api.description.as_ref().unwrap().value, "Answers requests.");
@@ -8999,10 +9086,10 @@ mod tests {
         assert_eq!(m.children(system.id), [app.id]);
         assert_eq!(m.children(app.id), [api.id]);
         assert!(m.children(user.id).is_empty());
-        assert_eq!(m.find("system.app"), Some(app.id));
-        assert_eq!(m.find("system.app.api"), Some(api.id));
-        assert_eq!(m.find("app.system"), None);
-        assert_eq!(m.find("nothing"), None);
+        assert_eq!(m.find_written("system.app"), Some(app.id));
+        assert_eq!(m.find_written("system.app.api"), Some(api.id));
+        assert_eq!(m.find_written("app.system"), None);
+        assert_eq!(m.find_written("nothing"), None);
     }
 
     #[test]
@@ -9109,10 +9196,10 @@ mod tests {
         }"#,
         ));
         assert_eq!(
-            m.element(m.find("model").unwrap()).name.value,
+            m.element(m.find_written("model").unwrap()).name.value,
             "Diagram file"
         );
-        assert_eq!(m.find("system.views"), Some(ElementId(2)));
+        assert_eq!(m.find_written("system.views"), Some(ElementId(2)));
     }
 
     #[test]
@@ -9135,7 +9222,7 @@ mod tests {
         assert_eq!(m.elements[1].description.as_ref().unwrap().value, "Sells.");
         // Ids match ignoring case (Structurizr; owner ruling,
         // phase2-decisions Part C, A.3 item 4).
-        assert_eq!(m.find("USER"), Some(ElementId(0)));
+        assert_eq!(m.find_written("USER"), Some(ElementId(0)));
     }
 
     // model-02: relationships
@@ -9157,10 +9244,10 @@ mod tests {
         let m = model(&src);
         assert_eq!(m.relationships.len(), 3);
         let (user, app, db, system) = (
-            m.find("user").unwrap(),
-            m.find("app").unwrap(),
-            m.find("db").unwrap(),
-            m.find("system").unwrap(),
+            m.find_written("user").unwrap(),
+            m.find_written("app").unwrap(),
+            m.find_written("db").unwrap(),
+            m.find_written("system").unwrap(),
         );
         let nested = m.relationship(RelationshipId(0));
         assert_eq!(nested.id, RelationshipId(0));
@@ -9197,8 +9284,8 @@ mod tests {
         user = person "Operator""#,
         ));
         let r = &m.relationships[0];
-        assert_eq!(r.source.value, m.find("user").unwrap());
-        assert_eq!(r.destination.value, m.find("shop").unwrap());
+        assert_eq!(r.source.value, m.find_written("user").unwrap());
+        assert_eq!(r.destination.value, m.find_written("shop").unwrap());
     }
 
     #[test]
@@ -9242,7 +9329,7 @@ mod tests {
         }"#,
         );
         let m = model(&src);
-        let (user, mail) = (m.find("user").unwrap(), m.find("mail").unwrap());
+        let (user, mail) = (m.find_written("user").unwrap(), m.find_written("mail").unwrap());
         let this = &m.relationships[0];
         assert_eq!((this.source.value, this.destination.value), (user, mail));
         assert_eq!(text(&src, this.source.span), "this");
@@ -9271,7 +9358,7 @@ mod tests {
         b -> a "Back"
         a -> b "Second""#,
         ));
-        let (a, b) = (m.find("a").unwrap(), m.find("b").unwrap());
+        let (a, b) = (m.find_written("a").unwrap(), m.find_written("b").unwrap());
         assert_eq!(
             m.find_relationship(a, b),
             [RelationshipId(0), RelationshipId(2)]
@@ -9319,11 +9406,11 @@ mod tests {
         assert!(text(&src, m.styles_span.unwrap()).starts_with("styles {"));
         assert!(text(&src, m.views_span.unwrap()).starts_with("views {"));
 
-        let user = m.style_of(m.find("user").unwrap());
+        let user = m.style_of(m.find_written("user").unwrap());
         assert_eq!(user.shape, Shape::Person);
         assert_eq!(user.background, C(0x0b, 0x3c, 0x6f));
         assert_eq!(user.color, C(255, 255, 255));
-        let db = m.style_of(m.find("db").unwrap());
+        let db = m.style_of(m.find_written("db").unwrap());
         assert_eq!(db.shape, Shape::Cylinder);
         assert_eq!(db.background, C(0xdd, 0xdd, 0xdd));
         assert_eq!(db.color, C(0, 0, 0));
@@ -9396,18 +9483,18 @@ mod tests {
             }
         }"#,
         ));
-        let tags = |k: &str| m.element(m.find(k).unwrap()).tags.clone();
+        let tags = |k: &str| m.element(m.find_written(k).unwrap()).tags.clone();
         assert_eq!(tags("user"), ["Element", "Person"]);
         assert_eq!(tags("shop"), ["Element", "Software System"]);
         assert_eq!(tags("app"), ["Element", "Container"]);
         assert_eq!(tags("api"), ["Element", "Component"]);
         assert_eq!(m.relationships[0].tags, ["Relationship"]);
 
-        let user = m.style_of(m.find("user").unwrap());
+        let user = m.style_of(m.find_written("user").unwrap());
         assert_eq!(user.color, C(1, 2, 3));
         assert_eq!(user.background, C(0xdd, 0xdd, 0xdd));
         assert_eq!(user.shape, Shape::Person);
-        assert_eq!(m.style_of(m.find("api").unwrap()).shape, Shape::Box);
+        assert_eq!(m.style_of(m.find_written("api").unwrap()).shape, Shape::Box);
         assert_eq!(
             ResolvedStyle::default_for(ElementKind::Person),
             ResolvedStyle {
@@ -9533,7 +9620,7 @@ mod tests {
         let m = model(&src);
         let v = m.view("c2").unwrap();
         assert_eq!(v.kind, ViewKind::Container);
-        assert_eq!(v.scope.element(), m.find("shop"));
+        assert_eq!(v.scope.element(), m.find_written("shop"));
         assert!(!v.technology.unwrap().value);
         assert_eq!(text(&src, v.technology.unwrap().span), "off");
         assert!(v.bus.unwrap().value);
@@ -9553,8 +9640,8 @@ mod tests {
         let focus: Vec<ElementId> = v.focus.iter().map(|f| f.value).collect();
         assert_eq!(keys(&m, &focus), ["web", "db", "job"]);
         assert_eq!(v.hide.len(), 2);
-        assert_eq!(v.hide[0].source.value, m.find("user").unwrap());
-        assert_eq!(v.hide[0].destination.value, m.find("web").unwrap());
+        assert_eq!(v.hide[0].source.value, m.find_written("user").unwrap());
+        assert_eq!(v.hide[0].destination.value, m.find_written("web").unwrap());
         assert_eq!(text(&src, v.hide[1].span), "hide api -> db");
         assert_eq!(v.include.len(), 1);
         assert_eq!(v.include[0].value, Selector::All);
@@ -9722,7 +9809,7 @@ mod tests {
         );
         let m = model(&src);
         let v = m.view("c2").unwrap();
-        let (user, web) = (m.find("user").unwrap(), m.find("web").unwrap());
+        let (user, web) = (m.find_written("user").unwrap(), m.find_written("web").unwrap());
         assert_eq!(v.positions.len(), 2);
         let at = v.position_of(web).unwrap();
         assert_eq!((at.x.value, at.y.value), (620, -480));
@@ -9730,7 +9817,7 @@ mod tests {
         assert_eq!(text(&src, at.y.span), "-480");
         assert_eq!(text(&src, at.element.span), "web");
         assert_eq!(v.position_of(user).unwrap().x.value, 220);
-        assert!(v.position_of(m.find("db").unwrap()).is_none());
+        assert!(v.position_of(m.find_written("db").unwrap()).is_none());
         let size = v.size_of(web).unwrap();
         assert_eq!((size.width.value, size.height.value), (280, 140));
         assert_eq!(text(&src, size.span), "size web 280 140");
@@ -9787,9 +9874,9 @@ mod tests {
         }"#,
         ));
         let v = m.view("c3").unwrap();
-        assert_eq!(v.scope.element(), m.find("web"));
-        assert_eq!(v.positions[0].element.value, m.find("api").unwrap());
-        assert_eq!(v.sizes[0].element.value, m.find("db").unwrap());
+        assert_eq!(v.scope.element(), m.find_written("web"));
+        assert_eq!(v.positions[0].element.value, m.find_written("api").unwrap());
+        assert_eq!(v.sizes[0].element.value, m.find_written("db").unwrap());
         let e = error(&in_workspace(
             SHOP,
             "        component shop.web {\n            include *\n            at web.shop 1 2\n        }",
@@ -10093,12 +10180,12 @@ mod tests {
         );
         assert_eq!(serving.hide.len(), 2);
         assert_eq!(m.view("C3-startup").unwrap().focus.len(), 3);
-        let app = m.find("app").unwrap();
+        let app = m.find_written("app").unwrap();
         let at = m.view("C2").unwrap().position_of(app).unwrap();
         assert_eq!((at.x.value, at.y.value), (800, 540));
-        let db = m.find("db").unwrap();
+        let db = m.find_written("db").unwrap();
         assert_eq!(m.style_of(db).shape, Shape::Cylinder);
-        assert!(m.element(m.find("vikunja").unwrap()).is_external());
+        assert!(m.element(m.find_written("vikunja").unwrap()).is_external());
     }
 
     // Oracle fixture test; the example's `relationship` style block is

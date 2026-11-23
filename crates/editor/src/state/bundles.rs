@@ -13,6 +13,7 @@
 // for vertices and anchors.
 
 use c4rizer_core::edit::LineRef;
+use c4rizer_core::model::ElementKey;
 use c4rizer_core::scene::ItemKey;
 use c4rizer_core::view::EdgeId;
 
@@ -148,7 +149,7 @@ impl State {
         let (_, build) = self.shown.as_ref()?;
         let model = self.scene_model()?;
         let e = build.plan.edges.get(edge.0 as usize)?;
-        let key = |b: c4rizer_core::view::BoxId| -> Option<String> {
+        let key = |b: c4rizer_core::view::BoxId| -> Option<ElementKey> {
             let element = build.plan.boxes.get(b.0 as usize)?.element;
             model.full_key(element)
         };

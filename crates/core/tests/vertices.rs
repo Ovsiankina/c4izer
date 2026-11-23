@@ -5,6 +5,7 @@
 // Tests name the model `m`, the build `b`, a line `l`, as the router does.
 #![allow(clippy::many_single_char_names, clippy::similar_names)]
 
+use c4rizer_core::model::ElementKey;
 use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::edit;
@@ -452,8 +453,8 @@ fn applied(src: &str, edits: &[edit::Edit]) -> edit::Applied {
 fn set_via(src: &str, dst: &str, points: Option<Vec<(i32, i32)>>) -> edit::Edit {
     edit::Edit::SetVia {
         view: "c2".to_owned(),
-        source: src.to_owned(),
-        destination: dst.to_owned(),
+        source: ElementKey::from_written(src),
+        destination: ElementKey::from_written(dst),
         order: None,
         points,
     }
@@ -481,8 +482,8 @@ fn p3_310_set_via_adds_after_last_at() {
         &src,
         &[edit::Edit::SetVia {
             view: "flow".to_owned(),
-            source: "web".to_owned(),
-            destination: "db".to_owned(),
+            source: ElementKey::from_written("web"),
+            destination: ElementKey::from_written("db"),
             order: Some("3".to_owned()),
             points: Some(vec![(400, 600)]),
         }],

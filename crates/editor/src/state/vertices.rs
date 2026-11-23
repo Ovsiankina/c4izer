@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use c4rizer_core::geom::{GRID_PX, Point};
+use c4rizer_core::model::ElementKey;
 use c4rizer_core::scene::ItemKey;
 use c4rizer_core::view::{BoxId, EdgeId};
 
@@ -274,7 +275,7 @@ impl State {
         let (_, build) = self.shown.as_ref()?;
         let model = self.scene_model()?;
         let e = build.plan.edges.get(edge.0 as usize)?;
-        let key = |b: BoxId| -> Option<String> {
+        let key = |b: BoxId| -> Option<ElementKey> {
             let element = build.plan.boxes.get(b.0 as usize)?.element;
             super::edit_key(model, element)
         };
@@ -289,7 +290,7 @@ impl State {
     /// Writes `vias` with the boxes `boxes` moved (canonical key to centre
     /// px), one batch, one undo step (P3-315). Nothing to write, nothing
     /// written.
-    pub(super) fn write_vias(&mut self, vias: Vec<ViaChange>, boxes: BTreeMap<String, (i32, i32)>) -> Vec<Effect> {
+    pub(super) fn write_vias(&mut self, vias: Vec<ViaChange>, boxes: BTreeMap<ElementKey, (i32, i32)>) -> Vec<Effect> {
         if vias.is_empty() && boxes.is_empty() {
             self.preview = None;
             return Vec::new();

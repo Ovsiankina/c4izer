@@ -10,6 +10,7 @@
 //! against Structurizr 6.2.4's `diagrams.jsp` and `structurizr-diagram.js`
 //! where noted). Test data uses roles, never personal names.
 
+use c4rizer_core::model::ElementKey;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -202,7 +203,7 @@ impl Shell {
     }
 
     fn rect(&self, key: &str) -> Rect {
-        let id = self.model().find(key).expect("element");
+        let id = self.model().find_written(key).expect("element");
         let b = self.scene().boxes_of(id)[0];
         self.scene().boxes[b.0 as usize].rect
     }
@@ -243,7 +244,7 @@ impl Shell {
     /// `source` to `destination`, away from its label.
     fn line_point(&self, source: &str, destination: &str) -> ScreenPoint {
         let model = self.model();
-        let (from, to) = (model.find(source).expect("source"), model.find(destination).expect("destination"));
+        let (from, to) = (model.find_written(source).expect("source"), model.find_written(destination).expect("destination"));
         let id = model.find_relationship(from, to)[0];
         let line = self
             .scene()
@@ -301,7 +302,7 @@ fn declared(key: &str) -> ViewRef {
 }
 
 fn el(key: &str) -> Selected {
-    Selected::Element(key.to_owned())
+    Selected::Element(ElementKey::from_written(key))
 }
 
 fn close(a: f32, b: f32) -> bool {
@@ -836,7 +837,7 @@ fn p2_700_auto_place_twice_is_byte_identical() {
 fn p2_700_auto_place_in_default_view_writes_view_first() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::ShowView(ViewRef::Default {
-        scope: "web".to_owned(),
+        scope: ElementKey::from_written("web"),
         kind: ViewKind::Component,
     }));
     sh.cmd(Command::AutoPlace);
@@ -1012,7 +1013,7 @@ fn p2_702_canvas_step_keeps_drawing_on_screen() {
     let mut sh = Shell::with(SHOP);
     let screen_of_shop = |sh: &Shell| {
         let model = parse(&sh.text()).expect("parses").model;
-        let id = model.find("shop").expect("shop");
+        let id = model.find_written("shop").expect("shop");
         let b = sh.scene().boxes.iter().find(|b| b.element == id).expect("drawn").rect;
         sh.s.camera.to_screen(b.min)
     };
@@ -1324,7 +1325,7 @@ fn p2_725_tag_filter_lists_user_defined_tags_only() {
     // Bank box's `External` is listed (as Structurizr 6.2.4 lists it).
     assert_eq!(sh.s.tag_choices(), ["Buyer", "External", "Web"]);
     sh.cmd(Command::TagFilter(vec!["External".to_owned()]));
-    let bank = sh.model().find("bank").expect("bank");
+    let bank = sh.model().find_written("bank").expect("bank");
     let bank_box = ItemKey::Box(sh.scene().boxes_of(bank)[0]);
     assert!(!sh.s.draw_list().faded.contains(&bank_box), "External picks the external box");
 }
@@ -1338,10 +1339,10 @@ fn p2_725_tag_filter_marks_untagged_items() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::TagFilter(vec!["Buyer".to_owned()]));
     let faded = sh.s.draw_list().faded;
-    let customer = sh.model().find("customer").expect("customer");
+    let customer = sh.model().find_written("customer").expect("customer");
     let box_of = |sh: &Shell, id| ItemKey::Box(sh.scene().boxes_of(id)[0]);
     assert!(!faded.contains(&box_of(&sh, customer)));
-    let clerk = sh.model().find("clerk").expect("clerk");
+    let clerk = sh.model().find_written("clerk").expect("clerk");
     assert!(faded.contains(&box_of(&sh, clerk)));
     assert!(faded.iter().any(|k| matches!(k, ItemKey::Line(_))));
     sh.cmd(Command::TagFilter(Vec::new()));
@@ -1361,9 +1362,9 @@ fn p2_726_perspective_list_and_marks() {
     assert_eq!(sh.s.perspective_choices(), ["Security"]);
     sh.cmd(Command::Perspective(Some("Security".to_owned())));
     let faded = sh.s.draw_list().faded;
-    let clerk = sh.model().find("clerk").expect("clerk");
+    let clerk = sh.model().find_written("clerk").expect("clerk");
     assert!(faded.contains(&ItemKey::Box(sh.scene().boxes_of(clerk)[0])));
-    let customer = sh.model().find("customer").expect("customer");
+    let customer = sh.model().find_written("customer").expect("customer");
     assert!(!faded.contains(&ItemKey::Box(sh.scene().boxes_of(customer)[0])));
     sh.cmd(Command::Perspective(None));
     assert!(sh.s.draw_list().faded.is_empty());
@@ -1534,7 +1535,7 @@ fn edit_5_double_click_edits_label_and_title() {
     use c4rizer_core::scene::ItemKey;
     let mut sh = Shell::with(SHOP);
     let model = sh.model();
-    let (from, to) = (model.find("customer").expect("customer"), model.find("shop").expect("shop"));
+    let (from, to) = (model.find_written("customer").expect("customer"), model.find_written("shop").expect("shop"));
     let rel = model.find_relationship(from, to)[0];
     let edge = sh.scene().lines.iter().find(|l| l.relationships.contains(&rel)).expect("line").edge;
     let at = sh.s.camera.to_screen(sh.scene().item_bounds(ItemKey::Label(edge)).expect("label").centre());
@@ -1929,7 +1930,7 @@ fn p2_665_svg_text_choice_writes_nothing() {
 fn p2_734_breadcrumb_names_c4_level() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::ShowView(ViewRef::Default {
-        scope: "web".to_owned(),
+        scope: ElementKey::from_written("web"),
         kind: ViewKind::Component,
     }));
     // Amended at step 5: a crumb names the level of the view it opens

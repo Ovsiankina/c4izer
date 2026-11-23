@@ -53,7 +53,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
-use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
+use c4rizer_core::model::{ElementKey, Mode, Model, Parsed, ViewKind};
 
 use crate::export_files;
 use c4rizer_core::pipeline::{
@@ -91,8 +91,8 @@ pub enum ViewRef {
     /// The default view of `scope` (EDIT-15); once written by
     /// `edit::Edit::AddDefaultView` it is `Declared("<scope>-<kind>")`.
     Default {
-        /// The scope's canonical element key (`Element::key`).
-        scope: String,
+        /// The scope's canonical element key (`Model::full_key`).
+        scope: ElementKey,
         /// `Container` (of a system), `Component` (of a container) or
         /// `SystemContext` (of a system, model-only files).
         kind: ViewKind,
@@ -976,6 +976,7 @@ fn run_thread(
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1067,7 +1068,7 @@ mod tests {
     fn view_ref_key_and_extension() {
         assert_eq!(declared("context").key(), "context");
         let d = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         assert_eq!(d.key(), "web-component");
@@ -1442,7 +1443,7 @@ mod tests {
     fn edit_15_default_view_built_or_no_view() {
         let parsed = shop();
         let view = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         let job = |view: &ViewRef| Job::Build {
@@ -1461,7 +1462,7 @@ mod tests {
         assert!(build.scene.boxes.len() >= 2);
         // `shop` already has a container view: its default does not open.
         let gone = ViewRef::Default {
-            scope: "shop".to_owned(),
+            scope: ElementKey::from_written("shop"),
             kind: ViewKind::Container,
         };
         let reply = serve(req(4, job(&gone)), &AtomicBool::new(false));

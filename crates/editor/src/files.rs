@@ -49,7 +49,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use c4rizer_core::model::ViewKind;
+use c4rizer_core::model::{ElementKey, ViewKind};
 
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM, ScenePoint};
 use crate::worker::{ExportFormat, ViewRef, Wake};
@@ -812,13 +812,17 @@ fn view_from_text(s: &str) -> Option<ViewRef> {
         .into_iter()
         .find(|k| k.keyword() == kind)?;
     Some(ViewRef::Default {
-        scope: scope.to_owned(),
+        // DECISION: the state file holds the canonical key the editor
+        // wrote (`view_to_text`), read back as is; a stale one simply
+        // finds no element and the view falls back (EDIT-13).
+        scope: ElementKey::from_written(scope),
         kind,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver};
@@ -900,7 +904,7 @@ mod tests {
             dir.join("other\tname.dsl"),
             FileMemory {
                 view: ViewRef::Default {
-                    scope: "shop".to_owned(),
+                    scope: ElementKey::from_written("shop"),
                     kind: ViewKind::Container,
                 },
                 camera: Camera::default(),

@@ -647,7 +647,7 @@ fn p4_113_every_view_change_is_recorded() {
     sh.show("shop-context");
     // Context menu Enter.
     let at = {
-        let id = sh.model().find("shop").expect("shop");
+        let id = sh.model().find_written("shop").expect("shop");
         let b = sh.scene().boxes_of(id)[0];
         sh.s.camera.to_screen(sh.scene().boxes[b.0 as usize].rect.centre())
     };

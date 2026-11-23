@@ -106,7 +106,7 @@ fn perf_core_24_rerender_after_move_under_100ms() {
     let before = build_view(&m, C3, &Keep::default(), &go()).expect("builds");
     // `mail` two cells right: clear of every other box, every line
     // touching it re-routed in the full route.
-    let mail = before.plan.boxes_of(m.find("mail").expect("mail"))[0];
+    let mail = before.plan.boxes_of(m.find_written("mail").expect("mail"))[0];
     let at = before.scene.centres[mail.0 as usize];
     let mut keep = Keep::from_previous(&before.plan, &before.scene.centres);
     keep.moved = BTreeMap::from([(mail, Point::new(at.x + 2, at.y))]);

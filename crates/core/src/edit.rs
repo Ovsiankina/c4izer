@@ -140,7 +140,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::model::{
-    self, Colour, ElementId, ElementKind, ElementStyle, LabelMode, CrossingStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
+    self, Colour, ElementId, ElementKey, ElementKind, ElementStyle, LabelMode, CrossingStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
 };
 use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 
@@ -150,11 +150,11 @@ use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelationshipRef {
-    /// Source element key: the canonical element key (the bare
-    /// `model::Element::key` in phase 1).
-    pub source: String,
+    /// Source element key: the canonical element key
+    /// (`model::Model::full_key`).
+    pub source: ElementKey,
     /// Destination element key, canonical like `source`.
-    pub destination: String,
+    pub destination: ElementKey,
     /// Index among the `source -> destination` relationships, in source
     /// order, from 0.
     pub ordinal: u32,
@@ -163,10 +163,10 @@ pub struct RelationshipRef {
 impl RelationshipRef {
     /// The `ordinal`-th relationship from `source` to `destination`.
     /// Serves DSL-10, EDIT-24.
-    pub fn new(source: impl Into<String>, destination: impl Into<String>, ordinal: u32) -> Self {
+    pub fn new(source: ElementKey, destination: ElementKey, ordinal: u32) -> Self {
         RelationshipRef {
-            source: source.into(),
-            destination: destination.into(),
+            source,
+            destination,
             ordinal,
         }
     }
@@ -234,9 +234,8 @@ pub enum ViewField {
 pub enum TextTarget {
     /// A field of the element with this key.
     Element {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// Which field.
         field: ElementField,
     },
@@ -327,9 +326,8 @@ pub enum Edit {
     Move {
         /// View key (`model::ViewSpec::key`).
         view: String,
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// New centre in pixels, in the order `(x, y)`, or `None` for no
         /// `at` line. Written as given; grid snapping is the editor's job
         /// (EDIT-2).
@@ -342,9 +340,8 @@ pub enum Edit {
     Resize {
         /// View key (`model::ViewSpec::key`).
         view: String,
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// New size in pixels, in the order `(width, height)`, each
         /// `> 0`, or `None` for no `size` line. Off-grid values (DSL-7:
         /// multiples of 20) are written as given and flagged by lint L5,
@@ -377,9 +374,8 @@ pub enum Edit {
     /// says (DSL-13, EDIT-17). A multi-box change is one batch, one undo
     /// step (EDIT-17, EDIT-19).
     SetStyle {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// `all <tag>` or `this box only`.
         target: StyleTarget,
         /// The property and its value.
@@ -391,9 +387,8 @@ pub enum Edit {
     /// removed only when they hold nothing but what `edit` wrote there;
     /// otherwise only the tag, or the per-box properties, go (EDIT-21).
     ResetStyle {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
     },
     /// Write the default view of `scope` (EDIT-15): a `kind` view with key
     /// `<scope id>-<kind>` (`<kind>` is `ViewKind::keyword`), appended as
@@ -408,9 +403,8 @@ pub enum Edit {
     /// block, and the `views` block too when it holds nothing but what
     /// `edit` wrote there.
     AddDefaultView {
-        /// The scope element key (the bare `model::Element::key` in phase
-        /// 1).
-        scope: String,
+        /// The scope's canonical element key (`model::Model::full_key`).
+        scope: ElementKey,
         /// `ViewKind::Container`: container view of a software system;
         /// `ViewKind::Component`: component view of a container;
         /// `ViewKind::SystemContext`: system context view of a software
@@ -438,9 +432,8 @@ pub enum Edit {
     /// created it. The inverse adds the view back with its `at` and
     /// `size` lines.
     RemoveDefaultView {
-        /// The scope element key (the bare `model::Element::key` in phase
-        /// 1).
-        scope: String,
+        /// The scope's canonical element key (`model::Model::full_key`).
+        scope: ElementKey,
         /// The view kind, as in `AddDefaultView`; a view with the key
         /// `<scope id>-<kind>` of another kind or scope is
         /// `EditErrorKind::InvalidValue`, no view with that key is
@@ -522,9 +515,9 @@ pub enum Edit {
         /// View key (`model::ViewSpec::key`).
         view: String,
         /// The line's source, a canonical element key.
-        source: String,
+        source: ElementKey,
         /// The line's destination, a canonical element key.
-        destination: String,
+        destination: ElementKey,
         /// In a dynamic view, the step's number (`via <n>: ...`);
         /// `None` names the lowest-numbered step between those ends, and
         /// is the only form in other views.
@@ -544,9 +537,9 @@ pub enum Edit {
         /// View key (`model::ViewSpec::key`).
         view: String,
         /// The line's source, a canonical element key.
-        source: String,
+        source: ElementKey,
         /// The line's destination, a canonical element key.
-        destination: String,
+        destination: ElementKey,
         /// In a dynamic view, the step's number (`anchor <n>: ...`), as
         /// for `SetVia`.
         order: Option<String>,
@@ -614,9 +607,9 @@ pub enum Edit {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LineRef {
     /// The line's source, a canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, a canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// In a dynamic view, the step's number.
     pub order: Option<String>,
 }
@@ -624,10 +617,10 @@ pub struct LineRef {
 impl LineRef {
     /// The line from `source` to `destination` (step `order`). Serves
     /// P4-424.
-    pub fn new(source: impl Into<String>, destination: impl Into<String>, order: Option<String>) -> Self {
+    pub fn new(source: ElementKey, destination: ElementKey, order: Option<String>) -> Self {
         LineRef {
-            source: source.into(),
-            destination: destination.into(),
+            source,
+            destination,
             order,
         }
     }
@@ -1548,7 +1541,7 @@ fn no_workspace() -> EditErrorKind {
 /// The bare key of `id` (phase 1: always written).
 /// The canonical element key: `Model::full_key`, the dotted full id
 /// under hierarchical ids (P2-142).
-fn element_key(model: &model::Model, id: ElementId) -> String {
+fn element_key(model: &model::Model, id: ElementId) -> ElementKey {
     model.full_key(id).unwrap_or_default()
 }
 
@@ -1568,8 +1561,8 @@ fn gone(target: &str) -> EditErrorKind {
     }
 }
 
-fn find_element(model: &model::Model, key: &str) -> Res<ElementId> {
-    model.find(key).ok_or_else(|| gone(key))
+fn find_element(model: &model::Model, key: &ElementKey) -> Res<ElementId> {
+    model.find(key).ok_or_else(|| gone(key.as_str()))
 }
 
 // ----------------------------------------------------- at and size lines
@@ -1588,7 +1581,7 @@ impl LineKind {
         }
     }
 
-    fn edit(self, view: &str, element: &str, value: Option<(i32, i32)>) -> Edit {
+    fn edit(self, view: &str, element: &ElementKey, value: Option<(i32, i32)>) -> Edit {
         match self {
             LineKind::At => Edit::Move {
                 view: view.to_owned(),
@@ -1624,7 +1617,7 @@ impl LineKind {
 
 /// The view and element of a box edit: the view exists and the element
 /// is in it (EDIT-24).
-fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m ViewSpec, ElementId)> {
+fn find_box<'m>(model: &'m model::Model, view: &str, element: &ElementKey) -> Res<(&'m ViewSpec, ElementId)> {
     let spec = model.view(view).ok_or_else(|| gone(view))?;
     // P3-117: an instance without an id is `<element key>_<n>` in its
     // view's environment; another environment may use the same key.
@@ -1632,7 +1625,7 @@ fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m 
     let local = included
         .iter()
         .copied()
-        .find(|&e| model.element(e).key.is_none() && model.full_key(e).is_some_and(|k| k.eq_ignore_ascii_case(element)));
+        .find(|&e| model.element(e).key.is_none() && model.full_key(e).is_some_and(|k| k.as_str().eq_ignore_ascii_case(element.as_str())));
     let id = match local {
         Some(id) => id,
         None => find_element(model, element)?,
@@ -1640,14 +1633,14 @@ fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m 
     let drawn = included.contains(&id)
         || spec.position_of(id).is_some()
         || spec.size_of(id).is_some();
-    if drawn { Ok((spec, id)) } else { Err(gone(element)) }
+    if drawn { Ok((spec, id)) } else { Err(gone(element.as_str())) }
 }
 
 /// `Move` and `Resize` (DSL-7, DSL-9, EDIT-18).
 fn box_line(
     current: &mut Parsed,
     view: &str,
-    element: &str,
+    element: &ElementKey,
     value: Option<(i32, i32)>,
     kind: LineKind,
 ) -> Res<Vec<Edit>> {
@@ -1958,8 +1951,8 @@ fn via_points(points: &[(i32, i32)]) -> String {
 fn set_via(
     current: &mut Parsed,
     view: &str,
-    source: &str,
-    destination: &str,
+    source: &ElementKey,
+    destination: &ElementKey,
     order: Option<&str>,
     points: Option<&[(i32, i32)]>,
 ) -> Res<Vec<Edit>> {
@@ -2044,8 +2037,8 @@ fn anchor_ends(from: Option<crate::anchor::Anchor>, to: Option<crate::anchor::An
 fn set_anchor(
     current: &mut Parsed,
     view: &str,
-    source: &str,
-    destination: &str,
+    source: &ElementKey,
+    destination: &ElementKey,
     order: Option<&str>,
     (from, to): (Option<crate::anchor::Anchor>, Option<crate::anchor::Anchor>),
 ) -> Res<Vec<Edit>> {
@@ -2391,7 +2384,7 @@ fn target_file(model: &model::Model, target: &TextTarget) -> Res<FileId> {
 
 /// The file declaring the element keyed `element`: a per-box `tags` line
 /// goes there (B dsl-breadth 8).
-fn element_file(model: &model::Model, element: &str) -> Res<FileId> {
+fn element_file(model: &model::Model, element: &ElementKey) -> Res<FileId> {
     Ok(model.element(find_element(model, element)?).span.file)
 }
 
@@ -2471,7 +2464,7 @@ impl<'a> TextField<'a> {
                     RelationshipField::Description => (r.description.clone(), 0),
                     RelationshipField::Technology => (r.technology.clone(), 1),
                 };
-                let owner = cx.statement(r.span).ok_or_else(|| gone(&relationship.source))?;
+                let owner = cx.statement(r.span).ok_or_else(|| gone(relationship.source.as_str()))?;
                 let arrow = cx
                     .head(owner)
                     .iter()
@@ -2591,7 +2584,7 @@ fn resolve_relationship(model: &model::Model, r: &RelationshipRef) -> Res<Relati
 
 fn set_style(
     current: &mut Parsed,
-    element: &str,
+    element: &ElementKey,
     target: &StyleTarget,
     property: StyleProperty,
 ) -> Res<Vec<Edit>> {
@@ -2645,7 +2638,7 @@ fn set_style(
     }
 }
 
-fn reset_style(current: &mut Parsed, element: &str) -> Res<Vec<Edit>> {
+fn reset_style(current: &mut Parsed, element: &ElementKey) -> Res<Vec<Edit>> {
     let model = &current.model;
     let id = find_element(model, element)?;
     let Some(tag) = per_box_tag(model, id) else {
@@ -2882,9 +2875,9 @@ fn new_per_box_tag(model: &model::Model, id: ElementId) -> String {
 
 /// Adds `tags "<tag>"` as the last line of the element's block, creating
 /// the block when it has none (DSL-13).
-fn plan_add_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
+fn plan_add_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element))?;
+    let owner = cx.statement(e.span).ok_or_else(|| gone(element.as_str()))?;
     let line = format!("tags {}", text::quote(tag));
     if let Some(block) = &owner.block {
         return Ok(cx.insert_last(owner, block, &one_line(line)));
@@ -2908,9 +2901,9 @@ fn plan_add_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
 /// Removes `tag` from the element: from its tags literal, the literal
 /// when it holds only that tag, the `tags` line when it holds only that
 /// literal, and the element's block when it holds only that line.
-fn plan_remove_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
+fn plan_remove_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element))?;
+    let owner = cx.statement(e.span).ok_or_else(|| gone(element.as_str()))?;
     let Some(literal) = e
         .declared_tags
         .iter()
@@ -2970,7 +2963,7 @@ fn plan_remove_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
 
 // ---------------------------------------------------------- default view
 
-fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Vec<Edit>> {
+fn add_default_view(current: &mut Parsed, scope: &ElementKey, kind: ViewKind) -> Res<Vec<Edit>> {
     let model = &current.model;
     let id = find_element(model, scope)?;
     let fits = match kind {
@@ -2991,7 +2984,7 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
     };
     if !fits {
         return Err(EditErrorKind::InvalidValue {
-            value: scope.to_owned(),
+            value: scope.to_string(),
             reason: "this element cannot be the scope of that view kind",
         });
     }
@@ -3035,7 +3028,7 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
 // held, since the text does not say who created it; a file whose `views`
 // block was empty before `AddDefaultView` gets the same model back, not
 // the same bytes.
-fn remove_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Vec<Edit>> {
+fn remove_default_view(current: &mut Parsed, scope: &ElementKey, kind: ViewKind) -> Res<Vec<Edit>> {
     let key = format!("{scope}-{}", kind.keyword());
     let model = &current.model;
     let view = model.view(&key).ok_or_else(|| gone(&key))?;
@@ -3181,7 +3174,7 @@ workspace {
     fn mv(view: &str, element: &str, x: i32, y: i32) -> Edit {
         Edit::Move {
             view: view.into(),
-            element: element.into(),
+            element: ElementKey::from_written(element),
             centre: Some((x, y)),
         }
     }
@@ -3189,7 +3182,7 @@ workspace {
     fn resize(view: &str, element: &str, w: i32, h: i32) -> Edit {
         Edit::Resize {
             view: view.into(),
-            element: element.into(),
+            element: ElementKey::from_written(element),
             size: Some((w, h)),
         }
     }
@@ -3212,14 +3205,14 @@ workspace {
 
     fn el_field(element: &str, field: ElementField) -> TextTarget {
         TextTarget::Element {
-            element: element.into(),
+            element: ElementKey::from_written(element),
             field,
         }
     }
 
     fn rel_field(source: &str, destination: &str, ordinal: u32, field: RelationshipField) -> TextTarget {
         TextTarget::Relationship {
-            relationship: RelationshipRef::new(source, destination, ordinal),
+            relationship: RelationshipRef::new(ElementKey::from_written(source), ElementKey::from_written(destination), ordinal),
             field,
         }
     }
@@ -3262,7 +3255,7 @@ workspace {
 
     fn style(element: &str, target: StyleTarget, property: StyleProperty) -> Edit {
         Edit::SetStyle {
-            element: element.into(),
+            element: ElementKey::from_written(element),
             target,
             property,
         }
@@ -3274,7 +3267,7 @@ workspace {
 
     fn style_of(source: &str, element: &str) -> model::ResolvedStyle {
         let model = parse(source).model;
-        model.style_of(model.find(element).unwrap())
+        model.style_of(model.find_written(element).unwrap())
     }
 
     const RED: Colour = Colour { r: 0xaa, g: 0, b: 0 };
@@ -3315,7 +3308,7 @@ workspace {
             applied.inverse,
             vec![Edit::Move {
                 view: "c2".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 centre: Some((100, 100)),
             }]
         );
@@ -3354,7 +3347,7 @@ workspace {
             round_trip(&line, &[clear_text(el_field("db", ElementField::Description))]);
         assert!(!cleared.contains("Keeps rows"));
         let model = parse(&back).model;
-        let db = model.find("db").unwrap();
+        let db = model.find_written("db").unwrap();
         assert_eq!(model.element(db).description.as_ref().unwrap().value, "Keeps rows");
     }
 
@@ -3547,7 +3540,7 @@ workspace {
                 },
                 Edit::Move {
                     view: "c2".into(),
-                    element: "user".into(),
+                    element: ElementKey::from_written("user"),
                     centre: Some((100, 100)),
                 },
             ]
@@ -3588,7 +3581,7 @@ workspace {
             resize("c2", "api", 240, 160),
             Edit::Move {
                 view: "c2".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 centre: None,
             },
             set_text(el_field("db", ElementField::Technology), "SQL"),
@@ -3596,9 +3589,9 @@ workspace {
             set_text(view_field("c2", ViewField::Title), "Containers"),
             style("api", tag("Service"), StyleProperty::Color(Some(BLUE))),
             style("db", StyleTarget::ThisBox, StyleProperty::Shape(Some(Shape::Cylinder))),
-            Edit::ResetStyle { element: "db".into() },
+            Edit::ResetStyle { element: ElementKey::from_written("db") },
             Edit::AddDefaultView {
-                scope: "api".into(),
+                scope: ElementKey::from_written("api"),
                 kind: ViewKind::Component,
             },
         ];
@@ -3647,13 +3640,13 @@ workspace {
             "ext = softwareSystem \"External\" {\n            tags \"ext\"\n            worker = container \"Worker\"\n            worker -> api \"Calls\"\n        }"
         ));
         assert_eq!(style_of(&undone.text, "ext").shape, Shape::Cylinder);
-        let reset = ok(&undone.text, &[Edit::ResetStyle { element: "ext".into() }]);
+        let reset = ok(&undone.text, &[Edit::ResetStyle { element: ElementKey::from_written("ext") }]);
         assert!(reset.text.contains(
             "ext = softwareSystem \"External\" {\n            worker = container \"Worker\"\n            worker -> api \"Calls\"\n        }"
         ));
         assert!(!reset.text.contains("\"ext\""));
         let model = parse(&reset.text).model;
-        assert!(model.find("ext.worker").is_some());
+        assert!(model.find_written("ext.worker").is_some());
         assert_eq!(model.relationships.len(), 2);
     }
 
@@ -3686,7 +3679,7 @@ workspace {
         assert_eq!(original.inverse.len(), applied.inverse.len());
         assert!(applied.inverse.contains(&Edit::Move {
             view: "c2".into(),
-            element: "user".into(),
+            element: ElementKey::from_written("user"),
             centre: Some((120, 140)),
         }));
     }
@@ -3721,7 +3714,7 @@ workspace {
             .unwrap();
         assert_eq!(
             RelationshipRef::of(model, pays.id),
-            RelationshipRef::new("user", "api", 2)
+            RelationshipRef::new(ElementKey::from_written("user"), ElementKey::from_written("api"), 2)
         );
     }
 
@@ -3842,7 +3835,7 @@ workspace {
         // writes `""`; the technology stays in its slot.
         let applied = ok(BASE, &[clear_text(el_field("api", ElementField::Description))]);
         assert!(applied.text.contains("api = container \"API\" \"\" \"Rust\"\n"));
-        let api = parse(&applied.text).model.find("api").unwrap();
+        let api = parse(&applied.text).model.find_written("api").unwrap();
         let model = parse(&applied.text).model;
         assert_eq!(model.element(api).technology.as_ref().unwrap().value, "Rust");
         assert_eq!(ok(&applied.text, &applied.inverse).text, BASE);
@@ -3951,12 +3944,12 @@ workspace {
         let moved = [
             Edit::Move {
                 view: "c2".into(),
-                element: "api".into(),
+                element: ElementKey::from_written("api"),
                 centre: None,
             },
             Edit::Resize {
                 view: "c2".into(),
-                element: "api".into(),
+                element: ElementKey::from_written("api"),
                 size: None,
             },
         ];
@@ -3968,7 +3961,7 @@ workspace {
         let (_, back) = round_trip(&source, &[mv("c2", "api", 0, 0)]);
         assert_eq!(back, source);
         let boxed = ok(&source, &[style("db", StyleTarget::ThisBox, StyleProperty::Shape(Some(Shape::Cylinder)))]);
-        let (_, back) = round_trip(&boxed.text, &[Edit::ResetStyle { element: "db".into() }]);
+        let (_, back) = round_trip(&boxed.text, &[Edit::ResetStyle { element: ElementKey::from_written("db") }]);
         same_model(&back, &boxed.text);
     }
 
@@ -3981,7 +3974,7 @@ workspace {
             (mv("c2", "user", 0, 0), "c2"),
             (set_text(el_field("db", ElementField::Name), "x"), "db"),
             (style("db", tag("Container"), StyleProperty::Background(Some(RED))), "db"),
-            (Edit::ResetStyle { element: "db".into() }, "db"),
+            (Edit::ResetStyle { element: ElementKey::from_written("db") }, "db"),
             (
                 set_text(rel_field("user", "db", 0, RelationshipField::Description), "x"),
                 "db",
@@ -4179,7 +4172,7 @@ workspace {
             &source,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "db", 200, 200),
@@ -4195,7 +4188,7 @@ workspace {
         let again = ok(
             &applied.text,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4209,7 +4202,7 @@ workspace {
         let e = fail(
             &clash,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4218,7 +4211,7 @@ workspace {
         let applied = ok(
             BASE,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::SystemContext,
             }],
         );
@@ -4238,7 +4231,7 @@ workspace {
         ] {
             let batch = [
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::SystemContext,
                 },
                 second,
@@ -4261,7 +4254,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4308,7 +4301,7 @@ workspace {
         let applied = ok(
             MODEL_ONLY,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4332,7 +4325,7 @@ workspace {
             &source,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "db", 200, 200),
@@ -4343,7 +4336,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4354,7 +4347,7 @@ workspace {
 
     fn remove_default(scope: &str, kind: ViewKind) -> Edit {
         Edit::RemoveDefaultView {
-            scope: scope.into(),
+            scope: ElementKey::from_written(scope),
             kind,
         }
     }
@@ -4365,7 +4358,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4385,7 +4378,7 @@ workspace {
         let added = ok(
             &styled(),
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         )
@@ -4452,7 +4445,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::SystemContext,
                 },
                 mv("sys-systemContext", "user", 100, 100),
@@ -4472,7 +4465,7 @@ workspace {
             let e = fail(
                 MODEL_ONLY,
                 &[Edit::AddDefaultView {
-                    scope: scope.into(),
+                    scope: ElementKey::from_written(scope),
                     kind,
                 }],
             );
@@ -4481,7 +4474,7 @@ workspace {
         let e = fail(
             MODEL_ONLY,
             &[Edit::AddDefaultView {
-                scope: "nobody".into(),
+                scope: ElementKey::from_written("nobody"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4499,7 +4492,7 @@ workspace {
                 style("api", StyleTarget::ThisBox, StyleProperty::Color(Some(GREEN))),
             ],
         );
-        let reset = ok(&boxed.text, &[Edit::ResetStyle { element: "api".into() }]);
+        let reset = ok(&boxed.text, &[Edit::ResetStyle { element: ElementKey::from_written("api") }]);
         assert_eq!(reset.text, source);
         assert_eq!(style_of(&reset.text, "api").background, RED);
         // Its inverse gives the per-box style back.
@@ -4507,7 +4500,7 @@ workspace {
         assert_eq!(style_of(&back.text, "api").background, BLUE);
         assert_eq!(style_of(&back.text, "api").color, GREEN);
         // No per-box tag: nothing to do.
-        let none = ok(&source, &[Edit::ResetStyle { element: "db".into() }]);
+        let none = ok(&source, &[Edit::ResetStyle { element: ElementKey::from_written("db") }]);
         assert_eq!(none.text, source);
         assert!(none.inverse.is_empty());
         // A block holding a comment keeps it; the properties and the tag go.
@@ -4515,7 +4508,7 @@ workspace {
             "element \"sys.api\" {\n",
             "element \"sys.api\" {\n                // kept\n",
         );
-        let reset = ok(&commented, &[Edit::ResetStyle { element: "api".into() }]);
+        let reset = ok(&commented, &[Edit::ResetStyle { element: ElementKey::from_written("api") }]);
         assert!(reset.text.contains("element \"sys.api\" {\n                // kept\n            }"));
         assert!(!reset.text.contains("tags \"sys.api\""));
         assert_eq!(style_of(&reset.text, "api").background, RED);

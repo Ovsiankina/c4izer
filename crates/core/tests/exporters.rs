@@ -952,7 +952,7 @@ fn p3_424_static_site_index_and_links() {
     assert!(!c1.contains("alt=\"Worker\""), "{c1}");
     // The area sits on the box, in the SVG's own pixels.
     let scene = &all.view("C1").unwrap().scene;
-    let system = model.find("system").unwrap();
+    let system = model.find_written("system").unwrap();
     let b = scene.boxes.iter().find(|b| b.element == system).unwrap();
     let (x0, y0) = (b.rect.min.x - scene.bounds.min.x, b.rect.min.y - scene.bounds.min.y);
     let coords = format!("coords=\"{x0},{y0},{},{}\"", x0 + b.rect.width(), y0 + b.rect.height());
@@ -1197,7 +1197,7 @@ fn p3_416_made_up_ids_never_take_written_ones() {
     let view = m.view("d").unwrap();
     let instance = m.elements.iter().find(|e| e.instance_of.is_some()).unwrap().id;
     assert!(m.included(view).contains(&instance), "{:?}", m.included(view));
-    assert_eq!(m.find("zz_1").map(|e| m.element(e).name.value.clone()).as_deref(), Some("T"));
+    assert_eq!(m.find_written("zz_1").map(|e| m.element(e).name.value.clone()).as_deref(), Some("T"));
     // Written `e3` and `s_1` beside an element with no id, and a group.
     let m = read(r#"{"model": {"softwareSystems": [{"id": "1", "name": "S", "properties": {"structurizr.dsl.identifier": "zz"}},
           {"id": "2", "name": "T", "properties": {"structurizr.dsl.identifier": "e3"}}, {"id": "3", "name": "U"},
@@ -1205,7 +1205,7 @@ fn p3_416_made_up_ids_never_take_written_ones() {
         "deploymentNodes": [{"id": "4", "name": "DN", "environment": "Prod", "children": [],
           "softwareSystemInstances": [{"id": "5", "softwareSystemId": "1", "environment": "Prod", "deploymentGroups": ["grp"], "instanceId": 1}]}]}}"#);
     assert_eq!(m.elements.len(), 6);
-    assert_eq!(m.find("e3").map(|e| m.element(e).name.value.clone()).as_deref(), Some("T"));
+    assert_eq!(m.find_written("e3").map(|e| m.element(e).name.value.clone()).as_deref(), Some("T"));
 }
 
 /// P3-416 under `!identifiers hierarchical`: an instance whose implicit
@@ -1223,7 +1223,7 @@ fn p3_416_hierarchical_instance_id_taken() {
     let m = model::parse_json(text.as_bytes(), &mut Watch::default()).unwrap_or_else(|e| panic!("{e}"));
     let instance = m.elements.iter().find(|e| e.instance_of.is_some()).unwrap().id;
     assert!(m.included(m.view("d").unwrap()).contains(&instance));
-    assert_eq!(m.find("sys.api_1").map(|e| m.element(e).name.value.clone()).as_deref(), Some("Api one"));
+    assert_eq!(m.find_written("sys.api_1").map(|e| m.element(e).name.value.clone()).as_deref(), Some("Api one"));
     let all = pipeline::build_all(&m, &AtomicBool::new(false)).unwrap();
     let back = model::parse_json(export::json(&m, &all, None).as_bytes(), &mut Watch::default()).unwrap_or_else(|e| panic!("{e}"));
     let instance = back.elements.iter().find(|e| e.instance_of.is_some()).unwrap().id;

@@ -1822,7 +1822,7 @@ mod tests {
     }
 
     fn el(model: &Model, key: &str) -> ElementId {
-        model.find(key).unwrap_or_else(|| panic!("no element {key}"))
+        model.find_written(key).unwrap_or_else(|| panic!("no element {key}"))
     }
 
     fn rel(model: &Model, src: &str, dst: &str) -> RelationshipId {

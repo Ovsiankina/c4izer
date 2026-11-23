@@ -1024,6 +1024,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use std::time::{Duration, Instant};
 
     use std::sync::Arc;
@@ -1073,7 +1074,7 @@ mod tests {
         let effects = state.handle(Event::Command(Command::Open(path)));
         run(&mut state, effects);
         let effects = state.handle(Event::Command(Command::ShowView(ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         })));
         run(&mut state, effects);

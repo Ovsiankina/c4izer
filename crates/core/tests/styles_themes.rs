@@ -10,6 +10,7 @@
 //! pending the owner's yes).
 
 
+use c4rizer_core::model::ElementKey;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io;
@@ -208,7 +209,7 @@ fn edited(src: &str, edits: &[Edit]) -> String {
 
 fn set_style(element: &str, target: StyleTarget, property: StyleProperty) -> Edit {
     Edit::SetStyle {
-        element: element.into(),
+        element: ElementKey::from_written(element),
         target,
         property,
     }
@@ -226,7 +227,7 @@ fn changed_lines<'a>(before: &str, after: &'a str) -> Vec<&'a str> {
 }
 
 fn sys(m: &Model) -> ElementId {
-    m.find("sys").expect("sys")
+    m.find_written("sys").expect("sys")
 }
 
 // ---- Element style properties (styles-themes-01)
@@ -1216,7 +1217,7 @@ fn p2_430_mode_selects_blocks() {
                 }
             }",
     ));
-    let a = m.find("a").unwrap();
+    let a = m.find_written("a").unwrap();
     let light = m.style_of_in(a, Mode::Light);
     let dark = m.style_of_in(a, Mode::Dark);
     assert_eq!((light.background, light.color), (rgb(0xee, 0xee, 0xee), rgb(1, 1, 1)));
@@ -1281,7 +1282,7 @@ fn p2_430_mode_block_precedence() {
                 thickness 4
             }",
     ));
-    let a = m.find("a").unwrap();
+    let a = m.find_written("a").unwrap();
     let dark = m.style_of_in(a, Mode::Dark);
     assert_eq!((dark.background, dark.color), (rgb(0x22, 0x22, 0x22), rgb(0x33, 0x33, 0x33)));
     assert_eq!(m.style_of_in(a, Mode::Light).background, rgb(0xdd, 0xdd, 0xdd));
@@ -1299,7 +1300,7 @@ fn p2_430_mode_block_precedence() {
                 background #444444
             }",
     ));
-    let a = m.find("a").unwrap();
+    let a = m.find_written("a").unwrap();
     assert_eq!(m.style_of_in(a, Mode::Dark).background, rgb(0x44, 0x44, 0x44));
 }
 
@@ -1582,7 +1583,7 @@ fn p2_402_tag_size_replaces_kind_default() {
         "            element \"Tagged\" {\n                width 400\n            }\n            element \"Person\" {\n                height 300\n            }",
     ));
     let plan = view::plan(&m, &m.views[0]);
-    let of = |key: &str| plan.boxes.iter().find(|b| b.element == m.find(key).unwrap()).unwrap();
+    let of = |key: &str| plan.boxes.iter().find(|b| b.element == m.find_written(key).unwrap()).unwrap();
     // Software system default: 240x140 = 12x7 half units.
     assert_eq!((of("sys").half_width, of("sys").half_height), (20, 7));
     // Person default: 200x180 = 10x9.
@@ -1704,7 +1705,7 @@ fn ctx_scene(styles: &str) -> (Model, scene::Scene) {
 
 /// The scene box drawing element `key`.
 fn scene_box<'a>(m: &Model, s: &'a scene::Scene, key: &str) -> &'a scene::SceneBox {
-    let e = m.find(key).expect("element");
+    let e = m.find_written(key).expect("element");
     s.boxes.iter().find(|b| b.element == e).expect("box")
 }
 
@@ -3174,7 +3175,7 @@ fn p2_431_dark_defaults() {
     let dark = build_in(&m, "c2", Mode::Dark).scene;
     assert!(dark.boxes.iter().all(|b| b.fill == rgb(0, 0x79, 0x6b) && b.name.colour == rgb(0, 0, 0)));
     // The resolved styles stay mode-independent (P2-430).
-    let app = m.find("app").unwrap();
+    let app = m.find_written("app").unwrap();
     assert_eq!(m.style_of_in(app, Mode::Dark), m.style_of_in(app, Mode::Light));
 }
 
@@ -3226,7 +3227,7 @@ fn p2_13_edit_reparse_keeps_theme_and_icons() {
         &parsed,
         &[Edit::Move {
             view: "ctx".into(),
-            element: "sys".into(),
+            element: ElementKey::from_written("sys"),
             centre: Some((400, 200)),
         }],
     )

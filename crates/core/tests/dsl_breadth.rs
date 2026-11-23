@@ -11,6 +11,7 @@
 
 #![allow(clippy::todo)]
 
+use c4rizer_core::model::ElementKey;
 use c4rizer_core::model::{self, ElementKind, Model, ModelError, ModelErrorKind, Parsed};
 
 /// `source` parsed, panicking with the error text.
@@ -317,7 +318,7 @@ fn included_pair() -> (String, String, Parsed) {
 
 /// The element keyed `key`.
 fn el<'m>(m: &'m Model, key: &str) -> &'m model::Element {
-    m.element(m.find(key).unwrap_or_else(|| panic!("no element {key}")))
+    m.element(m.find_written(key).unwrap_or_else(|| panic!("no element {key}")))
 }
 
 /// Element and relationship values without spans, to compare two parses.
@@ -475,13 +476,13 @@ fn p2_1_every_reference_keyword_parses() {
     assert_eq!(parsed.paths[0], path);
     // The base's element and view are in the model (P2-16), and so is the
     // included file's (P2-5).
-    assert!(m.find("legacy").is_some() && m.view("legacy").is_some());
-    assert!(m.find("customer").is_some() && m.find("clerk").is_some());
+    assert!(m.find_written("legacy").is_some() && m.view("legacy").is_some());
+    assert!(m.find_written("customer").is_some() && m.find_written("clerk").is_some());
     // `${ORG}` was substituted (P2-150), the custom element and the
     // archetype applied (P2-170, P2-155).
     assert!(m.groups.iter().any(|g| g.name.value == "Example partners"));
-    assert_eq!(m.element(m.find("scanner").unwrap()).kind, ElementKind::Custom);
-    assert!(m.element(m.find("api").unwrap()).tags.iter().any(|t| t == "Service"));
+    assert_eq!(m.element(m.find_written("scanner").unwrap()).kind, ElementKind::Custom);
+    assert!(m.element(m.find_written("api").unwrap()).tags.iter().any(|t| t == "Service"));
     // Every view kind is there; the drawable ones build, the others are
     // listed as unsupported (P2-2).
     let kinds: Vec<&str> = m.views.iter().map(|v| v.kind.keyword()).collect();
@@ -634,7 +635,7 @@ fn p2_149_unquoted_string_arguments() {
         &parsed(&src),
         &[c4rizer_core::edit::Edit::SetText {
             target: c4rizer_core::edit::TextTarget::Element {
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 field: c4rizer_core::edit::ElementField::Name,
             },
             value: Some("Night operator".into()),
@@ -722,7 +723,7 @@ fn p2_151_edit_of_substituted_literal_is_refused() {
         &parsed(&src),
         &[edit::Edit::SetText {
             target: edit::TextTarget::Element {
-                element: "s".into(),
+                element: ElementKey::from_written("s"),
                 field: edit::ElementField::Name,
             },
             value: Some("Store".into()),
@@ -1124,9 +1125,9 @@ fn p2_120_deployment_constructs_parse_and_are_not_drawn() {
     assert_eq!(m.relationships.len(), 3);
     assert_eq!(
         m.included(&m.views[0]),
-        vec![m.find("user").unwrap(), m.find("web").unwrap(), m.find("db").unwrap()]
+        vec![m.find_written("user").unwrap(), m.find_written("web").unwrap(), m.find_written("db").unwrap()]
     );
-    assert_eq!(m.element(m.find("lb").unwrap()).kind, model::ElementKind::InfrastructureNode);
+    assert_eq!(m.element(m.find_written("lb").unwrap()).kind, model::ElementKind::InfrastructureNode);
 }
 
 /// An undeclared id is `UndeclaredId` (DSL-5); an id already used is `DuplicateId`.
@@ -1168,7 +1169,7 @@ fn p2_142_hierarchical_ids_scope_deployment_children() {
     let m = model_of(&in_model(
         "        !identifiers hierarchical\n        ss = softwareSystem \"SS\" {\n            c = container \"C\"\n        }\n        deploymentEnvironment \"A\" {\n            g = deploymentGroup \"G\"\n            dn = deploymentNode \"DN\" {\n                dn1 = deploymentNode \"DN1\" {\n                    softwareSystemInstance ss\n                }\n                dn2 = deploymentNode \"DN2\"\n                dn1 -> dn2\n            }\n            dn1 = deploymentNode \"DN1\"\n            dn1 -> dn.dn2\n        }\n        deploymentEnvironment \"B\" {\n            g = deploymentGroup \"G\"\n        }\n        live = deploymentEnvironment \"Live\" {\n            ss = deploymentNode \"Node\" {\n                c = deploymentNode \"Inner\" {\n                    i = containerInstance ss.c\n                }\n                lb = infrastructureNode \"LB\"\n                c.i -> lb\n            }\n            ss.lb -> ss.c.i\n        }",
     ));
-    assert!(m.find("ss").is_some());
+    assert!(m.find_written("ss").is_some());
     // Flat mode keeps one global register.
     let e = error_of(&in_model(
         "        deploymentEnvironment \"A\" {\n            g = deploymentGroup \"G\"\n        }\n        deploymentEnvironment \"B\" {\n            g = deploymentGroup \"G\"\n        }",
@@ -1226,11 +1227,11 @@ fn p2_121_dynamic_view_body_parses() {
     // dynamic-view (P3-204, P3-206): a container step end needs a
     // system scope, so the view is scoped to `shop`; `*` is covered by
     // p2_124 and the P2-121 undeclared-id test.
-    assert_eq!(v.scope.element(), m.find("shop"));
+    assert_eq!(v.scope.element(), m.find_written("shop"));
     assert_eq!(v.title.as_ref().unwrap().value, "Sign-up flow");
     assert_eq!(v.properties.len(), 1);
-    assert_eq!(m.views[1].scope.element(), m.find("shop"));
-    assert_eq!(m.views[2].scope.element(), m.find("db"));
+    assert_eq!(m.views[1].scope.element(), m.find_written("shop"));
+    assert_eq!(m.views[2].scope.element(), m.find_written("db"));
 }
 
 /// A dynamic step may carry a `{ url ...; properties { } }` block, as in
@@ -1311,7 +1312,7 @@ fn p2_179_deployment_view_parses() {
     else {
         panic!("{:?}", m.views[1].scope);
     };
-    assert_eq!(software_system.unwrap().value, m.find("shop").unwrap());
+    assert_eq!(software_system.unwrap().value, m.find_written("shop").unwrap());
     assert_eq!(environment.value, "live");
     assert_eq!(m.views[1].key, "Deployment-001");
 }
@@ -1459,11 +1460,11 @@ fn p2_6_hierarchical_ids_scope_by_parent() {
         };
         let m = model_of(&src);
         assert_eq!(m.identifiers, model::Identifiers::Hierarchical, "{place}");
-        let (a1, a2) = (m.find("s1.api").unwrap(), m.find("s2.api").unwrap());
+        let (a1, a2) = (m.find_written("s1.api").unwrap(), m.find_written("s2.api").unwrap());
         assert_ne!(a1, a2);
-        assert_eq!(m.element(a1).parent, m.find("s1"));
-        assert_eq!(m.full_key(a1).as_deref(), Some("s1.api"));
-        assert_eq!(m.full_key(m.find("s1").unwrap()).as_deref(), Some("s1"));
+        assert_eq!(m.element(a1).parent, m.find_written("s1"));
+        assert_eq!(m.full_key(a1).as_ref().map(ElementKey::as_str), Some("s1.api"));
+        assert_eq!(m.full_key(m.find_written("s1").unwrap()).as_ref().map(ElementKey::as_str), Some("s1"));
     }
     let e = error_of(&in_model(
         "        !identifiers hierarchical\n        s1 = softwareSystem \"One\" {\n            api = container \"Api\"\n            api = container \"Other\"\n        }",
@@ -1484,9 +1485,9 @@ fn p2_142_full_id_in_relationships_views_at_size_focus_hide() {
     );
     let m = model_of(&src);
     let (api, db, other) = (
-        m.find("s1.api").unwrap(),
-        m.find("s1.db").unwrap(),
-        m.find("s2.api").unwrap(),
+        m.find_written("s1.api").unwrap(),
+        m.find_written("s1.db").unwrap(),
+        m.find_written("s2.api").unwrap(),
     );
     // A bare id inside the parent's block is looked up there first.
     assert_eq!(
@@ -1506,7 +1507,7 @@ fn p2_142_full_id_in_relationships_views_at_size_focus_hide() {
     assert_eq!(v.position_of(api).unwrap().x.value, 100);
     assert_eq!(v.size_of(db).unwrap().width.value, 200);
     // Identifier lookup ignores case (Structurizr).
-    assert_eq!(m.find("S1.API"), Some(api));
+    assert_eq!(m.find_written("S1.API"), Some(api));
 }
 
 /// `r = a -> b` inside s1 is found as `r`, not `s1.r`.
@@ -1560,8 +1561,8 @@ fn p2_145_anonymous_element_selected_by_star() {
     assert_eq!(visitor.name.value, "Visitor");
     assert_eq!(m.full_key(visitor.id), None);
     let web = &m.elements[2];
-    assert_eq!((web.key.as_ref(), web.parent), (None, m.find("shop")));
-    assert_eq!(m.included(&m.views[0]), vec![web.id, m.find("db").unwrap()]);
+    assert_eq!((web.key.as_ref(), web.parent), (None, m.find_written("shop")));
+    assert_eq!(m.included(&m.views[0]), vec![web.id, m.find_written("db").unwrap()]);
 }
 
 /// `r = a -> b` sets `Relationship::key` to r and `!relationship r` resolves it.
@@ -1576,7 +1577,7 @@ fn p2_146_named_relationship_key() {
     assert_eq!(key.value, "uses");
     assert_eq!(&src[key.span.range()], "uses");
     assert_eq!(r.tags, ["Relationship", "Main"]);
-    assert_eq!((r.source.value, r.destination.value), (m.find("a").unwrap(), m.find("b").unwrap()));
+    assert_eq!((r.source.value, r.destination.value), (m.find_written("a").unwrap(), m.find_written("b").unwrap()));
 }
 
 /// A relationship key declared twice is `DuplicateId` naming both lines.
@@ -1669,8 +1670,8 @@ fn p2_4_group_members_carry_group() {
         assert_eq!(g.full_name, g.name.value);
     }
     assert_eq!(m.groups[0].owner, None);
-    assert_eq!(m.groups[1].owner, m.find("shop"));
-    assert_eq!(m.groups[2].owner, m.find("web"));
+    assert_eq!(m.groups[1].owner, m.find_written("shop"));
+    assert_eq!(m.groups[2].owner, m.find_written("web"));
     let group_of = |k: &str| el(&m, k).group;
     let g = |i: u32| Some(model::GroupId(i));
     assert_eq!(group_of("user"), g(0));
@@ -1731,7 +1732,7 @@ fn p2_128_group_line_in_component_block() {
     assert_eq!(a, b);
     assert_eq!(el(&m, "d").group, None);
     let g = &m.groups[a.unwrap().0 as usize];
-    assert_eq!((g.name.value.as_str(), g.owner), ("Line", m.find("c")));
+    assert_eq!((g.name.value.as_str(), g.owner), ("Line", m.find_written("c")));
 }
 
 /// With structurizr.groupSeparator `/`, nested groups A and B give full name A/B.
@@ -1766,8 +1767,8 @@ fn p2_131_group_not_in_hierarchical_id() {
     let m = model_of(&in_model(
         "        !identifiers hierarchical\n        s1 = softwareSystem \"One\" {\n            group \"G\" {\n                api = container \"Api\"\n            }\n        }",
     ));
-    let api = m.find("s1.api").unwrap();
-    assert_eq!(m.full_key(api).as_deref(), Some("s1.api"));
+    let api = m.find_written("s1.api").unwrap();
+    assert_eq!(m.full_key(api).as_ref().map(ElementKey::as_str), Some("s1.api"));
     assert!(m.element(api).group.is_some());
 }
 
@@ -1851,8 +1852,8 @@ fn p2_130_group_boundary_around_drawn_members() {
     assert_eq!(scene.boundaries.len(), 2, "{:?}", b.plan.boundaries);
     let g = group_boundary(&m, scene, "Front");
     let boundary = &scene.boundaries[g];
-    let web = m.find("web").unwrap();
-    let app = m.find("app").unwrap();
+    let web = m.find_written("web").unwrap();
+    let app = m.find_written("app").unwrap();
     let mut want: Vec<_> = [web, app].iter().flat_map(|&e| b.plan.boxes_of(e)).collect();
     want.sort();
     assert_eq!(boundary.members, want);
@@ -1958,7 +1959,7 @@ fn p2_130_out_of_scope_group_clear_of_scope_boundary() {
     // With one box kept (the editor's case), the others auto-placed keep
     // the groups apart too.
     let mut keep = c4rizer_core::place::Keep::default();
-    let api = m.find("api").unwrap();
+    let api = m.find_written("api").unwrap();
     keep.previous.insert(api, c4rizer_core::geom::Point::new(60, 60));
     let never = std::sync::atomic::AtomicBool::new(false);
     let kept = c4rizer_core::pipeline::build_view(&m, "c2", &keep, &never).unwrap();
@@ -2187,7 +2188,7 @@ fn p2_157_relationship_archetype_arrow() {
     assert_eq!(r.tags, ["Relationship", "Synchronous"]);
     assert_eq!(r.technology.as_ref().unwrap().value, "HTTPS");
     assert_eq!(r.description.as_ref().unwrap().value, "d");
-    assert_eq!((r.source.value, r.destination.value), (m.find("a").unwrap(), m.find("b").unwrap()));
+    assert_eq!((r.source.value, r.destination.value), (m.find_written("a").unwrap(), m.find_written("b").unwrap()));
     let back = &m.relationships[1];
     assert_eq!(back.technology.as_ref().unwrap().value, "Queue");
     assert_eq!(el(&m, "a").description.as_ref().unwrap().value, "Works here.");
@@ -2318,7 +2319,7 @@ fn p2_17_element_directive_adds_tags_children_relationships() {
         .iter()
         .map(|r| (r.source.value, r.destination.value))
         .collect();
-    let mail = m.find("mail").unwrap();
+    let mail = m.find_written("mail").unwrap();
     assert_eq!(ends, [(web.id, mail), (shop.id, mail)]);
     let e = error_of(&in_model("        !element ghost {\n        }"));
     assert_eq!(e.kind, ModelErrorKind::UndeclaredId { id: "ghost".into() });
@@ -2337,7 +2338,7 @@ fn p2_17_element_directive_on_deployment_elements() {
     let m = model_of(&in_model(
         "        db = softwareSystem \"DB\"\n        de = deploymentEnvironment \"Live\"\n        !element de {\n            aws = deploymentNode \"AWS\" {\n                region = deploymentNode \"US-East-1\" {\n                    dns = infrastructureNode \"Route 53\"\n                }\n            }\n        }\n        !element \"DeploymentNode://Live/AWS/US-East-1\" {\n            deploymentNode \"Extra\" {\n                infrastructureNode \"Extra infra\" {\n                    -> dns\n                }\n            }\n        }\n        !element region {\n            softwareSystemInstance db\n        }\n        !element \"InfrastructureNode://Live/AWS/US-East-1/Route 53\" {\n            technology \"DNS\"\n        }",
     ));
-    assert!(m.find("db").is_some());
+    assert!(m.find_written("db").is_some());
     // A node's block refuses what a node refuses; an environment's block
     // refuses an infrastructure node.
     let e = error_of(&in_model(
@@ -2484,10 +2485,10 @@ fn p2_166_elements_directive_per_expression_form() {
         .filter(|r| r.description.as_ref().is_some_and(|d| d.value == "Reports"))
         .map(|r| r.source.value)
         .collect();
-    assert_eq!(reports, [m.find("c1").unwrap(), m.find("c2").unwrap()]);
+    assert_eq!(reports, [m.find_written("c1").unwrap(), m.find_written("c2").unwrap()]);
     // The evaluator is public.
-    let expr = model::Expression::Afferent(Box::new(model::Expression::Element(m.find("s").unwrap())));
-    assert_eq!(m.select_elements(&expr), [m.find("u").unwrap(), m.find("s").unwrap()]);
+    let expr = model::Expression::Afferent(Box::new(model::Expression::Element(m.find_written("s").unwrap())));
+    assert_eq!(m.select_elements(&expr), [m.find_written("u").unwrap(), m.find_written("s").unwrap()]);
 }
 
 /// `!relationships <expr> { ... }` applies its children to every relationship `Model::select_relationships` returns; one case per relationship-expression form, plus && and ||.
@@ -2659,7 +2660,7 @@ fn p2_161_terminology_replaces_type_words() {
     assert_eq!(tag, "Web [Unit]");
     // grammar.dsl writes `terminology { person "Actor" }`.
     let (_, parsed) = grammar();
-    let customer = parsed.model.find("customer").unwrap();
+    let customer = parsed.model.find_written("customer").unwrap();
     let scene = scene_of(&parsed.model, "containers");
     let b = scene.boxes.iter().find(|b| b.element == customer).unwrap();
     assert_eq!(b.type_line.lines.join(" "), "[Actor]");
@@ -3045,12 +3046,12 @@ fn p2_164_child_references_base_ids() {
     let p = extends_fixture();
     let m = &p.model;
     let r = &m.relationships[1];
-    assert_eq!((r.source.value, r.destination.value), (m.find("web").unwrap(), m.find("mail").unwrap()));
+    assert_eq!((r.source.value, r.destination.value), (m.find_written("web").unwrap(), m.find_written("mail").unwrap()));
     let c2 = m.view("c2").unwrap();
-    assert_eq!(c2.scope.element(), m.find("shop"));
+    assert_eq!(c2.scope.element(), m.find_written("shop"));
     assert_eq!(
         m.included(c2),
-        vec![m.find("user").unwrap(), m.find("web").unwrap(), m.find("mail").unwrap()]
+        vec![m.find_written("user").unwrap(), m.find_written("web").unwrap(), m.find_written("mail").unwrap()]
     );
     // A base id declared again in the child is a duplicate.
     let mut loader = Mem::default().file(
@@ -3086,7 +3087,7 @@ fn p2_139_text_edit_patches_included_file() {
     let (root, people, p) = included_pair();
     let set = |field, value: &str| Edit::SetText {
         target: TextTarget::Element {
-            element: "user".into(),
+            element: ElementKey::from_written("user"),
             field,
         },
         value: Some(value.into()),
@@ -3108,7 +3109,7 @@ fn p2_139_text_edit_patches_included_file() {
     let styled = edit::apply(
         &p,
         &[Edit::SetStyle {
-            element: "user".into(),
+            element: ElementKey::from_written("user"),
             target: edit::StyleTarget::ThisBox,
             property: edit::StyleProperty::Background(Some(model::Colour { r: 1, g: 2, b: 3 })),
         }],
@@ -3130,12 +3131,12 @@ fn p2_140_at_and_size_go_to_root_file() {
         &[
             Edit::Move {
                 view: "c1".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 centre: Some((100, 200)),
             },
             Edit::Resize {
                 view: "c1".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 size: Some((240, 160)),
             },
         ],
@@ -3155,7 +3156,7 @@ fn p2_140_at_and_size_go_to_root_file() {
         &p,
         &[Edit::Move {
             view: "inc".into(),
-            element: "shop".into(),
+            element: ElementKey::from_written("shop"),
             centre: Some((40, 60)),
         }],
     )
@@ -3174,9 +3175,9 @@ fn p2_142_edit_keys_are_full_hierarchical_ids() {
     );
     let p = parsed(&src);
     let m = &p.model;
-    let api = m.find("s1.api").unwrap();
+    let api = m.find_written("s1.api").unwrap();
     let key = m.full_key(api).unwrap();
-    assert_eq!(key, "s1.api");
+    assert_eq!(key.as_str(), "s1.api");
     let applied = edit::apply(
         &p,
         &[Edit::Move {
@@ -3189,7 +3190,7 @@ fn p2_142_edit_keys_are_full_hierarchical_ids() {
     assert!(applied.text.contains("at s1.api 100 100"), "{}", applied.text);
     // The inverse names the element by its full id too.
     assert!(
-        matches!(&applied.inverse[0], Edit::Move { element, .. } if element == "s1.api"),
+        matches!(&applied.inverse[0], Edit::Move { element, .. } if element.as_str() == "s1.api"),
         "{:?}",
         applied.inverse
     );
