@@ -109,6 +109,7 @@ use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request,
 mod anchors;
 mod bridges;
 mod bundles;
+pub(crate) mod guides;
 pub(crate) mod inplace;
 mod label_drag;
 mod lint_resolve;
@@ -447,6 +448,11 @@ pub enum Command {
     Fit(Fit),
     /// Toggle fullscreen (P2-706).
     Fullscreen,
+    /// Settings > Editor > "Snap to alignment guides": on pulls a dragged
+    /// box onto a guide, off only shows guides (P5-505); saved in the UI
+    /// state.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    SetSnapGuides(bool),
     /// Open the previous view of the view list (P2-713).
     PreviousView,
     /// Open the next view of the view list (P2-713).
@@ -1079,6 +1085,10 @@ pub struct DrawList<'a> {
     // the crate), so no pub item is added; empty paints every 2px line
     // 1.5px, the default look.
     pub(crate) written_thickness: Vec<c4rizer_core::view::EdgeId>,
+    /// While a box drag is under way, the alignment guides, scene px
+    /// (P5-503): marks, never scene items.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    pub guides: &'a [guides::Guide],
 }
 
 /// The tooltip overlay (P2-723): the hovered item's details, at the
@@ -1453,6 +1463,12 @@ pub struct State {
     /// The resolutions of the shown build's findings, computed when it
     /// is shown (P5-406).
     resolutions: Option<lint_resolve::Resolutions>,
+    /// The alignment guide index of the box drag under way, built when
+    /// it starts (P5-500).
+    guide_index: Option<guides::GuideIndex>,
+    /// The guides of the box drag under way, refilled per pointer move
+    /// (P5-503); drawn only while dragging.
+    guides: Vec<guides::Guide>,
 }
 
 impl State {
@@ -1504,6 +1520,8 @@ impl State {
             after_place: AfterPlace::Nothing,
             unbuilt: None,
             resolutions: None,
+            guide_index: None,
+            guides: Vec::new(),
         }
     }
 
@@ -2041,6 +2059,7 @@ impl State {
                 (Some(scene), Some(model)) => crate::canvas::thickness_written(model, scene),
                 _ => Vec::new(),
             },
+            guides: if matches!(self.gesture, Gesture::Dragging { .. }) { &self.guides } else { &[] },
         }
     }
 
@@ -3387,6 +3406,7 @@ impl State {
         ) {
             self.gesture = Gesture::Idle;
         }
+        self.drop_guides();
         self.dragged = None;
         self.preview = None;
         self.awaited_drag = None;
@@ -3422,6 +3442,8 @@ impl State {
             self.notice = Some("move dropped: the dragged element is no longer in the file".to_owned());
             return;
         }
+        // P5-500: the index again, against the new build's boxes.
+        self.guide_index = self.shown.as_ref().and_then(|(_, b)| guides::GuideIndex::build(&b.scene, &new_boxes));
         self.gesture = Gesture::Dragging {
             from,
             boxes: new_boxes,
@@ -3960,6 +3982,8 @@ impl State {
                         _ => None,
                     })
                     .collect();
+                // P5-500: the guide index, once per drag.
+                self.guide_index = guides::GuideIndex::build(scene, &boxes);
                 self.text_edit = None;
                 self.gesture = Gesture::Dragging {
                     from,
@@ -3995,7 +4019,7 @@ impl State {
         at: ScreenPoint,
     ) -> Vec<Effect> {
         let (dx, dy) = ((at.x - from.x) / self.camera.zoom, (at.y - from.y) / self.camera.zoom);
-        let next: BTreeMap<BoxId, Point> = boxes
+        let mut next: BTreeMap<BoxId, Point> = boxes
             .iter()
             .map(|(&id, &c)| {
                 #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
@@ -4003,6 +4027,7 @@ impl State {
                 (id, snap_centre(ScenePoint { x, y }))
             })
             .collect();
+        self.pull_to_guides(boxes, &mut next);
         self.gesture = Gesture::Dragging {
             from,
             boxes: boxes.clone(),
@@ -4196,6 +4221,7 @@ impl State {
                 effects
             }
             Gesture::Dragging { boxes, to, .. } => {
+                self.drop_guides();
                 self.dragged = None;
                 self.awaited_drag = None;
                 let earlier = self.unbuilt_moves();
@@ -5066,6 +5092,10 @@ impl State {
                 };
                 self.nav_query.clear();
                 Vec::new()
+            }
+            Command::SetSnapGuides(on) => {
+                self.ui.snap_guides_off = !on;
+                vec![Effect::SaveUiState(self.ui.clone())]
             }
             Command::Fullscreen => {
                 // P2-706: the view, camera and selection are untouched.

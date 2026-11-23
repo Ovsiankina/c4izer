@@ -41,6 +41,9 @@ pub enum Source {
     /// The outline of the box being resized at its release size (a
     /// selection mark, EDIT-18).
     ResizeOutline,
+    /// An alignment guide of the box drag under way (a mark, P5-507).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    Guide,
 }
 
 /// One primitive to paint, in screen px: the egui-free form of a scene
@@ -122,7 +125,7 @@ pub struct PaintItem {
 
 /// Every primitive of `list`, in paint order: the scene items in the
 /// scene's paint order, then the marks, then the resize outline, then
-/// the rubber band. Nothing that is not from `list.scene` or a mark
+/// the alignment guides (P5-507), then the rubber band. Nothing that is not from `list.scene` or a mark
 /// (EDIT-12). Empty when the list has no scene. Serves EDIT-12, EDIT-9,
 /// EDIT-15, EDIT-18.
 #[must_use]
@@ -457,6 +460,21 @@ pub fn paint_items(list: &DrawList<'_>) -> Vec<PaintItem> {
     if let Some((a, b)) = list.resize_outline {
         push(Source::ResizeOutline, screen_rect(a, b, mk.mark, MARK_WIDTH, None));
     }
+    // P5-507: the alignment guides, 1px solid in the mark colour, with
+    // the marks and under the rubber band.
+    for g in list.guides {
+        let screen = |x: f32, y: f32| ScreenPoint {
+            x: (x - cam.pan.x) * cam.zoom,
+            y: (y - cam.pan.y) * cam.zoom,
+        };
+        let (a, b) = if g.vertical { (screen(g.at, g.from), screen(g.at, g.to)) } else { (screen(g.from, g.at), screen(g.to, g.at)) };
+        push(Source::Guide, Primitive::Path {
+            points: vec![a, b],
+            colour: mk.mark,
+            width: GUIDE_WIDTH,
+            dash: None,
+        });
+    }
     if let Some((a, b)) = list.rubber_band {
         // Marks: 1px dashed outline, 10% fill (the fill is its own item so
         // the outline stays whole).
@@ -579,6 +597,8 @@ const fn mark_colours(mode: Mode) -> MarkColours {
 const MARK_WIDTH: f32 = 1.5;
 /// Hover outline width, screen px (Marks: 1px `mark-hint`).
 const HOVER_WIDTH: f32 = 1.0;
+/// Alignment guide width, screen px (P5-507: 1px solid).
+const GUIDE_WIDTH: f32 = 1.0;
 /// Half the side of a drawn box or vertex handle, screen px (Marks: 7px
 /// handles). `state::HANDLE_PX` stays the hit size.
 const HANDLE_DRAW_HALF: f32 = 3.5;
@@ -1837,6 +1857,7 @@ mod tests {
             faded: Vec::new(),
             tooltip: None,
             written_thickness: Vec::new(),
+            guides: &[],
         }
     }
 
@@ -1897,7 +1918,8 @@ mod tests {
             Source::Scene(_) => 7,
             Source::Mark(..) => 8,
             Source::ResizeOutline => 9,
-            Source::RubberBand => 10,
+            Source::Guide => 10,
+            Source::RubberBand => 11,
         }
     }
 
@@ -1933,12 +1955,22 @@ mod tests {
                 item: ItemKey::Box(BoxId(0)),
                 kind: MarkKind::SelectedWithHandles,
             });
+            // P5-507: a drag's alignment guide is a mark too.
+            let guide = [crate::state::guides::Guide {
+                vertical: true,
+                at: 100.0,
+                from: 0.0,
+                to: 200.0,
+            }];
+            l.guides = &guide;
             let items = paint_items(&l);
             let expected = scene_items(&scene);
+            assert!(items.iter().any(|i| i.source == Source::Guide));
             for item in &items {
                 match item.source {
                     Source::Scene(k) => assert!(expected.contains(&k), "{k:?} not in the scene"),
                     Source::Mark(k, _) => assert_eq!(k, ItemKey::Box(BoxId(0))),
+                    Source::Guide => {}
                     other => panic!("unexpected source {other:?}"),
                 }
             }

@@ -1821,7 +1821,7 @@ fn p2_732_draw_list_extras_are_only_overlays_and_marks() {
     for item in paint_items(&list) {
         match item.source {
             Source::Scene(k) => assert!(sh.scene().item_bounds(k).is_some(), "{k:?} is a scene item"),
-            Source::Mark(..) | Source::RubberBand | Source::ResizeOutline => {}
+            Source::Mark(..) | Source::RubberBand | Source::ResizeOutline | Source::Guide => {}
         }
     }
     // The scene (what the export draws) is untouched by the aids.

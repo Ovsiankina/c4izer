@@ -441,6 +441,10 @@ pub struct UiState {
     pub recent: Vec<PathBuf>,
     /// Per file, by the path as opened.
     pub files: BTreeMap<PathBuf, FileMemory>,
+    /// Settings > Editor > "Snap to alignment guides" is off (P5-505);
+    /// `false`, the default, is on. Saved as `pref\tsnap-guides\toff`.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    pub snap_guides_off: bool,
 }
 
 /// The most recent files kept (EDIT-13).
@@ -483,6 +487,9 @@ impl UiState {
                     };
                     state.files.insert(PathBuf::from(path), FileMemory { view, camera });
                 }
+                [key, name, value] if key == "pref" && name == "snap-guides" => {
+                    state.snap_guides_off = value == "off";
+                }
                 _ => {}
             }
         }
@@ -516,6 +523,11 @@ impl UiState {
                 c.zoom,
                 escape(p)
             );
+        }
+        // DECISION: only the non-default "off" is written, so a state file
+        // without preferences reads and writes back byte for byte.
+        if self.snap_guides_off {
+            out.push_str("pref\tsnap-guides\toff\n");
         }
         out
     }

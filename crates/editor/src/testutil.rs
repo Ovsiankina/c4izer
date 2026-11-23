@@ -203,3 +203,47 @@ pub fn heavy(n: usize) -> String {
     s.push_str("        }\n    }\n}\n");
     s
 }
+
+/// Timed runs per phase 5 benchmark (SRS P5-900: at least 11).
+pub const BENCH_RUNS: usize = 11;
+
+/// True (after printing why) when this is not a release build: a timing
+/// in a debug build means nothing (P5-900).
+pub fn debug_build(test: &str) -> bool {
+    if cfg!(debug_assertions) {
+        println!("{test}: skipped, timing needs `cargo test --release`");
+        return true;
+    }
+    false
+}
+
+/// A phase 5 benchmark (P5-900), as the core's `bench_util/bench.rs`:
+/// one warm-up call, then `BENCH_RUNS` runs, each looping `body` enough
+/// times to take over 1 ms and divided by that count; prints
+/// `BENCH\t<id>\t<feature>\t<what>\t<input>\t<median_us>\t<min_us>\t<max_us>\t<runs>\t<budget_us>`
+/// and asserts `median <= budget_us`.
+// DECISION: times in microseconds with three decimals, as the core's
+// helper: a snap query is well under one microsecond.
+#[expect(clippy::too_many_arguments, reason = "the six fields of the BENCH line, then the body")]
+pub fn bench(id: &str, feature: &str, what: &str, input: &str, budget_us: u64, mut body: impl FnMut()) {
+    use std::time::{Duration, Instant};
+    let t = Instant::now();
+    body();
+    let once = t.elapsed().max(Duration::from_nanos(1));
+    let reps = u32::try_from((Duration::from_millis(1).as_nanos() / once.as_nanos()) + 1).unwrap_or(u32::MAX);
+    let mut times: Vec<f64> = (0..BENCH_RUNS)
+        .map(|_| {
+            let t = Instant::now();
+            for _ in 0..reps {
+                body();
+            }
+            t.elapsed().as_secs_f64() * 1e6 / f64::from(reps)
+        })
+        .collect();
+    times.sort_by(f64::total_cmp);
+    let (median, min, max) = (times[BENCH_RUNS / 2], times[0], times[BENCH_RUNS - 1]);
+    println!("BENCH\t{id}\t{feature}\t{what}\t{input}\t{median:.3}\t{min:.3}\t{max:.3}\t{BENCH_RUNS}\t{budget_us}");
+    #[expect(clippy::cast_precision_loss, reason = "budgets are far below 2^52 us")]
+    let budget = budget_us as f64;
+    assert!(median <= budget, "{id}: median {median:.3} us over the budget {budget_us} us");
+}

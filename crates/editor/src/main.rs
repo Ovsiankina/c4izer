@@ -38,6 +38,8 @@ mod file_menu_tests;
 #[path = "../../cli/src/export_files.rs"]
 mod export_files;
 mod files;
+#[cfg(test)]
+mod guides_tests;
 mod history;
 mod icons;
 mod kit;

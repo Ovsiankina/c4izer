@@ -582,6 +582,9 @@ fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
         }
         ui.spacing_mut().item_spacing.y = 0.0;
         // P5-408: "Resolve all" from two resolvable findings.
+        // DECISION: the first row of the section body, right-aligned, not
+        // in the 28px header: `kit::section` has no header slot, and a
+        // button over the header would also fold the section.
         let resolvable = state.resolvable();
         if resolvable >= 2 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

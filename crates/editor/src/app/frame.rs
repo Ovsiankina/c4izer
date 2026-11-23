@@ -918,6 +918,7 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
             let Some(budget) = budget else {
                 menu_label(ui, "View settings");
                 file_row(ui, "Open a view to change its settings", None, false, false);
+                editor_settings(ui, state, events);
                 return;
             };
             menu_label(ui, "View settings");
@@ -950,7 +951,23 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
                     ui.label(egui::RichText::new(text).color(ink));
                 });
             }
+            editor_settings(ui, state, events);
         });
+}
+
+/// The Settings menu's "Editor" block, under the view settings (P5-505):
+/// the app's own behaviour, saved in the UI state, never in the file.
+fn editor_settings(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    kit::hairline(ui);
+    menu_label(ui, "Editor");
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        let mut on = !state.ui.snap_guides_off;
+        let r = kit::checkbox(ui, &mut on, "Snap to alignment guides");
+        let r = kit::tip(r, "Pull a dragged box onto the lines of other boxes", None);
+        if r.changed() {
+            events.push(Event::Command(Command::SetSnapGuides(on)));
+        }
+    });
 }
 
 /// One recent file (EDIT-13, behaviour change 10): its name in Geist

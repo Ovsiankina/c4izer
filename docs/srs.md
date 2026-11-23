@@ -4092,6 +4092,33 @@ lint-resolve
 
 align-guides
 
+- **P5-500** When a box drag starts, the editor builds once an index of
+  the left, centre and right (x) and top, centre and bottom (y) lines of
+  every box not being dragged, sorted per axis, with the dragged boxes'
+  bounding rect; a drag of several boxes uses that bounding rect.
+- **P5-501** On each pointer move, after the 10px grid snap, the dragged
+  rect is pulled onto the nearest index line within 6 screen px (divided
+  by the zoom) of one of its three lines per axis; the release writes
+  the pulled centres.
+- **P5-502** A pull is taken only when it is a whole number of 10px
+  steps, so every dragged centre stays on the grid (no L5); a nearer
+  line off that step is skipped for a farther one on it.
+- **P5-503** While dragging, for each axis, every index line equal to a
+  line of the dragged rect at its final position draws one guide
+  segment, spanning the dragged rect and every box on that line, plus
+  12px at each end.
+- **P5-504** A drag of several boxes is pulled and guided by their
+  bounding rect.
+- **P5-505** Settings > Editor > "Snap to alignment guides" (a
+  checkbox, on by default) turns the pull off: guides still show on
+  exact alignment; the choice is saved in the UI state file as
+  `pref\tsnap-guides\toff` (absent: on) and read back.
+- **P5-506** Guides clear on pointer up and when the drag is cancelled
+  (view switch, reload dropping it).
+- **P5-507** Guides are painted as marks (`Source::Guide`): 1px solid
+  paths in the mark colour, after the selection marks and the resize
+  outline, before the rubber band (EDIT-12).
+
 view-folders
 
 map-tree
