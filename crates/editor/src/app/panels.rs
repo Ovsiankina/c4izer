@@ -108,6 +108,9 @@ impl App {
                         egui::RichText::new("Click a box or a line to see it here.\nRight-click a box to enter its views.")
                             .color(INK_2),
                     );
+                    // P5-206: several boxes, or several lines, share the
+                    // Group and Tags rows.
+                    self.group_and_tag_rows(ui, out);
                     return;
                 };
                 let boxes = self
@@ -156,9 +159,43 @@ impl App {
                 {
                     relationship_rows(ui, &self.state, r);
                 }
-                detail_rows(ui, &d);
+                detail_rows(ui, &d, self.state.tag_row().is_none());
+                self.group_and_tag_rows(ui, out);
             });
         kit::hairline(ui);
+    }
+
+    /// The Group row of a box selection (P5-106, P5-109) and the editable
+    /// Tags row of boxes or lines (P5-204..P5-206).
+    fn group_and_tag_rows(&self, ui: &mut egui::Ui, out: &mut Vec<Event>) {
+        if let Some(row) = self.state.group_row() {
+            kit::prop_row(ui, "group", |ui| {
+                let mut names = vec!["None".to_owned()];
+                names.extend(row.choices.iter().cloned());
+                names.push("New group…".to_owned());
+                let current = if row.mixed { "several" } else { row.current.as_deref().unwrap_or("None") };
+                let selected = if row.mixed { None } else { names.iter().position(|n| n == current) };
+                let shown = ui.add_enabled_ui(row.enabled, |ui| kit::select(ui, "group", current, &names, selected));
+                shown.response.on_disabled_hover_text("Boxes must share a parent");
+                match shown.inner {
+                    Some(i) if Some(i) == selected => {}
+                    Some(0) => cmd(out, Command::SetGroup(None)),
+                    Some(i) if i + 1 == names.len() => cmd(out, Command::GroupPopup),
+                    Some(i) => cmd(out, Command::SetGroup(Some(names[i].clone()))),
+                    None => {}
+                }
+                if !row.enabled {
+                    ui.label(egui::RichText::new("Boxes must share a parent").color(INK_3));
+                }
+            });
+        }
+        if let Some(row) = self.state.tag_row() {
+            kit::prop_row(ui, "tags", |ui| match kit::tag_row(ui, &row.tags, &row.removable, true) {
+                Some(kit::TagRowAction::Remove(tag)) => cmd(out, Command::RemoveTag(tag)),
+                Some(kit::TagRowAction::Add) => cmd(out, Command::TagPopup),
+                None => {}
+            });
+        }
     }
 
     /// The view as a whole: Auto-place, paper size, Magnet, Centre, Remove
@@ -302,8 +339,9 @@ fn bus_text(lines: usize) -> String {
 
 /// The property rows every kind of selection may have: deployment
 /// instances and environment, tags, where a lifted line comes from, the
-/// lines merged into it, and a dynamic step.
-fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details) {
+/// lines merged into it, and a dynamic step. `tags`: the read-only tag
+/// chips, left out when the editable Tags row shows (P5-204).
+fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details, tags: bool) {
     // P3-131: a deployment node's instances and environment.
     if let Some(n) = &d.instances {
         kit::prop_row(ui, "instances", |ui| {
@@ -315,7 +353,7 @@ fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details) {
             ui.label(egui::RichText::new(env).color(INK));
         });
     }
-    if !d.tags.is_empty() {
+    if tags && !d.tags.is_empty() {
         kit::prop_row(ui, "tags", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(4.0);

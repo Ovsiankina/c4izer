@@ -707,6 +707,110 @@ pub fn chip(ui: &mut Ui, text: &str, kind: ChipKind) -> Response {
     response
 }
 
+/// What a tag row did this frame (P5-204).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagRowAction {
+    /// The remove mark of this tag was clicked.
+    Remove(String),
+    /// The "+" chip was clicked.
+    Add,
+}
+
+/// The editable tag row of boxes and lines (P5-204): one chip per tag of
+/// `tags`, those in `removable` with a remove mark on hover, then a "+"
+/// chip when `add`. Chips wrap. Returns what was clicked.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+// DECISION: a removable chip keeps the room of its mark when not hovered,
+// so the row does not reflow under the pointer.
+pub fn tag_row(ui: &mut Ui, tags: &[String], removable: &[String], add: bool) -> Option<TagRowAction> {
+    let mut action = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(4.0);
+        let font = FontId::proportional(11.0);
+        for tag in tags {
+            if !removable.contains(tag) {
+                chip(ui, tag, ChipKind::Plain);
+                continue;
+            }
+            let w = text_width(ui, tag, &font) + 12.0 + SIZE_ICON;
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(w, 18.0), Sense::click());
+            let p = ui.painter();
+            p.rect_filled(rect, r1(), BG_RAISED);
+            p.rect_stroke(rect, r1(), Stroke::new(1.0, LINE_2), StrokeKind::Inside);
+            p.text(egui::pos2(rect.min.x + 6.0, rect.center().y), Align2::LEFT_CENTER, tag, font.clone(), INK_2);
+            let mark = Rect::from_center_size(egui::pos2(rect.max.x - 2.0 - SIZE_ICON / 2.0, rect.center().y), Vec2::splat(10.0));
+            let over_mark = response.hover_pos().is_some_and(|at| mark.expand(2.0).contains(at));
+            if response.hovered() {
+                icons::paint(p, Icon::Close, mark, if over_mark { INK } else { INK_3 });
+            }
+            let response = response.on_hover_text(format!("Remove the tag {tag} (one undo step)"));
+            if response.clicked() && over_mark {
+                action = Some(TagRowAction::Remove(tag.clone()));
+            }
+        }
+        if add {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::click());
+            let p = ui.painter();
+            let border = if response.hovered() { INK_3 } else { LINE_2 };
+            p.rect_filled(rect, r1(), BG_RAISED);
+            p.rect_stroke(rect, r1(), Stroke::new(1.0, border), StrokeKind::Inside);
+            icons::paint(p, Icon::Plus, Rect::from_center_size(rect.center(), Vec2::splat(12.0)), INK_2);
+            let response = tip(response, "Add a tag", None);
+            focus_ring(ui, &response);
+            if response.clicked() {
+                action = Some(TagRowAction::Add);
+            }
+        }
+    });
+    action
+}
+
+/// What the add-tag popup's body did this frame (P5-205).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagPick {
+    /// The field's new text, when it changed.
+    pub typed: Option<String>,
+    /// The row clicked.
+    pub picked: Option<String>,
+}
+
+/// The add-tag popup's body (P5-205): a text field holding `query`, with
+/// focus, then one row per entry of `rows`. Enter and Escape are the
+/// state's keys.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+pub fn tag_picker(ui: &mut Ui, query: &str, rows: &[String]) -> TagPick {
+    let mut pick = TagPick::default();
+    let mut buffer = query.to_owned();
+    let field = ui.scope(|ui| {
+        field_style(ui);
+        ui.add(
+            egui::TextEdit::singleline(&mut buffer)
+                .hint_text(egui::RichText::new("new or existing tag").color(INK_3))
+                .desired_width(f32::INFINITY)
+                .align(Align2::LEFT_CENTER)
+                .min_size(Vec2::new(0.0, SIZE_CONTROL)),
+        )
+    });
+    if !field.inner.has_focus() {
+        field.inner.request_focus();
+    }
+    if buffer != query {
+        pick.typed = Some(buffer);
+    }
+    ui.add_space(4.0);
+    if rows.is_empty() {
+        ui.label(egui::RichText::new("no existing tag matches; Enter adds it").color(INK_3));
+    }
+    for row in rows {
+        if menu_row(ui, Some(Icon::Tag), row, false, true).clicked() {
+            pick.picked = Some(row.clone());
+        }
+    }
+    pick
+}
+
 /// A key cap (`components/Kbd`).
 pub fn kbd(ui: &mut Ui, text: &str) -> Response {
     let font = FontId::monospace(10.0);

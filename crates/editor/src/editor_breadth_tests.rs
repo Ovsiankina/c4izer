@@ -1567,18 +1567,19 @@ fn p2_305_context_menu_lists_every_reachable_view_and_url() {
     let at = sh.screen("shop");
     sh.click_button(at, Button::Right, NONE);
     let labels: Vec<String> = sh.menu().into_iter().map(|e| e.label).collect();
-    assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop"]);
+    // P5-108 (owner request 2026-11-23) adds "Group…" after the views.
+    assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop", "Group…"]);
     // owner decision 2026-11-19: behaviour change 5
     // A box with neither views nor URL opens a menu with no entry (all
-    // rows greyed).
+    // rows greyed) but "Group…" (P5-108).
     let at = sh.screen("clerk");
     sh.click_button(at, Button::Right, NONE);
-    assert_eq!(sh.s.overlay, Some(Overlay::ContextMenu { entries: Vec::new() }));
+    assert_eq!(sh.s.overlay, Some(Overlay::ContextMenu { entries: group_only() }));
     sh.key(Key::Escape, NONE);
     // URL entries on a box and on a line.
     let at = sh.screen("customer");
     sh.click_button(at, Button::Right, NONE);
-    let entries = sh.menu();
+    let entries: Vec<_> = sh.menu().into_iter().filter(|e| e.label != "Group…").collect();
     assert_eq!(entries.len(), 1);
     sh.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(sh.urls, ["https://example.com/customer"]);
@@ -1590,7 +1591,7 @@ fn p2_305_context_menu_lists_every_reachable_view_and_url() {
     assert_eq!(sh.urls[1], "https://example.com/visits");
     let at = sh.screen("bank");
     sh.click_button(at, Button::Right, NONE);
-    let entries = sh.menu();
+    let entries: Vec<_> = sh.menu().into_iter().filter(|e| e.label != "Group…").collect();
     sh.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(sh.urls.len(), 2, "ftp is not opened");
     assert!(sh.s.status().notice.expect("a notice").contains("ftp://bank.example/"));
@@ -1639,7 +1640,8 @@ fn edit_28_right_click_under_slop_opens_menu() {
     let near = ScreenPoint { x: at.x + 3.0, y: at.y };
     sh.input(Input::PointerMove { at: near });
     sh.input(Input::PointerUp { at: near, button: Button::Right });
-    assert_eq!(sh.menu().len(), 1);
+    // "Enter" and, P5-108 (owner request 2026-11-23), "Group…".
+    assert_eq!(sh.menu().len(), 2);
     assert_eq!(sh.s.camera.pan, pan, "no pan");
     assert_eq!(sh.selection(), vec![el("shop")]);
 }
@@ -1669,8 +1671,10 @@ fn p2_305_menu_without_entries_opens_disabled_and_harmless() {
     let mut sh = Shell::with(SHOP);
     let at = sh.screen("clerk");
     sh.click_button(at, Button::Right, NONE);
-    let empty = Some(Overlay::ContextMenu { entries: Vec::new() });
-    assert_eq!(sh.s.overlay, empty, "the menu opens with every entry disabled");
+    // P5-108 (owner request 2026-11-23): "Group…" is the one entry a
+    // person always has; every other row is disabled.
+    let empty = Some(Overlay::ContextMenu { entries: group_only() });
+    assert_eq!(sh.s.overlay, empty, "the menu opens with every other entry disabled");
     assert_eq!(sh.selection(), [el("clerk")]);
     sh.key(Key::Enter, NONE);
     assert_eq!(sh.s.overlay, empty, "Enter leaves the menu");
@@ -1685,6 +1689,15 @@ fn p2_305_menu_without_entries_opens_disabled_and_harmless() {
     assert_eq!(sh.selection(), [el("clerk")], "and keeps the selection");
     assert_eq!(sh.s.view, Some(declared("context")));
     assert!(sh.writes.is_empty() && sh.urls.is_empty());
+}
+
+/// The entries of a box menu with no view and no URL: "Group…" alone
+/// (P5-108).
+fn group_only() -> Vec<crate::state::MenuEntry> {
+    vec![crate::state::MenuEntry {
+        label: "Group…".to_owned(),
+        action: crate::state::MenuAction::Group,
+    }]
 }
 
 // ------------------------------------------------------------ task 12

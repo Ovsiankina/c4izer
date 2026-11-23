@@ -249,7 +249,9 @@ impl Shell {
                     | MenuAction::GroupBus
                     | MenuAction::UngroupBus { .. }
                     | MenuAction::RemoveFromBus { .. }
-                    | MenuAction::FlipBridge { .. } => None,
+                    | MenuAction::FlipBridge { .. }
+                    | MenuAction::Group
+                    | MenuAction::RemoveFromGroup => None,
                 })
                 .collect(),
             _ => Vec::new(),
