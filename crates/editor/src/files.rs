@@ -948,6 +948,33 @@ mod tests {
         assert_eq!(UiState::parse("garbage\nfile\tx\n"), UiState::default());
     }
 
+    /// P5-505 and P5-604 together: a state with the `pref\tsnap-guides\toff`
+    /// line and `fold` lines writes both and parses back to itself, in
+    /// either line order (guards the merge of the two branches).
+    #[test]
+    fn p5_505_p5_604_pref_and_fold_lines_round_trip() {
+        use crate::view_folders::ViewFolder;
+        let mut state = UiState {
+            snap_guides_off: true,
+            ..UiState::default()
+        };
+        state.opened(Path::new("/d/shop.dsl"));
+        state
+            .folded
+            .insert(PathBuf::from("/d/shop.dsl"), [ViewFolder::C2, ViewFolder::Other].into());
+        state.folded.insert(PathBuf::from("/d/a\tb.dsl"), [ViewFolder::C1].into());
+        let text = state.to_text();
+        assert!(text.contains("pref\tsnap-guides\toff\n"), "{text}");
+        assert_eq!(text.matches("fold\t").count(), 3, "{text}");
+        assert_eq!(UiState::parse(&text), state);
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines.reverse();
+        let reversed = lines.join("\n") + "\n";
+        let back = UiState::parse(&reversed);
+        assert!(back.snap_guides_off);
+        assert_eq!(back.folded, state.folded);
+    }
+
     /// EDIT-13: re-opening a path moves it to the front; the list stops
     /// at `RECENT_MAX`.
     #[test]
