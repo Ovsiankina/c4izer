@@ -4085,7 +4085,8 @@ editor-groups
   group writes one `SetGroup` for every selected box, one undo step,
   and keeps the selection.
 - **P5-107** "New group…", the context menu's "Group…" and Ctrl+G open
-  a name popup prefilled "Group": Enter writes the `SetGroup` with the
+  a name popup prefilled "Group", the prefill selected so the first
+  typed character replaces it: Enter writes the `SetGroup` with the
   trimmed name, Escape closes it writing nothing, and an empty name is
   refused with a notice.
 - **P5-108** The context menu of a box selection has, in one group

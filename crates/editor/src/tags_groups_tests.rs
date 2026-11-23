@@ -404,6 +404,52 @@ fn body_p5_107_name_popup_refuses_empty_and_escape_cancels(ids: Ids) {
 }
 
 #[test]
+fn p5_107_typed_name_replaces_the_prefill() {
+    body_p5_107_typed_name_replaces_the_prefill(Ids::Flat);
+}
+
+#[test]
+fn p5_107_typed_name_replaces_the_prefill_hierarchical_ids() {
+    body_p5_107_typed_name_replaces_the_prefill(Ids::Hierarchical);
+}
+
+/// Owner report 2026-11-23: typing `Reviewers` into the fresh popup gave
+/// `GroupReviewers`. The popup's real egui field, frame by frame, one key
+/// per frame: the first key replaces the prefill.
+fn body_p5_107_typed_name_replaces_the_prefill(ids: Ids) {
+    use eframe::egui::{self, Event as E, Pos2, RawInput, Rect, Vec2};
+    let mut sh = Shell::open(ids);
+    sh.click_box("a", NONE);
+    sh.key(Key::G, CTRL);
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx);
+    let frame = |sh: &mut Shell, events: Vec<E>| {
+        let Some(Overlay::GroupName { name }) = sh.s.overlay.clone() else { panic!("popup closed: {:?}", sh.s.overlay) };
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| crate::app::group_name_field(ui, &name, &mut out));
+        output.textures_delta.clear();
+        for event in out {
+            sh.event(event);
+        }
+    };
+    // The popup opens, the field takes focus.
+    frame(&mut sh, Vec::new());
+    frame(&mut sh, Vec::new());
+    for c in "Reviewers".chars() {
+        frame(&mut sh, vec![E::Text(c.to_string())]);
+    }
+    assert_eq!(sh.s.overlay, Some(Overlay::GroupName { name: "Reviewers".to_owned() }));
+    sh.key(Key::Enter, NONE);
+    assert!(sh.s.overlay.is_none());
+    assert!(sh.text().contains("            group \"Reviewers\" {\n"), "{}", sh.text());
+}
+
+#[test]
 fn p5_108_menu_group_and_remove_from_group() {
     body_p5_108_menu_group_and_remove_from_group(Ids::Flat);
 }

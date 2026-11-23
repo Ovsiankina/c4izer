@@ -631,23 +631,7 @@ impl App {
             // P5-107: the group-name popup.
             Overlay::GroupName { name } => {
                 small_window(ctx, canvas, "Group", &mut out, &Command::GroupPopup, |ui, out| {
-                    let mut buffer = name.clone();
-                    let field = ui.scope(|ui| {
-                        kit::field_style(ui);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut buffer)
-                                .hint_text(egui::RichText::new("group name").color(INK_3))
-                                .desired_width(f32::INFINITY)
-                                .align(egui::Align2::LEFT_CENTER)
-                                .min_size(Vec2::new(0.0, SIZE_CONTROL)),
-                        )
-                    });
-                    if !field.inner.has_focus() {
-                        field.inner.request_focus();
-                    }
-                    if buffer != name {
-                        out.push(Event::Text(buffer));
-                    }
+                    group_name_field(ui, &name, out);
                     ui.label(egui::RichText::new("Enter groups the selected boxes, Esc cancels").color(INK_3));
                     Some(("Group", Command::SetGroup(Some(name.clone()))))
                 });
@@ -809,6 +793,39 @@ pub(super) fn menu_rows(entries: &[MenuEntry], relationship: bool) -> Vec<MenuRo
     rows
 }
 
+/// The group-name popup's field (P5-107): focused at once, its prefilled
+/// name selected so the first typed character replaces it; each change
+/// goes out as the whole text (`Event::Text`).
+// DECISION: select the prefill on focus rather than drop it: Enter on the
+// prefill still writes "Group" as P5-107 states, and the state keeps
+// taking the whole buffer, so nothing changes outside this field.
+pub(crate) fn group_name_field(ui: &mut egui::Ui, name: &str, out: &mut Vec<Event>) {
+    use egui::text::{CCursor, CCursorRange};
+    let mut buffer = name.to_owned();
+    let mut field = ui
+        .scope(|ui| {
+            kit::field_style(ui);
+            egui::TextEdit::singleline(&mut buffer)
+                .hint_text(egui::RichText::new("group name").color(INK_3))
+                .desired_width(f32::INFINITY)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(Vec2::new(0.0, SIZE_CONTROL))
+                .show(ui)
+        })
+        .inner;
+    // `request_focus` takes effect at once, so `gained_focus` never fires
+    // here: the selection is set where the focus is given.
+    if !field.response.has_focus() {
+        field.response.request_focus();
+        let all = CCursorRange::two(CCursor::new(0), CCursor::new(buffer.chars().count()));
+        field.state.cursor.set_char_range(Some(all));
+        field.state.store(ui.ctx(), field.response.id);
+    }
+    if buffer != name {
+        out.push(Event::Text(buffer));
+    }
+}
+
 /// A small window over the canvas, top right, 12 px in (`components/
 /// Window`): a 28 px title bar with a close button, the body, and an
 /// optional footer button.
@@ -937,6 +954,12 @@ pub(super) fn file_menu(ui: &mut egui::Ui, state: &crate::state::State, events: 
     });
 }
 
+/// The Settings menu's content width.
+// DECISION: fixed at 320 px: the segmented controls fill their row, so a
+// free width let them stretch the popup to ~590 px; 320 holds the 96 px
+// label column and "Plain | From box" with room to spare.
+const SETTINGS_MENU_W: f32 = 320.0;
+
 /// The `Settings` button beside `File` and its menu (owner request
 /// 2026-11-23): the open view's settings: its crossing budget
 /// (`maxCrossings`, CORE-17) with the count the view draws, then its line
@@ -955,7 +978,7 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
     egui::Popup::menu(&r)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.set_min_width(260.0);
+            ui.set_width(SETTINGS_MENU_W);
             ui.spacing_mut().item_spacing.y = 0.0;
             let Some(budget) = budget else {
                 menu_label(ui, "View settings");
@@ -965,7 +988,7 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
             };
             menu_label(ui, "View settings");
             egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-                kit::form_row(ui, "Max crossings", |ui| {
+                kit::menu_form_row(ui, "Max crossings", |ui| {
                     let value = budget.to_string();
                     let items = [
                         Segment::icon(Icon::Minus, "One crossing fewer (one undo step)"),
@@ -997,7 +1020,7 @@ pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, even
             if let Some(mode) = line_colours {
                 use c4rizer_core::model::LineColours;
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-                    kit::form_row(ui, "Line colours", |ui| {
+                    kit::menu_form_row(ui, "Line colours", |ui| {
                         let choices = [LineColours::Plain, LineColours::Box];
                         let items = [
                             Segment::text("Plain", "Every line in the plain line colour (one undo step)")
@@ -1282,6 +1305,9 @@ mod tests {
         use crate::state::{Command, Event};
         fn texts(shape: &Shape, out: &mut Vec<String>) {
             match shape {
+                // A cut label reads with its ellipsis, so a lookup of the
+                // full text fails when it is cut.
+                Shape::Text(t) if t.galley.elided => out.push(format!("{}…", t.galley.text())),
                 Shape::Text(t) => out.push(t.galley.text().to_owned()),
                 Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
                 _ => {}
@@ -1327,7 +1353,9 @@ mod tests {
         frame(click(at(&shown, "Settings")));
         let (shown, _) = frame(Vec::new());
         at(&shown, "VIEW SETTINGS");
+        // In full: "MAX CROS…" at 1280x800 before (owner report 2026-11-23).
         at(&shown, "MAX CROSSINGS");
+        assert!(!shown.iter().any(|(t, _)| t.ends_with('…')), "a label is cut: {shown:?}");
         assert!(shown.iter().any(|(t, _)| t.starts_with("This view draws ")), "{shown:?}");
         let (_, events) = frame(click(at(&shown, "2")));
         assert!(matches!(events.as_slice(), [Event::Command(Command::SetMaxCrossings(0))]), "{events:?}");
@@ -1346,6 +1374,9 @@ mod tests {
         use crate::state::{Command, Event};
         fn texts(shape: &Shape, out: &mut Vec<String>) {
             match shape {
+                // A cut label reads with its ellipsis, so a lookup of the
+                // full text fails when it is cut.
+                Shape::Text(t) if t.galley.elided => out.push(format!("{}…", t.galley.text())),
                 Shape::Text(t) => out.push(t.galley.text().to_owned()),
                 Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
                 _ => {}
@@ -1387,9 +1418,14 @@ mod tests {
         let (shown, _) = frame(Vec::new());
         frame(click(at(&shown, "Settings").center()));
         let (shown, _) = frame(Vec::new());
+        // Both labels in full ("LINE COL…" before), the controls not
+        // stretched past the menu's width.
         let budget = at(&shown, "MAX CROSSINGS");
         let colours = at(&shown, "LINE COLOURS");
+        assert!(!shown.iter().any(|(t, _)| t.ends_with('…')), "a label is cut: {shown:?}");
         assert!(colours.min.y > budget.max.y, "under Max crossings: {colours:?} {budget:?}");
+        let from_box = at(&shown, "From box");
+        assert!(from_box.max.x - colours.min.x <= super::SETTINGS_MENU_W, "{from_box:?} {colours:?}");
         // Plain is the mode: a click on it asks nothing.
         let (_, events) = frame(click(at(&shown, "Plain").center()));
         assert!(events.is_empty(), "{events:?}");
@@ -1410,7 +1446,11 @@ mod tests {
 
         fn walk(shape: &Shape, out: &mut Vec<(String, Rect, Color32)>) {
             match shape {
-                Shape::Text(t) => out.push((t.galley.text().to_owned(), shape.visual_bounding_rect(), t.fallback_color)),
+                Shape::Text(t) => {
+                    // A cut label reads with its ellipsis (see above).
+                    let text = if t.galley.elided { format!("{}…", t.galley.text()) } else { t.galley.text().to_owned() };
+                    out.push((text, shape.visual_bounding_rect(), t.fallback_color));
+                }
                 Shape::Rect(r) if r.rect.height() <= 1.0 && r.rect.width() > 100.0 => out.push(("<rule>".to_owned(), r.rect, r.fill)),
                 Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
                 _ => {}
@@ -1456,6 +1496,11 @@ mod tests {
             .iter()
             .find(|(t, r, _)| t == "<rule>" && r.min.y >= colours.max.y && r.max.y <= editor.min.y)
             .map_or_else(|| panic!("no hairline between the blocks: {shown:?}"), |(_, r, _)| *r);
+        // Labels in full, the menu no wider than its width (the hairline
+        // spans it).
+        assert!(!shown.iter().any(|(t, _, _)| t.ends_with('…')), "a label is cut: {shown:?}");
+        assert!(rule.width() <= super::SETTINGS_MENU_W + 0.5, "menu {} px wide", rule.width());
+        assert!(rule.width() >= super::SETTINGS_MENU_W - 0.5, "menu {} px wide", rule.width());
         // Order, top to bottom.
         assert!(view.max.y <= budget.min.y && budget.max.y <= colours.min.y, "{shown:?}");
         assert!(colours.max.y <= rule.min.y && rule.max.y <= editor.min.y && editor.max.y <= snap.min.y, "{shown:?}");

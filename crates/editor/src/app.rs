@@ -37,6 +37,8 @@ mod frame;
 mod inplace;
 mod panels;
 
+#[cfg(test)]
+pub(crate) use frame::group_name_field;
 pub(crate) use inplace::focus_keys;
 #[cfg(test)]
 pub(crate) use inplace::suppress as suppress_edited;

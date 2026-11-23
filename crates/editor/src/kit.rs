@@ -506,13 +506,29 @@ pub fn head_label(ui: &mut Ui, text: &str, dot: Option<Color32>) {
 
 /// A form row: a 64 px label column, then `control` filling the rest.
 pub fn form_row<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    form_row_with(ui, 64.0, label, control)
+}
+
+/// The label column of [`menu_form_row`]: room for "MAX CROSSINGS".
+// DECISION: 96 px, the longest menu label ("MAX CROSSINGS", about 86 px
+// in the tracked mono label) plus slack; the panel keeps its 64 px.
+const MENU_LABEL_W: f32 = 96.0;
+
+/// A form row in a menu: like [`form_row`], with a label column wide
+/// enough for the Settings menu's labels (they are longer than the
+/// panel's and must not be cut).
+pub fn menu_form_row<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    form_row_with(ui, MENU_LABEL_W, label, control)
+}
+
+fn form_row_with<R>(ui: &mut Ui, label_w: f32, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, ui.spacing().interact_size.y), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(label_w, ui.spacing().interact_size.y), Sense::hover());
         let galley = egui::WidgetText::from(crate::theme::label(label)).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            64.0,
+            label_w,
             egui::TextStyle::Small,
         );
         ui.painter()
