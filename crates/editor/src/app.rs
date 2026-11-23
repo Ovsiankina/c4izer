@@ -40,6 +40,8 @@ mod panels;
 pub(crate) use inplace::focus_keys;
 #[cfg(test)]
 pub(crate) use inplace::suppress as suppress_edited;
+#[cfg(test)]
+pub(crate) use panels::line_style_section as line_style_section_for_tests;
 
 /// The startup report request (EDIT-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

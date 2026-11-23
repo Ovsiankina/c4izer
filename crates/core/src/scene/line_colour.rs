@@ -72,7 +72,7 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::*;
-    use crate::bench_util::{Bench, debug_build};
+    use crate::bench_util::{bench, debug_build};
     use crate::model::{LineColours, Mode, parse};
     use crate::view::plan;
 
@@ -204,7 +204,7 @@ mod tests {
         out
     }
 
-    fn bench_pass(test: &str, boxes: usize, lines: usize, budget_us: f64) {
+    fn bench_pass(test: &str, boxes: usize, lines: usize, budget_us: u64) {
         if debug_build(test) {
             return;
         }
@@ -212,14 +212,8 @@ mod tests {
         assert_eq!((p.boxes.len(), p.edges.len()), (boxes, lines));
         let fills: Vec<Colour> = p.boxes.iter().map(|b| b.style.background).collect();
         let page = Colour { r: 0xff, g: 0xff, b: 0xff };
-        Bench {
-            id: "P5-312",
-            feature: "line colour",
-            what: "colour pass alone",
-            input: &format!("generated {boxes} boxes / {lines} lines"),
-            budget_us,
-        }
-        .run(|| {
+        let input = format!("generated {boxes} boxes / {lines} lines");
+        bench(["P5-312", "line colour", "colour pass alone", &input], budget_us, || {
             std::hint::black_box(end_box_colours(std::hint::black_box(&p), |b| fills[b.0 as usize], page));
         });
     }
@@ -259,21 +253,14 @@ mod tests {
             ("scene build, plain", &b.plan, BUDGET_SCENE_US),
             ("scene build, lineColours box", &boxed, BUDGET_SCENE_US),
         ] {
-            Bench {
-                id: "P5-312",
-                feature: "line colour",
-                what,
-                input: "example.dsl C3-serving",
-                budget_us,
-            }
-            .run(|| {
+            bench(["P5-312", "line colour", what, "example.dsl C3-serving"], budget_us, || {
                 std::hint::black_box(super::super::build(std::hint::black_box(plan), &b.routes, &b.labels));
             });
         }
     }
 
     // Budgets (P5-900: about 4x the measured median, at least 50 us).
-    const BUDGET_40_US: f64 = 50.0;
-    const BUDGET_1000_US: f64 = 400.0;
-    const BUDGET_SCENE_US: f64 = 500.0;
+    const BUDGET_40_US: u64 = 50;
+    const BUDGET_1000_US: u64 = 400;
+    const BUDGET_SCENE_US: u64 = 500;
 }

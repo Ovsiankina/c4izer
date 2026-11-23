@@ -4185,6 +4185,52 @@ line-colour
   benchmarks (P5-900) time the scene build of `C3-serving` of
   `example.dsl` plain and `box`, and the pass alone on generated views
   of 40 boxes / 60 lines and 1000 boxes / 3000 lines.
+- **P5-350** `Edit::SetLineStyle` with `LineStyleTarget::ThisLine` and
+  a colour gives the relationship a per-line tag, `<source>-><destination>`
+  (the ends' full dotted ids) suffixed `-2`, `-3`... when another
+  relationship already carries it, as a `tags` line at the end of its
+  block (the block created when it has none), and writes `color
+  #rrggbb` in a `relationship "<tag>"` block added at the end of
+  `styles` (`styles` and `views` created when missing, as DSL-13); a
+  later change rewrites that value in place.
+- **P5-351** `Edit::SetLineStyle` with `LineStyleTarget::Tag(t)` writes
+  the colour in the file's last top-level `relationship "t"` block that
+  sets it, else as a new line of the last such block, else in a new
+  block at the end of `styles`; a tag the relationship does not carry,
+  a relationship copied between instances, or a relationship that no
+  longer resolves is refused and nothing is written.
+- **P5-352** A `None` colour removes the `color` line, then the
+  `relationship "<tag>"` block, `styles` and `views` when they hold
+  nothing else; for `ThisLine` the per-line tag goes too once no block
+  of it is left.
+- **P5-353** `Edit::ResetLineStyle` removes the properties of the
+  relationship's per-line `relationship "<tag>"` blocks (each whole
+  block unless it holds a comment) and the per-line tag; a relationship
+  with no per-line tag writes nothing.
+- **P5-354** The inverse of `SetLineStyle`, and of a `ResetLineStyle`
+  of a per-line style `SetLineStyle` wrote, gives the text back byte for
+  byte.
+- **P5-355** A line's colour is, first to last: its per-line colour,
+  the colour of the later declared of its tags' `relationship` styles,
+  the `Relationship` style, the end box's fill in a `lineColours box`
+  view (P5-300), the plain line colour.
+- **P5-356** A drawn line that stands for several relationships takes
+  the style of its winner (`PlanEdge.relationships[0]`, the
+  relationship a click on the line selects), and styling the winner
+  recolours that line.
+- **P5-357** With lines and no box selected, the right panel shows
+  "Style · N line(s)" with the rows "Apply to" (`this line only`, then
+  `all <tag>` for each tag every selected line carries), "Colour" (a
+  swatch of the colour the lines are drawn in when they agree) and
+  "Reset to tag style"; a colour pick or a reset applies to every
+  selected line as one undo step.
+- **P5-358** The Details Tags row (P5-204..P5-206) adds and removes
+  tags on the selected lines, several lines as one undo step.
+- **P5-359** DSL with no per-line tag parses, draws and exports as
+  before: a `SetLineStyle` and its undo leave the text, and so the four
+  goldens (CLI-5), unchanged.
+- **P5-360** Its benchmark (P5-900) times `SetLineStyle` this line,
+  apply, on `tests/data/example/workspace.dsl`.
 
 lint-resolve
 

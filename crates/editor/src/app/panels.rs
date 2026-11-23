@@ -4,7 +4,7 @@
 //! Lint · Export. A section that does not apply is left out, never
 //! dimmed (behaviour change 12).
 
-use c4rizer_core::edit::{StyleProperty, StyleTarget};
+use c4rizer_core::edit::{LineStyleProperty, LineStyleTarget, StyleProperty, StyleTarget};
 use c4rizer_core::model::{Colour, CrossingStyle, ElementKey, LabelMode};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Vec2};
 
@@ -77,9 +77,13 @@ impl App {
                 if let Some(panel) = &style {
                     style_section(ui, panel, &mut out);
                 }
+                let line_style = self.state.line_style_panel();
+                if let Some(panel) = &line_style {
+                    line_style_section(ui, panel, &mut out);
+                }
                 line_section(ui, &self.state, &mut out);
                 steps_section(ui, &self.state, &mut out);
-                self.canvas_section(ui, style.is_none(), &mut out);
+                self.canvas_section(ui, style.is_none() && line_style.is_none(), &mut out);
                 lint_section(ui, &self.state, &mut out);
                 export_section(ui, &mut out);
             });
@@ -516,6 +520,52 @@ fn style_section(ui: &mut egui::Ui, panel: &crate::state::StylePanel, out: &mut 
                 }
             });
         }
+        ui.vertical_centered(|ui| {
+            if Button::new("Reset to tag style").with_icon(Icon::Reset).look(Look::Ghost).show(ui).clicked() {
+                cmd(out, Command::ResetStyle);
+            }
+        });
+    });
+}
+
+/// The Style section of a line selection (P5-357): the box section's
+/// layout, "Apply to", "Colour", "Reset to tag style".
+pub(crate) fn line_style_section(ui: &mut egui::Ui, panel: &crate::state::LineStylePanel, out: &mut Vec<Event>) {
+    let title = format!("Style · {} line{}", panel.lines, if panel.lines == 1 { "" } else { "s" });
+    kit::section(ui, "line-style", &title, None, true, |ui| {
+        // DECISION: the box section's labels with "line" for "box"
+        // (`this line only`, `all <tag>`), so the two sections read alike;
+        // the choice lives in egui's temporary memory, as for boxes.
+        let id = egui::Id::unique("c4rizer-line-style-target");
+        let mut choice = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
+        if choice > panel.tags.len() {
+            choice = 0;
+        }
+        let names: Vec<String> = std::iter::once("this line only".to_owned())
+            .chain(panel.tags.iter().map(|t| format!("all {t}")))
+            .collect();
+        kit::form_row(ui, "Apply to", |ui| {
+            if let Some(i) = kit::select(ui, "line-style-target", &names[choice], &names, Some(choice)) {
+                choice = i;
+            }
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(id, choice));
+        let target = if choice == 0 {
+            LineStyleTarget::ThisLine
+        } else {
+            LineStyleTarget::Tag(panel.tags[choice - 1].clone())
+        };
+        kit::form_row(ui, "Colour", |ui| {
+            if let Some([r, g, b]) = kit::swatch(ui, "Colour", panel.color.map(|c| [c.r, c.g, c.b])) {
+                cmd(
+                    out,
+                    Command::SetLineStyle {
+                        target: target.clone(),
+                        property: LineStyleProperty::Color(Some(Colour { r, g, b })),
+                    },
+                );
+            }
+        });
         ui.vertical_centered(|ui| {
             if Button::new("Reset to tag style").with_icon(Icon::Reset).look(Look::Ghost).show(ui).clicked() {
                 cmd(out, Command::ResetStyle);

@@ -390,13 +390,13 @@ fn bench_index(n: usize, budgets: (u64, u64)) {
     let scene = grid_scene(n);
     let dragged: BTreeMap<BoxId, Point> = [(BoxId(0), scene.centres[0])].into();
     let input = format!("{n} boxes");
-    bench("P5-500", "guides", "index build", &input, budgets.0, || {
+    bench(["P5-500", "guides", "index build", &input], budgets.0, || {
         std::hint::black_box(GuideIndex::build(&scene, &dragged));
     });
     let index = GuideIndex::build(&scene, &dragged).expect("an index");
     let mut out = Vec::with_capacity(6);
     let mut dx = 0;
-    bench("P5-501", "guides", "snap query + guides", &input, budgets.1, || {
+    bench(["P5-501", "guides", "snap query + guides", &input], budgets.1, || {
         dx = (dx + 7) % 200;
         let pull = index.snap((dx, 3), 6.0, true);
         index.guides((dx + pull.0, 3 + pull.1), &mut out);
@@ -448,7 +448,7 @@ fn perf_p5_501_drag_to_with_and_without_guides() {
             sh.s.drop_guide_index();
         }
         let mut step = 0.0_f32;
-        bench("P5-501", "guides", what, "example C3-serving", budget, || {
+        bench(["P5-501", "guides", what, "example C3-serving"], budget, || {
             step = (step + 13.0) % 400.0;
             let effects = sh.s.handle(Event::Input(Input::PointerMove {
                 at: ScreenPoint { x: from.x + 20.0 + step, y: from.y + step / 3.0 },

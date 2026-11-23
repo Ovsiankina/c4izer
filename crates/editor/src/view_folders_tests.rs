@@ -15,7 +15,7 @@ use crate::app::{draw_view_list, draw_view_list_with};
 use crate::camera::ScreenPoint;
 use crate::files::{self, FileEvent, UiState};
 use crate::state::{Command, Effect, Event, Input, State};
-use crate::testutil::{TempDir, bench_n, many_views};
+use crate::testutil::{TempDir, bench, debug_build, many_views};
 use crate::view_folders::{FolderCache, ViewFolder, folder_of, folders};
 use crate::worker::{self, ViewRef};
 
@@ -248,6 +248,29 @@ fn p5_601_folders_in_order_non_empty_only() {
     assert_eq!(c1, ["estate", "shop-context"]);
 }
 
+/// P5-606: the list build (one key map per call) puts every view in the
+/// folder `folder_of` gives it, filtered views and unwritten default
+/// views included.
+#[test]
+fn p5_606_folders_agree_with_folder_of() {
+    for src in [ESTATE.to_owned(), many_views(60)] {
+        let sh = Shell::with(&src);
+        let model = sh.s.model().expect("a model").clone();
+        let mut entries = sh.s.views();
+        let scope = model.full_key(model.elements[0].id).expect("a key");
+        entries.push(crate::state::ViewEntry {
+            view: ViewRef::Default { scope, kind: c4rizer_core::model::ViewKind::Container },
+            ..entries[0].clone()
+        });
+        for f in folders(&model, entries.clone()) {
+            for e in &f.views {
+                assert_eq!(folder_of(&model, &e.view), f.folder, "{}", e.view.key());
+            }
+        }
+        assert_eq!(folders(&model, entries.clone()).iter().map(|f| f.views.len()).sum::<usize>(), entries.len());
+    }
+}
+
 /// P5-602: a header per folder then its views, every row one line of
 /// `SIZE_ROW`, nothing painted past the panel's edge at 100, 120 and
 /// 220 px.
@@ -465,17 +488,16 @@ fn p5_607_header_hover_shows_recap() {
 #[test]
 #[ignore = "perf: run with --release -- --ignored perf_p5"]
 fn perf_p5_606_folder_list_build() {
-    if cfg!(debug_assertions) {
-        eprintln!("perf_p5_606_folder_list_build: skipped in a debug build");
+    if debug_build("perf_p5_606_folder_list_build") {
         return;
     }
     // Budgets: about 4x the medians measured 2026-11-23 (22-25 us, 441-680 us).
-    for (n, budget) in [(50, 100.0), (500, 3_000.0)] {
+    for (n, budget) in [(50, 100), (500, 3_000)] {
         let sh = Shell::with(&many_views(n));
         let model = sh.s.model().expect("a model").clone();
         let entries = sh.s.views();
         assert_eq!(entries.len(), n);
-        bench_n(["P5-606", "view-folders", "folder list build", &format!("{n} views")], 21, budget, || {
+        bench(["P5-606", "view folders", "folder list build", &format!("{n} views")], budget, || {
             std::hint::black_box(folders(&model, std::hint::black_box(entries.clone())));
         });
     }
@@ -486,8 +508,7 @@ fn perf_p5_606_folder_list_build() {
 #[test]
 #[ignore = "perf: run with --release -- --ignored perf_p5"]
 fn perf_p5_606_view_list_frame() {
-    if cfg!(debug_assertions) {
-        eprintln!("perf_p5_606_view_list_frame: skipped in a debug build");
+    if debug_build("perf_p5_606_view_list_frame") {
         return;
     }
     let sh = Shell::with(&many_views(500));
@@ -499,7 +520,7 @@ fn perf_p5_606_view_list_frame() {
         crate::app::view_list_frame(&ctx, &sh.s, 220.0, &mut cache);
     }
     // Budget: about 4x the 92 us median measured 2026-11-23.
-    bench_n(["P5-606", "view-folders", "view list frame", "500 views"], 21, 400.0, || {
+    bench(["P5-606", "view folders", "view list frame", "500 views"], 400, || {
         crate::app::view_list_frame(&ctx, &sh.s, 220.0, &mut cache);
     });
     assert_eq!(cache.builds, 1, "no rebuild per frame");

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use c4rizer_core::model::{Parsed, ViewKind, parse};
 use eframe::egui;
 
-use crate::testutil::{bench_n, many_views};
+use crate::testutil::{bench, debug_build, many_views};
 use crate::view_folders_tests::{ESTATE, Shell, declared};
 use crate::view_map::{MapNode, ViewMap, ViewMapPanel, tree_rows};
 use crate::worker::ViewRef;
@@ -304,15 +304,14 @@ fn p5_705_tree_built_with_the_map_once_per_parse() {
 #[test]
 #[ignore = "perf: run with --release -- --ignored perf_p5"]
 fn perf_p5_705_tree_rows_build() {
-    if cfg!(debug_assertions) {
-        eprintln!("perf_p5_705_tree_rows_build: skipped in a debug build");
+    if debug_build("perf_p5_705_tree_rows_build") {
         return;
     }
     // Budgets: about 4x the medians measured 2026-11-23 (14 us, 163 us).
-    for (n, budget) in [(50, 60.0), (500, 700.0)] {
+    for (n, budget) in [(50, 60), (500, 700)] {
         let map = ViewMap::build(&parsed(&many_views(n)).model);
         assert_eq!(map.nodes.len(), n);
-        bench_n(["P5-705", "map-tree", "tree rows build", &format!("{n} views")], 21, budget, || {
+        bench(["P5-705", "map tree", "tree rows build", &format!("{n} views")], budget, || {
             std::hint::black_box(tree_rows(std::hint::black_box(&map.nodes), &map.drawn));
         });
     }
@@ -323,8 +322,7 @@ fn perf_p5_705_tree_rows_build() {
 #[test]
 #[ignore = "perf: run with --release -- --ignored perf_p5"]
 fn perf_p5_705_map_tree_frame() {
-    if cfg!(debug_assertions) {
-        eprintln!("perf_p5_705_map_tree_frame: skipped in a debug build");
+    if debug_build("perf_p5_705_map_tree_frame") {
         return;
     }
     let p = parsed(&many_views(500));
@@ -338,7 +336,7 @@ fn perf_p5_705_map_tree_frame() {
     }
     assert!(panel.tree);
     // Budget: about 4x the 208 us median measured 2026-11-23.
-    bench_n(["P5-705", "map-tree", "map panel frame, tree mode", "500 views"], 21, 900.0, || {
+    bench(["P5-705", "map tree", "map panel frame, tree mode", "500 views"], 900, || {
         frame(&ctx, &mut panel, &p, Some(&current), size, Vec::new());
     });
     assert_eq!(panel.builds, 1, "no rebuild per frame");

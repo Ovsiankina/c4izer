@@ -335,6 +335,34 @@ pub enum StyleProperty {
     Shape(Option<Shape>),
 }
 
+/// Where a line style change is written (P5-350, P5-351): the line
+/// counterpart of `StyleTarget`.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LineStyleTarget {
+    /// `all <tag>`: the `relationship "<tag>"` block, added at the end of
+    /// `styles` when there is none (`styles` and `views` created as for
+    /// `StyleTarget::Tag`). The relationship must carry `tag`, else
+    /// `EditErrorKind::InvalidValue`; every line carrying it changes.
+    Tag(String),
+    /// `this line only`: a per-line tag `<source>-><destination>` (the
+    /// ends' full dotted ids), suffixed `-2`, `-3`... when another
+    /// relationship already carries it, added as the relationship's last
+    /// `tags` line, and a `relationship "<tag>"` block at the end of
+    /// `styles` (P5-350).
+    ThisLine,
+}
+
+/// One line style property and its new value; `None` removes the
+/// property line, and an emptied block with it (P5-352).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LineStyleProperty {
+    /// `color #rrggbb`: line, chevrons, tip and label text (P2-419).
+    Color(Option<Colour>),
+}
+
 /// One semantic edit. Targets are named by the keys written in the file,
 /// so an edit applies to any later text where they still resolve
 /// (EDIT-24) and doubles as an undo step (EDIT-19).
@@ -719,6 +747,29 @@ pub enum Edit {
         /// The body's bytes now.
         expected: String,
     },
+    /// Change one style property of a relationship's line, written where
+    /// `target` says: the line counterpart of `SetStyle` (P5-350..P5-352).
+    /// A line standing for several relationships is styled through its
+    /// winner (P5-356). The inverse is a `SetLineStyle` with the previous
+    /// value; undo gives the bytes back (P5-354).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// The relationship, from `RelationshipRef::of`.
+        relationship: RelationshipRef,
+        /// `all <tag>` or `this line only`.
+        target: LineStyleTarget,
+        /// The property and its value.
+        property: LineStyleProperty,
+    },
+    /// "Reset to tag style" for a line: remove the relationship's per-line
+    /// tag and its `relationship "<tag>"` blocks, under the same rules as
+    /// `ResetStyle` (P5-353). Nothing is written when it has no per-line
+    /// tag.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    ResetLineStyle {
+        /// The relationship, from `RelationshipRef::of`.
+        relationship: RelationshipRef,
+    },
 }
 
 /// A drawn line of a view named by its ends' canonical element keys and,
@@ -814,7 +865,9 @@ pub struct Applied {
 /// (`EditErrorKind::InvalidValue`: size not `> 0`, an absent element
 /// name, a technology on a person or software system, another control
 /// character in a text value, `StyleTarget::Tag` with a tag the element
-/// does not carry, an `AddDefaultView` scope whose kind does not fit, an
+/// does not carry, `LineStyleTarget::Tag` with a tag the relationship
+/// does not carry, a `SetLineStyle` on a relationship copied between
+/// instances (P5-351), an `AddDefaultView` scope whose kind does not fit, an
 /// `AddDefaultView` or `RemoveDefaultView` whose key `<scope>-<kind>`
 /// names a view of another scope or kind, a `RemoveDefaultView` whose
 /// view holds more than `edit` wrote; the same view already written is
@@ -1044,6 +1097,12 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::RestoreTags { target, text, expected } => restore_tags(current, target, text, expected),
         Edit::SetGroup { elements, group } => set_group(current, elements, group.as_deref()),
         Edit::RestoreGroups { scope, text, expected } => restore_groups(current, scope.as_ref(), text, expected),
+        Edit::SetLineStyle {
+            relationship,
+            target,
+            property,
+        } => set_line_style(current, relationship, target, *property),
+        Edit::ResetLineStyle { relationship } => reset_line_style(current, relationship),
     }
 }
 
@@ -2920,16 +2979,40 @@ fn tag_value(model: &model::Model, tag: &str, property: StyleProperty) -> StyleP
 }
 
 /// Writes `property` into the `element "<tag>"` block (DSL-13).
+fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan> {
+    let (keyword, value) = prop_parts(property);
+    let blocks: Vec<StyleBlock> = file_blocks(cx.model, tag)
+        .map(|s| StyleBlock {
+            span: s.span,
+            value: prop_in(s, property).0,
+        })
+        .collect();
+    plan_block_property(cx, ("element", tag), &blocks, keyword, value)
+}
+
+/// A file's own top-level style block for one tag, as `edit` reads it:
+/// the statement, and the value of the property being written when the
+/// block sets it.
+struct StyleBlock {
+    span: Span,
+    value: Option<Span>,
+}
+
+/// Writes `keyword value` into the `<head> "<tag>"` blocks `blocks` (in
+/// file order), or removes it for `None` (DSL-13, P5-350..P5-352).
 // DECISION: with several blocks for one tag, the value is rewritten in
 // the last block that sets it (the one that takes effect, DSL-15), and a
 // new property line goes into the last block.
-fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan> {
-    let (keyword, value) = prop_parts(property);
-    let blocks: Vec<&ElementStyle> = file_blocks(cx.model, tag).collect();
-    let setting = blocks
-        .iter()
-        .rev()
-        .find_map(|s| prop_in(s, property).0.map(|span| (*s, span)));
+// DECISION: shared by element and relationship styles (P5-350): one
+// writer, so a line style lands exactly where a box style would.
+fn plan_block_property(
+    cx: &Ctx<'_>,
+    (head, tag): (&str, &str),
+    blocks: &[StyleBlock],
+    keyword: &str,
+    value: Option<String>,
+) -> Res<Plan> {
+    let setting = blocks.iter().rev().find_map(|b| b.value.map(|span| (b.span, span)));
     let missing = || EditErrorKind::InvalidValue {
         value: tag.to_owned(),
         reason: "its style block was not found",
@@ -2940,10 +3023,10 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
             text: v,
         }]),
         (Some((style, span)), None) => {
-            let owner = cx.statement(style.span).ok_or_else(missing)?;
+            let owner = cx.statement(style).ok_or_else(missing)?;
             let block = owner.block.as_ref().ok_or_else(missing)?;
             let line = Ctx::child_holding(block, span).ok_or_else(missing)?;
-            let parents = [Some(style.span), cx.model.styles_span, cx.model.views_span];
+            let parents = [Some(style), cx.model.styles_span, cx.model.views_span];
             Plan::Patches(vec![cx.remove_nested(line, &parents)])
         }
         (None, None) => Plan::Patches(Vec::new()),
@@ -2955,7 +3038,7 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
                 cx.insert_last(owner, block, &one_line(line))
             } else {
                 let lines = vec![
-                    (0, format!("element {} {{", text::quote(tag))),
+                    (0, format!("{head} {} {{", text::quote(tag))),
                     (1, line),
                     (0, "}".to_owned()),
                 ];
@@ -2969,8 +3052,14 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
 /// any: the whole block (and `styles`, `views` when they hold nothing
 /// else) when it holds no comment, else only the property lines.
 fn plan_clear_block(cx: &Ctx<'_>, tag: &str) -> Plan {
-    for style in file_blocks(cx.model, tag).rev() {
-        let Some(owner) = cx.statement(style.span) else {
+    let spans: Vec<Span> = file_blocks(cx.model, tag).map(|s| s.span).collect();
+    plan_clear_blocks(cx, &spans)
+}
+
+/// `plan_clear_block` on the style blocks at `spans`, in file order.
+fn plan_clear_blocks(cx: &Ctx<'_>, spans: &[Span]) -> Plan {
+    for &span in spans.iter().rev() {
+        let Some(owner) = cx.statement(span) else {
             continue;
         };
         let Some(block) = &owner.block else {
@@ -3146,6 +3235,198 @@ fn plan_remove_tag_at(cx: &Ctx<'_>, span: Span, declared: &[model::Literal], tag
         return Ok(Plan::Patches(vec![Patch::remove(from..to)]));
     }
     Ok(Plan::Patches(vec![cx.remove_line(line.span)]))
+}
+
+// ------------------------------------------------------ line style edits
+
+/// The file's own top-level `relationship "<tag>"` blocks, in file order
+/// (the line counterpart of `file_blocks`).
+fn line_blocks<'m>(
+    model: &'m model::Model,
+    tag: &'m str,
+) -> impl DoubleEndedIterator<Item = &'m model::RelationshipStyle> {
+    model
+        .relationship_styles
+        .iter()
+        .filter(move |s| s.theme.is_none() && s.mode.is_none() && s.tag.value == tag)
+}
+
+/// The colour the file's `relationship "<tag>"` blocks set, later blocks
+/// winning (DSL-15).
+fn line_tag_colour(model: &model::Model, tag: &str) -> Option<Colour> {
+    line_blocks(model, tag).rev().find_map(|s| s.color.map(|c| c.value))
+}
+
+/// Writes `colour` into the `relationship "<tag>"` block (P5-350..P5-352).
+fn plan_line_style(cx: &Ctx<'_>, tag: &str, colour: Option<Colour>) -> Res<Plan> {
+    let blocks: Vec<StyleBlock> = line_blocks(cx.model, tag)
+        .map(|s| StyleBlock {
+            span: s.span,
+            value: s.color.map(|c| c.span),
+        })
+        .collect();
+    plan_block_property(cx, ("relationship", tag), &blocks, "color", colour.map(|c| c.to_string()))
+}
+
+/// True when a written relationship other than `id` carries `tag`.
+// DECISION: a relationship copied between instances (P3-106) carries
+// its original's tags; it is not written, so it never makes a per-line
+// tag "taken" (else the original's own tag would stop counting as its).
+fn line_tag_taken(model: &model::Model, id: Option<RelationshipId>, tag: &str) -> bool {
+    model
+        .relationships
+        .iter()
+        .any(|r| Some(r.id) != id && r.copied_from.is_none() && r.tags.iter().any(|t| t == tag))
+}
+
+/// The per-line tag's stem: `<source>-><destination>`, the ends' full
+/// dotted ids (P5-350).
+// DECISION: the ends' dotted ids, as DSL-13 names a box's tag, so the
+// tag reads as the line in both identifier modes and is stable across
+// edits that do not rename an end.
+fn line_tag_stem(model: &model::Model, id: RelationshipId) -> String {
+    let r = model.relationship(id);
+    format!("{}->{}", dotted_id(model, r.source.value), dotted_id(model, r.destination.value))
+}
+
+/// The relationship's per-line tag, if it declares one: the stem, or the
+/// stem suffixed `-N` (N >= 2), carried by no other written relationship.
+fn per_line_tag(model: &model::Model, id: RelationshipId) -> Option<String> {
+    let stem = line_tag_stem(model, id);
+    model
+        .relationship(id)
+        .declared_tags
+        .iter()
+        .flat_map(|l| l.value.split(','))
+        .map(str::trim)
+        .rev()
+        .filter(|t| !line_tag_taken(model, Some(id), t))
+        .find(|t| {
+            *t == stem
+                || t.strip_prefix(stem.as_str())
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| n >= 2)
+        })
+        .map(str::to_owned)
+}
+
+/// A new per-line tag: the stem, suffixed `-2`, `-3`... when a written
+/// relationship already carries it (P5-350).
+fn new_per_line_tag(model: &model::Model, id: RelationshipId) -> String {
+    let stem = line_tag_stem(model, id);
+    if !line_tag_taken(model, None, &stem) {
+        return stem;
+    }
+    (2..=u32::MAX)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|t| !line_tag_taken(model, None, t))
+        .unwrap_or(stem)
+}
+
+/// Adds (`add`) or removes `tag` on the relationship `r` in its file.
+fn line_tag(current: &mut Parsed, r: &RelationshipRef, tag: &str, add: bool) -> Res<()> {
+    let file = current.model.relationship(resolve_relationship(&current.model, r)?).span.file;
+    let name = format!("{} -> {}", r.source, r.destination);
+    run_in(current, file, |cx| {
+        let rel = cx.model.relationship(resolve_relationship(cx.model, r)?);
+        if add {
+            plan_add_tag_at(cx, rel.span, tag, &name)
+        } else {
+            plan_remove_tag_at(cx, rel.span, &rel.declared_tags, tag, &name)
+        }
+    })
+}
+
+/// `Edit::SetLineStyle` (P5-350..P5-352).
+fn set_line_style(
+    current: &mut Parsed,
+    relationship: &RelationshipRef,
+    target: &LineStyleTarget,
+    property: LineStyleProperty,
+) -> Res<Vec<Edit>> {
+    let LineStyleProperty::Color(colour) = property;
+    let model = &current.model;
+    let id = resolve_relationship(model, relationship)?;
+    let rel = model.relationship(id);
+    if rel.copied_from.is_some() {
+        return Err(EditErrorKind::InvalidValue {
+            value: format!("{} -> {}", relationship.source, relationship.destination),
+            reason: "this relationship is copied between instances; style the one it copies",
+        });
+    }
+    let undo = |colour| {
+        vec![Edit::SetLineStyle {
+            relationship: relationship.clone(),
+            target: target.clone(),
+            property: LineStyleProperty::Color(colour),
+        }]
+    };
+    match target {
+        LineStyleTarget::Tag(tag) => {
+            if !rel.tags.iter().any(|t| t == tag) {
+                return Err(EditErrorKind::InvalidValue {
+                    value: tag.clone(),
+                    reason: "the relationship does not carry this tag",
+                });
+            }
+            let inverse = undo(line_tag_colour(model, tag));
+            run(current, |cx| plan_line_style(cx, tag, colour))?;
+            Ok(inverse)
+        }
+        LineStyleTarget::ThisLine => match per_line_tag(model, id) {
+            Some(tag) => {
+                let inverse = undo(line_tag_colour(model, &tag));
+                run(current, |cx| plan_line_style(cx, &tag, colour))?;
+                // As `set_style`: the tag goes with its last block, so
+                // undoing a first "this line only" change gives the bytes
+                // back.
+                if colour.is_none() && line_blocks(&current.model, &tag).next().is_none() {
+                    line_tag(current, relationship, &tag, false)?;
+                }
+                Ok(inverse)
+            }
+            None if colour.is_none() => Ok(Vec::new()),
+            None => {
+                let tag = new_per_line_tag(model, id);
+                let inverse = undo(None);
+                line_tag(current, relationship, &tag, true)?;
+                run(current, |cx| plan_line_style(cx, &tag, colour))?;
+                Ok(inverse)
+            }
+        },
+    }
+}
+
+/// `Edit::ResetLineStyle` (P5-353): as `reset_style`.
+fn reset_line_style(current: &mut Parsed, relationship: &RelationshipRef) -> Res<Vec<Edit>> {
+    let model = &current.model;
+    let id = resolve_relationship(model, relationship)?;
+    let Some(tag) = per_line_tag(model, id) else {
+        return Ok(Vec::new());
+    };
+    let inverse = line_tag_colour(model, &tag)
+        .map(|c| Edit::SetLineStyle {
+            relationship: relationship.clone(),
+            target: LineStyleTarget::ThisLine,
+            property: LineStyleProperty::Color(Some(c)),
+        })
+        .into_iter()
+        .collect();
+    // One block (or its properties) per pass; each pass removes bytes,
+    // so the loop ends.
+    loop {
+        let before = root(current).source().len();
+        run(current, |cx| {
+            let spans: Vec<Span> = line_blocks(cx.model, &tag).map(|s| s.span).collect();
+            Ok(plan_clear_blocks(cx, &spans))
+        })?;
+        if root(current).source().len() == before {
+            break;
+        }
+    }
+    line_tag(current, relationship, &tag, false)?;
+    Ok(inverse)
 }
 
 // ------------------------------------------------------------ tag edits

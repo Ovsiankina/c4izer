@@ -7,8 +7,8 @@
 // (`p`, `s`, `r`, then `q`, `t` after the write) read best side by side.
 #![allow(clippy::many_single_char_names)]
 
-#[path = "bench_util/bench.rs"]
-mod bench;
+#[path = "../src/bench_util.rs"]
+mod bench_util;
 
 use std::fmt::Write as _;
 use std::sync::atomic::AtomicBool;
@@ -346,10 +346,10 @@ fn bench_resolve(cols: i32, rows: i32, budgets: (u64, u64)) {
     let report = lint(&p.model, &s);
     let first = report.findings.iter().find(|f| f.rule == Rule::TooClose).expect("an L6").clone();
     let input = format!("generated {} boxes", cols * rows);
-    bench::bench("P5-400", "lint resolve", "resolve L6", &input, budgets.0, || {
+    bench_util::bench(["P5-400", "lint resolve", "resolve L6", &input], budgets.0, || {
         std::hint::black_box(resolve(&p.model, &s, &first));
     });
-    bench::bench("P5-405", "lint resolve", "resolve_all", &input, budgets.1, || {
+    bench_util::bench(["P5-405", "lint resolve", "resolve_all", &input], budgets.1, || {
         std::hint::black_box(resolve_all(&p.model, &s, &report.findings));
     });
 }
@@ -357,7 +357,7 @@ fn bench_resolve(cols: i32, rows: i32, budgets: (u64, u64)) {
 #[test]
 #[ignore = "timing: cargo test --release -- --ignored perf_p5"]
 fn perf_p5_400_resolve_40_boxes() {
-    if bench::debug_build("perf_p5_400_resolve_40_boxes") {
+    if bench_util::debug_build("perf_p5_400_resolve_40_boxes") {
         return;
     }
     bench_resolve(8, 5, (50, 100));
@@ -366,7 +366,7 @@ fn perf_p5_400_resolve_40_boxes() {
 #[test]
 #[ignore = "timing: cargo test --release -- --ignored perf_p5"]
 fn perf_p5_400_resolve_400_boxes() {
-    if bench::debug_build("perf_p5_400_resolve_400_boxes") {
+    if bench_util::debug_build("perf_p5_400_resolve_400_boxes") {
         return;
     }
     bench_resolve(20, 20, (50, 4_000));

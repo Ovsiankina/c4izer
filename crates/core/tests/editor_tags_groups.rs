@@ -3,8 +3,8 @@
 //! `Edit::SetGroup`, their inverses, and their benchmarks (P5-100..109,
 //! P5-200..206, P5-900).
 
-#[path = "common/bench.rs"]
-mod bench;
+#[path = "../src/bench_util.rs"]
+mod bench_util;
 
 use c4rizer_core::edit::{self, Applied, Edit, EditErrorKind, RelationshipRef, TagTarget};
 use c4rizer_core::model::{self, ElementKey, Model, Parsed};
@@ -413,13 +413,13 @@ const EXAMPLE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../t
 #[test]
 #[ignore = "perf: release perf oracle only"]
 fn perf_p5_200_add_then_remove_tag() {
-    if bench::debug_build("perf_p5_200_add_then_remove_tag") {
+    if bench_util::debug_build("perf_p5_200_add_then_remove_tag") {
         return;
     }
     let parsed = parse(EXAMPLE);
     let m = &parsed.model;
     let target = TagTarget::Element(m.full_key(m.elements.iter().find(|e| e.parent.is_some()).expect("a nested element").id).expect("key"));
-    bench::run("P5-200", "tags", "AddTag then RemoveTag apply", "example/workspace.dsl", 4_600, || {
+    bench_util::bench(["P5-200", "tags", "AddTag then RemoveTag apply", "example/workspace.dsl"], 4_600, || {
         let added = edit::apply(&parsed, &[add(target.clone(), "Bench")]).expect("adds");
         let again = parse(&added.text);
         let removed = edit::apply(&again, &added.inverse).expect("removes");
@@ -430,7 +430,7 @@ fn perf_p5_200_add_then_remove_tag() {
 #[test]
 #[ignore = "perf: release perf oracle only"]
 fn perf_p5_100_set_group_create_in_out() {
-    if bench::debug_build("perf_p5_100_set_group_create_in_out") {
+    if bench_util::debug_build("perf_p5_100_set_group_create_in_out") {
         return;
     }
     let parsed = parse(EXAMPLE);
@@ -446,7 +446,7 @@ fn perf_p5_100_set_group_create_in_out() {
     let create = Edit::SetGroup { elements: three[..2].to_vec(), group: Some("Bench".to_owned()) };
     let move_in = Edit::SetGroup { elements: three[2..].to_vec(), group: Some("Bench".to_owned()) };
     let move_out = Edit::SetGroup { elements: three.clone(), group: None };
-    bench::run("P5-100", "groups", "SetGroup create, move in, move out", "example/workspace.dsl, 3 boxes", 6_500, || {
+    bench_util::bench(["P5-100", "groups", "SetGroup create, move in, move out", "example/workspace.dsl, 3 boxes"], 6_500, || {
         let a = edit::apply(&parsed, std::slice::from_ref(&create)).expect("creates");
         let a = parse(&a.text);
         let b = edit::apply(&a, std::slice::from_ref(&move_in)).expect("moves in");

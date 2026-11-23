@@ -112,11 +112,14 @@ mod bundles;
 pub(crate) mod guides;
 pub(crate) mod inplace;
 mod label_drag;
+mod line_style;
 mod lint_resolve;
 mod steps;
 mod tags_groups;
 mod vertices;
 pub use anchors::SnapMark;
+// PENDING SIGN-OFF: new pub re-export (owner request 2026-11-23, OR-15 / issue #5)
+pub use line_style::LineStylePanel;
 pub use steps::StepDetails;
 
 /// Pointer travel below which a press and release is a click, in screen
@@ -383,8 +386,18 @@ pub enum Command {
         /// The property and value.
         property: StyleProperty,
     },
-    /// "Reset to tag style" on every selected box (DSL-13).
+    /// "Reset to tag style" on every selected box (DSL-13), or with lines
+    /// and no box selected on every selected line (P5-357).
     ResetStyle,
+    /// Set a line style property on every selected line, one undo step
+    /// (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// `all <tag>` or `this line only`.
+        target: c4rizer_core::edit::LineStyleTarget,
+        /// The property and value.
+        property: c4rizer_core::edit::LineStyleProperty,
+    },
     /// Align the selected boxes, one undo step (EDIT-20).
     Align(Alignment),
     /// Distribute the selected boxes evenly, one undo step (EDIT-20).
@@ -868,6 +881,27 @@ pub enum Action {
         view: ViewRef,
         /// Canonical element keys.
         elements: Vec<ElementKey>,
+    },
+    /// Line style change on several lines, one batch (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// The view the change was made in (EDIT-15: a default view is
+        /// written first).
+        view: ViewRef,
+        /// The selected lines' relationships.
+        relationships: Vec<RelationshipRef>,
+        /// `all <tag>` or `this line only`.
+        target: c4rizer_core::edit::LineStyleTarget,
+        /// Property and value.
+        property: c4rizer_core::edit::LineStyleProperty,
+    },
+    /// Reset to tag style on several lines (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    ResetLineStyle {
+        /// The view the change was made in (EDIT-15).
+        view: ViewRef,
+        /// The selected lines' relationships.
+        relationships: Vec<RelationshipRef>,
     },
     /// Set the canvas size, moving boxes to keep the drawing centred, one
     /// batch (P2-701, P2-702).
@@ -2677,6 +2711,25 @@ impl State {
             Action::ResetStyle { view, elements } => {
                 let mut out = add_default(model, view);
                 out.extend(elements.iter().map(|e| Edit::ResetStyle { element: e.clone() }));
+                out
+            }
+            Action::SetLineStyle {
+                view,
+                relationships,
+                target,
+                property,
+            } => {
+                let mut out = add_default(model, view);
+                out.extend(relationships.iter().map(|r| Edit::SetLineStyle {
+                    relationship: r.clone(),
+                    target: target.clone(),
+                    property: *property,
+                }));
+                out
+            }
+            Action::ResetLineStyle { view, relationships } => {
+                let mut out = add_default(model, view);
+                out.extend(relationships.iter().map(|r| Edit::ResetLineStyle { relationship: r.clone() }));
                 out
             }
             Action::Vertices {
@@ -5081,10 +5134,11 @@ impl State {
                 let elements = self.selected_elements();
                 let Some(view) = self.view.clone() else { return Vec::new() };
                 if elements.is_empty() {
-                    return Vec::new();
+                    return self.reset_line_style(view);
                 }
                 self.write(Action::ResetStyle { view, elements })
             }
+            Command::SetLineStyle { target, property } => self.set_line_style(target, property),
             Command::Align(how) => {
                 let rects = self.selected_rects();
                 let to = align_to(&rects, how, self.first_selected_box());
