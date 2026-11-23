@@ -11,7 +11,7 @@ use c4rizer_core::scene::{Scene, SceneLine};
 use crate::camera::ScreenPoint;
 use crate::files::{self, FileEvent, UiState};
 use crate::state::{Button, Command, Effect, Event, Input, Modifiers, State};
-use crate::testutil::TempDir;
+use crate::testutil::{Ids, TempDir};
 use crate::worker;
 
 /// A shop, roles only, its container view placed by hand; `{vias}` is
@@ -41,15 +41,17 @@ const SHOP: &str = r#"workspace "Shop" {
 }
 "#;
 
-/// `SHOP` with `vias` (each a whole `via ...` line).
-fn shop(vias: &[&str]) -> String {
+/// `SHOP` with `vias` (each a whole `via ...` line, written with flat
+/// ids), under `ids`: under hierarchical ids every reference to a
+/// container, `via` lines included, is its dotted full id.
+fn shop(ids: Ids, vias: &[&str]) -> String {
     let lines: String = vias.iter().fold(String::new(), |mut out, v| {
         out.push_str("            ");
         out.push_str(v);
         out.push('\n');
         out
     });
-    SHOP.replace("{vias}\n", &lines)
+    ids.workspace(&SHOP.replace("{vias}\n", &lines))
 }
 
 /// The shell without a window: every effect at once.
@@ -208,7 +210,19 @@ fn shift() -> Modifiers {
 
 #[test]
 fn p3_310_click_on_selected_line_adds_vertex() {
-    let mut sh = Shell::open(&shop(&[]));
+    p3_310(Ids::Flat);
+}
+
+/// As `p3_310_click_on_selected_line_adds_vertex`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p3_310_click_on_selected_line_adds_vertex_hierarchical_ids() {
+    p3_310(Ids::Hierarchical);
+}
+
+fn p3_310(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &[]));
     let before = sh.text();
     sh.select_line("Web", "Db");
     assert_eq!(sh.text(), before, "selecting writes nothing");
@@ -222,7 +236,7 @@ fn p3_310_click_on_selected_line_adds_vertex() {
     at.y += 3.0 * sh.s.camera.zoom;
     sh.click(at, Modifiers::default());
     let want = format!("            at db 200 800\n            via web -> db {} {}\n", mid.x, mid.y);
-    assert!(sh.text().contains(&want), "{}", sh.text());
+    assert!(sh.text().contains(&ids.refs(&want)), "{}", sh.text());
     assert_eq!(sh.undo_steps(), 1);
     assert!(on_line(&sh.line("Web", "Db").points, mid), "the new scene passes the vertex");
     // A second click further along adds a second vertex after the first.
@@ -233,7 +247,7 @@ fn p3_310_click_on_selected_line_adds_vertex() {
     let near_end = Point::new((last.x + (end.x - last.x) * 4 / 5) / 10 * 10, (last.y + (end.y - last.y) * 4 / 5) / 10 * 10);
     sh.click(sh.at(near_end.x, near_end.y), Modifiers::default());
     let want = format!("via web -> db {} {} {} {}\n", mid.x, mid.y, near_end.x, near_end.y);
-    assert!(sh.text().contains(&want), "{}", sh.text());
+    assert!(sh.text().contains(&ids.refs(&want)), "{}", sh.text());
     // A click on an unselected line only selects it.
     let text = sh.text();
     let other = sh.line("Api", "Db");
@@ -244,7 +258,19 @@ fn p3_310_click_on_selected_line_adds_vertex() {
 
 #[test]
 fn p3_311_drag_handle_moves_vertex() {
-    let mut sh = Shell::open(&shop(&["via web -> db 0 600 0 700"]));
+    p3_311(Ids::Flat);
+}
+
+/// As `p3_311_drag_handle_moves_vertex`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p3_311_drag_handle_moves_vertex_hierarchical_ids() {
+    p3_311(Ids::Hierarchical);
+}
+
+fn p3_311(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &["via web -> db 0 600 0 700"]));
     assert!(sh.s.vertex_handles().is_empty(), "no handles until the line is selected");
     sh.select_line("Web", "Db");
     let handles = sh.s.vertex_handles();
@@ -261,7 +287,7 @@ fn p3_311_drag_handle_moves_vertex() {
     assert_eq!(sh.text(), before, "nothing written mid-drag");
     sh.up(to);
     let after = sh.text();
-    assert_eq!(after, before.replace("via web -> db 0 600 0 700", "via web -> db -100 610 0 700"), "only that via line changes");
+    assert_eq!(after, before.replace(&ids.refs("via web -> db 0 600 0 700"), &ids.refs("via web -> db -100 610 0 700")), "only that via line changes");
     assert_eq!(sh.undo_steps(), 1);
     // A press and release on a handle without moving writes nothing.
     sh.select_line("Web", "Db");
@@ -272,26 +298,50 @@ fn p3_311_drag_handle_moves_vertex() {
 
 #[test]
 fn p3_312_double_click_handle_removes_vertex() {
-    let mut sh = Shell::open(&shop(&["via web -> db 0 600 0 700"]));
+    p3_312(Ids::Flat);
+}
+
+/// As `p3_312_double_click_handle_removes_vertex`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p3_312_double_click_handle_removes_vertex_hierarchical_ids() {
+    p3_312(Ids::Hierarchical);
+}
+
+fn p3_312(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &["via web -> db 0 600 0 700"]));
     sh.select_line("Web", "Db");
     sh.double_click(sh.at(0, 600));
-    assert!(sh.text().contains("            via web -> db 0 700\n"), "{}", sh.text());
+    assert!(sh.text().contains(&ids.refs("            via web -> db 0 700\n")), "{}", sh.text());
     assert_eq!(sh.undo_steps(), 1, "the double click is one step and its clicks added nothing");
     sh.select_line("Web", "Db");
     sh.double_click(sh.at(0, 700));
     assert!(!sh.text().contains("via"), "the last vertex deletes the via line: {}", sh.text());
-    assert_eq!(sh.text(), shop(&[]));
+    assert_eq!(sh.text(), shop(ids, &[]));
 }
 
 #[test]
 fn p3_313_remove_all_vertices_one_step() {
-    let with = shop(&["via web -> db 0 600", "via api -> db 900 600"]);
+    p3_313(Ids::Flat);
+}
+
+/// As `p3_313_remove_all_vertices_one_step`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p3_313_remove_all_vertices_one_step_hierarchical_ids() {
+    p3_313(Ids::Hierarchical);
+}
+
+fn p3_313(ids: Ids) {
+    let with = shop(ids, &["via web -> db 0 600", "via api -> db 900 600"]);
     let mut sh = Shell::open(&with);
     sh.event(Event::Command(Command::RemoveAllVertices));
-    assert_eq!(sh.text(), shop(&[]));
+    assert_eq!(sh.text(), shop(ids, &[]));
     assert_eq!(sh.undo_steps(), 1);
     // The canvas equals the routed view with no vertices.
-    let mut plain = Shell::open(&shop(&[]));
+    let mut plain = Shell::open(&shop(ids, &[]));
     assert_eq!(sh.scene().lines, plain.scene().lines);
     sh.event(Event::Command(Command::Undo));
     let m = c4rizer_core::model::parse(&sh.text()).expect("parses").model;
@@ -303,7 +353,19 @@ fn p3_313_remove_all_vertices_one_step() {
 
 #[test]
 fn p3_314_single_move_keeps_vertices_multi_move_carries_them() {
-    let mut sh = Shell::open(&shop(&["via web -> db 0 600", "via api -> db 900 600"]));
+    p3_314(Ids::Flat);
+}
+
+/// As `p3_314_single_move_keeps_vertices_multi_move_carries_them`, on nested
+/// containers under `!identifiers hierarchical` (P2-142): the line's ends are
+/// named by their full ids.
+#[test]
+fn p3_314_single_move_keeps_vertices_multi_move_carries_them_hierarchical_ids() {
+    p3_314(Ids::Hierarchical);
+}
+
+fn p3_314(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &["via web -> db 0 600", "via api -> db 900 600"]));
     let zoom = sh.s.camera.zoom;
     // One box: the vertices stay where they are.
     let from = sh.at(200, 400);
@@ -313,8 +375,8 @@ fn p3_314_single_move_keeps_vertices_multi_move_carries_them() {
     };
     sh.drag(from, to, Modifiers::default());
     let text = sh.text();
-    assert!(text.contains("at web 300 400"), "{text}");
-    assert!(text.contains("via web -> db 0 600\n") && text.contains("via api -> db 900 600\n"), "{text}");
+    assert!(text.contains(&ids.refs("at web 300 400")), "{text}");
+    assert!(text.contains(&ids.refs("via web -> db 0 600\n")) && text.contains(&ids.refs("via api -> db 900 600\n")), "{text}");
     assert_eq!(sh.undo_steps(), 1);
     // Web and db together: web -> db's vertices move with them, api ->
     // db's (api stays) do not; one write, one undo step.
@@ -328,23 +390,35 @@ fn p3_314_single_move_keeps_vertices_multi_move_carries_them() {
     };
     sh.drag(from, to, Modifiers::default());
     let text = sh.text();
-    assert!(text.contains("at web 400 450") && text.contains("at db 300 850"), "{text}");
-    assert!(text.contains("via web -> db 100 650\n"), "{text}");
-    assert!(text.contains("via api -> db 900 600\n"), "{text}");
+    assert!(text.contains(&ids.refs("at web 400 450")) && text.contains(&ids.refs("at db 300 850")), "{text}");
+    assert!(text.contains(&ids.refs("via web -> db 100 650\n")), "{text}");
+    assert!(text.contains(&ids.refs("via api -> db 900 600\n")), "{text}");
     assert_eq!(sh.undo_steps(), 2);
     sh.event(Event::Command(Command::Undo));
     let back = sh.text();
-    assert!(back.contains("at web 300 400") && back.contains("via web -> db 0 600\n"), "{back}");
+    assert!(back.contains(&ids.refs("at web 300 400")) && back.contains(&ids.refs("via web -> db 0 600\n")), "{back}");
 }
 
 #[test]
 fn p3_315_vertex_edit_atomic_one_undo_step() {
-    let original = shop(&["via web -> db 0 600"]);
+    p3_315(Ids::Flat);
+}
+
+/// As `p3_315_vertex_edit_atomic_one_undo_step`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p3_315_vertex_edit_atomic_one_undo_step_hierarchical_ids() {
+    p3_315(Ids::Hierarchical);
+}
+
+fn p3_315(ids: Ids) {
+    let original = shop(ids, &["via web -> db 0 600"]);
     let mut sh = Shell::open(&original);
     sh.select_line("Web", "Db");
     sh.drag(sh.at(0, 600), sh.at(-100, 600), Modifiers::default());
     let moved = sh.text();
-    assert!(moved.contains("via web -> db -100 600\n"), "{moved}");
+    assert!(moved.contains(&ids.refs("via web -> db -100 600\n")), "{moved}");
     assert_eq!(sh.undo_steps(), 1, "a whole drag is one step");
     sh.event(Event::Command(Command::Undo));
     assert_eq!(sh.text(), original, "undo gives the bytes back");
@@ -373,7 +447,7 @@ fn json_of(dsl: &str) -> String {
 /// nothing is written.
 #[test]
 fn p3_420_vertex_edits_refused_on_json_workspace() {
-    let json = json_of(&shop(&["via web -> db 0 600 0 700"]));
+    let json = json_of(&shop(Ids::Flat, &["via web -> db 0 600 0 700"]));
     let mut sh = Shell::open_as(&json, "shop.json");
     assert!(sh.s.read_only());
     let before = sh.text();
@@ -407,7 +481,7 @@ fn p3_420_vertex_edits_refused_on_json_workspace() {
 /// nothing even when the view has no vertices.
 #[test]
 fn p3_420_remove_all_refused_on_json_without_vertices() {
-    let json = json_of(&shop(&[]));
+    let json = json_of(&shop(Ids::Flat, &[]));
     let mut sh = Shell::open_as(&json, "shop.json");
     assert!(sh.s.read_only());
     sh.s.notice = None;

@@ -11,7 +11,7 @@ use c4rizer_core::scene::{Scene, SceneLine};
 use crate::camera::ScreenPoint;
 use crate::files::{self, FileEvent, UiState};
 use crate::state::{Button, Command, Effect, Event, Input, MenuAction, Modifiers, Overlay, State};
-use crate::testutil::TempDir;
+use crate::testutil::{Ids, TempDir};
 use crate::worker;
 
 /// A shop, roles only, its container view placed by hand; `{lines}` is
@@ -42,15 +42,17 @@ const SHOP: &str = r#"workspace "Shop" {
 }
 "#;
 
-/// `SHOP` with `lines` (each a whole view line).
-fn shop(lines: &[&str]) -> String {
+/// `SHOP` with `lines` (each a whole view line, written with flat ids),
+/// under `ids`: under hierarchical ids every reference to a container,
+/// `anchor` lines included, is its dotted full id.
+fn shop(ids: Ids, lines: &[&str]) -> String {
     let text: String = lines.iter().fold(String::new(), |mut out, v| {
         out.push_str("            ");
         out.push_str(v);
         out.push('\n');
         out
     });
-    SHOP.replace("{lines}\n", &text)
+    ids.workspace(&SHOP.replace("{lines}\n", &text))
 }
 
 /// The shell without a window: every effect at once.
@@ -187,7 +189,19 @@ impl Shell {
 
 #[test]
 fn p4_213_selected_line_shows_end_handles() {
-    let mut sh = Shell::open(&shop(&[]));
+    p4_213(Ids::Flat);
+}
+
+/// As `p4_213_selected_line_shows_end_handles`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_213_selected_line_shows_end_handles_hierarchical_ids() {
+    p4_213(Ids::Hierarchical);
+}
+
+fn p4_213(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &[]));
     assert!(sh.s.end_handles().is_empty(), "no handles until a line is selected");
     sh.select_line("Web", "Db");
     let (a, b) = sh.ends("Web", "Db");
@@ -199,7 +213,19 @@ fn p4_213_selected_line_shows_end_handles() {
 
 #[test]
 fn p4_214_drag_shows_snap_points_and_snaps() {
-    let mut sh = Shell::open(&shop(&[]));
+    p4_214(Ids::Flat);
+}
+
+/// As `p4_214_drag_shows_snap_points_and_snaps`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_214_drag_shows_snap_points_and_snaps_hierarchical_ids() {
+    p4_214(Ids::Hierarchical);
+}
+
+fn p4_214(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &[]));
     sh.select_line("Web", "Db");
     let before = sh.text();
     let (_, end) = sh.ends("Web", "Db");
@@ -230,13 +256,25 @@ fn p4_214_drag_shows_snap_points_and_snaps() {
 
 #[test]
 fn p4_215_release_on_snap_point_pins_end() {
-    let mut sh = Shell::open(&shop(&[]));
+    p4_215(Ids::Flat);
+}
+
+/// As `p4_215_release_on_snap_point_pins_end`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_215_release_on_snap_point_pins_end_hierarchical_ids() {
+    p4_215(Ids::Hierarchical);
+}
+
+fn p4_215(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &[]));
     sh.select_line("Web", "Db");
     let (_, end) = sh.ends("Web", "Db");
     // db's top side at a quarter: (140, 730).
     sh.drag(end, sh.at(142, 727));
     let text = sh.text();
-    assert!(text.contains("            at db 200 800\n            anchor web -> db to top 25\n"), "{text}");
+    assert!(text.contains(&ids.refs("            at db 200 800\n            anchor web -> db to top 25\n")), "{text}");
     assert_eq!(sh.undo_steps(), 1);
     let l = sh.line("Web", "Db");
     assert_eq!(*l.points.last().expect("end"), Point::new(140, 730));
@@ -245,27 +283,51 @@ fn p4_215_release_on_snap_point_pins_end() {
     let (start, _) = sh.ends("Web", "Db");
     sh.drag(start, sh.at(81, 402));
     let text = sh.text();
-    assert!(text.contains("anchor web -> db from left to top 25\n"), "{text}");
+    assert!(text.contains(&ids.refs("anchor web -> db from left to top 25\n")), "{text}");
     assert_eq!(sh.line("Web", "Db").points[0], Point::new(80, 400));
     assert_eq!(sh.undo_steps(), 2);
 }
 
 #[test]
 fn p4_216_release_away_removes_pin() {
-    let mut sh = Shell::open(&shop(&["anchor web -> db to top 25"]));
+    p4_216(Ids::Flat);
+}
+
+/// As `p4_216_release_away_removes_pin`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_216_release_away_removes_pin_hierarchical_ids() {
+    p4_216(Ids::Hierarchical);
+}
+
+fn p4_216(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &["anchor web -> db to top 25"]));
     assert_eq!(*sh.line("Web", "Db").points.last().expect("end"), Point::new(140, 730));
     sh.select_line("Web", "Db");
     let (_, end) = sh.ends("Web", "Db");
     sh.drag(end, sh.at(500, 620));
-    assert_eq!(sh.text(), shop(&[]), "the last pin removed deletes the anchor line");
+    assert_eq!(sh.text(), shop(ids, &[]), "the last pin removed deletes the anchor line");
     assert_eq!(sh.undo_steps(), 1);
-    let plain = Shell::open(&shop(&[]));
+    let plain = Shell::open(&shop(ids, &[]));
     assert_eq!(sh.scene().lines, plain.scene().lines, "the router's line again");
 }
 
 #[test]
 fn p4_217_context_menu_releases_an_end() {
-    let mut sh = Shell::open(&shop(&["anchor web -> db from left to right"]));
+    p4_217(Ids::Flat);
+}
+
+/// As `p4_217_context_menu_releases_an_end`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_217_context_menu_releases_an_end_hierarchical_ids() {
+    p4_217(Ids::Hierarchical);
+}
+
+fn p4_217(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &["anchor web -> db from left to right"]));
     let l = sh.line("Web", "Db");
     let (a, b) = (l.points[1], l.points[2]);
     let at = sh.at(i32::midpoint(a.x, b.x), i32::midpoint(a.y, b.y));
@@ -283,11 +345,11 @@ fn p4_217_context_menu_releases_an_end() {
     let release_end = entries[1].action.clone();
     assert!(matches!(release_end, MenuAction::ReleaseAnchor { destination: true, .. }));
     sh.event(Event::Command(Command::ContextAction(release_end)));
-    assert!(sh.text().contains("            anchor web -> db from left\n"), "{}", sh.text());
+    assert!(sh.text().contains(&ids.refs("            anchor web -> db from left\n")), "{}", sh.text());
     assert_eq!(sh.undo_steps(), 1);
     // A line with no pin offers neither, but the menu opens.
     // owner decision 2026-11-19: behaviour change 5
-    let mut plain = Shell::open(&shop(&[]));
+    let mut plain = Shell::open(&shop(ids, &[]));
     let l = plain.line("Web", "Db");
     let at = plain.at(i32::midpoint(l.points[0].x, l.points[1].x), i32::midpoint(l.points[0].y, l.points[1].y));
     plain.event(Event::Input(Input::PointerDown {
@@ -304,13 +366,25 @@ fn p4_217_context_menu_releases_an_end() {
 
 #[test]
 fn p4_218_anchor_edit_atomic_one_undo_step() {
-    let original = shop(&[]);
+    p4_218(Ids::Flat);
+}
+
+/// As `p4_218_anchor_edit_atomic_one_undo_step`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the line's ends are named by their
+/// full ids.
+#[test]
+fn p4_218_anchor_edit_atomic_one_undo_step_hierarchical_ids() {
+    p4_218(Ids::Hierarchical);
+}
+
+fn p4_218(ids: Ids) {
+    let original = shop(ids, &[]);
     let mut sh = Shell::open(&original);
     sh.select_line("Web", "Db");
     let (_, end) = sh.ends("Web", "Db");
     sh.drag(end, sh.at(142, 727));
     let pinned = sh.text();
-    assert!(pinned.contains("anchor web -> db to top 25\n"), "{pinned}");
+    assert!(pinned.contains(&ids.refs("anchor web -> db to top 25\n")), "{pinned}");
     sh.event(Event::Command(Command::Undo));
     assert_eq!(sh.text(), original, "undo gives the bytes back");
     sh.event(Event::Command(Command::Redo));
@@ -338,7 +412,7 @@ fn json_of(dsl: &str) -> String {
 /// refused with the JSON message; nothing is written.
 #[test]
 fn p4_213_no_end_handles_on_json_workspace() {
-    let json = json_of(&shop(&[]));
+    let json = json_of(&shop(Ids::Flat, &[]));
     let mut sh = Shell::open_as(&json, "shop.json");
     assert!(sh.s.read_only());
     let before = sh.text();

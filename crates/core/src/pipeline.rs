@@ -714,7 +714,8 @@ pub fn keep_across_reparse(
 }
 
 /// The EDIT-15 default view of `scope`: a `kind` view keyed
-/// `<scope id>-<kind>` (`<kind>` is `ViewKind::keyword`, as `edit`'s
+/// `<scope id>-<kind>` (`<scope id>` is `Model::full_key`, dotted under
+/// `!identifiers hierarchical`; `<kind>` is `ViewKind::keyword`, as `edit`'s
 /// `AddDefaultView` writes it), with `include *`, no title line (the
 /// description is the scope's name, so it has a drawn title), no
 /// options, no `at` or `size` line (every box auto-placed). It is not
@@ -767,7 +768,12 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
     }
     // DECISION: an element with no identifier (none in phase 1) has no
     // default view key, so no default view.
-    let id = &element.key.as_ref()?.value;
+    element.key.as_ref()?;
+    // DECISION: the key starts with the scope's full id (`shop.web` under
+    // `!identifiers hierarchical`), the id `edit`'s `AddDefaultView` and the
+    // editor name the scope by; the bare id would key the unwritten view
+    // apart from the one the first write declares.
+    let id = model.full_key(scope)?;
     let key = format!("{id}-{}", kind.keyword());
     if model.view(&key).is_some() {
         return None;
@@ -1338,6 +1344,19 @@ mod tests {
         let operator = m.find("operator").expect("operator");
         assert_eq!(m.element(operator).kind, ElementKind::Person);
         assert!(default_view(&m, operator, ViewKind::SystemContext).is_none());
+    }
+
+    /// EDIT-15, P2-142: under `!identifiers hierarchical` the default view
+    /// of a nested container is keyed by its full id, the key `edit`'s
+    /// `AddDefaultView` writes for it.
+    #[test]
+    fn edit_15_default_view_key_hierarchical_ids() {
+        let m = model(
+            "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\" {\n                cart = component \"Cart\"\n            }\n        }\n    }\n}\n",
+        );
+        let web = m.find("shop.web").expect("web");
+        let spec = default_view(&m, web, ViewKind::Component).expect("web has none");
+        assert_eq!(spec.key, "shop.web-component");
     }
 
     #[test]

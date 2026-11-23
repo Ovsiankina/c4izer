@@ -83,6 +83,102 @@ fn shop_fixture_parses_and_builds() {
     }
 }
 
+/// Which identifiers a fixture is written with (P2-6, P2-142): a test
+/// body taking it runs once per mode, so every gesture that names an
+/// element is exercised on nested elements whose bare id does not resolve
+/// under `!identifiers hierarchical`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ids {
+    /// The default: an element is named by its bare id.
+    Flat,
+    /// `!identifiers hierarchical`: a nested element is named by its
+    /// dotted full id (`shop.web`).
+    Hierarchical,
+}
+
+/// The full ids of `SHOP`'s nested elements, by bare id.
+pub const SHOP_NESTED: &[(&str, &str)] = &[
+    ("web", "shop.web"),
+    ("db", "shop.db"),
+    ("api", "shop.api"),
+    ("cart", "shop.web.cart"),
+    ("pay", "shop.web.pay"),
+];
+
+/// The full ids of the nested containers of the `s` system that the bus
+/// and bridge fixtures declare, by bare id.
+pub const S_NESTED: &[(&str, &str)] = &[
+    ("a", "s.a"),
+    ("b", "s.b"),
+    ("c", "s.c"),
+    ("d", "s.d"),
+    ("x", "s.x"),
+    ("y", "s.y"),
+    ("z", "s.z"),
+];
+
+impl Ids {
+    /// `text`, a workspace written with flat ids, in this mode, for the
+    /// nested elements of `SHOP_NESTED`.
+    pub fn workspace(self, text: &str) -> String {
+        self.workspace_in(text, SHOP_NESTED)
+    }
+
+    /// `text`, a workspace written with flat ids, in this mode: under
+    /// `Hierarchical` the `!identifiers hierarchical` line opens the
+    /// workspace body and every reference to a nested element of `nested`
+    /// (not its declaration) is its full id.
+    pub fn workspace_in(self, text: &str, nested: &[(&str, &str)]) -> String {
+        match self {
+            Ids::Flat => text.to_owned(),
+            Ids::Hierarchical => {
+                let (head, body) = text.split_once('\n').expect("a workspace line");
+                format!("{head}\n    !identifiers hierarchical\n{}", self.refs_in(body, nested))
+            }
+        }
+    }
+
+    /// `text` as this mode names the nested elements of `SHOP_NESTED`.
+    pub fn refs(self, text: &str) -> String {
+        self.refs_in(text, SHOP_NESTED)
+    }
+
+    /// `text` with every whole-word bare id of `nested` that is not
+    /// followed by `=` written as this mode names it: unchanged under
+    /// `Flat`, the full id under `Hierarchical`. For expected file lines
+    /// (`at web 1 2`, `via web -> db 0 600`) and keys (`web`).
+    pub fn refs_in(self, text: &str, nested: &[(&str, &str)]) -> String {
+        if self == Ids::Flat {
+            return text.to_owned();
+        }
+        let words: Vec<&str> = text.split(' ').collect();
+        let mut out = Vec::with_capacity(words.len());
+        for (i, w) in words.iter().enumerate() {
+            // A word may end the line (`db\n`); match the part before it.
+            let (word, rest) = w.find('\n').map_or((*w, ""), |n| w.split_at(n));
+            let declared = words.get(i + 1).is_some_and(|next| *next == "=");
+            match nested.iter().find(|(bare, _)| *bare == word) {
+                Some((_, full)) if !declared => out.push(format!("{full}{rest}")),
+                _ => out.push((*w).to_owned()),
+            }
+        }
+        out.join(" ")
+    }
+}
+
+#[test]
+fn ids_rewrite_references_not_declarations() {
+    let text = "workspace {\n    model {\n        web = container \"Web\"\n        web -> db \"Uses web\"\n    }\n    at web 1 2\n    via web -> db 0 600\n}\n";
+    assert_eq!(Ids::Flat.workspace(text), text);
+    assert_eq!(
+        Ids::Hierarchical.workspace(text),
+        "workspace {\n    !identifiers hierarchical\n    model {\n        web = container \"Web\"\n        shop.web -> shop.db \"Uses web\"\n    }\n    at shop.web 1 2\n    via shop.web -> shop.db 0 600\n}\n"
+    );
+    let parsed = c4rizer_core::model::parse(&Ids::Hierarchical.workspace(SHOP)).expect("hierarchical SHOP parses");
+    assert!(parsed.model.find("shop.web.cart").is_some());
+    assert!(parsed.model.find("cart").is_none(), "a bare nested id does not resolve");
+}
+
 /// A container view with `n` components on a grid, every one with an
 /// `at` line, and dense relationships: slow to route in a debug build,
 /// instant to place (EDIT-25 stop tests).

@@ -188,3 +188,26 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
     assert_eq!(sh.s.view, Some(declared("live")));
     assert!(!enterable(sh.model(), mail));
 }
+
+/// P3-131 under `!identifiers hierarchical` (P2-142): an instance inside
+/// nested nodes is dragged and its `at` line names it by its full id; a
+/// click on a nested node's boundary selects the node by its full id.
+#[test]
+fn p3_131_drag_and_select_nested_deployment_hierarchical_ids() {
+    let text = "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            a = container \"A\"\n        }\n        live = deploymentEnvironment \"Live\" {\n            aws = deploymentNode \"AWS\" {\n                ec2 = deploymentNode \"EC2\" {\n                    webi = containerInstance shop.a\n                    lb = infrastructureNode \"LB\"\n                    lb -> webi \"Forwards\"\n                }\n            }\n        }\n    }\n    views {\n        deployment shop \"Live\" \"live\" {\n            include *\n        }\n    }\n}\n";
+    let mut sh = Shell::with(text);
+    sh.event(Event::Command(Command::ShowView(declared("live"))));
+    assert_eq!(sh.scene().key, "live");
+    assert!(sh.model().find("webi").is_none(), "a bare nested id does not resolve");
+    let from = sh.box_centre("live.aws.ec2.webi");
+    sh.drag(from, 200.0, 0.0);
+    let text = sh.text();
+    assert!(text.lines().any(|l| l.trim_start().starts_with("at live.aws.ec2.webi ")), "{text}");
+    let tag = sh.node_tag("live.aws.ec2");
+    sh.click_at(tag);
+    assert_eq!(
+        sh.s.selection.iter().cloned().collect::<Vec<_>>(),
+        [Selected::Element("live.aws.ec2".to_owned())]
+    );
+    assert_eq!(sh.s.details().expect("details").name, "EC2");
+}

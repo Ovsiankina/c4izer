@@ -15,7 +15,7 @@ use crate::files::{self, FileEvent, UiState};
 use crate::state::{
     Button, Command, Effect, Event, Gesture, Input, Key, Mark, MarkKind, Modifiers, Selected, State,
 };
-use crate::testutil::TempDir;
+use crate::testutil::{Ids, SHOP_NESTED, TempDir};
 use crate::worker;
 
 /// A shop container view placed by hand, roomy enough for callouts:
@@ -43,14 +43,14 @@ const SHOP: &str = r#"workspace "Shop" {
 }
 "#;
 
-fn shop(lines: &[&str]) -> String {
+fn shop(ids: Ids, lines: &[&str]) -> String {
     let text: String = lines.iter().fold(String::new(), |mut out, v| {
         out.push_str("            ");
         out.push_str(v);
         out.push('\n');
         out
     });
-    SHOP.replace("{lines}\n", &text)
+    ids.workspace_in(&SHOP.replace("{lines}\n", &text), SHOP_NESTED)
 }
 
 const NONE: Modifiers = Modifiers {
@@ -189,7 +189,19 @@ impl Shell {
 /// in the view's `line` line, one undo step; undo restores the file.
 #[test]
 fn label_drag_writes_position_and_undoes() {
-    let mut sh = Shell::open(&shop(&[]));
+    body_label_drag_writes_position_and_undoes(Ids::Flat);
+}
+
+/// As `label_drag_writes_position_and_undoes`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the `line` line names the
+/// relationship by its ends' full ids.
+#[test]
+fn label_drag_writes_position_and_undoes_hierarchical_ids() {
+    body_label_drag_writes_position_and_undoes(Ids::Hierarchical);
+}
+
+fn body_label_drag_writes_position_and_undoes(ids: Ids) {
+    let mut sh = Shell::open(&shop(ids, &[]));
     let before = sh.text();
     let label = sh.label();
     let edge = label.edge;
@@ -216,7 +228,7 @@ fn label_drag_writes_position_and_undoes() {
     sh.up(to);
     let n = sh.percent_at(centre.x + 150);
     let text = sh.text();
-    assert!(text.contains(&format!("            line web -> db position {n}\n")), "{text}");
+    assert!(text.contains(&ids.refs_in(&format!("            line web -> db position {n}\n"), SHOP_NESTED)), "{text}");
     assert_eq!(sh.undo_steps(), 1);
     assert!(matches!(sh.s.selection.iter().next(), Some(Selected::Relationship(_))));
     let after = sh.label().rect.centre();
@@ -230,7 +242,7 @@ fn label_drag_writes_position_and_undoes() {
 /// attach point along the line and writes `position N` the same way.
 #[test]
 fn callout_label_drag_writes_position() {
-    let base = shop(&["labels callout"]);
+    let base = shop(Ids::Flat, &["labels callout"]);
     let mut sh = Shell::open(&base);
     let label = sh.label();
     let c = label.callout.clone().expect("a callout");
@@ -265,7 +277,7 @@ fn callout_label_drag_writes_position() {
 /// selects the line and writes nothing.
 #[test]
 fn label_press_under_slop_selects_line_only() {
-    let mut sh = Shell::open(&shop(&[]));
+    let mut sh = Shell::open(&shop(Ids::Flat, &[]));
     let before = sh.text();
     let from = sh.at(sh.label().rect.centre());
     let near = ScreenPoint {
@@ -286,7 +298,7 @@ fn label_press_under_slop_selects_line_only() {
 /// and the release writes nothing.
 #[test]
 fn escape_cancels_label_drag() {
-    let mut sh = Shell::open(&shop(&[]));
+    let mut sh = Shell::open(&shop(Ids::Flat, &[]));
     let before = sh.text();
     let centre = sh.label().rect.centre();
     let from = sh.at(centre);
@@ -309,8 +321,8 @@ fn escape_cancels_label_drag() {
 /// nothing and writes nothing, as on a box.
 #[test]
 fn read_only_refuses_label_drag() {
-    let mut sh = Shell::open(&shop(&[]));
-    let broken = shop(&[]).replacen("    model {\n", "    model {\n        )\n", 1);
+    let mut sh = Shell::open(&shop(Ids::Flat, &[]));
+    let broken = shop(Ids::Flat, &[]).replacen("    model {\n", "    model {\n        )\n", 1);
     std::fs::write(&sh.path, &broken).expect("external write");
     sh.event(Event::File(FileEvent::Changed {
         text: broken.clone(),
@@ -332,7 +344,7 @@ fn read_only_refuses_label_drag() {
 /// A double click on a label still opens the in-place editor.
 #[test]
 fn double_click_on_label_still_edits() {
-    let mut sh = Shell::open(&shop(&[]));
+    let mut sh = Shell::open(&shop(Ids::Flat, &[]));
     let at = sh.at(sh.label().rect.centre());
     sh.down(at);
     sh.up(at);

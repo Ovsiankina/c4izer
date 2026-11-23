@@ -6147,7 +6147,7 @@ mod tests {
     };
     use crate::camera::{Camera, ScreenPoint, ZOOM_STEP};
     use crate::files::{self, FileEvent, UiState, WriteRequest};
-    use crate::testutil::{SHOP, TempDir};
+    use crate::testutil::{Ids, SHOP, TempDir};
     use crate::worker::{self, ExportFormat, Job, Request, ViewRef};
 
     const NONE: Modifiers = Modifiers {
@@ -6442,7 +6442,8 @@ mod tests {
             }));
         }
 
-        /// The `at` lines of `view` in the file on disk, by element key.
+        /// The `at` lines of `view` in the file on disk, by full element
+        /// key (the bare one under flat ids).
         fn at_lines(&self, view: &str) -> BTreeMap<String, (i32, i32)> {
             let parsed = self.on_disk();
             let model = &parsed.model;
@@ -6452,7 +6453,7 @@ mod tests {
                 .positions
                 .iter()
                 .map(|a| {
-                    let key = model.element(a.element.value).key.as_ref().expect("key").value.clone();
+                    let key = model.full_key(a.element.value).expect("key");
                     (key, (a.x.value, a.y.value))
                 })
                 .collect()
@@ -6576,6 +6577,204 @@ mod tests {
         h.up(pt(from.x + 40.0, from.y + 20.0), Button::Left);
         let text = h.text();
         assert!(text.contains(&format!("at shop.web {} {}", cx + 40, cy + 20)), "{text}");
+    }
+
+    /// `SHOP` under `!identifiers hierarchical` (relationships written with
+    /// dotted ids), its container view open: every box but the person and
+    /// the bank is nested, so its bare id does not resolve.
+    fn nested_shop() -> H {
+        let mut h = H::with_file(&Ids::Hierarchical.workspace(SHOP));
+        h.cmd(Command::ShowView(declared("containers")));
+        assert!(h.model().find("web").is_none(), "the fixture's bare nested ids do not resolve");
+        h
+    }
+
+    /// EDIT-10, EDIT-20, P2-142: under hierarchical ids a click selects a
+    /// nested box by its full id, Shift adds one, and the details and
+    /// style panels read the selection.
+    #[test]
+    fn edit_10_click_selects_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, NONE);
+        assert_eq!(h.selection(), vec![el("shop.web")]);
+        assert_eq!(h.s.details().expect("details of the nested box").name, "Web app");
+        h.click("shop.db", Button::Left, SHIFT);
+        assert_eq!(h.selection(), vec![el("shop.db"), el("shop.web")]);
+        assert_eq!(h.s.style_panel().map(|p| p.boxes), Some(2));
+    }
+
+    /// EDIT-20, EDIT-26, P2-142: under hierarchical ids a rubber band
+    /// selects the nested boxes, they move together in one write (every
+    /// box's `at` line by its full id), and align as one step.
+    #[test]
+    fn edit_20_band_selects_and_moves_nested_boxes_hierarchical_ids() {
+        let mut h = nested_shop();
+        let b = h.scene().bounds;
+        let (from, to) = (h.s.camera.to_screen(b.min), h.s.camera.to_screen(b.max));
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(f32::midpoint(from.x, to.x), f32::midpoint(from.y, to.y)));
+        h.move_to(to);
+        h.up(to, Button::Left);
+        let selected = h.selection();
+        for key in ["customer", "shop.web", "shop.db"] {
+            assert!(selected.contains(&el(key)), "{key} in the band: {selected:?}");
+        }
+        let keys: Vec<String> = selected
+            .iter()
+            .map(|s| match s {
+                Selected::Element(k) => k.clone(),
+                other => panic!("only boxes: {other:?}"),
+            })
+            .collect();
+        let before: Vec<(i32, i32)> = keys.iter().map(|k| h.centre_px(k)).collect();
+        h.drag_box("shop.db", 0.0, 50.0);
+        assert_eq!(h.writes.len(), 1, "one write");
+        let text = h.text();
+        for (k, (x, y)) in keys.iter().zip(&before) {
+            assert!(text.contains(&format!("at {k} {x} {}", y + 50)), "{k} moved with the rest: {text}");
+        }
+
+        h.cmd(Command::Align(Alignment::Top));
+        assert_eq!(h.writes.len(), 2);
+        let tops: Vec<i32> = keys.iter().map(|k| h.rect(k).min.y).collect();
+        assert!(tops.iter().all(|&t| t == tops[0]), "{tops:?}");
+        assert_eq!(h.s.history.undo.len(), 2, "each one step");
+    }
+
+    /// EDIT-18, P2-142: under hierarchical ids a nested box resizes and
+    /// its `size` line names it by its full id.
+    #[test]
+    fn edit_18_resize_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, NONE);
+        let start = h.rect("shop.web");
+        let (end, size) = resize_drag(&mut h, "shop.web", 63.0, 47.0);
+        assert!(size.0 > start.width() && size.1 > start.height(), "{size:?} vs {start:?}");
+        h.up(end, Button::Left);
+        let text = h.text();
+        assert!(text.contains(&format!("            size shop.web {} {}\n", size.0, size.1)), "{text}");
+        assert_eq!((h.rect("shop.web").width(), h.rect("shop.web").height()), size);
+        assert_eq!(h.rect("shop.web").centre(), start.centre());
+    }
+
+    /// EDIT-15, EDIT-16, P2-142: under hierarchical ids entering a nested
+    /// container opens its default component view, scoped by the full
+    /// id; the breadcrumb names the nesting; the first move writes the
+    /// view and the component's `at` line by full ids; undo removes the
+    /// view again; Backspace goes up.
+    #[test]
+    fn edit_15_enter_nested_container_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.enter("shop.web");
+        let default = ViewRef::Default {
+            scope: "shop.web".to_owned(),
+            kind: ViewKind::Component,
+        };
+        assert_eq!(h.s.view, Some(default.clone()));
+        assert_eq!(h.scene().key, default.key(), "the scene is the view the editor names");
+        let crumbs: Vec<Option<String>> = h.s.breadcrumb().into_iter().map(|c| c.scope).collect();
+        assert_eq!(crumbs, [None, Some("shop".to_owned()), Some("shop.web".to_owned())]);
+
+        let (cx, cy) = h.centre_px("shop.web.cart");
+        h.drag_box("shop.web.cart", 100.0, 0.0);
+        assert_eq!(h.writes.len(), 1, "one write");
+        let text = h.text();
+        assert!(text.contains(&format!("component shop.web \"{}\" {{", default.key())), "{text}");
+        assert!(text.contains(&format!("at shop.web.cart {} {cy}", cx + 100)), "{text}");
+        assert_eq!(h.s.view, Some(declared(&default.key())));
+        assert_eq!(h.centre_px("shop.web.cart"), (cx + 100, cy));
+
+        h.cmd(Command::Undo);
+        assert!(h.on_disk().model.view(&default.key()).is_none(), "undo removes the view again");
+        assert_eq!(h.s.view, Some(default));
+        h.key(Key::Backspace, NONE);
+        assert_eq!(h.s.view, Some(declared("containers")));
+    }
+
+    /// EDIT-26, EDIT-19, P2-142: under hierarchical ids the first write
+    /// in a view writes every nested box's `at` line by its full id, and
+    /// an undo re-applied to a view where a nested box lost its line
+    /// writes it back in the same step.
+    #[test]
+    fn edit_26_first_write_writes_every_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        let keys: Vec<String> = h.scene().boxes.iter().filter_map(|b| h.model().full_key(b.element)).collect();
+        assert!(keys.contains(&"shop.db".to_owned()), "{keys:?}");
+        let mut want: BTreeMap<String, (i32, i32)> = keys.iter().map(|k| (k.clone(), h.centre_px(k))).collect();
+        h.drag_box("shop.web", 100.0, 0.0);
+        if let Some(web) = want.get_mut("shop.web") {
+            web.0 += 100;
+        }
+        assert_eq!(h.at_lines("containers"), want);
+        assert_eq!(h.s.history.undo.len(), 1, "one step");
+
+        h.drag_box("shop.web", 0.0, 100.0);
+        let without_db: String = h.text().lines().filter(|l| !l.contains("at shop.db")).flat_map(|l| [l, "\n"]).collect();
+        h.external(&without_db);
+        assert!(!h.at_lines("containers").contains_key("shop.db"));
+        h.cmd(Command::Undo);
+        let at = h.at_lines("containers");
+        assert_eq!(at.len(), want.len(), "every box has an `at` line: {at:?}");
+        assert!(at.contains_key("shop.db"), "{at:?}");
+    }
+
+    /// EDIT-24, P2-142: under hierarchical ids an external save in the
+    /// middle of a nested box's drag keeps the drag; release writes it.
+    #[test]
+    fn edit_24_external_save_mid_drag_keeps_nested_drag_hierarchical_ids() {
+        let mut h = nested_shop();
+        let (cx, cy) = h.centre_px("shop.web");
+        let from = h.screen("shop.web");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x + 50.0, from.y));
+        h.move_to(pt(from.x + 100.0, from.y));
+        let external = h.text().replace("Moves money.", "Moves lots of money.");
+        h.external(&external);
+        assert!(matches!(h.s.gesture, Gesture::Dragging { .. }), "the drag survives: {:?}", h.s.gesture);
+        h.move_to(pt(from.x + 100.0, from.y));
+        h.up(pt(from.x + 100.0, from.y), Button::Left);
+        assert_eq!(h.writes.len(), 1, "the move is written");
+        assert!(h.text().contains("Moves lots of money."));
+        assert_eq!(h.at_lines("containers").get("shop.web"), Some(&(cx + 100, cy)));
+    }
+
+    /// EDIT-5, P2-142: under hierarchical ids the text of a selected
+    /// nested box is edited in place.
+    #[test]
+    fn edit_5_edits_nested_box_text_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, CTRL);
+        h.key(Key::Enter, NONE);
+        assert_eq!(h.s.text_edit.as_ref().expect("editor open").fields[0].buffer, "Web app");
+        h.event(Event::Text("Storefront".to_owned()));
+        h.key(Key::Enter, NONE);
+        assert_eq!(h.writes.len(), 1);
+        assert!(h.text().contains("web = container \"Storefront\" \"Serves pages.\""), "{}", h.text());
+    }
+
+    /// EDIT-17, P2-142: under hierarchical ids a style change on nested
+    /// boxes is written for each, one step, and reset again.
+    #[test]
+    fn edit_17_style_nested_boxes_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, CTRL);
+        h.click("shop.db", Button::Left, SHIFT);
+        let fill = colour(0x12, 0x34, 0x56);
+        h.cmd(Command::SetStyle {
+            target: StyleTarget::ThisBox,
+            property: StyleProperty::Background(Some(fill)),
+        });
+        assert_eq!(h.writes.len(), 1);
+        assert_eq!(h.s.history.undo.len(), 1, "one step for both boxes");
+        let style = |h: &H, key: &str| {
+            let parsed = h.on_disk();
+            let id = parsed.model.find(key).expect("element");
+            parsed.model.style_of(id)
+        };
+        assert_eq!(style(&h, "shop.web").background, fill);
+        assert_eq!(style(&h, "shop.db").background, fill);
+        h.cmd(Command::ResetStyle);
+        assert_ne!(style(&h, "shop.web").background, fill, "reset to tag style");
     }
 
     /// EDIT-3 (plan editor-04): release writes the box's `at` line

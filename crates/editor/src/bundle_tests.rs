@@ -12,7 +12,7 @@ use crate::camera::ScreenPoint;
 use crate::canvas::{Primitive, Source};
 use crate::files::{self, FileEvent, UiState};
 use crate::state::{Button, Command, Effect, Event, Input, MarkKind, MenuAction, Modifiers, Overlay, State};
-use crate::testutil::TempDir;
+use crate::testutil::{Ids, S_NESTED, TempDir};
 use crate::worker;
 
 /// Three containers on top, three below, placed by hand; `{lines}` is
@@ -54,14 +54,14 @@ const NONE: Modifiers = Modifiers {
 const SHIFT: Modifiers = Modifiers { shift: true, ..NONE };
 
 /// `GRID` with `lines` (each a whole view line).
-fn grid(lines: &[&str]) -> String {
+fn grid(ids: Ids, lines: &[&str]) -> String {
     let text: String = lines.iter().fold(String::new(), |mut out, v| {
         out.push_str("            ");
         out.push_str(v);
         out.push('\n');
         out
     });
-    GRID.replace("{lines}\n", &text)
+    ids.workspace_in(&GRID.replace("{lines}\n", &text), S_NESTED)
 }
 
 /// The shell without a window: every effect at once.
@@ -181,7 +181,7 @@ fn labels(menu: &[(String, MenuAction)]) -> Vec<&str> {
 
 #[test]
 fn p4_423_shift_click_toggles_lines() {
-    let mut sh = Shell::open(&grid(&[]));
+    let mut sh = Shell::open(&grid(Ids::Flat, &[]));
     sh.click_line("A", "X", NONE);
     assert_eq!(sh.s.selected_lines().len(), 1);
     sh.click_line("B", "Y", SHIFT);
@@ -196,7 +196,19 @@ fn p4_423_shift_click_toggles_lines() {
 
 #[test]
 fn p4_424_group_as_bus_from_menu_and_panel() {
-    let mut sh = Shell::open(&grid(&[]));
+    body_p4_424_group_as_bus_from_menu_and_panel(Ids::Flat);
+}
+
+/// As `p4_424_group_as_bus_from_menu_and_panel`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the bus names its lines by their
+/// ends' full ids.
+#[test]
+fn p4_424_group_as_bus_from_menu_and_panel_hierarchical_ids() {
+    body_p4_424_group_as_bus_from_menu_and_panel(Ids::Hierarchical);
+}
+
+fn body_p4_424_group_as_bus_from_menu_and_panel(ids: Ids) {
+    let mut sh = Shell::open(&grid(ids, &[]));
     sh.click_line("A", "X", NONE);
     sh.click_line("B", "Y", SHIFT);
     sh.click_line("C", "Z", SHIFT);
@@ -208,7 +220,7 @@ fn p4_424_group_as_bus_from_menu_and_panel() {
     assert_eq!(labels(&menu), ["Group as bus"]);
     sh.pick(&menu, "Group as bus");
     let text = sh.text();
-    assert!(text.contains("            at z 1200 1100\n            bundle a -> x b -> y c -> z\n"), "{text}");
+    assert!(text.contains(&ids.refs_in("            at z 1200 1100\n            bundle a -> x b -> y c -> z\n", S_NESTED)), "{text}");
     assert_eq!(sh.undo_steps(), 1);
     assert_eq!(sh.scene().bundles.len(), 1);
     assert!(!sh.scene().bundles[0].fallback);
@@ -219,7 +231,7 @@ fn p4_424_group_as_bus_from_menu_and_panel() {
     let menu = sh.menu_on("C", "Z");
     sh.pick(&menu, "Group as bus");
     let text = sh.text();
-    assert!(text.contains("            bundle b -> y c -> z\n") && !text.contains("a -> x b"), "{text}");
+    assert!(text.contains(&ids.refs_in("            bundle b -> y c -> z\n", S_NESTED)) && !text.contains(&ids.refs_in("a -> x b", S_NESTED)), "{text}");
     assert_eq!(sh.undo_steps(), 2);
     // One line selected and off every bus: nothing to offer.
     sh.click_line("A", "X", NONE);
@@ -228,12 +240,24 @@ fn p4_424_group_as_bus_from_menu_and_panel() {
 
 #[test]
 fn p4_425_ungroup_and_remove_from_bus() {
-    let mut sh = Shell::open(&grid(&["bundle a -> x b -> y c -> z"]));
+    body_p4_425_ungroup_and_remove_from_bus(Ids::Flat);
+}
+
+/// As `p4_425_ungroup_and_remove_from_bus`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the bus names its lines by their
+/// ends' full ids.
+#[test]
+fn p4_425_ungroup_and_remove_from_bus_hierarchical_ids() {
+    body_p4_425_ungroup_and_remove_from_bus(Ids::Hierarchical);
+}
+
+fn body_p4_425_ungroup_and_remove_from_bus(ids: Ids) {
+    let mut sh = Shell::open(&grid(ids, &["bundle a -> x b -> y c -> z"]));
     sh.click_line("B", "Y", NONE);
     let menu = sh.menu_on("B", "Y");
     assert_eq!(labels(&menu), ["Ungroup bus", "Remove from bus"]);
     sh.pick(&menu, "Remove from bus");
-    assert!(sh.text().contains("            bundle a -> x c -> z\n"), "{}", sh.text());
+    assert!(sh.text().contains(&ids.refs_in("            bundle a -> x c -> z\n", S_NESTED)), "{}", sh.text());
     // Removing one of two removes the whole line.
     sh.click_line("A", "X", NONE);
     let menu = sh.menu_on("A", "X");
@@ -241,17 +265,17 @@ fn p4_425_ungroup_and_remove_from_bus() {
     assert!(!sh.text().contains("bundle"), "{}", sh.text());
     assert_eq!(sh.undo_steps(), 2);
     // Ungroup removes the whole bus.
-    let mut sh = Shell::open(&grid(&["bundle a -> x b -> y c -> z"]));
+    let mut sh = Shell::open(&grid(ids, &["bundle a -> x b -> y c -> z"]));
     sh.click_line("C", "Z", NONE);
     let menu = sh.menu_on("C", "Z");
     sh.pick(&menu, "Ungroup bus");
-    assert_eq!(sh.text(), grid(&[]));
+    assert_eq!(sh.text(), grid(ids, &[]));
     assert_eq!(sh.undo_steps(), 1);
 }
 
 #[test]
 fn p4_426_selecting_a_member_marks_its_bus() {
-    let mut sh = Shell::open(&grid(&["bundle a -> x b -> y c -> z"]));
+    let mut sh = Shell::open(&grid(Ids::Flat, &["bundle a -> x b -> y c -> z"]));
     sh.click_line("B", "Y", NONE);
     let (ax, cz) = (ItemKey::Line(sh.line("A", "X").edge), ItemKey::Line(sh.line("C", "Z").edge));
     let list = sh.s.draw_list();
@@ -267,21 +291,33 @@ fn p4_426_selecting_a_member_marks_its_bus() {
         assert!(matches!(h.primitive, Primitive::Path { .. }), "a halo along the line");
     }
     // Off every bus: no such marks.
-    let mut plain = Shell::open(&grid(&[]));
+    let mut plain = Shell::open(&grid(Ids::Flat, &[]));
     plain.click_line("B", "Y", NONE);
     assert!(plain.s.draw_list().marks.iter().all(|m| m.kind != MarkKind::BusPeer));
 }
 
 #[test]
 fn p4_427_bus_edits_atomic_undoable_checked_on_disk() {
-    let original = grid(&[]);
+    body_p4_427_bus_edits_atomic_undoable_checked_on_disk(Ids::Flat);
+}
+
+/// As `p4_427_bus_edits_atomic_undoable_checked_on_disk`, on nested
+/// containers under `!identifiers hierarchical` (P2-142): the bus names its
+/// lines by their ends' full ids.
+#[test]
+fn p4_427_bus_edits_atomic_undoable_checked_on_disk_hierarchical_ids() {
+    body_p4_427_bus_edits_atomic_undoable_checked_on_disk(Ids::Hierarchical);
+}
+
+fn body_p4_427_bus_edits_atomic_undoable_checked_on_disk(ids: Ids) {
+    let original = grid(ids, &[]);
     let mut sh = Shell::open(&original);
     sh.click_line("A", "X", NONE);
     sh.click_line("B", "Y", SHIFT);
     let menu = sh.menu_on("A", "X");
     sh.pick(&menu, "Group as bus");
     let grouped = sh.text();
-    assert!(grouped.contains("bundle a -> x b -> y\n"), "{grouped}");
+    assert!(grouped.contains(&ids.refs_in("bundle a -> x b -> y\n", S_NESTED)), "{grouped}");
     sh.event(Event::Command(Command::Undo));
     assert_eq!(sh.text(), original, "undo gives the bytes back");
     sh.event(Event::Command(Command::Redo));
