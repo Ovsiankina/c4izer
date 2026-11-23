@@ -1401,6 +1401,82 @@ mod tests {
         );
     }
 
+    /// The Settings menu reads as one menu: "View settings" then, under a
+    /// hairline, "Editor" with its checkbox; both labels in one style at
+    /// one x, the rows' labels and the checkbox at one x (P5-309, P5-505).
+    #[test]
+    fn settings_menu_blocks_read_as_one_menu() {
+        use eframe::egui::{self, Color32, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        fn walk(shape: &Shape, out: &mut Vec<(String, Rect, Color32)>) {
+            match shape {
+                Shape::Text(t) => out.push((t.galley.text().to_owned(), shape.visual_bounding_rect(), t.fallback_color)),
+                Shape::Rect(r) if r.rect.height() <= 1.0 && r.rect.width() > 100.0 => out.push(("<rule>".to_owned(), r.rect, r.fill)),
+                Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, h) = crate::file_menu_tests::shop("settings-blocks");
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> Vec<(String, Rect, Color32)> {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                walk(&c.shape, &mut shown);
+            }
+            shown
+        };
+        let at = |shown: &[(String, Rect, Color32)], text: &str| -> (Rect, Color32) {
+            shown.iter().find(|(t, _, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r, c)| (*r, *c))
+        };
+        let settings = at(&frame(Vec::new()), "Settings").0.center();
+        frame(vec![
+            E::PointerMoved(settings),
+            E::PointerButton { pos: settings, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            E::PointerButton { pos: settings, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+        ]);
+        let shown = frame(Vec::new());
+        let (view, view_ink) = at(&shown, "VIEW SETTINGS");
+        let (budget, _) = at(&shown, "MAX CROSSINGS");
+        let (colours, _) = at(&shown, "LINE COLOURS");
+        let (editor, editor_ink) = at(&shown, "EDITOR");
+        let (snap, _) = at(&shown, "Snap to alignment guides");
+        let rule = shown
+            .iter()
+            .find(|(t, r, _)| t == "<rule>" && r.min.y >= colours.max.y && r.max.y <= editor.min.y)
+            .map_or_else(|| panic!("no hairline between the blocks: {shown:?}"), |(_, r, _)| *r);
+        // Order, top to bottom.
+        assert!(view.max.y <= budget.min.y && budget.max.y <= colours.min.y, "{shown:?}");
+        assert!(colours.max.y <= rule.min.y && rule.max.y <= editor.min.y && editor.max.y <= snap.min.y, "{shown:?}");
+        // One label style, one x for the labels and for the rows.
+        assert_eq!(view_ink, editor_ink, "both block labels in one ink");
+        assert!((view.height() - editor.height()).abs() < 0.5, "one label size: {view:?} {editor:?}");
+        assert!((view.min.x - editor.min.x).abs() < 0.5, "labels aligned: {view:?} {editor:?}");
+        assert!((budget.min.x - colours.min.x).abs() < 0.5, "row labels aligned: {budget:?} {colours:?}");
+        // The checkbox (its 14 px box, 8 px gap, then the text) starts at
+        // the rows' label x.
+        assert!((snap.min.x - 22.0 - colours.min.x).abs() < 1.0, "checkbox aligned: {snap:?} {colours:?}");
+        // Room on both sides of the hairline.
+        let (above, below) = (rule.min.y - colours.max.y, editor.min.y - rule.max.y);
+        assert!(above > 0.0 && below > 0.0, "{above} {below}");
+        // The menu keeps its width from frame to frame.
+        let again = frame(Vec::new());
+        // (Rects only: the popup fades in, so inks change between frames.)
+        assert_eq!(at(&again, "EDITOR").0, editor);
+        assert!(again.iter().any(|(t, r, _)| t == "<rule>" && *r == rule), "{again:?}");
+    }
+
     fn entry(label: &str) -> MenuEntry {
         MenuEntry {
             label: label.to_owned(),

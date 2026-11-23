@@ -6,16 +6,16 @@
 //! Depends on: `state` (`State`, `ViewEntry`, `Effect`), `view_map`
 //! (`level_of`), `worker` (`ViewRef`), `c4rizer-core` (`model`).
 
-// Shape: `folder_of` is the one place that decides a view's folder
-// (design section 7): the list, the walk and the tests all go through
-// it. `folders` groups a view list (`State::views`) into folders, pure;
+// Shape: `folder_of` (its body `folder_by`) is the one place that
+// decides a view's folder (design section 7): the list, the walk and the
+// tests all go through it. `folders` groups a view list (`State::views`) into folders, pure;
 // `FolderCache` keeps the result with the parse and view it came from
 // (`Arc::ptr_eq`, as `ViewMapPanel::sync`), so the left panel rebuilds
 // it on a model or view change, never per frame. Fold state is plain data
 // in `State::ui` (`UiState::folded`), changed only by
 // `Command::ToggleFolder` through `State::handle`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use c4rizer_core::model::{ElementKind, Model, Parsed, ViewKind, ViewSpec};
@@ -110,12 +110,15 @@ impl ViewFolder {
 // DECISION: dynamic and deployment views go in Other even though the map
 // puts them on a C row (`level_of`): the design's table, so a C folder
 // holds only the plain view of its level.
-fn folder_of_spec(model: &Model, spec: &ViewSpec) -> ViewFolder {
+fn folder_of_spec<'m>(model: &'m Model, spec: &ViewSpec, find: &dyn Fn(&str) -> Option<&'m ViewSpec>) -> ViewFolder {
     match spec.kind {
-        ViewKind::Filtered => model
-            .base_view(spec)
+        // `Model::base_view`, through `find`.
+        ViewKind::Filtered => spec
+            .filter
+            .as_ref()
+            .and_then(|f| find(&f.base.value))
             .filter(|b| b.kind != ViewKind::Filtered)
-            .map_or(ViewFolder::Other, |base| folder_of_spec(model, base)),
+            .map_or(ViewFolder::Other, |base| folder_of_spec(model, base, find)),
         ViewKind::Image => {
             if spec.scope.element().is_some_and(|e| model.element(e).kind == ElementKind::Component) {
                 ViewFolder::C4
@@ -136,10 +139,21 @@ fn folder_of_spec(model: &Model, spec: &ViewSpec) -> ViewFolder {
 /// The folder of `view` in `model` (P5-600): the one function that
 /// decides it. An EDIT-15 default view that is not written goes by its
 /// kind. PENDING SIGN-OFF: new pub item.
+// DECISION: the rule itself is `folder_by`, with the view lookup given;
+// `folder_of` is it with `Model::view`, and `folders` (the only caller
+// outside tests) passes a key map, so the app build does not call
+// `folder_of` itself.
 #[must_use]
+#[cfg_attr(not(test), expect(dead_code, reason = "the one-view entry point; the list build passes a key map to `folder_by`"))]
 pub fn folder_of(model: &Model, view: &ViewRef) -> ViewFolder {
+    folder_by(model, view, &|key| model.view(key))
+}
+
+/// `folder_of` with the view lookup given: `folders` passes a key map
+/// built once, so a list of n views costs O(n), not n linear lookups.
+fn folder_by<'m>(model: &'m Model, view: &ViewRef, find: &dyn Fn(&str) -> Option<&'m ViewSpec>) -> ViewFolder {
     match view {
-        ViewRef::Declared(key) => model.view(key).map_or(ViewFolder::Other, |spec| folder_of_spec(model, spec)),
+        ViewRef::Declared(key) => find(key).map_or(ViewFolder::Other, |spec| folder_of_spec(model, spec, find)),
         // DECISION: a default view is a context, container or component
         // view of its scope; its kind alone gives the folder.
         ViewRef::Default { kind, .. } => match kind {
@@ -174,9 +188,17 @@ impl Folder {
 /// each keeping the list's order. PENDING SIGN-OFF: new pub item.
 #[must_use]
 pub fn folders(model: &Model, entries: Vec<ViewEntry>) -> Vec<Folder> {
+    // DECISION: one key-to-spec map per call, the first view of a key
+    // winning as in `Model::view`: each `folder_of` lookup was linear, so
+    // the list build was quadratic (about 0.7 ms for 500 views).
+    let mut by_key: HashMap<&str, &ViewSpec> = HashMap::with_capacity(model.views.len());
+    for spec in &model.views {
+        by_key.entry(spec.key.as_str()).or_insert(spec);
+    }
+    let find = |key: &str| by_key.get(key).copied();
     let mut out: Vec<Folder> = ViewFolder::ALL.iter().map(|&folder| Folder { folder, views: Vec::new() }).collect();
     for entry in entries {
-        let folder = folder_of(model, &entry.view);
+        let folder = folder_by(model, &entry.view, &find);
         // `ALL` is in enum order, so the folder's index is its place.
         if let Some(slot) = out.iter_mut().find(|f| f.folder == folder) {
             slot.views.push(entry);
