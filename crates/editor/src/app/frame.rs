@@ -614,6 +614,44 @@ impl App {
             }
             // Drawn over the canvas at the pointer (`App::canvas`).
             Overlay::ContextMenu { .. } => {}
+            // P5-205: the add-tag popup.
+            Overlay::AddTag { query, .. } => {
+                small_window(ctx, canvas, "Add tag", &mut out, &Command::TagPopup, |ui, out| {
+                    let rows = self.state.tag_popup_rows();
+                    let pick = kit::tag_picker(ui, &query, &rows);
+                    if let Some(typed) = pick.typed {
+                        out.push(Event::Text(typed));
+                    }
+                    if let Some(tag) = pick.picked {
+                        out.push(Event::Command(Command::AddTag(tag)));
+                    }
+                    (!query.trim().is_empty()).then(|| ("Add", Command::AddTag(query.clone())))
+                });
+            }
+            // P5-107: the group-name popup.
+            Overlay::GroupName { name } => {
+                small_window(ctx, canvas, "Group", &mut out, &Command::GroupPopup, |ui, out| {
+                    let mut buffer = name.clone();
+                    let field = ui.scope(|ui| {
+                        kit::field_style(ui);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut buffer)
+                                .hint_text(egui::RichText::new("group name").color(INK_3))
+                                .desired_width(f32::INFINITY)
+                                .align(egui::Align2::LEFT_CENTER)
+                                .min_size(Vec2::new(0.0, SIZE_CONTROL)),
+                        )
+                    });
+                    if !field.inner.has_focus() {
+                        field.inner.request_focus();
+                    }
+                    if buffer != name {
+                        out.push(Event::Text(buffer));
+                    }
+                    ui.label(egui::RichText::new("Enter groups the selected boxes, Esc cancels").color(INK_3));
+                    Some(("Group", Command::SetGroup(Some(name.clone()))))
+                });
+            }
             Overlay::TagFilter => {
                 small_window(ctx, canvas, "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
                     let chosen = &self.state.aids.tags;
@@ -743,7 +781,9 @@ pub(super) fn menu_rows(entries: &[MenuEntry], relationship: bool) -> Vec<MenuRo
             vec![url],
         ]
     } else {
-        vec![vec![enter], vec![url]]
+        // P5-108: the group entries, one slot group after "Enter".
+        let group = vec![("Group…", "Group…", Icon::Layers), ("Remove from group", "Remove from group", Icon::Minus)];
+        vec![vec![enter], group, vec![url]]
     };
     let mut rows = Vec::new();
     let mut used = vec![false; entries.len()];
@@ -1373,16 +1413,42 @@ mod tests {
     }
 
     /// Behaviour change 5: a box with a URL but no deeper view shows
-    /// `Enter` disabled above the URL entry, split by a rule.
+    /// `Enter` disabled above the URL entry, split by a rule. P5-108
+    /// (owner request 2026-11-23) adds the group pair between them.
     #[test]
     fn box_menu_keeps_its_shape() {
         let url = entry("Open URL https://x.org");
         let rows = menu_rows(std::slice::from_ref(&url), false);
         assert_eq!(
             texts(&rows),
-            [("Enter a view".to_owned(), false, false), ("Open URL https://x.org".to_owned(), true, true)]
+            [
+                ("Enter a view".to_owned(), false, false),
+                ("Group…".to_owned(), false, true),
+                ("Remove from group".to_owned(), false, false),
+                ("Open URL https://x.org".to_owned(), true, true)
+            ]
         );
-        assert_eq!(rows[1].entry, Some(&url));
+        assert_eq!(rows[3].entry, Some(&url));
+    }
+
+    /// P5-108: "Group…" and "Remove from group" are one slot group right
+    /// after "Enter", enabled when offered.
+    #[test]
+    fn p5_108_box_menu_group_slot_after_enter() {
+        let entries = [entry("Enter Containers"), entry("Group…"), entry("Remove from group")];
+        let rows = menu_rows(&entries, false);
+        assert_eq!(
+            texts(&rows),
+            [
+                ("Enter Containers".to_owned(), true, false),
+                ("Group…".to_owned(), true, true),
+                ("Remove from group".to_owned(), true, false),
+                ("Open URL".to_owned(), false, true)
+            ]
+        );
+        let rows = menu_rows(&entries[..2], false);
+        assert_eq!(rows[2].text, "Remove from group");
+        assert!(rows[2].entry.is_none(), "greyed when no selected box is in a group");
     }
 
     /// Behaviour change 5: a bundled line without pins or URL shows the
@@ -1420,9 +1486,15 @@ mod tests {
     #[test]
     fn menu_with_no_entry_is_all_disabled() {
         let box_rows = menu_rows(&[], false);
+        // P5-108 (owner request 2026-11-23) adds the group pair.
         assert_eq!(
             texts(&box_rows),
-            [("Enter a view".to_owned(), false, false), ("Open URL".to_owned(), false, true)]
+            [
+                ("Enter a view".to_owned(), false, false),
+                ("Group…".to_owned(), false, true),
+                ("Remove from group".to_owned(), false, false),
+                ("Open URL".to_owned(), false, true)
+            ]
         );
         let line_rows = menu_rows(&[], true);
         assert!(!line_rows.is_empty());

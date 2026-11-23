@@ -114,6 +114,7 @@ pub(crate) mod inplace;
 mod label_drag;
 mod lint_resolve;
 mod steps;
+mod tags_groups;
 mod vertices;
 pub use anchors::SnapMark;
 pub use steps::StepDetails;
@@ -445,6 +446,24 @@ pub enum Command {
     /// colours": `Plain | From box`), one undo step (P5-309).
     // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
     SetLineColours(c4rizer_core::model::LineColours),
+    /// Add a tag to every selected box, or every selected line, one undo
+    /// step; closes the add-tag popup (P5-204..P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag(String),
+    /// Remove a declared tag from every selected box, or every selected
+    /// line, one undo step (P5-204, P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RemoveTag(String),
+    /// Open the add-tag popup, or close it when open (P5-204, P5-205).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    TagPopup,
+    /// Put every selected box in the group of that name of their scope,
+    /// or in no group with `None`, one undo step (P5-106..P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup(Option<String>),
+    /// Open the group-name popup, or close it when open (P5-107).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    GroupPopup,
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -911,6 +930,26 @@ pub enum Action {
         /// The style written, `None` for no line (`crossings gap`).
         style: Option<c4rizer_core::model::CrossingStyle>,
     },
+    /// Add or remove one tag on several boxes or lines, one batch
+    /// (P5-204..P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    Tags {
+        /// The selected boxes or lines.
+        targets: Vec<c4rizer_core::edit::TagTarget>,
+        /// The tag.
+        tag: String,
+        /// True to add, false to remove.
+        add: bool,
+    },
+    /// Move boxes into a group of their scope, or out of every group,
+    /// one batch (P5-106..P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup {
+        /// Canonical element keys.
+        elements: Vec<ElementKey>,
+        /// The group's name, `None` for no group.
+        group: Option<String>,
+    },
     /// Set every `bridge` line of the view (P4-522).
     // APPROVER: new pub item
     Bridges {
@@ -1189,6 +1228,21 @@ pub enum Overlay {
         /// The entries, in the order shown.
         entries: Vec<MenuEntry>,
     },
+    /// The add-tag popup (P5-205): the typed text and the existing tags
+    /// of the selection's kind, gathered when it opened.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag {
+        /// The typed text.
+        query: String,
+        /// Every tag it may offer, before filtering by `query`.
+        choices: Vec<String>,
+    },
+    /// The group-name popup (P5-107): the typed name.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    GroupName {
+        /// The typed name, prefilled "Group".
+        name: String,
+    },
 }
 
 /// What a context menu entry does (editor-ux-02).
@@ -1236,6 +1290,14 @@ pub enum MenuAction {
         /// The crossing's passing line.
         passing: c4rizer_core::view::EdgeId,
     },
+    /// "Group…": open the group-name popup for the selected boxes
+    /// (P5-107, P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    Group,
+    /// "Remove from group": the selected boxes leave their groups
+    /// (P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    RemoveFromGroup,
 }
 
 /// One entry of the context menu (editor-ux-02).
@@ -1959,6 +2021,9 @@ impl State {
                 }
                 if self.overlay == Some(Overlay::Navigator) {
                     self.nav_query = text;
+                    return Vec::new();
+                }
+                if self.popup_text(&text) {
                     return Vec::new();
                 }
                 if let Some(edit) = self.text_edit.as_mut()
@@ -2699,6 +2764,25 @@ impl State {
                 });
                 out
             }
+            // P5-206: a tag change and a group change name no view, so
+            // no default view is written for them.
+            Action::Tags { targets, tag, add } => targets
+                .iter()
+                .map(|target| match add {
+                    true => Edit::AddTag {
+                        target: target.clone(),
+                        tag: tag.clone(),
+                    },
+                    false => Edit::RemoveTag {
+                        target: target.clone(),
+                        tag: tag.clone(),
+                    },
+                })
+                .collect(),
+            Action::SetGroup { elements, group } => vec![Edit::SetGroup {
+                elements: elements.clone(),
+                group: group.clone(),
+            }],
             Action::Bridges { view, bridges, layout } => {
                 let view = &layout_view(model, view);
                 let own = vec![Edit::SetBridges {
@@ -4407,6 +4491,24 @@ impl State {
         if let Some(Overlay::QuickNavigation { .. }) = self.overlay {
             return self.quick_nav_key(key);
         }
+        // P5-205, P5-107: an open add-tag or group-name popup takes every
+        // key: Enter confirms, Escape closes.
+        if let Some(effects) = self.popup_key(key) {
+            return effects;
+        }
+        match key {
+            // P5-107, P5-108: Ctrl+G groups the selected boxes, Ctrl+Shift+G
+            // takes them out of their groups.
+            Key::G if mods.ctrl && mods.shift => {
+                return if self.group_row().is_some_and(|r| r.enabled && r.grouped) {
+                    self.write_group(None)
+                } else {
+                    Vec::new()
+                };
+            }
+            Key::G if mods.ctrl => return self.toggle_group_popup(),
+            _ => {}
+        }
         match key {
             // DECISION: the context menu has no keyboard highlight, so
             // Enter or F2 while it is open runs nothing (no entry, no
@@ -4796,6 +4898,8 @@ impl State {
                     let label = format!("Enter {}", self.entry_of(model, view.clone()).label);
                     entries.push(MenuEntry { label, action: MenuAction::Show(view) });
                 }
+                // P5-108: "Group…" and "Remove from group".
+                entries.extend(self.group_entries());
                 let el = model.element(e);
                 el.url.as_ref().map(|u| (el.name.value.clone(), u.value.clone()))
             }
@@ -4942,8 +5046,15 @@ impl State {
                     MenuAction::UngroupBus { edge } => self.ungroup_bus(edge),
                     MenuAction::RemoveFromBus { edge } => self.remove_from_bus(edge),
                     MenuAction::FlipBridge { carrier, passing } => self.flip_bridge(carrier, passing),
+                    MenuAction::Group => self.toggle_group_popup(),
+                    MenuAction::RemoveFromGroup => self.write_group(None),
                 }
             }
+            Command::AddTag(tag) => self.write_tag(&tag, true),
+            Command::RemoveTag(tag) => self.write_tag(&tag, false),
+            Command::TagPopup => self.toggle_tag_popup(),
+            Command::SetGroup(group) => self.write_group(group),
+            Command::GroupPopup => self.toggle_group_popup(),
             Command::ShowView(view) => {
                 // P2-715, P2-729: picking a view in quick navigation or the
                 // navigator closes it.

@@ -55,6 +55,8 @@ mod state;
 #[cfg(test)]
 mod styles_themes_tests;
 #[cfg(test)]
+mod tags_groups_tests;
+#[cfg(test)]
 mod testutil;
 mod theme;
 #[cfg(test)]
