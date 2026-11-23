@@ -91,6 +91,8 @@ pub struct App {
     explore: crate::explore::Explore,
     /// The view map section of the left panel (P4-100).
     view_map: crate::view_map::ViewMapPanel,
+    /// The view list's folders of the last parse and view (P5-606).
+    view_folders: crate::view_folders::FolderCache,
     /// The canvas region on screen last frame, for the overlays placed
     /// over it.
     canvas_rect: Cell<egui::Rect>,
@@ -176,6 +178,7 @@ impl App {
             include_rx,
             explore: crate::explore::Explore::default(),
             view_map: crate::view_map::ViewMapPanel::default(),
+            view_folders: crate::view_folders::FolderCache::default(),
             canvas_rect: Cell::new(egui::Rect::NOTHING),
             canvas_size: Cell::new(ScreenPoint { x: 0.0, y: 0.0 }),
             last_width: None,
@@ -322,6 +325,8 @@ impl App {
                 out.push(Event::Command(Command::ShowView(view)));
             }
         }
+        // P5-606: the folder list is rebuilt on a parse or view change only.
+        self.view_folders.sync(&self.state, |f| panels::key_column(ui, f));
         out.extend(self.left_panel(ui));
         out
     }
@@ -459,25 +464,64 @@ pub(crate) fn view_label(entry: &ViewEntry) -> String {
     }
 }
 
-/// The view list of the left panel (EDIT-8, P2-737, behaviour change 11):
-/// one row per view, the key column first (mono, keys aligned), then the
-/// title cut to the room left with an ellipsis; the full title (and
-/// EDIT-8's kind, P2-123's note) as tooltip. Pushes the events its clicks
-/// make; returns each row's text as drawn and rect.
-fn view_list(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) -> Vec<(String, egui::Rect)> {
+/// The view list of the left panel (EDIT-8, P2-737, behaviour change 11,
+/// P5-600..P5-607): the C-level folders, each a header row then, unless
+/// folded, one row per view indented by a chevron width, the key column
+/// first (mono, keys aligned), then the title cut to the room left with
+/// an ellipsis; the full title (and EDIT-8's kind, P2-123's note) as
+/// tooltip. Scrolls vertically and draws only the rows in sight
+/// (P5-606). Pushes the events its clicks make; returns each drawn row's
+/// text as drawn and rect.
+fn view_list(
+    ui: &mut egui::Ui,
+    state: &State,
+    folders: &[crate::view_folders::Folder],
+    key_w: f32,
+    out: &mut Vec<Event>,
+) -> Vec<(String, egui::Rect)> {
     // egui stores a panel's width as its content's, so without this
     // claim the panel shrank frame after frame to its minimum.
     ui.set_min_width(ui.available_width());
     ui.spacing_mut().item_spacing.y = 0.0;
-    let key_w = panels::key_column(ui, state);
+    let shown = |f: &crate::view_folders::Folder| if state.is_folded(f.folder) { 1 } else { 1 + f.views.len() };
+    let total: usize = folders.iter().map(shown).sum();
     let mut rows = Vec::new();
-    for entry in state.views() {
-        let (line, response) = panels::view_row(ui, &entry, key_w);
-        rows.push((line, response.rect));
-        if response.clicked() && !entry.current {
-            out.push(Event::Command(Command::ShowView(entry.view)));
-        }
-    }
+    // DECISION: every line (header or view) is `SIZE_ROW` high, so
+    // `show_rows` lays out only the lines in sight: a 500-view list
+    // costs what a screenful does (P5-606).
+    egui::ScrollArea::vertical()
+        .id_salt("c4rizer-view-list")
+        .auto_shrink([false, true])
+        .show_rows(ui, theme::SIZE_ROW, total, |ui, range| {
+            ui.set_min_width(ui.available_width());
+            let mut at = 0;
+            for f in folders {
+                let n = shown(f);
+                if at >= range.end {
+                    break;
+                }
+                if at + n > range.start {
+                    if range.contains(&at) {
+                        let (line, response) = panels::folder_header(ui, f, state.is_folded(f.folder), key_w);
+                        rows.push((line, response.rect));
+                        if response.clicked() {
+                            out.push(Event::Command(Command::ToggleFolder(f.folder)));
+                        }
+                    }
+                    for (i, entry) in f.views.iter().enumerate().take(n - 1) {
+                        if !range.contains(&(at + 1 + i)) {
+                            continue;
+                        }
+                        let (line, response) = panels::view_row(ui, entry, key_w, theme::SIZE_ICON);
+                        rows.push((line, response.rect));
+                        if response.clicked() && !entry.current {
+                            out.push(Event::Command(Command::ShowView(entry.view.clone())));
+                        }
+                    }
+                }
+                at += n;
+            }
+        });
     rows
 }
 
@@ -538,28 +582,54 @@ fn shape_row(
 }
 
 /// The view list as drawn headless in a left panel `width` px wide (the
-/// app's panel settings) after `frames` frames (P2-737).
+/// app's panel settings) after `frames` frames (P2-737, P5-602).
 #[cfg(test)]
 pub(crate) struct DrawnViewList {
-    /// Each row's line and height, px.
+    /// Each drawn row's line and height, px: folder headers and views.
     pub rows: Vec<(String, f32)>,
+    /// Each drawn row's rect, screen px, as `rows`.
+    pub rects: Vec<egui::Rect>,
+    /// How many of `rows` are folder headers (P5-602).
+    pub headers: usize,
     /// The height of one widget row, px.
     pub row_height: f32,
     /// The panel's width after the last frame, px.
     pub panel_width: f32,
+    /// The right edge of the rightmost text painted in the last frame, px.
+    pub text_right: f32,
+    /// The events the last frame's clicks made.
+    pub events: Vec<Event>,
+    /// The folder lists built over all frames (P5-606).
+    pub builds: usize,
+    /// Every text painted in the last frame, tooltips included.
+    pub texts: Vec<String>,
 }
 
 #[cfg(test)]
 pub(crate) fn draw_view_list(state: &State, width: f32, frames: usize) -> DrawnViewList {
-    let ctx = egui::Context::default();
+    draw_view_list_with(&egui::Context::default(), state, width, (0..frames).map(|_| Vec::new()).collect())
+}
+
+/// `draw_view_list` in `ctx` with one frame per entry of `inputs`, each
+/// frame taking its entry as input events.
+#[cfg(test)]
+pub(crate) fn draw_view_list_with(ctx: &egui::Context, state: &State, width: f32, inputs: Vec<Vec<egui::Event>>) -> DrawnViewList {
     let mut drawn = DrawnViewList {
         rows: Vec::new(),
+        rects: Vec::new(),
+        headers: 0,
         row_height: 0.0,
         panel_width: 0.0,
+        text_right: 0.0,
+        events: Vec::new(),
+        builds: 0,
+        texts: Vec::new(),
     };
-    for _ in 0..frames {
+    let mut cache = crate::view_folders::FolderCache::default();
+    for events in inputs {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))),
+            events,
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
@@ -568,17 +638,54 @@ pub(crate) fn draw_view_list(state: &State, width: f32, frames: usize) -> DrawnV
                 .default_size(width)
                 .size_range(width.min(SIDE_PANEL_MIN_PX)..=width)
                 .show(ui, |ui| {
+                    let folders = cache.sync(state, |f| panels::key_column(ui, f));
                     let mut out = Vec::new();
-                    let rows = view_list(ui, state, &mut out);
+                    let rows = view_list(ui, state, &folders, cache.key_w, &mut out);
+                    drawn.headers = rows.iter().filter(|(l, _)| l.starts_with(['▾', '▸'])).count();
+                    drawn.rects = rows.iter().map(|(_, r)| *r).collect();
                     drawn.rows = rows.into_iter().map(|(l, r)| (l, r.height())).collect();
+                    drawn.events = out;
                     // redesign 2026-11-19: a view row is `size-row` high, one row.
                     drawn.row_height = theme::SIZE_ROW;
                 });
             drawn.panel_width = panel.response.rect.width();
         });
+        let texts: Vec<&egui::epaint::TextShape> = output
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if !t.galley.text().is_empty() => Some(t),
+                _ => None,
+            })
+            .collect();
+        drawn.text_right = texts.iter().map(|t| t.visual_bounding_rect().max.x).fold(0.0, f32::max);
+        drawn.texts = texts.iter().map(|t| t.galley.text().to_owned()).collect();
         output.textures_delta.clear();
     }
+    drawn.builds = cache.builds;
     drawn
+}
+
+/// One frame of the left panel's view list as the app draws it, `cache`
+/// kept across frames as `App` keeps it (P5-606 benchmark).
+#[cfg(test)]
+pub(crate) fn view_list_frame(ctx: &egui::Context, state: &State, width: f32, cache: &mut crate::view_folders::FolderCache) {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))),
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| {
+        egui::Panel::left("c4rizer-left")
+            .resizable(true)
+            .default_size(width)
+            .size_range(width.min(SIDE_PANEL_MIN_PX)..=width)
+            .show(ui, |ui| {
+                let folders = cache.sync(state, |f| panels::key_column(ui, f));
+                let mut out = Vec::new();
+                let _ = view_list(ui, state, &folders, cache.key_w, &mut out);
+            });
+    });
+    output.textures_delta.clear();
 }
 
 /// The formats of the export panel, as `c4rizer export -f` names them

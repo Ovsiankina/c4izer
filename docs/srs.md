@@ -2473,8 +2473,9 @@ Note after it is not part of the sentence.
 
 **Viewing aids (split from P2-24)**
 
-- **P2-713** Up or Right opens the previous view of the view list
-  (`State::views`, EDIT-8, ordered per P2-716), and Down or Left opens
+- **P2-713** Up or Right opens the previous view of the view list as
+  displayed (in its folders, folded ones skipped: P5-605 supersedes the
+  plain `State::views` order), and Down or Left opens
   the next, unless P2-712 gives the key elsewhere. The reference reads:
   "`Up arrow` Navigate to the previous diagram", "`Down arrow` … next",
   "`Left arrow` … next", "`Right arrow` … previous". TODO(srs): the
@@ -2614,7 +2615,8 @@ Note after it is not part of the sentence.
 - **P2-736** The style panel's shape choice is a single drop-down, never
   wrapped over lines.
 - **P2-737** The view list shows each view on one line (title truncated
-  with an ellipsis, then the key); the full title is a tooltip.
+  with an ellipsis, then the key), under its folder's header (P5-602);
+  the full title is a tooltip.
 - **P2-738** A fitted view keeps box and label text at least 9px high on
   screen: when fitting would go smaller, the fit stops at that zoom and
   the view can be panned. `TODO(srs)`: confirm 9px after measuring.
@@ -3453,9 +3455,11 @@ view-map
 - **P4-110** Hovering a node shows the view's full title.
 - **P4-111** When a row is wider than the section, node widths shrink
   evenly to fit it, down to the widest tag (keys are cut with "…", tags
-  stay whole, the full name is the hover text); a map still larger than
-  its section scrolls in both directions with visible scroll bars, and
-  its text keeps the view list's font size.
+  stay whole, the full name is the hover text); a map still wider than
+  its section is drawn as the tree list of P5-700 (owner request
+  2026-11-23, superseding the sideways scroll), a map taller than its
+  section scrolls vertically, and its text keeps the view list's font
+  size.
 - **P4-112** The map is built once per parse of the file and reused by
   every frame until the next parse.
 
@@ -4177,7 +4181,74 @@ align-guides
 
 view-folders
 
+- **P5-600** One function (`view_folders::folder_of`, built on the view
+  map's levels) puts every view of the view list in one folder: C1
+  "Context" (system landscape and system context views), C2
+  "Containers" (container views), C3 "Components" (component views), C4
+  "Code" (image views scoped to a component), Other "Other" (dynamic,
+  deployment, custom and every other image view); a filtered view goes
+  in its base's folder, an unwritten default view (EDIT-15) by its kind.
+- **P5-601** The view list shows only non-empty folders, in the order
+  C1, C2, C3, C4, Other; inside a folder the views keep the view-list
+  order (declaration, or `structurizr.sort`, P2-716).
+- **P5-602** A folder header is one `SIZE_ROW` row: a chevron, the
+  folder key in the key column's font and colour, the label, and the
+  folder's view count right-aligned in `INK_3`; its view rows keep their
+  key column, indented by one chevron width; at panel widths of 100, 120
+  and 220 px every header and view row is one line and no text is
+  painted past the panel's right edge.
+- **P5-603** A click on a folder header, or Enter or Space while it has
+  keyboard focus, folds or unfolds the folder; a folded folder shows its
+  header only; a folded folder holding the view on screen shows an
+  `ACCENT` dot on its header.
+- **P5-604** Fold state is kept in `State` per file (by the path as
+  opened) and saved in the UI state file as `fold\t<folder>\t<path>`
+  lines, so reopening the file restores it; unknown folders are skipped.
+- **P5-605** Previous/Next view (P2-713) walk the view list as
+  displayed, folder by folder, and skip the views of folded folders; the
+  view on screen keeps its place in the walk even when its folder is
+  folded.
+- **P5-606** The folder list (and the key column's width) is built once
+  per parse and view change, not per frame; the list draws only the rows
+  in sight, and one frame of a 500-view list stays well under 16 ms
+  (release, `perf_p5_606_*`).
+- **P5-607** Hovering a folder header shows, after the tooltip delay, a
+  card at most 260 px wide: the title in `strong_font` ("C1 · System
+  context", "C2 · Container", "C3 · Component", "C4 · Code", "Other"),
+  then the sentence of issue #10, verbatim: C1 "The starting point; how
+  the software system in scope fits into the world around it.", C2
+  "Zooms into the system; the applications and data stores inside it.",
+  C3 "Zooms into one container; the components inside it.", C4 "Zooms
+  into one component; how it is implemented at the code level (e.g. UML
+  class diagram).", Other "Supplementary diagrams: dynamic, deployment,
+  custom and image views."
+
 map-tree
+
+- **P5-700** When the view map cannot fit its section's width even with
+  every node at its floor width (P4-111's minimum), the section draws a
+  tree list instead of the node graph; when the graph fits, the graph is
+  drawn as before, and it comes back as soon as the section is wide
+  enough again.
+- **P5-701** The tree list shows one view per line, 20 px high, in the
+  map's mono font: the `├─ `, `└─ ` and `│  ` prefixes of `tree` in
+  `INK_3`, then the view's key, then its title cut with an ellipsis to
+  the room left.
+- **P5-702** A view's parent in the tree is the node it is entered from
+  in the map's drawn (reduced) links; with several, the one of the
+  lowest level, then the first in map order (the view-list order of
+  P4-101); views with no parent are roots, and roots and siblings are in
+  map order.
+- **P5-703** The current view's tree row has an `ACCENT_SOFT` fill and
+  its key in `ACCENT`, and is scrolled into sight when the view changes;
+  a hovered row has a `BG_ACTIVE` fill and the node's hover text
+  (P4-110); a click on a row opens its view as a node click does
+  (P4-109).
+- **P5-704** The tree list is never wider than its section and scrolls
+  vertically only; it never shows a horizontal scroll bar.
+- **P5-705** The tree rows are computed in `ViewMap::build`, with the
+  map, once per parse (P4-112), never per frame; the panel lays out only
+  the rows in sight (release, `perf_p5_705_*`).
 
 benchmarks
 

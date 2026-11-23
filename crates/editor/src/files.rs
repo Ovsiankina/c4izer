@@ -445,6 +445,10 @@ pub struct UiState {
     /// `false`, the default, is on. Saved as `pref\tsnap-guides\toff`.
     // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
     pub snap_guides_off: bool,
+    /// Per file, by the path as opened, the view-list folders folded
+    /// (P5-604); a file with none folded has no entry. PENDING SIGN-OFF:
+    /// new pub field (owner request 2026-11-23, issue #11).
+    pub folded: BTreeMap<PathBuf, std::collections::BTreeSet<crate::view_folders::ViewFolder>>,
 }
 
 /// The most recent files kept (EDIT-13).
@@ -490,6 +494,12 @@ impl UiState {
                 [key, name, value] if key == "pref" && name == "snap-guides" => {
                     state.snap_guides_off = value == "off";
                 }
+                // P5-604: `fold\t<folder>\t<path>`, an unknown folder skipped.
+                [key, folder, path] if key == "fold" => {
+                    if let Some(folder) = crate::view_folders::ViewFolder::from_key(folder) {
+                        state.folded.entry(PathBuf::from(path)).or_default().insert(folder);
+                    }
+                }
                 _ => {}
             }
         }
@@ -528,6 +538,12 @@ impl UiState {
         // without preferences reads and writes back byte for byte.
         if self.snap_guides_off {
             out.push_str("pref\tsnap-guides\toff\n");
+        }
+        for (path, folded) in &self.folded {
+            let Some(p) = path.to_str() else { continue };
+            for folder in folded {
+                let _ = writeln!(out, "fold\t{}\t{}", folder.key(), escape(p));
+            }
         }
         out
     }

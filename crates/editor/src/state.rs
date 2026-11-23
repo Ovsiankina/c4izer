@@ -502,6 +502,10 @@ pub enum Command {
         /// Up (towards the first step) or down.
         up: bool,
     },
+    /// Fold or unfold a folder of the view list in the open file
+    /// (P5-603, P5-604). PENDING SIGN-OFF: new pub item (owner request
+    /// 2026-11-23, issue #11).
+    ToggleFolder(crate::view_folders::ViewFolder),
 }
 
 /// Everything that goes into the state machine.
@@ -4896,6 +4900,7 @@ impl State {
             Command::RemoveAllVertices => self.remove_all_vertices(),
             Command::SelectStep(step) => self.select_step(step),
             Command::MoveStep { step, up } => self.move_step(step, up),
+            Command::ToggleFolder(folder) => self.toggle_folder(folder),
             Command::Open(path) => {
                 self.remember();
                 vec![Effect::Read(path)]
@@ -5128,7 +5133,8 @@ impl State {
                 // Structurizr 6.2.4 diagrams.jsp (`navigateToPreviousDiagram`
                 // and `navigateToNextDiagram` stop at the ends); B
                 // editor-breadth 9 proposed wrapping, Structurizr wins.
-                let list = self.views();
+                // P5-605: the list as displayed, folded folders skipped.
+                let list = self.walk_views();
                 let Some(at) = list.iter().position(|e| e.current) else {
                     return list.first().map_or_else(Vec::new, |e| self.show(e.view.clone()));
                 };

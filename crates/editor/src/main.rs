@@ -46,6 +46,8 @@ mod kit;
 #[cfg(test)]
 mod label_drag_tests;
 #[cfg(test)]
+mod map_tree_tests;
+#[cfg(test)]
 mod landscape_filtered_tests;
 #[cfg(test)]
 mod lint_resolve_tests;
@@ -57,6 +59,9 @@ mod testutil;
 mod theme;
 #[cfg(test)]
 mod vertices_tests;
+mod view_folders;
+#[cfg(test)]
+mod view_folders_tests;
 mod view_map;
 #[cfg(test)]
 mod view_map_tests;
