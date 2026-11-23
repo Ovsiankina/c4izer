@@ -581,6 +581,16 @@ fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
             return;
         }
         ui.spacing_mut().item_spacing.y = 0.0;
+        // P5-408: "Resolve all" from two resolvable findings.
+        let resolvable = state.resolvable();
+        if resolvable >= 2 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let r = Button::new("Resolve all").look(Look::Ghost).show(ui);
+                if kit::tip(r, &format!("Resolves {resolvable} of {n} findings"), None).clicked() {
+                    cmd(out, Command::ResolveAll);
+                }
+            });
+        }
         let rows = findings.len() + notices.len();
         egui::ScrollArea::vertical()
             .id_salt("c4rizer-lint")
@@ -588,26 +598,44 @@ fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for (i, f) in findings.iter().enumerate() {
-                    if lint_row(ui, Icon::Warn, WARN, &f.message, true).clicked() {
+                    // P5-406: a resolvable finding has a Resolve button at
+                    // the right of its row; the rest of the row picks.
+                    let resolution = state.resolution(i);
+                    let reserve = resolution.map_or(0.0, |_| kit::button_width(ui, "Resolve") + theme::PAD);
+                    let row = lint_row(ui, Icon::Warn, WARN, &f.message, true, reserve);
+                    if row.clicked() {
                         cmd(out, Command::PickFinding(i));
+                    }
+                    if let Some(r) = resolution {
+                        let mut child = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(Rect::from_min_max(egui::pos2(row.rect.max.x - reserve, row.rect.min.y), row.rect.max))
+                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                        );
+                        let b = Button::new("Resolve").look(Look::Ghost).show(&mut child);
+                        if kit::tip(b, &r.label, None).clicked() {
+                            cmd(out, Command::Resolve(i));
+                        }
                     }
                 }
                 // P2-126: notices name the construct, its file and line;
                 // they select nothing.
                 for notice in &notices {
-                    lint_row(ui, Icon::Info, INK_3, &format!("notice: {notice}"), false);
+                    lint_row(ui, Icon::Info, INK_3, &format!("notice: {notice}"), false, 0.0);
                 }
             });
         let _ = rows;
     });
 }
 
-/// One lint row: 32 px icon column, the text in two lines at most.
-fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: bool) -> egui::Response {
+/// One lint row: 32 px icon column, the text in two lines at most,
+/// `reserve` px kept free at the right (P5-406: the Resolve button).
+#[expect(clippy::too_many_arguments, reason = "a row's icon, text and pick, then the room kept for its button")]
+fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: bool, reserve: f32) -> egui::Response {
     let width = ui.available_width();
     let font = theme::ui_font();
     let job = {
-        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, INK_2, width - 32.0 - 16.0 - 8.0);
+        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, INK_2, width - 32.0 - 16.0 - 8.0 - reserve);
         job.wrap.max_rows = 2;
         job
     };

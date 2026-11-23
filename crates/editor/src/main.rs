@@ -45,6 +45,8 @@ mod kit;
 mod label_drag_tests;
 #[cfg(test)]
 mod landscape_filtered_tests;
+#[cfg(test)]
+mod lint_resolve_tests;
 mod state;
 #[cfg(test)]
 mod styles_themes_tests;

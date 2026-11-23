@@ -111,6 +111,7 @@ mod bridges;
 mod bundles;
 pub(crate) mod inplace;
 mod label_drag;
+mod lint_resolve;
 mod steps;
 mod vertices;
 pub use anchors::SnapMark;
@@ -405,6 +406,14 @@ pub enum Command {
     /// Select the items of the `n`-th finding of `State::findings`
     /// (EDIT-6).
     PickFinding(usize),
+    /// Write the resolution of the `n`-th finding of `State::findings`,
+    /// one undo step (P5-407).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Resolve(usize),
+    /// Write the resolution of every resolvable finding at once, one undo
+    /// step (P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    ResolveAll,
     /// "Auto-place view": every box placed afresh and written, one undo
     /// step (P2-700).
     AutoPlace,
@@ -786,6 +795,21 @@ pub enum Action {
         size: (i32, i32),
         /// Every box of `view` at its centre, px, as shown when the
         /// gesture ended: the `at` lines of an EDIT-26 first write.
+        layout: BTreeMap<ElementKey, (i32, i32)>,
+    },
+    /// Move and resize boxes, one batch: a lint resolve with sizes
+    /// (P5-407, P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Arrange {
+        /// The view the boxes were changed in.
+        view: ViewRef,
+        /// Canonical element key to new centre `(x, y)` px.
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Canonical element key to new size `(width, height)` px,
+        /// multiples of 20.
+        sizes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Every box of `view` at its centre, px, as shown: the `at` lines
+        /// of an EDIT-26 first write.
         layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Write text fields, one batch (EDIT-5).
@@ -1426,6 +1450,9 @@ pub struct State {
     // rather than cleared at every place `shown` changes: any new shown
     // build, view switch or reload makes the moves void by itself.
     unbuilt: Option<(Arc<ViewBuild>, BTreeMap<BoxId, Point>)>,
+    /// The resolutions of the shown build's findings, computed when it
+    /// is shown (P5-406).
+    resolutions: Option<lint_resolve::Resolutions>,
 }
 
 impl State {
@@ -1476,6 +1503,7 @@ impl State {
             nav_query: String::new(),
             after_place: AfterPlace::Nothing,
             unbuilt: None,
+            resolutions: None,
         }
     }
 
@@ -2488,6 +2516,28 @@ impl State {
                 }];
                 layout_batch(model, view, layout, None, own)
             }
+            Action::Arrange {
+                view,
+                boxes,
+                sizes,
+                layout,
+            } => {
+                let view = &layout_view(model, view);
+                let mut own: Vec<Edit> = boxes
+                    .iter()
+                    .map(|(element, &centre)| Edit::Move {
+                        view: view.key(),
+                        element: element.clone(),
+                        centre: Some(centre),
+                    })
+                    .collect();
+                own.extend(sizes.iter().map(|(element, &size)| Edit::Resize {
+                    view: view.key(),
+                    element: element.clone(),
+                    size: Some(size),
+                }));
+                layout_batch(model, view, layout, Some(boxes), own)
+            }
             Action::SetText { fields } => {
                 let mut out = Vec::new();
                 for (target, value, expected) in fields {
@@ -3473,6 +3523,7 @@ impl State {
         let mut effects = vec![Effect::SaveUiState(self.ui.clone())];
         if let (Some(build), Some(parsed)) = (cached, self.parsed()) {
             self.shown = Some((parsed, build));
+            self.refresh_resolutions();
             // A build in flight for the previous view is now stale.
             self.awaited_build = Some(self.next_generation());
         } else {
@@ -4988,6 +5039,8 @@ impl State {
                     },
                 })]
             }
+            Command::Resolve(n) => self.resolve_finding(n),
+            Command::ResolveAll => self.resolve_every_finding(),
             Command::PickFinding(n) => {
                 let (Some(scene), Some(model)) = (self.scene(), self.model()) else { return Vec::new() };
                 let Some(finding) = self.findings().get(n) else { return Vec::new() };
@@ -5657,6 +5710,7 @@ impl State {
                     let Some(parsed) = self.parsed() else { return Vec::new() };
                     self.cache.insert(view, Arc::clone(&build));
                     let old = self.shown.replace((Arc::clone(&parsed), build));
+                    self.refresh_resolutions();
                     // The moves of `unbuilt` are relative to the old build.
                     self.unbuilt = None;
                     // P2-731: a reload of the same view drops stale aids.

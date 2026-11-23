@@ -4049,6 +4049,47 @@ line-colour
 
 lint-resolve
 
+- **P5-400** `resolve::resolve` of an L6 finding moves its two boxes
+  apart, centres on the 10px grid, so that once the moves are written
+  and the view rebuilt the two boxes are at least 60px apart edge to
+  edge; label "Move apart".
+- **P5-401** The L6 move is the first of these candidates that brings
+  no other box closer than 60px to a moved box than it was, else the
+  first: both boxes half each along the axis needing the smaller push
+  (x on a tie), both half each along the other axis, only the second
+  box, only the first box (the last two along the smaller-push axis).
+- **P5-402** `resolve` of an L5 finding snaps the line it points at:
+  the `at` line to the centre the scene draws (10px grid), or the
+  `size` line to the size the scene draws (20px steps); label "Snap to
+  grid"; rebuilt, that L5 finding is gone.
+- **P5-403** `resolve` of an L25 finding on a box sets its size to the
+  smallest-area size in 20px steps, no side smaller than now, at which
+  `scene::texts_fit` holds; label "Fit text"; rebuilt, the box has no
+  L25 finding.
+- **P5-404** `resolve` of a finding of any other rule, of an L25
+  finding on a label or boundary, or of an L25 box no size up to 1200px
+  fits, gives `None`; `resolve_all` gives `None` when no finding has a
+  resolution.
+- **P5-405** `resolve_all` gives one resolution ("Resolve all") for
+  every finding of a report: the L5 snaps, the L25 boxes grown, then
+  every box moved by at most 32 relaxation passes until no two boxes
+  are closer than 60px; on a crowded 40-box view, written and rebuilt,
+  no L5 or L6 finding is left.
+- **P5-406** The editor knows which findings of the shown build have a
+  resolution as soon as the build is shown (not per frame); a Lint row
+  of such a finding has a ghost "Resolve" button at its right whose tip
+  is the resolution's label, and a click on the rest of the row still
+  selects the finding's items.
+- **P5-407** Resolve writes through the move and resize write path
+  (EDIT-26 first write included) as one undo step; Undo restores the
+  file byte for byte.
+- **P5-408** With two or more resolvable findings the Lint section shows
+  "Resolve all" (tip "Resolves N of M findings"), which writes
+  `resolve_all` as one undo step; Undo restores the file byte for byte.
+- **P5-409** A resolve the write path refuses (file read-only, a write
+  still in flight, workspace JSON) writes nothing and shows that path's
+  usual notice.
+
 align-guides
 
 view-folders
