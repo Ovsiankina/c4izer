@@ -897,7 +897,11 @@ Editing
   (EDIT-28) move together, and can be aligned (left, centre, right,
   top, middle, bottom) and distributed evenly.
 - **EDIT-21** The app never creates or deletes elements or
-  relationships; it changes text, layout and style only (section 2).
+  relationships; it changes text, layout, style, tags and groups only
+  (section 2). A tag and a group are neither elements nor
+  relationships: adding or removing a tag (P5-200) and moving a
+  declaration into or out of a group, writing or removing the group
+  block (P5-100), are allowed.
 - **EDIT-26** The first write in a view (move or resize) writes an `at`
   line for every box of that view at its current position, as one undo
   step; after that a move changes only the moved box's line (DSL-9).
@@ -4043,7 +4047,82 @@ map-tree P5-700.., benchmarks P5-900..
 
 editor-groups
 
+- **P5-100** `Edit::SetGroup` with a group name moves the named
+  declarations (persons, software systems, containers, components that
+  share one parent scope: the model, one software system or one
+  container), in source order, each whole with its block and
+  re-indented, to the end of the body of the group of that name
+  declared directly in that scope; when there is none it first writes
+  `group "<name>" {` and `}` where the first moved declaration, or the
+  scope-level group holding it, stood.
+- **P5-101** `Edit::SetGroup` with no name moves each named declaration
+  that sits in a group out to its scope, right after the scope-level
+  group holding it; a declaration in no group is left as it is.
+- **P5-102** A group block that a `SetGroup` leaves with no statement
+  and no comment, and that has no identifier, is removed; a group is
+  never nested by `SetGroup`.
+- **P5-103** `SetGroup` changes no element key, relationship, view,
+  `at`, `size` or `via` line: the parse after it has the same elements
+  under the same canonical keys and the same relationships.
+- **P5-104** `SetGroup` is refused (`InvalidValue`) and writes nothing
+  when the list is empty, the name is blank or holds a line break, an
+  element is of another kind, the elements do not share one parent
+  scope, or a declaration is in another file than its scope's block; a
+  one-line block holding a moved declaration is first split onto lines
+  (DSL-9).
+- **P5-105** The inverse of a `SetGroup` restores the file byte for
+  byte; it is refused, writing nothing, when the scope's body changed
+  since.
+- **P5-106** With one or more boxes of one parent scope selected, the
+  Details section shows a "Group" select with "None", the groups
+  declared directly in that scope and "New group…"; picking "None" or a
+  group writes one `SetGroup` for every selected box, one undo step,
+  and keeps the selection.
+- **P5-107** "New group…", the context menu's "Group…" and Ctrl+G open
+  a name popup prefilled "Group": Enter writes the `SetGroup` with the
+  trimmed name, Escape closes it writing nothing, and an empty name is
+  refused with a notice.
+- **P5-108** The context menu of a box selection has, in one group
+  after "Enter", "Group…" and, when a selected box is in a group,
+  "Remove from group" (Ctrl+Shift+G), which writes `SetGroup` with no
+  name for the selected boxes.
+- **P5-109** When the selected boxes do not share a parent scope the
+  Group select is disabled with the hint "Boxes must share a parent",
+  the menu's group entries are greyed and Ctrl+G does nothing.
+
 editor-tags
+
+- **P5-200** `Edit::AddTag` on an element or a relationship writes
+  `tags "<tag>"` as the last line of its block, creating the `{ }`
+  block when it has none; a tag the target already carries (implicit
+  tags included) writes nothing and has an empty inverse, and the
+  inverse of a write gives the bytes back.
+- **P5-201** `Edit::RemoveTag` removes every declared occurrence of the
+  tag on its target, wherever written (positional string, `tags` line,
+  `tag` line, comma list), and the literal, line or block that then
+  holds nothing; a tag the target does not declare (`Element`, its kind
+  tag, `Relationship`, an archetype's tags) is refused
+  (`InvalidValue`).
+- **P5-202** The inverse of a `RemoveTag` restores the file byte for
+  byte, tag order included; it is refused, writing nothing, when the
+  target's statement changed since.
+- **P5-203** A tag is trimmed; an empty tag or one holding `"`, `,` or
+  a line break is refused (`InvalidValue`).
+- **P5-204** The Details section's Tags row shows a box's or a line's
+  tags as chips: a tag every selected item declares has a remove mark
+  on hover that writes `RemoveTag`, the others are plain, and a last
+  "+" chip opens the add-tag popup; a read-only file shows plain chips
+  only.
+- **P5-205** The add-tag popup has a text field and, below it, the
+  existing tags of the selection's kind (declared on any element, resp.
+  relationship, or named by an `element`, resp. `relationship`, style)
+  that contain the typed text (any case), minus the tags every selected
+  item carries; Enter adds the typed text, a click on a row adds that
+  tag, Escape closes.
+- **P5-206** With several boxes, or several lines, selected the Tags
+  row shows the tags they all carry and "+" and the remove mark apply
+  to every selected item as one undo step; a selection of boxes and
+  lines together shows no Tags row.
 
 line-colour
 

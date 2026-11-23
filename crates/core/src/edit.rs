@@ -56,6 +56,20 @@
 // - a per-box tag (DSL-13) on an existing element: the tag in a `tags`
 //   line, the `tags` line itself, and the element's `{ }` block when the
 //   element had none.
+// - a tag on an element or a relationship (P5-200, P5-201, owner request
+//   2026-11-23): a tag is neither an element nor a relationship. Added
+//   as a `tags "<tag>"` line, the `{ }` block created when the item had
+//   none; removed from a tags literal wherever it is declared, with the
+//   literal, line or block that then holds nothing. `Edit::RestoreTags`
+//   (inverse only) puts back the statement's bytes exactly as they were.
+// - a group (P5-100..P5-102): a group is not an element. `group "<name>"
+//   {` and `}` lines in the model, a software system or a container; a
+//   declaration moved whole into or out of a group block (its bytes
+//   move, re-indented; none are added); a group block removed when a
+//   move leaves it with no statement, no comment and no identifier.
+//   `Edit::RestoreGroups` (inverse only) puts back the scope's body
+//   exactly as it was, and is refused when that would change the set of
+//   elements or relationships.
 // Removal exists only so an inverse gives the bytes back (EDIT-19), and
 // a block (`{ }` of an element, `element "<tag>"`, `styles`) or a `tags`
 // line is removed only when it holds nothing but what `edit` wrote there;
@@ -288,6 +302,18 @@ pub enum StyleTarget {
     /// at the end of `styles`, `styles` and `views` created as for `Tag`
     /// when missing (DSL-13).
     ThisBox,
+}
+
+/// What a tag edit names: an element or a relationship, by keys (P5-200,
+/// P5-201).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TagTarget {
+    /// The element with this canonical key (`model::Model::full_key`).
+    Element(ElementKey),
+    /// A relationship, from `RelationshipRef::of`.
+    Relationship(RelationshipRef),
 }
 
 /// One style property and its new value. `None` removes the property
@@ -597,6 +623,89 @@ pub enum Edit {
         /// The bridges, each `(carrier, other)`.
         bridges: Vec<(LineRef, LineRef)>,
     },
+    /// Add `tag` to an element or a relationship: a `tags "<tag>"` line
+    /// as the last line of its block, the `{ }` block created when it has
+    /// none, in the file declaring it. A tag the target already carries
+    /// (implicit tags included) writes nothing and has no inverse. The
+    /// tag is trimmed; an empty tag or one holding `"`, `,` or a line
+    /// break is `EditErrorKind::InvalidValue`. The inverse is a
+    /// `RemoveTag`. Serves P5-200, P5-203.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The tag, as typed.
+        tag: String,
+    },
+    /// Remove `tag` from an element or a relationship wherever its
+    /// statement declares it (positional string, `tags` line, `tag` line,
+    /// comma list), with the literal, line or `{ }` block that then holds
+    /// nothing. A tag the target does not declare (`Element`, its kind
+    /// tag, `Relationship`, an archetype's tags) is
+    /// `EditErrorKind::InvalidValue`. The inverse is a `RestoreTags`.
+    /// Serves P5-201, P5-203.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RemoveTag {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The tag, as typed.
+        tag: String,
+    },
+    /// Put back the bytes of the target's statement as they were before a
+    /// `RemoveTag` (EDIT-19), so tag order and layout come back exactly.
+    /// Inverse only: the editor never builds it from a gesture. Refused
+    /// (`EditErrorKind::InvalidValue`), writing nothing, when the
+    /// statement does not hold `expected` now, or when the result would
+    /// change the set of elements or relationships (EDIT-21). Its inverse
+    /// is a `RestoreTags` the other way. Serves P5-202.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RestoreTags {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The statement's bytes to write back.
+        text: String,
+        /// The statement's bytes now.
+        expected: String,
+    },
+    /// Move the declarations of `elements` into the group `group` of
+    /// their scope, or out of every group with `None`. The elements are
+    /// persons, software systems, containers or components sharing one
+    /// parent scope (the model, a software system or a container), each
+    /// declared on its own lines in the file holding the scope's block;
+    /// else `EditErrorKind::InvalidValue`.
+    ///
+    /// `Some(name)`: the declarations move, in source order, whole and
+    /// re-indented, to the end of the body of the group named `name`
+    /// declared directly in the scope; when there is none, `group
+    /// "<name>" {` and `}` are first written where the first moved
+    /// declaration (or the scope-level group holding it) stood. `None`:
+    /// each declaration in a group moves right after the scope-level
+    /// group holding it. A group block left with no statement, no comment
+    /// and no identifier is removed. Groups are never nested (P2-129).
+    /// Keys do not change (groups add no id segment, P2-131). The inverse
+    /// is a `RestoreGroups`. Serves P5-100..P5-104.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup {
+        /// Canonical element keys (`model::Model::full_key`).
+        elements: Vec<ElementKey>,
+        /// The group's name, `None` for no group.
+        group: Option<String>,
+    },
+    /// Put back the body of a scope's block (between its braces) as it
+    /// was before a `SetGroup` (EDIT-19), byte for byte. Inverse only.
+    /// Refused (`EditErrorKind::InvalidValue`), writing nothing, when the
+    /// body does not hold `expected` now, or when the result would change
+    /// the set of elements or relationships (EDIT-21). Its inverse is a
+    /// `RestoreGroups` the other way. Serves P5-105.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    RestoreGroups {
+        /// The scope element's canonical key; `None` for the model.
+        scope: Option<ElementKey>,
+        /// The body's bytes to write back.
+        text: String,
+        /// The body's bytes now.
+        expected: String,
+    },
 }
 
 /// A drawn line of a view named by its ends' canonical element keys and,
@@ -696,7 +805,9 @@ pub struct Applied {
 /// `AddDefaultView` or `RemoveDefaultView` whose key `<scope>-<kind>`
 /// names a view of another scope or kind, a `RemoveDefaultView` whose
 /// view holds more than `edit` wrote; the same view already written is
-/// not an error for `AddDefaultView`).
+/// not an error for `AddDefaultView`; a tag refused by P5-203 or not
+/// declared on a `RemoveTag` target; a `SetGroup` refused by P5-104; a
+/// `RestoreTags` or `RestoreGroups` whose bytes changed since).
 pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
     // DECISION: each edit is applied to the text left by the previous one,
     // re-parsed in between, so every edit finds its target by key in the
@@ -914,6 +1025,11 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::SetBundles { view, bundles } => set_bundles(current, view, bundles),
         Edit::SetCrossingStyle { view, style } => set_crossing_style(current, view, *style),
         Edit::SetBridges { view, bridges } => set_bridges(current, view, bridges),
+        Edit::AddTag { target, tag } => add_tag(current, target, tag),
+        Edit::RemoveTag { target, tag } => remove_tag(current, target, tag),
+        Edit::RestoreTags { target, text, expected } => restore_tags(current, target, text, expected),
+        Edit::SetGroup { elements, group } => set_group(current, elements, group.as_deref()),
+        Edit::RestoreGroups { scope, text, expected } => restore_groups(current, scope.as_ref(), text, expected),
     }
 }
 
@@ -2877,7 +2993,13 @@ fn new_per_box_tag(model: &model::Model, id: ElementId) -> String {
 /// the block when it has none (DSL-13).
 fn plan_add_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element.as_str()))?;
+    plan_add_tag_at(cx, e.span, tag, element.as_str())
+}
+
+/// `plan_add_tag` on the statement at `span` (an element or a
+/// relationship, P5-200); `name` names it in an error.
+fn plan_add_tag_at(cx: &Ctx<'_>, span: Span, tag: &str, name: &str) -> Res<Plan> {
+    let owner = cx.statement(span).ok_or_else(|| gone(name))?;
     let line = format!("tags {}", text::quote(tag));
     if let Some(block) = &owner.block {
         return Ok(cx.insert_last(owner, block, &one_line(line)));
@@ -2903,9 +3025,14 @@ fn plan_add_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
 /// literal, and the element's block when it holds only that line.
 fn plan_remove_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element.as_str()))?;
-    let Some(literal) = e
-        .declared_tags
+    plan_remove_tag_at(cx, e.span, &e.declared_tags, tag, element.as_str())
+}
+
+/// `plan_remove_tag` on the statement at `span` declaring `declared`
+/// (an element or a relationship, P5-201); `name` names it in an error.
+fn plan_remove_tag_at(cx: &Ctx<'_>, span: Span, declared: &[model::Literal], tag: &str, name: &str) -> Res<Plan> {
+    let owner = cx.statement(span).ok_or_else(|| gone(name))?;
+    let Some(literal) = declared
         .iter()
         .find(|l| l.value.split(',').any(|t| t.trim() == tag))
     else {
@@ -2959,6 +3086,559 @@ fn plan_remove_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
         return Ok(Plan::Patches(vec![Patch::remove(from..to)]));
     }
     Ok(Plan::Patches(vec![cx.remove_line(line.span)]))
+}
+
+// ------------------------------------------------------------ tag edits
+
+/// A tag target as found in one parse: its statement, declared literals
+/// and effective tags.
+struct Tagged {
+    span: Span,
+    declared: Vec<model::Literal>,
+    tags: Vec<String>,
+    name: String,
+}
+
+/// Resolves a tag target (P5-200, P5-201).
+fn tagged(model: &model::Model, target: &TagTarget) -> Res<Tagged> {
+    match target {
+        TagTarget::Element(key) => {
+            let e = model.element(find_element(model, key)?);
+            Ok(Tagged {
+                span: e.span,
+                declared: e.declared_tags.clone(),
+                tags: e.tags.clone(),
+                name: key.to_string(),
+            })
+        }
+        TagTarget::Relationship(r) => {
+            let rel = model.relationship(resolve_relationship(model, r)?);
+            let name = format!("{} -> {}", r.source, r.destination);
+            if rel.copied_from.is_some() {
+                return Err(EditErrorKind::InvalidValue {
+                    value: name,
+                    reason: "this relationship is copied between instances; tag the one it copies",
+                });
+            }
+            Ok(Tagged {
+                span: rel.span,
+                declared: rel.declared_tags.clone(),
+                tags: rel.tags.clone(),
+                name,
+            })
+        }
+    }
+}
+
+/// P5-203: the tag trimmed; empty, `"`, `,` or a line break refused.
+fn check_tag(tag: &str) -> Res<String> {
+    let refused = |reason| {
+        Err(EditErrorKind::InvalidValue {
+            value: tag.to_owned(),
+            reason,
+        })
+    };
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        return refused("a tag cannot be empty");
+    }
+    if trimmed.contains(['\n', '\r']) {
+        return refused("a tag holds one line");
+    }
+    if trimmed.contains('"') {
+        return refused("a tag cannot hold a double quote");
+    }
+    if trimmed.contains(',') {
+        return refused("a tag cannot hold a comma: commas separate tags");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return refused("a tag cannot hold a control character");
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// True when `literal` declares `tag` (a comma list counts each part).
+fn declares(literal: &model::Literal, tag: &str) -> bool {
+    literal.value.split(',').any(|t| t.trim() == tag)
+}
+
+/// `Edit::AddTag` (P5-200).
+fn add_tag(current: &mut Parsed, target: &TagTarget, tag: &str) -> Res<Vec<Edit>> {
+    let tag = check_tag(tag)?;
+    let found = tagged(&current.model, target)?;
+    if found.tags.contains(&tag) {
+        return Ok(Vec::new());
+    }
+    run_in(current, found.span.file, |cx| {
+        let found = tagged(cx.model, target)?;
+        plan_add_tag_at(cx, found.span, &tag, &found.name)
+    })?;
+    Ok(vec![Edit::RemoveTag {
+        target: target.clone(),
+        tag,
+    }])
+}
+
+/// `Edit::RemoveTag` (P5-201): one declaring literal per pass, until
+/// none is left; the inverse restores the statement's bytes (P5-202).
+fn remove_tag(current: &mut Parsed, target: &TagTarget, tag: &str) -> Res<Vec<Edit>> {
+    let tag = check_tag(tag)?;
+    let found = tagged(&current.model, target)?;
+    let declaring: Vec<&model::Literal> = found.declared.iter().filter(|l| declares(l, &tag)).collect();
+    if declaring.is_empty() {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the item does not declare this tag (implicit and archetype tags cannot be removed)",
+        });
+    }
+    let inside = |l: &model::Literal| {
+        l.span.file == found.span.file && found.span.start <= l.span.start && l.span.end <= found.span.end
+    };
+    if !declaring.iter().all(|l| inside(l)) {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the tag is declared outside the item's statement (an `!element` block); remove it there",
+        });
+    }
+    let file = found.span.file;
+    let before = tree_of(current, file).source()[found.span.range()].to_owned();
+    // Each pass removes one literal's occurrence; the bound guards a
+    // planning bug from looping.
+    for _ in 0..=declaring.len() {
+        let now = tagged(&current.model, target)?;
+        if !now.declared.iter().any(|l| declares(l, &tag)) {
+            break;
+        }
+        run_in(current, file, |cx| {
+            let now = tagged(cx.model, target)?;
+            plan_remove_tag_at(cx, now.span, &now.declared, &tag, &now.name)
+        })?;
+    }
+    let after = tagged(&current.model, target)?;
+    if after.declared.iter().any(|l| declares(l, &tag)) {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the tag could not be removed from where it is written",
+        });
+    }
+    let expected = tree_of(current, file).source()[after.span.range()].to_owned();
+    Ok(vec![Edit::RestoreTags {
+        target: target.clone(),
+        text: before,
+        expected,
+    }])
+}
+
+/// The canonical element keys and relationship ends of `model`: what
+/// EDIT-21 keeps, compared by the `Restore*` inverses.
+// DECISION: compared as sorted lists of keys, since a group move changes
+// declaration order (and so `ElementId`s) but not identity.
+fn identity(model: &model::Model) -> (Vec<ElementKey>, Vec<(ElementKey, ElementKey)>) {
+    let mut elements: Vec<ElementKey> = model.elements.iter().map(|e| element_key(model, e.id)).collect();
+    let mut relationships: Vec<(ElementKey, ElementKey)> = model
+        .relationships
+        .iter()
+        .map(|r| (element_key(model, r.source.value), element_key(model, r.destination.value)))
+        .collect();
+    elements.sort_unstable();
+    relationships.sort_unstable();
+    (elements, relationships)
+}
+
+/// Replaces `range` of `file` with `text` when it holds `expected`,
+/// refusing a result that adds or drops an element or a relationship
+/// (EDIT-21). Shared by `RestoreTags` and `RestoreGroups`.
+fn restore(current: &mut Parsed, file: FileId, range: Range<usize>, (text, expected): (&str, &str), what: &str) -> Res<String> {
+    let now = tree_of(current, file).source()[range.clone()].to_owned();
+    if now != expected {
+        return Err(EditErrorKind::InvalidValue {
+            value: what.to_owned(),
+            reason: "it changed since; this step cannot be undone, change it by hand",
+        });
+    }
+    let before = identity(&current.model);
+    commit(current, file, vec![Patch { range, text: text.to_owned() }])?;
+    if identity(&current.model) != before {
+        return Err(EditErrorKind::InvalidValue {
+            value: what.to_owned(),
+            reason: "restoring it would create or delete an element or relationship",
+        });
+    }
+    Ok(now)
+}
+
+/// `Edit::RestoreTags` (P5-202).
+fn restore_tags(current: &mut Parsed, target: &TagTarget, text: &str, expected: &str) -> Res<Vec<Edit>> {
+    let found = tagged(&current.model, target)?;
+    let now = restore(current, found.span.file, found.span.range(), (text, expected), &found.name)?;
+    Ok(vec![Edit::RestoreTags {
+        target: target.clone(),
+        text: now,
+        expected: text.to_owned(),
+    }])
+}
+
+// ---------------------------------------------------------- group edits
+
+/// The kinds a group holds (P5-100): its scope's own children.
+const fn groupable(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Person | ElementKind::SoftwareSystem | ElementKind::Container | ElementKind::Component
+    )
+}
+
+fn group_refused(value: &str, reason: &'static str) -> EditErrorKind {
+    EditErrorKind::InvalidValue {
+        value: value.to_owned(),
+        reason,
+    }
+}
+
+/// The checked elements of a `SetGroup`: their ids (deduplicated), the
+/// shared scope and the file declaring them (P5-104).
+fn group_members(model: &model::Model, elements: &[ElementKey]) -> Res<(Vec<ElementId>, Option<ElementId>, FileId)> {
+    let Some(first) = elements.first() else {
+        return Err(group_refused("", "no element to group"));
+    };
+    let mut ids = Vec::with_capacity(elements.len());
+    for key in elements {
+        let id = find_element(model, key)?;
+        if !groupable(model.element(id).kind) {
+            return Err(group_refused(key.as_str(), "only persons, software systems, containers and components go in a group"));
+        }
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let scope = model.element(ids[0]).parent;
+    let file = model.element(ids[0]).span.file;
+    for &id in &ids {
+        let e = model.element(id);
+        if e.parent != scope {
+            return Err(group_refused(first.as_str(), "the elements must share one parent to share a group"));
+        }
+        if e.span.file != file {
+            return Err(group_refused(first.as_str(), "the elements are declared in different files"));
+        }
+    }
+    Ok((ids, scope, file))
+}
+
+/// The block holding the declarations of `scope`'s children: the scope
+/// element's block, or the `model` block.
+fn scope_block<'a>(cx: &Ctx<'a>, scope: Option<ElementId>) -> Res<(&'a Statement, &'a Block)> {
+    let owner = match scope {
+        Some(id) => cx.statement(cx.model.element(id).span),
+        None => cx
+            .workspace()
+            .and_then(|w| w.block.as_ref())
+            .and_then(|b| b.statements.iter().find(|s| cx.keyword(s).is_some_and(|k| k.eq_ignore_ascii_case("model")))),
+    };
+    let owner = owner.ok_or_else(|| group_refused("", "the elements are not declared in the block of their parent in this file"))?;
+    let block = owner
+        .block
+        .as_ref()
+        .ok_or_else(|| group_refused("", "the parent has no block"))?;
+    Ok((owner, block))
+}
+
+/// The byte range between `block`'s braces.
+fn body_range(cx: &Ctx<'_>, block: &Block) -> Range<usize> {
+    cx.token(block.open).end as usize..cx.token(block.close).start as usize
+}
+
+/// The model's group declared at `span`, if `statement` is one.
+fn group_at<'m>(model: &'m model::Model, statement: &Statement) -> Option<&'m model::Group> {
+    statement.block.as_ref()?;
+    model.groups.iter().find(|g| g.span == statement.span)
+}
+
+/// The statements from `block` down to the one at `span`, outermost
+/// first, through group blocks only; `None` when `span` is not a
+/// statement of `block` or of a group in it.
+fn path_to<'a>(cx: &Ctx<'a>, block: &'a Block, span: Span) -> Option<Vec<&'a Statement>> {
+    let s = Ctx::child_holding(block, span)?;
+    if s.span == span {
+        return Some(vec![s]);
+    }
+    group_at(cx.model, s)?;
+    let mut rest = path_to(cx, s.block.as_ref()?, span)?;
+    rest.insert(0, s);
+    Some(rest)
+}
+
+/// The bytes of `statement`'s lines, line ending included, when it has
+/// its lines to itself (nothing but blank space before it, nothing but
+/// blank space or a line comment after it).
+fn own_lines(cx: &Ctx<'_>, statement: &Statement) -> Option<Range<usize>> {
+    let (start, end) = (statement.span.start as usize, statement.span.end as usize);
+    if !starts_line(cx.src, start) {
+        return None;
+    }
+    let last = line_end(cx.src, end);
+    let tokens = cx.tree.tokens();
+    let mut i = tokens.partition_point(|t| (t.start as usize) < end);
+    while let Some(t) = tokens.get(i).filter(|t| (t.start as usize) < last) {
+        if !matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment) {
+            return None;
+        }
+        i += 1;
+    }
+    let rest = &cx.src[last..];
+    let stop = if rest.starts_with("\r\n") {
+        last + 2
+    } else if rest.starts_with('\n') {
+        last + 1
+    } else {
+        return None;
+    };
+    Some(line_start(cx.src, start)..stop)
+}
+
+/// `text` with every line that starts with `from` starting with `to`
+/// instead (P5-100: a moved declaration is re-indented).
+fn reindent(text: &str, from: &str, to: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.strip_prefix(from) {
+            Some(rest) if !rest.trim().is_empty() => format!("{to}{rest}"),
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+/// The group named `name` declared directly in `scope`'s block.
+fn scope_group<'a>(cx: &Ctx<'a>, block: &'a Block, scope: Option<ElementId>, name: &str) -> Option<&'a Statement> {
+    let group = cx
+        .model
+        .groups
+        .iter()
+        .find(|g| g.owner == scope && g.parent.is_none() && g.name.value == name)?;
+    block.statements.iter().find(|s| s.span == group.span)
+}
+
+/// `Edit::SetGroup` (P5-100..P5-104).
+// DECISION: the inverse is the scope body's bytes (`RestoreGroups`), not
+// a list of semantic moves: comments and blank lines between
+// declarations make "where it stood" ambiguous for a semantic move, and
+// P5-105 asks for the bytes back. It is refused when the body changed
+// since and when it would add or drop an element (EDIT-21 guard).
+fn set_group(current: &mut Parsed, elements: &[ElementKey], group: Option<&str>) -> Res<Vec<Edit>> {
+    let name = match group {
+        Some(g) => {
+            let trimmed = g.trim();
+            if trimmed.is_empty() {
+                return Err(group_refused(g, "a group needs a name"));
+            }
+            if trimmed.contains(['\n', '\r']) {
+                return Err(group_refused(g, "a group name holds one line"));
+            }
+            check_value(trimmed)?;
+            Some(trimmed.to_owned())
+        }
+        None => None,
+    };
+    let (_, scope, file) = group_members(&current.model, elements)?;
+    let scope_key = scope.map(|id| element_key(&current.model, id));
+    let body = |parsed: &Parsed| -> Res<String> {
+        let cx = Ctx::in_file(parsed, file);
+        let scope = scope_key.as_ref().map(|k| find_element(cx.model, k)).transpose()?;
+        let (_, block) = scope_block(&cx, scope)?;
+        Ok(cx.src[body_range(&cx, block)].to_owned())
+    };
+    let before = body(current)?;
+    // Re-resolved by key in each plan: every commit re-parses.
+    let members = |cx: &Ctx<'_>| -> Res<(Vec<ElementId>, Option<ElementId>)> {
+        let (ids, scope, _) = group_members(cx.model, elements)?;
+        Ok((ids, scope))
+    };
+    if let Some(name) = &name {
+        run_in(current, file, |cx| {
+            let (ids, scope) = members(cx)?;
+            let (owner, block) = scope_block(cx, scope)?;
+            if scope_group(cx, block, scope, name).is_some() {
+                return Ok(Plan::Patches(Vec::new()));
+            }
+            // DECISION: the new group goes before the scope-level
+            // statement holding the first declaration (the declaration
+            // itself or its outermost group), so a group is never nested.
+            let first = ids
+                .iter()
+                .map(|&id| cx.model.element(id).span)
+                .min_by_key(|s| s.start)
+                .ok_or_else(|| group_refused(name, "no element to group"))?;
+            let path = path_to(cx, block, first)
+                .ok_or_else(|| group_refused(name, "a declaration is not directly in its parent's block or a group of it"))?;
+            let lines = vec![(0, format!("group {} {{", text::quote(name))), (0, "}".to_owned())];
+            Ok(cx.insert_before(owner, block, path[0], &lines))
+        })?;
+    }
+    run_in(current, file, |cx| {
+        let (ids, scope) = members(cx)?;
+        let (owner, block) = scope_block(cx, scope)?;
+        plan_regroup(cx, (owner, block), scope, &ids, name.as_deref())
+    })?;
+    let after = body(current)?;
+    if after == before {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Edit::RestoreGroups {
+        scope: scope_key,
+        text: before,
+        expected: after,
+    }])
+}
+
+/// The patches of one `SetGroup` once the target group (if any) exists:
+/// removals first, then insertions, so `commit`'s stable sort applies a
+/// removal starting where an insertion lands before that insertion.
+fn plan_regroup(cx: &Ctx<'_>, scope_block: (&Statement, &Block), scope: Option<ElementId>, ids: &[ElementId], name: Option<&str>) -> Res<Plan> {
+    let (owner, block) = scope_block;
+    let mut moving: Vec<Vec<&Statement>> = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let span = cx.model.element(id).span;
+        let path = path_to(cx, block, span)
+            .ok_or_else(|| group_refused(&bare_key(cx.model, id), "a declaration is not directly in its parent's block or a group of it"))?;
+        // DSL-9: a statement on the line of its block's brace is first
+        // split onto lines, then the step is planned again.
+        for (i, s) in path.iter().enumerate() {
+            let (parent, parent_block) = match i {
+                0 => (owner, block),
+                _ => match &path[i - 1].block {
+                    Some(b) => (path[i - 1], b),
+                    None => continue,
+                },
+            };
+            let open = cx.token(parent_block.open).start as usize;
+            let close = cx.token(parent_block.close).start as usize;
+            let (start, end) = (s.span.start as usize, s.span.end as usize);
+            if line_start(cx.src, open) == line_start(cx.src, start) || line_start(cx.src, close) == line_start(cx.src, end) {
+                return Ok(Plan::Split(cx.split(parent, parent_block)));
+            }
+        }
+        moving.push(path);
+    }
+    moving.sort_by_key(|p| p.last().map_or(0, |s| s.span.start));
+    let target = match name {
+        Some(name) => Some(
+            scope_group(cx, block, scope, name)
+                .ok_or_else(|| group_refused(name, "the group was not found in the parent's block"))?,
+        ),
+        None => None,
+    };
+    // Who moves: with a target, every declaration not directly in it;
+    // without, every declaration in a group.
+    moving.retain(|path| match target {
+        Some(t) => !(path.len() == 2 && path[0].span == t.span),
+        None => path.len() >= 2,
+    });
+    if moving.is_empty() {
+        return Ok(Plan::Patches(Vec::new()));
+    }
+    let lines = |s: &Statement| {
+        own_lines(cx, s).ok_or_else(|| {
+            group_refused(
+                cx.src[s.span.range()].lines().next().unwrap_or_default(),
+                "the declaration shares its line with another statement; put it on its own line first",
+            )
+        })
+    };
+    let moved = |path: &[&Statement], to: &str| -> Res<String> {
+        let decl = path[path.len() - 1];
+        let range = lines(decl)?;
+        let from = indent_at(cx.src, decl.span.start as usize);
+        Ok(reindent(&cx.src[range], from, to))
+    };
+    let mut patches = removals(cx, &moving, target.map(|t| t.span), &lines)?;
+    if let Some(t) = target {
+        let Some(tblock) = &t.block else {
+            return Err(group_refused(name.unwrap_or_default(), "the group has no block"));
+        };
+        let close = cx.token(tblock.close).start as usize;
+        if !starts_line(cx.src, close) {
+            return Ok(Plan::Split(cx.split(t, tblock)));
+        }
+        let indent = cx.body_indent(t, tblock);
+        let mut text = String::new();
+        for path in &moving {
+            text.push_str(&moved(path, &indent)?);
+        }
+        patches.push(Patch::insert(line_start(cx.src, close), text));
+    } else {
+        // One insertion after each scope-level group, its members in
+        // source order.
+        let mut outer: Vec<Span> = moving.iter().map(|p| p[0].span).collect();
+        outer.dedup();
+        for span in outer {
+            let g = moving.iter().find(|p| p[0].span == span).map(|p| p[0]).ok_or_else(|| gone("group"))?;
+            let end = lines(g)?.end;
+            let indent = indent_at(cx.src, g.span.start as usize).to_owned();
+            let mut text = String::new();
+            for path in moving.iter().filter(|p| p[0].span == span) {
+                text.push_str(&moved(path, &indent)?);
+            }
+            patches.push(Patch::insert(end, text));
+        }
+    }
+    Ok(Plan::Patches(patches))
+}
+
+/// The removal patches of the moving declarations: for each, its
+/// outermost group that the move empties (no other statement, no
+/// comment, no identifier, not `keep`), else the declaration's own lines
+/// (P5-102).
+fn removals(
+    cx: &Ctx<'_>,
+    moving: &[Vec<&Statement>],
+    keep: Option<Span>,
+    lines: &dyn Fn(&Statement) -> Res<Range<usize>>,
+) -> Res<Vec<Patch>> {
+    fn emptied(cx: &Ctx<'_>, s: &Statement, gone_decls: &[Span], keep: Option<Span>) -> bool {
+        if Some(s.span) == keep {
+            return false;
+        }
+        let (Some(group), Some(block)) = (group_at(cx.model, s), &s.block) else {
+            return false;
+        };
+        group.key.is_none()
+            && cx.only_statements(block)
+            && own_lines(cx, s).is_some()
+            && block
+                .statements
+                .iter()
+                .all(|inner| gone_decls.contains(&inner.span) || emptied(cx, inner, gone_decls, keep))
+    }
+    let gone_decls: Vec<Span> = moving.iter().filter_map(|p| p.last().map(|s| s.span)).collect();
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for path in moving {
+        let decl = path[path.len() - 1];
+        let range = match path[..path.len() - 1].iter().find(|g| emptied(cx, g, &gone_decls, keep)) {
+            Some(g) => lines(g)?,
+            None => lines(decl)?,
+        };
+        if !ranges.contains(&range) {
+            ranges.push(range);
+        }
+    }
+    Ok(ranges.into_iter().map(Patch::remove).collect())
+}
+
+/// `Edit::RestoreGroups` (P5-105).
+fn restore_groups(current: &mut Parsed, scope: Option<&ElementKey>, text: &str, expected: &str) -> Res<Vec<Edit>> {
+    let id = scope.map(|k| find_element(&current.model, k)).transpose()?;
+    let file = id.map_or(FileId::ROOT, |id| current.model.element(id).span.file);
+    let range = {
+        let cx = Ctx::in_file(current, file);
+        let (_, block) = scope_block(&cx, id)?;
+        body_range(&cx, block)
+    };
+    let what = scope.map_or("model", ElementKey::as_str).to_owned();
+    let now = restore(current, file, range, (text, expected), &what)?;
+    Ok(vec![Edit::RestoreGroups {
+        scope: scope.cloned(),
+        text: now,
+        expected: text.to_owned(),
+    }])
 }
 
 // ---------------------------------------------------------- default view
