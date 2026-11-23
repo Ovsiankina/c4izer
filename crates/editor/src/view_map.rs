@@ -84,6 +84,64 @@ pub struct ViewMap {
     /// The links drawn: `links` less those another path already covers
     /// (P4-106).
     pub drawn: Vec<(usize, usize)>,
+    /// The tree list drawn when the graph cannot fit (P5-700..P5-702),
+    /// one row per node. PENDING SIGN-OFF: new pub field (owner request
+    /// 2026-11-23, issue #9).
+    pub tree: Vec<TreeRow>,
+}
+
+/// One line of the map's tree list (P5-701). PENDING SIGN-OFF: new pub
+/// item (owner request 2026-11-23, issue #9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeRow {
+    /// The node, as an index into `ViewMap::nodes`.
+    pub node: usize,
+    /// The `├─ ` / `└─ ` / `│  ` prefix, as `tree` draws it; empty for a
+    /// root.
+    pub prefix: String,
+}
+
+/// The tree list of `nodes` (P5-702): a node's parent is the node it is
+/// entered from in `drawn` (the reduced links), the lowest level first,
+/// then map order, when it has several; nodes with no parent are roots;
+/// roots and each node's children in map order. PENDING SIGN-OFF: new
+/// pub item.
+// DECISION: "map order" is the node order, which is the view list's
+// order (P4-101): the same order the graph's rows start from, and stable
+// across a drag or a resize of the panel.
+#[must_use]
+pub fn tree_rows(nodes: &[MapNode], drawn: &[(usize, usize)]) -> Vec<TreeRow> {
+    let mut parent: Vec<Option<usize>> = vec![None; nodes.len()];
+    for &(a, b) in drawn {
+        let better = parent[b].is_none_or(|p| (nodes[a].level, a) < (nodes[p].level, p));
+        if better {
+            parent[b] = Some(a);
+        }
+    }
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (b, p) in parent.iter().enumerate() {
+        if let Some(p) = p {
+            children[*p].push(b);
+        }
+    }
+    let mut out = Vec::with_capacity(nodes.len());
+    // Depth first, iterative: (node, its own prefix, its children's).
+    let mut stack: Vec<(usize, String, String)> = (0..nodes.len())
+        .rev()
+        .filter(|&i| parent[i].is_none())
+        .map(|i| (i, String::new(), String::new()))
+        .collect();
+    while let Some((node, prefix, under)) = stack.pop() {
+        out.push(TreeRow { node, prefix });
+        let kids = &children[node];
+        for (k, &child) in kids.iter().enumerate().rev() {
+            let last = k + 1 == kids.len();
+            let own = format!("{under}{}", if last { "└─ " } else { "├─ " });
+            let next = format!("{under}{}", if last { "   " } else { "│  " });
+            stack.push((child, own, next));
+        }
+    }
+    out
 }
 
 /// The level and tag of `spec` (P4-102..P4-104).
@@ -170,7 +228,9 @@ impl ViewMap {
         let links: Vec<(usize, usize)> = links.into_iter().collect();
         let drawn = reduce(nodes.len(), &links);
         lay_out(&mut nodes, &drawn);
-        ViewMap { nodes, links, drawn }
+        // P5-705: built with the map, once per parse.
+        let tree = tree_rows(&nodes, &drawn);
+        ViewMap { nodes, links, drawn, tree }
     }
 }
 
@@ -352,6 +412,10 @@ pub struct ViewMapPanel {
     pub sizes: (egui::Vec2, egui::Vec2),
     /// The font size of the node text as last drawn (P4-111).
     pub font_size: f32,
+    /// True when the last frame drew the tree list instead of the graph
+    /// (P5-700); `drawn` then holds the tree rows in sight. PENDING
+    /// SIGN-OFF: new pub field (owner request 2026-11-23, issue #9).
+    pub tree: bool,
 }
 
 impl Default for ViewMapPanel {
@@ -367,6 +431,7 @@ impl Default for ViewMapPanel {
             header: egui::Rect::NOTHING,
             sizes: (egui::Vec2::ZERO, egui::Vec2::ZERO),
             font_size: 0.0,
+            tree: false,
         }
     }
 }
@@ -443,6 +508,7 @@ impl ViewMapPanel {
         let label = egui::WidgetText::from(theme::label("View map")).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
         ui.painter().galley(egui::pos2(hr.min.x + 32.0, hr.center().y - label.size().y / 2.0), label, theme::INK_3);
         self.drawn.clear();
+        self.tree = false;
         if !self.open {
             return None;
         }
@@ -497,6 +563,11 @@ impl ViewMapPanel {
         let room = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
         let lines_in = if two_lines { 2.0 } else { 1.0 };
         let node = egui::vec2(node_width(text_w, tag_w, columns, room), lines_in * line_h + 2.0 * NODE_PAD_Y);
+        // P5-700: wider than the room even at the floor width: the tree.
+        self.tree = columns * node.x + (columns - 1.0) * GAP_X + 2.0 * MARGIN > room + 0.5;
+        if self.tree {
+            return self.show_tree(ui, &map, current, (&font, moved));
+        }
         #[expect(clippy::cast_precision_loss, reason = "a few rows")]
         let content = egui::vec2(
             gutter + columns * node.x + (columns - 1.0) * GAP_X + 2.0 * MARGIN,
@@ -561,7 +632,81 @@ impl ViewMapPanel {
         self.drawn = drawn;
         picked
     }
+
+    /// The tree list in place of the graph (P5-700..P5-704): one view per
+    /// `TREE_ROW` line, `tree` prefixes in `ink-3`, the key, the title cut
+    /// to the room; the current row in `accent-soft` with its key in
+    /// `accent`, scrolled into sight when `moved`; a hovered row in
+    /// `bg-active` with the node's hover text. Scrolls vertically only and
+    /// lays out the rows in sight. Returns the view a click picked.
+    fn show_tree(&mut self, ui: &mut egui::Ui, map: &ViewMap, current: Option<&ViewRef>, (font, moved): (&egui::FontId, bool)) -> Option<ViewRef> {
+        let count = map.tree.len();
+        #[expect(clippy::cast_precision_loss, reason = "a few hundred views")]
+        let height = count as f32 * TREE_ROW;
+        let area = ui.available_size();
+        // Never wider than the section: no sideways scroll (P5-704).
+        self.sizes = (egui::vec2(area.x - ui.spacing().scroll.allocated_width(), height), area);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let mut scroll = egui::ScrollArea::vertical()
+            .id_salt("c4rizer-view-map-tree")
+            .auto_shrink([false, false]);
+        if moved && let Some(at) = map.tree.iter().position(|r| current == Some(&map.nodes[r.node].view)) {
+            #[expect(clippy::cast_precision_loss, reason = "a few hundred views")]
+            let top = at as f32 * TREE_ROW;
+            scroll = scroll.vertical_scroll_offset((top - (area.y - TREE_ROW) / 2.0).clamp(0.0, (height - area.y).max(0.0)));
+        }
+        let mut picked = None;
+        let mut drawn = Vec::new();
+        scroll.show_rows(ui, TREE_ROW, count, |ui, range| {
+            for row in &map.tree[range] {
+                let n = &map.nodes[row.node];
+                let is_current = current == Some(&n.view);
+                let (r, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TREE_ROW), egui::Sense::click());
+                let painter = ui.painter();
+                if is_current {
+                    painter.rect_filled(r, theme::RADIUS_1, theme::ACCENT_SOFT);
+                } else if response.hovered() {
+                    painter.rect_filled(r, theme::RADIUS_1, theme::BG_ACTIVE);
+                }
+                let right = r.max.x - MARGIN;
+                let mut x = r.min.x + MARGIN;
+                let width = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x);
+                if !row.prefix.is_empty() {
+                    x = painter.text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &row.prefix, font.clone(), theme::INK_3).max.x;
+                }
+                let key_ink = if is_current {
+                    theme::ACCENT
+                } else if response.hovered() {
+                    theme::INK
+                } else {
+                    theme::INK_2
+                };
+                let key = fit_text(&n.key, right - x, width);
+                x = painter.text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &key, font.clone(), key_ink).max.x + PAD;
+                if n.title != n.key && right - x > 0.0 {
+                    let title = fit_text(&n.title, right - x, width);
+                    if width(&title) <= right - x {
+                        painter.text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &title, font.clone(), theme::INK_3);
+                    }
+                }
+                let response = if response.hovered() {
+                    response.on_hover_text(hover_text(n)).on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else {
+                    response
+                };
+                if response.clicked() && !is_current {
+                    picked = Some(n.view.clone());
+                }
+                drawn.push(DrawnNode { view: n.view.clone(), rect: r, current: is_current });
+            }
+        });
+        self.drawn = drawn;
+        picked
+    }
 }
+
+/// One line of the tree list, px (P5-701).
+const TREE_ROW: f32 = 20.0;
 
 /// The gutter label of a row at `level` (redesign 2026-11-19,
 /// `components/ViewMap`): `LS`, `C1`..`C3`, `—` for views with no level.

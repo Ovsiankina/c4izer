@@ -44,6 +44,8 @@ mod kit;
 #[cfg(test)]
 mod label_drag_tests;
 #[cfg(test)]
+mod map_tree_tests;
+#[cfg(test)]
 mod landscape_filtered_tests;
 mod state;
 #[cfg(test)]

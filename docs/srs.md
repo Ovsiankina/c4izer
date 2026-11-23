@@ -3453,9 +3453,11 @@ view-map
 - **P4-110** Hovering a node shows the view's full title.
 - **P4-111** When a row is wider than the section, node widths shrink
   evenly to fit it, down to the widest tag (keys are cut with "…", tags
-  stay whole, the full name is the hover text); a map still larger than
-  its section scrolls in both directions with visible scroll bars, and
-  its text keeps the view list's font size.
+  stay whole, the full name is the hover text); a map still wider than
+  its section is drawn as the tree list of P5-700 (owner request
+  2026-11-23, superseding the sideways scroll), a map taller than its
+  section scrolls vertically, and its text keeps the view list's font
+  size.
 - **P4-112** The map is built once per parse of the file and reused by
   every frame until the next parse.
 
@@ -4098,6 +4100,31 @@ view-folders
   custom and image views."
 
 map-tree
+
+- **P5-700** When the view map cannot fit its section's width even with
+  every node at its floor width (P4-111's minimum), the section draws a
+  tree list instead of the node graph; when the graph fits, the graph is
+  drawn as before, and it comes back as soon as the section is wide
+  enough again.
+- **P5-701** The tree list shows one view per line, 20 px high, in the
+  map's mono font: the `├─ `, `└─ ` and `│  ` prefixes of `tree` in
+  `INK_3`, then the view's key, then its title cut with an ellipsis to
+  the room left.
+- **P5-702** A view's parent in the tree is the node it is entered from
+  in the map's drawn (reduced) links; with several, the one of the
+  lowest level, then the first in map order (the view-list order of
+  P4-101); views with no parent are roots, and roots and siblings are in
+  map order.
+- **P5-703** The current view's tree row has an `ACCENT_SOFT` fill and
+  its key in `ACCENT`, and is scrolled into sight when the view changes;
+  a hovered row has a `BG_ACTIVE` fill and the node's hover text
+  (P4-110); a click on a row opens its view as a node click does
+  (P4-109).
+- **P5-704** The tree list is never wider than its section and scrolls
+  vertically only; it never shows a horizontal scroll bar.
+- **P5-705** The tree rows are computed in `ViewMap::build`, with the
+  map, once per parse (P4-112), never per frame; the panel lays out only
+  the rows in sight (release, `perf_p5_705_*`).
 
 benchmarks
 

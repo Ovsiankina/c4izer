@@ -469,8 +469,8 @@ fn perf_p5_606_folder_list_build() {
         eprintln!("perf_p5_606_folder_list_build: skipped in a debug build");
         return;
     }
-    // Budgets: about 4x the medians measured 2026-11-23 (25 us, 441 us).
-    for (n, budget) in [(50, 100.0), (500, 2_000.0)] {
+    // Budgets: about 4x the medians measured 2026-11-23 (22-25 us, 441-680 us).
+    for (n, budget) in [(50, 100.0), (500, 3_000.0)] {
         let sh = Shell::with(&many_views(n));
         let model = sh.s.model().expect("a model").clone();
         let entries = sh.s.views();

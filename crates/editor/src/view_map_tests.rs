@@ -529,8 +529,10 @@ fn p4_110_hover_shows_full_title() {
     assert!(hover_text(&m.nodes[at(&m, "shop-context")]).starts_with("The shop and its neighbours\n"));
 }
 
-/// P4-111: a map larger than its section scrolls both ways, with the
-/// view list's font size.
+/// P4-111: a map larger than its section scrolls, with the view list's
+/// font size. Owner request 2026-11-23 (P5-700, P5-704) supersedes the
+/// sideways scroll: a map too wide for its section is the tree list,
+/// which scrolls vertically only.
 #[test]
 fn p4_111_large_map_scrolls_with_readable_text() {
     let ctx = egui::Context::default();
@@ -539,7 +541,8 @@ fn p4_111_large_map_scrolls_with_readable_text() {
     let size = egui::vec2(160.0, 120.0);
     frame(&ctx, &mut panel, &p, None, size, Vec::new());
     let (content, area) = panel.sizes;
-    assert!(content.x > area.x && content.y > area.y, "{content:?} over {area:?}");
+    assert!(panel.tree, "too wide: the tree (P5-700)");
+    assert!(content.x <= area.x && content.y > area.y, "{content:?} over {area:?}");
     // redesign 2026-11-19: the view list draws its keys in
     // `theme::code_font()` (mono 11), no longer in egui's Button style, and
     // the design pack's map keys are mono 10 (`.c4-map__key`): the map
@@ -551,6 +554,7 @@ fn p4_111_large_map_scrolls_with_readable_text() {
         panel.font_size
     );
     let before = panel.drawn[0].rect;
+    let before_view = panel.drawn[0].view.clone();
     let inside = egui::pos2(80.0, 80.0);
     frame(
         &ctx,
@@ -572,9 +576,16 @@ fn p4_111_large_map_scrolls_with_readable_text() {
     for _ in 0..30 {
         frame(&ctx, &mut panel, &p, None, size, Vec::new());
     }
-    let after = panel.drawn[0].rect;
-    assert!(after.min.x < before.min.x && after.min.y < before.min.y, "scrolled both ways: {before:?} -> {after:?}");
-    assert!((after.size() - before.size()).length() < 1e-3, "scrolling never scales the nodes");
+    // The tree draws only the rows in sight: the first row drawn is a
+    // later one, or the same one higher up; nothing moved sideways.
+    let first = &panel.drawn[0];
+    let after = first.rect;
+    assert!(
+        first.view != before_view || after.min.y < before.min.y,
+        "scrolled down: {before:?} -> {after:?}"
+    );
+    assert!((after.min.x - before.min.x).abs() < 1e-3, "never sideways: {before:?} -> {after:?}");
+    assert!((after.height() - before.height()).abs() < 1e-3, "scrolling never scales the rows");
 }
 
 /// P4-111: at the default 220 px panel the nodes shrink to fit its
@@ -602,12 +613,15 @@ fn p4_111_map_fits_the_panel_width() {
     for d in &panel.drawn {
         assert!(d.rect.max.x <= size.x && d.rect.min.x >= 0.0, "{} cut by the edge: {:?}", d.view.key(), d.rect);
     }
-    // Four nodes in a row with `C2 · deployment`: floored at the tag,
-    // so the map scrolls sideways instead.
+    assert!(!panel.tree, "it fits: the graph");
+    // Four nodes in a row with `C2 · deployment`: floored at the tag, too
+    // wide. Owner request 2026-11-23 (P5-700) supersedes the sideways
+    // scroll: the map is the tree list, never wider than the section.
     let mut panel = ViewMapPanel::default();
     frame(&ctx, &mut panel, &parsed(ESTATE), None, size, Vec::new());
     let (content, _) = panel.sizes;
-    assert!(content.x > size.x, "below the minimum it scrolls: {content:?}");
+    assert!(panel.tree, "below the minimum: the tree");
+    assert!(content.x <= size.x, "no sideways scroll: {content:?}");
     let m = map();
     assert!(m.nodes.iter().all(|n| hover_text(n).contains(&n.key)), "the full key on hover");
     // The pure rule: natural width when it fits, shrunk evenly, floored
