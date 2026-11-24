@@ -119,7 +119,7 @@ pub struct PlanBox {
     /// tag, then declared tags): the CORE-1 key groups colours by them.
     pub tags: Vec<String>,
     /// The element's resolved style: fill, text colour, shape (DSL-15,
-    /// CORE-2, CORE-3 line colour, CORE-9 ports).
+    /// CORE-2, P5-300 line colour, CORE-9 ports).
     pub style: ResolvedStyle,
     /// Element name, unquoted.
     pub name: String,
@@ -175,7 +175,8 @@ pub struct PlanEdge {
     pub id: EdgeId,
     /// The box the line starts at.
     pub source: BoxId,
-    /// The box the line points to (CORE-3: the line takes its colour).
+    /// The box the line points to (P5-300: in a `lineColours box` view
+    /// the line takes its fill).
     pub destination: BoxId,
     /// Every relationship this line stands for, winner first, then the
     /// merged lifted ones in source order; never empty (CORE-21
@@ -1563,7 +1564,7 @@ mod tests {
 
     /// The box of the element keyed `k`.
     fn box_named<'p>(m: &Model, p: &'p ViewPlan, k: &str) -> &'p PlanBox {
-        let id = p.boxes_of(m.find(k).unwrap())[0];
+        let id = p.boxes_of(m.find_written(k).unwrap())[0];
         &p.boxes[id.0 as usize]
     }
 
@@ -1605,7 +1606,7 @@ mod tests {
                 "shop -> mail: Sends"
             ]
         );
-        let sends = m.find_relationship(m.find("api").unwrap(), m.find("mail").unwrap());
+        let sends = m.find_relationship(m.find_written("api").unwrap(), m.find_written("mail").unwrap());
         assert_eq!(p.edges[2].relationships, sends);
     }
 
@@ -1616,9 +1617,9 @@ mod tests {
         let (m, p) = context_plan("        shop -> mail \"Direct\" \"SMTP\"");
         assert_indexed(&p);
         let (shop, mail, api) = (
-            m.find("shop").unwrap(),
-            m.find("mail").unwrap(),
-            m.find("api").unwrap(),
+            m.find_written("shop").unwrap(),
+            m.find_written("mail").unwrap(),
+            m.find_written("api").unwrap(),
         );
         let direct = m.find_relationship(shop, mail)[0];
         let lifted = m.find_relationship(api, mail)[0];
@@ -1638,9 +1639,9 @@ mod tests {
     fn core_5_first_declared_wins_among_lifted() {
         // Review Focus: its label is the first by source order.
         let (m, p) = context_plan("        auth -> mail \"Notifies\"");
-        let mail = m.find("mail").unwrap();
-        let sends = m.find_relationship(m.find("api").unwrap(), mail)[0];
-        let notifies = m.find_relationship(m.find("auth").unwrap(), mail)[0];
+        let mail = m.find_written("mail").unwrap();
+        let sends = m.find_relationship(m.find_written("api").unwrap(), mail)[0];
+        let notifies = m.find_relationship(m.find_written("auth").unwrap(), mail)[0];
         let edge = p
             .edges
             .iter()
@@ -1685,10 +1686,10 @@ mod tests {
             ]
         );
         // The lifted `user -> web` merges into the first direct edge.
-        let user = m.find("user").unwrap();
-        let shop = m.find("shop").unwrap();
+        let user = m.find_written("user").unwrap();
+        let shop = m.find_written("shop").unwrap();
         let direct = m.find_relationship(user, shop);
-        let lifted = m.find_relationship(user, m.find("web").unwrap())[0];
+        let lifted = m.find_relationship(user, m.find_written("web").unwrap())[0];
         assert_eq!(p.edges[2].relationships, [direct[0], lifted]);
         assert_eq!(p.edges[3].relationships, [direct[1]]);
     }
@@ -1699,8 +1700,8 @@ mod tests {
         // `api -> db` and `job -> api` both lift to `shop -> shop`.
         let (m, p) = context_plan("");
         assert!(p.edges.iter().all(|e| e.source != e.destination));
-        let reads = m.find_relationship(m.find("api").unwrap(), m.find("db").unwrap())[0];
-        let calls = m.find_relationship(m.find("job").unwrap(), m.find("api").unwrap())[0];
+        let reads = m.find_relationship(m.find_written("api").unwrap(), m.find_written("db").unwrap())[0];
+        let calls = m.find_relationship(m.find_written("job").unwrap(), m.find_written("api").unwrap())[0];
         assert!(
             p.edges
                 .iter()
@@ -1718,7 +1719,7 @@ mod tests {
         ));
         let p = plan_of(&m, "c2");
         assert_indexed(&p);
-        assert_eq!(p.boxes_of(m.find("admin").unwrap()).len(), 1);
+        assert_eq!(p.boxes_of(m.find_written("admin").unwrap()).len(), 1);
         assert!(edge_lines(&m, &p).iter().all(|l| !l.contains("admin")));
         assert_eq!(
             edge_lines(&m, &p),
@@ -1759,7 +1760,7 @@ mod tests {
         let p = plan_of(&m, "n");
         assert_indexed(&p);
         assert_eq!(box_keys(&m, &p), ["shop", "web"]);
-        let reads = m.find_relationship(m.find("api").unwrap(), m.find("db").unwrap())[0];
+        let reads = m.find_relationship(m.find_written("api").unwrap(), m.find_written("db").unwrap())[0];
         assert!(p.edges.iter().all(|e| !e.relationships.contains(&reads)));
         assert!(edge_lines(&m, &p).iter().all(|l| l != "web -> shop: Reads"));
     }
@@ -1773,7 +1774,7 @@ mod tests {
         ));
         let p = plan_of(&m, "n");
         assert_indexed(&p);
-        let calls = m.find_relationship(m.find("job").unwrap(), m.find("api").unwrap())[0];
+        let calls = m.find_relationship(m.find_written("job").unwrap(), m.find_written("api").unwrap())[0];
         assert!(p.edges.iter().all(|e| !e.relationships.contains(&calls)));
         assert!(edge_lines(&m, &p).iter().all(|l| l != "shop -> web: Calls"));
     }
@@ -1857,10 +1858,10 @@ mod tests {
         let p = plan_of(&m, "c2");
         assert_indexed(&p);
         assert_eq!(box_keys(&m, &p), ["mail", "web", "db", "job"]);
-        let user = m.find("user").unwrap();
+        let user = m.find_written("user").unwrap();
         assert!(p.boxes_of(user).is_empty());
         assert!(edge_lines(&m, &p).iter().all(|l| !l.contains("user")));
-        let r0 = m.find_relationship(user, m.find("web").unwrap())[0];
+        let r0 = m.find_relationship(user, m.find_written("web").unwrap())[0];
         assert!(p.edges.iter().all(|e| !e.relationships.contains(&r0)));
     }
 
@@ -2054,7 +2055,7 @@ mod tests {
         let (m, p) = container_plan("", "            at web 100 200");
         let web = box_named(&m, &p, "web");
         assert_eq!(p.boxes_of(web.element), [web.id]);
-        assert!(p.boxes_of(m.find("other").unwrap()).is_empty());
+        assert!(p.boxes_of(m.find_written("other").unwrap()).is_empty());
         assert_eq!(
             web.rect(),
             Some(Rect {
@@ -2082,8 +2083,8 @@ mod tests {
             &body,
             "        systemContext shop \"on\" {\n            include *\n        }\n        systemContext shop \"off\" {\n            include *\n            technology off\n        }",
         ));
-        let user = m.find("user").unwrap();
-        let browses = m.find_relationship(user, m.find("shop").unwrap())[0];
+        let user = m.find_written("user").unwrap();
+        let browses = m.find_relationship(user, m.find_written("shop").unwrap())[0];
         for key in ["on", "off"] {
             let p = plan_of(&m, key);
             let edge = p
@@ -2125,7 +2126,7 @@ mod tests {
         let (m, p) = container_plan("", "            exclude db");
         assert_eq!(p.boundaries.len(), 1);
         let b = &p.boundaries[0];
-        assert_eq!(b.of, BoundaryOf::Element(m.find("shop").unwrap()));
+        assert_eq!(b.of, BoundaryOf::Element(m.find_written("shop").unwrap()));
         assert_eq!(b.name, "Shop");
         let members: Vec<String> = b
             .members

@@ -598,7 +598,7 @@ mod tests {
     /// The subject as the CLI names it: element and relationship ends by
     /// id, views by key, styles by tag, the workspace as `-`.
     fn name(model: &Model, subject: &Subject) -> String {
-        let element = |id| model.full_key(id).unwrap_or_default();
+        let element = |id| model.full_key(id).unwrap_or_default().into_string();
         match subject {
             Subject::Workspace => "-".into(),
             Subject::Element(id) => element(*id),

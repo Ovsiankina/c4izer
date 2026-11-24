@@ -284,7 +284,7 @@ fn openable() -> Vec<(String, PathBuf)> {
 fn p2_14_own_workspace_import_uses_text() {
     let parsed = open(&own_workspace()).expect("docs/workspace.dsl parses");
     let m = &parsed.model;
-    let (import, text) = (m.find("cImport").expect("cImport"), m.find("cText").expect("cText"));
+    let (import, text) = (m.find_written("cImport").expect("cImport"), m.find_written("cText").expect("cText"));
     let edge = m
         .relationships
         .iter()

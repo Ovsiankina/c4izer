@@ -4,8 +4,8 @@
 //! Lint · Export. A section that does not apply is left out, never
 //! dimmed (behaviour change 12).
 
-use c4rizer_core::edit::{StyleProperty, StyleTarget};
-use c4rizer_core::model::{Colour, CrossingStyle, LabelMode};
+use c4rizer_core::edit::{LineStyleProperty, LineStyleTarget, StyleProperty, StyleTarget};
+use c4rizer_core::model::{Colour, CrossingStyle, ElementKey, LabelMode};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Vec2};
 
 use super::{App, editable_detail_fields, export_choices, svg_text_choices, view_label, view_list_line};
@@ -77,9 +77,13 @@ impl App {
                 if let Some(panel) = &style {
                     style_section(ui, panel, &mut out);
                 }
+                let line_style = self.state.line_style_panel();
+                if let Some(panel) = &line_style {
+                    line_style_section(ui, panel, &mut out);
+                }
                 line_section(ui, &self.state, &mut out);
                 steps_section(ui, &self.state, &mut out);
-                self.canvas_section(ui, style.is_none(), &mut out);
+                self.canvas_section(ui, style.is_none() && line_style.is_none(), &mut out);
                 lint_section(ui, &self.state, &mut out);
                 export_section(ui, &mut out);
             });
@@ -108,6 +112,9 @@ impl App {
                         egui::RichText::new("Click a box or a line to see it here.\nRight-click a box to enter its views.")
                             .color(INK_2),
                     );
+                    // P5-206: several boxes, or several lines, share the
+                    // Group and Tags rows.
+                    self.group_and_tag_rows(ui, out);
                     return;
                 };
                 let boxes = self
@@ -156,11 +163,72 @@ impl App {
                 {
                     relationship_rows(ui, &self.state, r);
                 }
-                detail_rows(ui, &d);
+                detail_rows(ui, &d, self.state.tag_row().is_none());
+                self.group_and_tag_rows(ui, out);
             });
         kit::hairline(ui);
     }
 
+    /// The Group row of a box selection (P5-106, P5-109) and the editable
+    /// Tags row of boxes or lines (P5-204..P5-206).
+    fn group_and_tag_rows(&self, ui: &mut egui::Ui, out: &mut Vec<Event>) {
+        group_and_tag_rows(ui, &self.state, &self.popup_anchors, out);
+    }
+}
+
+/// The Group and Tags rows of `state`'s selection (P5-106, P5-109,
+/// P5-204..P5-206). Records in `anchors` where the Group select and the
+/// Tags row are drawn, and which popup a click here opened, so the popup
+/// opens beside its control (P5-107, P5-205).
+pub(super) fn group_and_tag_rows(ui: &mut egui::Ui, state: &State, anchors: &std::cell::Cell<super::frame::PopupAnchors>, out: &mut Vec<Event>) {
+    let mut drawn = anchors.get();
+    drawn.group = None;
+    drawn.tags = None;
+    if let Some(row) = state.group_row() {
+        kit::prop_row(ui, "group", |ui| {
+            let mut names = vec!["None".to_owned()];
+            names.extend(row.choices.iter().cloned());
+            names.push("New group…".to_owned());
+            let current = if row.mixed { "several" } else { row.current.as_deref().unwrap_or("None") };
+            let selected = if row.mixed { None } else { names.iter().position(|n| n == current) };
+            let shown = ui.add_enabled_ui(row.enabled, |ui| kit::select(ui, "group", current, &names, selected));
+            drawn.group = Some(shown.response.rect);
+            shown.response.on_disabled_hover_text("Boxes must share a parent");
+            match shown.inner {
+                Some(i) if Some(i) == selected => {}
+                Some(0) => cmd(out, Command::SetGroup(None)),
+                Some(i) if i + 1 == names.len() => {
+                    drawn.opened = Some(super::frame::Anchored::Group);
+                    cmd(out, Command::GroupPopup);
+                }
+                Some(i) => cmd(out, Command::SetGroup(Some(names[i].clone()))),
+                None => {}
+            }
+            if !row.enabled {
+                ui.label(egui::RichText::new("Boxes must share a parent").color(INK_3));
+            }
+        });
+    }
+    if let Some(row) = state.tag_row() {
+        kit::prop_row(ui, "tags", |ui| {
+            let action = kit::tag_row(ui, &row.tags, &row.removable, true);
+            // DECISION: the anchor is the row's chips, `+` included: the
+            // popup's top meets the row's top wherever the chips wrap.
+            drawn.tags = Some(ui.min_rect());
+            match action {
+                Some(kit::TagRowAction::Remove(tag)) => cmd(out, Command::RemoveTag(tag)),
+                Some(kit::TagRowAction::Add) => {
+                    drawn.opened = Some(super::frame::Anchored::Tags);
+                    cmd(out, Command::TagPopup);
+                }
+                None => {}
+            }
+        });
+    }
+    anchors.set(drawn);
+}
+
+impl App {
     /// The view as a whole: Auto-place, paper size, Magnet, Centre, Remove
     /// vertices, crossings, Callout labels (P2-700..P2-704, P3-313,
     /// P4-318, P4-521). Folded by default while boxes are selected.
@@ -261,14 +329,12 @@ impl App {
             });
             return out;
         }
-        let views = self.state.views();
-        let count = format!("{:02}", views.len());
+        // P5-606: the folders `left_side` synced this frame, not a rebuild.
+        let folders = self.view_folders.folders();
+        let count = format!("{:02}", folders.iter().map(|f| f.views.len()).sum::<usize>());
         kit::section(ui, "views", "Views", Some((count, false)), true, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            egui::ScrollArea::vertical()
-                .id_salt("c4rizer-view-list")
-                .auto_shrink([false, true])
-                .show(ui, |ui| super::view_list(ui, &self.state, &mut out));
+            super::view_list(ui, &self.state, &folders, self.view_folders.key_w, &mut out);
         });
         out
     }
@@ -278,7 +344,7 @@ impl App {
 /// when the line is bundled (`components/Details`, P4-426).
 fn relationship_rows(ui: &mut egui::Ui, state: &State, r: &c4rizer_core::edit::RelationshipRef) {
     if let Some(model) = state.model() {
-        let name = |key: &str| model.find(key).map_or_else(|| key.to_owned(), |id| model.element(id).name.value.clone());
+        let name = |key: &ElementKey| model.find(key).map_or_else(|| key.to_string(), |id| model.element(id).name.value.clone());
         kit::prop_row(ui, "from", |ui| {
             ui.label(egui::RichText::new(name(&r.source)).color(INK));
         });
@@ -302,8 +368,9 @@ fn bus_text(lines: usize) -> String {
 
 /// The property rows every kind of selection may have: deployment
 /// instances and environment, tags, where a lifted line comes from, the
-/// lines merged into it, and a dynamic step.
-fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details) {
+/// lines merged into it, and a dynamic step. `tags`: the read-only tag
+/// chips, left out when the editable Tags row shows (P5-204).
+fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details, tags: bool) {
     // P3-131: a deployment node's instances and environment.
     if let Some(n) = &d.instances {
         kit::prop_row(ui, "instances", |ui| {
@@ -315,7 +382,7 @@ fn detail_rows(ui: &mut egui::Ui, d: &crate::state::Details) {
             ui.label(egui::RichText::new(env).color(INK));
         });
     }
-    if !d.tags.is_empty() {
+    if tags && !d.tags.is_empty() {
         kit::prop_row(ui, "tags", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(4.0);
@@ -488,6 +555,52 @@ fn style_section(ui: &mut egui::Ui, panel: &crate::state::StylePanel, out: &mut 
     });
 }
 
+/// The Style section of a line selection (P5-357): the box section's
+/// layout, "Apply to", "Colour", "Reset to tag style".
+pub(crate) fn line_style_section(ui: &mut egui::Ui, panel: &crate::state::LineStylePanel, out: &mut Vec<Event>) {
+    let title = format!("Style · {} line{}", panel.lines, if panel.lines == 1 { "" } else { "s" });
+    kit::section(ui, "line-style", &title, None, true, |ui| {
+        // DECISION: the box section's labels with "line" for "box"
+        // (`this line only`, `all <tag>`), so the two sections read alike;
+        // the choice lives in egui's temporary memory, as for boxes.
+        let id = egui::Id::unique("c4rizer-line-style-target");
+        let mut choice = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
+        if choice > panel.tags.len() {
+            choice = 0;
+        }
+        let names: Vec<String> = std::iter::once("this line only".to_owned())
+            .chain(panel.tags.iter().map(|t| format!("all {t}")))
+            .collect();
+        kit::form_row(ui, "Apply to", |ui| {
+            if let Some(i) = kit::select(ui, "line-style-target", &names[choice], &names, Some(choice)) {
+                choice = i;
+            }
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(id, choice));
+        let target = if choice == 0 {
+            LineStyleTarget::ThisLine
+        } else {
+            LineStyleTarget::Tag(panel.tags[choice - 1].clone())
+        };
+        kit::form_row(ui, "Colour", |ui| {
+            if let Some([r, g, b]) = kit::swatch(ui, "Colour", panel.color.map(|c| [c.r, c.g, c.b])) {
+                cmd(
+                    out,
+                    Command::SetLineStyle {
+                        target: target.clone(),
+                        property: LineStyleProperty::Color(Some(Colour { r, g, b })),
+                    },
+                );
+            }
+        });
+        ui.vertical_centered(|ui| {
+            if Button::new("Reset to tag style").with_icon(Icon::Reset).look(Look::Ghost).show(ui).clicked() {
+                cmd(out, Command::ResetStyle);
+            }
+        });
+    });
+}
+
 /// The Line section: the bus commands of the selected lines (P4-424,
 /// P4-425), only when there are some.
 fn line_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
@@ -567,15 +680,20 @@ fn steps_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
 
 /// The Lint section: findings (warn icon, text clamped to two lines),
 /// then notices; the list scrolls after five rows so Export stays in
-/// reach (behaviour change 13).
-fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
+/// reach (behaviour change 13). From two resolvable findings the header
+/// holds "Resolve all" before the count (P5-408).
+pub(super) fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
     if state.doc.is_none() {
         return;
     }
     let findings = state.findings();
     let notices = state.notices();
     let n = findings.len();
-    kit::section(ui, "lint", "Lint", Some((n.to_string(), n > 0)), true, |ui| {
+    // P5-408: "Resolve all" from two resolvable findings, in the header.
+    let resolvable = state.resolvable();
+    let tip = format!("Resolves {resolvable} of {n} findings");
+    let action = (resolvable >= 2).then_some(("Resolve all", tip.as_str()));
+    let (_, resolve_all) = kit::section_with_action(ui, "lint", "Lint", Some((n.to_string(), n > 0)), true, action, |ui| {
         if findings.is_empty() && notices.is_empty() {
             ui.label(egui::RichText::new("no findings").color(INK_2));
             return;
@@ -588,26 +706,47 @@ fn lint_section(ui: &mut egui::Ui, state: &State, out: &mut Vec<Event>) {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for (i, f) in findings.iter().enumerate() {
-                    if lint_row(ui, Icon::Warn, WARN, &f.message, true).clicked() {
+                    // P5-406: a resolvable finding has a Resolve button at
+                    // the right of its row; the rest of the row picks.
+                    let resolution = state.resolution(i);
+                    let reserve = resolution.map_or(0.0, |_| kit::button_width(ui, "Resolve") + theme::PAD);
+                    let row = lint_row(ui, Icon::Warn, WARN, &f.message, true, reserve);
+                    if row.clicked() {
                         cmd(out, Command::PickFinding(i));
+                    }
+                    if let Some(r) = resolution {
+                        let mut child = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(Rect::from_min_max(egui::pos2(row.rect.max.x - reserve, row.rect.min.y), row.rect.max))
+                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                        );
+                        let b = Button::new("Resolve").look(Look::Ghost).show(&mut child);
+                        if kit::tip(b, &r.label, None).clicked() {
+                            cmd(out, Command::Resolve(i));
+                        }
                     }
                 }
                 // P2-126: notices name the construct, its file and line;
                 // they select nothing.
                 for notice in &notices {
-                    lint_row(ui, Icon::Info, INK_3, &format!("notice: {notice}"), false);
+                    lint_row(ui, Icon::Info, INK_3, &format!("notice: {notice}"), false, 0.0);
                 }
             });
         let _ = rows;
     });
+    if resolve_all {
+        cmd(out, Command::ResolveAll);
+    }
 }
 
-/// One lint row: 32 px icon column, the text in two lines at most.
-fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: bool) -> egui::Response {
+/// One lint row: 32 px icon column, the text in two lines at most,
+/// `reserve` px kept free at the right (P5-406: the Resolve button).
+#[expect(clippy::too_many_arguments, reason = "a row's icon, text and pick, then the room kept for its button")]
+fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: bool, reserve: f32) -> egui::Response {
     let width = ui.available_width();
     let font = theme::ui_font();
     let job = {
-        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, INK_2, width - 32.0 - 16.0 - 8.0);
+        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, INK_2, width - 32.0 - 16.0 - 8.0 - reserve);
         job.wrap.max_rows = 2;
         job
     };
@@ -629,12 +768,23 @@ fn lint_row(ui: &mut egui::Ui, icon: Icon, icon_ink: Color32, text: &str, pick: 
     }
 }
 
+/// Where egui's memory keeps the export panel's SVG text choice.
+const SVG_TEXT_ID: &str = "c4rizer-svg-text";
+
+/// The SVG format the export panel's SVG text choice names (P2-663),
+/// plain `Svg` until one is made; File > Export uses it too.
+pub(super) fn svg_choice(ctx: &egui::Context) -> ExportFormat {
+    let choices = svg_text_choices();
+    let pick = ctx.data(|d| d.get_temp::<usize>(egui::Id::unique(SVG_TEXT_ID))).unwrap_or(0).min(choices.len() - 1);
+    choices[pick].1
+}
+
 /// The Export section, folded by default (EDIT-7, P2-663, P3-431).
 fn export_section(ui: &mut egui::Ui, out: &mut Vec<Event>) {
     kit::section(ui, "export", "Export", None, false, |ui| {
         // P2-663: the SVG text choice, `name` by default; it lives in
         // egui's memory and never reaches the diagram file (P2-665).
-        let id = egui::Id::unique("c4rizer-svg-text");
+        let id = egui::Id::unique(SVG_TEXT_ID);
         let choices = svg_text_choices();
         let mut pick = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(choices.len() - 1);
         let names: Vec<String> = choices.iter().map(|(l, _)| (*l).to_owned()).collect();
@@ -691,9 +841,11 @@ fn export_section(ui: &mut egui::Ui, out: &mut Vec<Event>) {
 
 /// One row of the view list: the key (mono, `accent` when current), then
 /// the title cut to the room left; the full title and kind as tooltip
-/// (EDIT-8, P2-737, behaviour change 11). Returns the row's text and
-/// response.
-pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w: f32) -> (String, egui::Response) {
+/// (EDIT-8, P2-737, behaviour change 11). Indented `indent` px under its
+/// folder's header (P5-602); key and title never pass the row's right
+/// edge. A view with no title of its own shows its key alone, cut to the
+/// row rather than to the key column. Returns the row's text and response.
+pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w: f32, indent: f32) -> (String, egui::Response) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_ROW), Sense::click());
     let p = ui.painter();
@@ -719,25 +871,101 @@ pub(super) fn view_row(ui: &mut egui::Ui, entry: &crate::state::ViewEntry, key_w
         INK_2
     };
     let code = theme::code_font();
-    let x0 = rect.min.x + 8.0;
-    let key_text = kit::elide(ui, &key, &code, key_w);
-    p.text(egui::pos2(x0, rect.center().y), Align2::LEFT_CENTER, &key_text, code, key_ink);
+    let x0 = rect.min.x + 8.0 + indent;
     let (_, title) = view_list_line(entry, entry.label.chars().count());
+    let untitled = title == key;
+    // P5-602: a panel narrower than the key column cuts the key, never
+    // the panel's edge; a view with no title of its own gives its key the
+    // whole row, so long keys that differ at their end stay apart.
+    let row_w = (rect.max.x - 8.0 - x0).max(0.0);
+    let key_w = if untitled { row_w } else { key_w.min(row_w) };
+    let key_text = fit(ui, &key, &code, key_w);
+    let p = ui.painter();
+    p.text(egui::pos2(x0, rect.center().y), Align2::LEFT_CENTER, &key_text, code, key_ink);
     let font = theme::ui_font();
     let room = (rect.max.x - 8.0 - (x0 + key_w + 8.0)).max(0.0);
-    let shown = if title == key { String::new() } else { kit::elide(ui, &title, &font, room) };
+    let shown = if untitled { String::new() } else { fit(ui, &title, &font, room) };
     p.text(egui::pos2(x0 + key_w + 8.0, rect.center().y), Align2::LEFT_CENTER, &shown, font, title_ink);
     let tip = format!("{title}\n{}", view_label(entry));
     (format!("{key_text}  {shown}"), response.on_hover_text(tip))
 }
 
-/// The width of the key column: the widest key, at most 104 px.
-pub(super) fn key_column(ui: &egui::Ui, state: &State) -> f32 {
+/// `kit::elide` of `text` to `room` px, or nothing when not even the
+/// ellipsis fits (P5-602: no text past a row's edge).
+fn fit(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> String {
+    let cut = kit::elide(ui, text, font, room);
+    let width = ui.fonts_mut(|f| f.layout_no_wrap(cut.clone(), font.clone(), INK).size().x);
+    if width <= room { cut } else { String::new() }
+}
+
+/// The width of the key column: the widest folder key, or key of a view
+/// with a title of its own, of `folders`, at most 104 px (P5-602). A
+/// view without a title draws its key over the whole row, so its key
+/// does not widen the column the titles start after.
+pub(super) fn key_column(ui: &egui::Ui, folders: &[crate::view_folders::Folder]) -> f32 {
     let code = theme::code_font();
-    state
-        .views()
+    let width = |text: String| ui.fonts_mut(|f| f.layout_no_wrap(text, code.clone(), INK).size().x);
+    let titled = |v: &&crate::state::ViewEntry| v.label != v.view.key();
+    folders
         .iter()
-        .map(|v| ui.fonts_mut(|f| f.layout_no_wrap(v.view.key(), code.clone(), INK).size().x))
+        .flat_map(|f| std::iter::once(f.folder.key().to_owned()).chain(f.views.iter().filter(titled).map(|v| v.view.key())))
+        .map(width)
         .fold(0.0_f32, f32::max)
         .min(104.0)
+}
+
+/// Room for the fold dot (P5-603) beside a header's count, px.
+const DOT_ROOM: f32 = 10.0;
+/// The recap card's widest line, px (P5-607).
+const RECAP_W: f32 = 260.0;
+
+/// One folder header of the view list (P5-602, P5-603, P5-607): a
+/// chevron, the folder key in the key column's font and colour, the
+/// label, the view count right-aligned in `ink-3`; folded and holding the
+/// view on screen, an `accent` dot left of the count. Hovering shows the
+/// recap card. Returns the row's text (`▾`/`▸`, key, label, count, `•`
+/// for the dot) and response; the caller folds on a click (pointer, or
+/// Enter or Space while focused).
+pub(super) fn folder_header(ui: &mut egui::Ui, group: &crate::view_folders::Folder, folded: bool, key_w: f32) -> (String, egui::Response) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, SIZE_ROW), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(2), BG_RAISED);
+    }
+    let cy = rect.center().y;
+    let x0 = rect.min.x + 8.0;
+    let chevron = Rect::from_center_size(egui::pos2(x0 + theme::SIZE_ICON / 2.0, cy), Vec2::splat(theme::SIZE_ICON));
+    icons::paint(ui.painter(), if folded { Icon::ChevronRight } else { Icon::ChevronDown }, chevron, INK_3);
+    let code = theme::code_font();
+    let count = format!("{:02}", group.views.len());
+    let count_w = ui.fonts_mut(|f| f.layout_no_wrap(count.clone(), code.clone(), INK_3).size().x);
+    let count_x = rect.max.x - 8.0;
+    ui.painter().text(egui::pos2(count_x, cy), Align2::RIGHT_CENTER, &count, code.clone(), INK_3);
+    let dot = folded && group.holds_current();
+    let mut right = count_x - count_w - 6.0;
+    if dot {
+        ui.painter().circle_filled(egui::pos2(right - DOT_ROOM / 2.0, cy), 3.0, ACCENT);
+        right -= DOT_ROOM;
+    }
+    let key_x = x0 + theme::SIZE_ICON;
+    let key_w = key_w.min((right - key_x).max(0.0));
+    let key = fit(ui, group.folder.key(), &code, key_w);
+    let key_rect = ui.painter().text(egui::pos2(key_x, cy), Align2::LEFT_CENTER, &key, code, INK);
+    let font = theme::ui_font();
+    // DECISION: the label follows the short folder key rather than the
+    // key column, so it keeps its whole word in a narrow panel.
+    let label_x = key_rect.max.x + 8.0;
+    let label = fit(ui, group.folder.label(), &font, (right - label_x).max(0.0));
+    ui.painter().text(egui::pos2(label_x, cy), Align2::LEFT_CENTER, &label, font, INK_2);
+    kit::focus_ring(ui, &response);
+    let which = group.folder;
+    let response = response.on_hover_ui(move |ui| {
+        ui.set_max_width(RECAP_W);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.label(egui::RichText::new(which.recap_title()).font(theme::strong_font()).color(INK));
+        ui.label(egui::RichText::new(which.recap()).color(INK_2));
+    });
+    let chev = if folded { '▸' } else { '▾' };
+    let mark = if dot { " •" } else { "" };
+    (format!("{chev} {key}  {label}  {count}{mark}"), response)
 }

@@ -88,7 +88,7 @@ fn moves(import: &Import) -> Vec<(String, String, (i32, i32))> {
         .edits
         .iter()
         .map(|e| match e {
-            Edit::Move { view, element, centre: Some(c) } => (view.clone(), element.clone(), *c),
+            Edit::Move { view, element, centre: Some(c) } => (view.clone(), element.to_string(), *c),
             other => panic!("import writes only `at` moves, got {other:?}"),
         })
         .collect()
@@ -377,7 +377,7 @@ fn p2_15_import_layout_writes_at_lines() {
     let at: Vec<(String, i32, i32)> = context
         .positions
         .iter()
-        .map(|a| (parsed.model.full_key(a.element.value).unwrap_or_default(), a.x.value, a.y.value))
+        .map(|a| (parsed.model.full_key(a.element.value).unwrap_or_default().into_string(), a.x.value, a.y.value))
         .collect();
     assert_eq!(at, [("user".to_owned(), 200, 100), ("sys".to_owned(), 600, 500), ("ext".to_owned(), 1000, 900)]);
     assert!(at.iter().all(|(_, x, y)| x % 10 == 0 && y % 10 == 0), "on the 10px grid");

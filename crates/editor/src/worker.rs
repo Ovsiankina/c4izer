@@ -53,7 +53,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use c4rizer_core::geom::Point;
-use c4rizer_core::model::{Mode, Model, Parsed, ViewKind};
+use c4rizer_core::model::{ElementKey, Mode, Model, Parsed, ViewKind};
 
 use crate::export_files;
 use c4rizer_core::pipeline::{
@@ -91,8 +91,8 @@ pub enum ViewRef {
     /// The default view of `scope` (EDIT-15); once written by
     /// `edit::Edit::AddDefaultView` it is `Declared("<scope>-<kind>")`.
     Default {
-        /// The scope's canonical element key (`Element::key`).
-        scope: String,
+        /// The scope's canonical element key (`Model::full_key`).
+        scope: ElementKey,
         /// `Container` (of a system), `Component` (of a container) or
         /// `SystemContext` (of a system, model-only files).
         kind: ViewKind,
@@ -159,6 +159,11 @@ pub enum ExportFormat {
     /// `export::static_site` (P3-423).
     // APPROVER: approved 2026-11-18
     Static,
+    /// `export::pdf`: one page per view; targets that share a file are
+    /// that file's pages, in order (File > Export, owner request
+    /// 2026-11-23).
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    Pdf,
 }
 
 impl ExportFormat {
@@ -170,6 +175,7 @@ impl ExportFormat {
         match self {
             ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "svg",
             ExportFormat::Png => "png",
+            ExportFormat::Pdf => "pdf",
             ExportFormat::PlantUml | ExportFormat::C4PlantUml => "puml",
             ExportFormat::Mermaid => "mmd",
             ExportFormat::WebSequenceDiagrams => "wsd",
@@ -706,6 +712,10 @@ fn export(
     // An export is never stopped: its flag is never set.
     let never = AtomicBool::new(false);
     let mut written = Vec::with_capacity(targets.len());
+    // DECISION: PDF targets that name the same file are that file's pages
+    // in target order, so "every view as one PDF" is one job of one file;
+    // the files are written after every view is built.
+    let mut documents: Vec<(PathBuf, Vec<c4rizer_core::scene::Scene>)> = Vec::new();
     for target in targets {
         let Built::Done(build) = build(model, &target.view, &target.keep, mode, &never) else {
             return Err(format!(
@@ -728,11 +738,24 @@ fn export(
                     format!("cannot export view \"{}\" as PNG: {e}", target.view.key())
                 })?
             }
+            ExportFormat::Pdf => {
+                match documents.iter_mut().find(|(path, _)| *path == target.path) {
+                    Some((_, pages)) => pages.push(build.scene),
+                    None => documents.push((target.path.clone(), vec![build.scene])),
+                }
+                continue;
+            }
             _ => unreachable!("text, JSON, theme and static go through `export_files`"),
         };
         export_files::replace_file(&target.path, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", target.path.display()))?;
         written.push(target.path.clone());
+    }
+    for (path, pages) in documents {
+        let pages: Vec<&c4rizer_core::scene::Scene> = pages.iter().collect();
+        let bytes = c4rizer_core::export::pdf(&pages).map_err(|e| format!("cannot export {} as PDF: {e}", path.display()))?;
+        export_files::replace_file(&path, &bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        written.push(path);
     }
     Ok(written)
 }
@@ -773,7 +796,11 @@ fn export_files(parsed: &Parsed, targets: &[ExportTarget], format: ExportFormat)
         ExportFormat::Json => "json",
         ExportFormat::Theme => "theme",
         ExportFormat::Static => "static",
-        ExportFormat::Svg | ExportFormat::Png | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => {
+        ExportFormat::Svg
+        | ExportFormat::Png
+        | ExportFormat::SvgEmbedded
+        | ExportFormat::SvgOutlined
+        | ExportFormat::Pdf => {
             unreachable!("image formats go through `export`")
         }
     };
@@ -949,6 +976,7 @@ fn run_thread(
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1040,7 +1068,7 @@ mod tests {
     fn view_ref_key_and_extension() {
         assert_eq!(declared("context").key(), "context");
         let d = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         assert_eq!(d.key(), "web-component");
@@ -1415,7 +1443,7 @@ mod tests {
     fn edit_15_default_view_built_or_no_view() {
         let parsed = shop();
         let view = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         let job = |view: &ViewRef| Job::Build {
@@ -1434,7 +1462,7 @@ mod tests {
         assert!(build.scene.boxes.len() >= 2);
         // `shop` already has a container view: its default does not open.
         let gone = ViewRef::Default {
-            scope: "shop".to_owned(),
+            scope: ElementKey::from_written("shop"),
             kind: ViewKind::Container,
         };
         let reply = serve(req(4, job(&gone)), &AtomicBool::new(false));

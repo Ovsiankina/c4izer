@@ -11,6 +11,7 @@
 // Tests name the model `m`, the build `b`, a line `l`, as the other rows do.
 #![allow(clippy::many_single_char_names, clippy::similar_names, clippy::too_many_lines)]
 
+use c4rizer_core::model::ElementKey;
 use std::sync::atomic::AtomicBool;
 
 use c4rizer_core::bridge::{self, BAR_HALF_PX, GAP_HALF_SLANT_PX, GAP_HALF_SQUARE_PX, HOP_PX};
@@ -690,7 +691,7 @@ fn p4_522_set_bridges_edit_flip_and_inverse() {
         &model::parse(&src).expect("parses"),
         &[Edit::SetBridges {
             view: "ring".to_owned(),
-            bridges: vec![(LineRef::new("c", "d", None), LineRef::new("a", "b", None))],
+            bridges: vec![(LineRef::new(ElementKey::from_written("c"), ElementKey::from_written("d"), None), LineRef::new(ElementKey::from_written("a"), ElementKey::from_written("b"), None))],
         }],
     )
     .expect("applies");

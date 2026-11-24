@@ -686,9 +686,9 @@ pub fn rebuild_with_anchors(
 /// When `old_centres` is shorter than `old_plan.boxes`, or `old_plan` was
 /// not built from `old_model`.
 // TODO(p2): elements with no key are dropped, which is lossless in phase
-// 1 (`Element::key` is always `Some`). Phase-2 hierarchical ids and
-// unkeyed elements need a fallback match (e.g. by parent key and
-// name), or CORE-29 breaks for them.
+// 1 (`Element::key` is always `Some`). Phase-2 unkeyed elements need a
+// fallback match (e.g. by parent key and name), or CORE-29 breaks for
+// them; hierarchical ids match by `Model::full_key`.
 #[must_use]
 pub fn keep_across_reparse(
     old_model: &Model,
@@ -699,14 +699,19 @@ pub fn keep_across_reparse(
     let old = Keep::from_previous(old_plan, old_centres);
     let mut keep = Keep::default();
     for (&element, &centre) in &old.previous {
-        let Some(key) = &old_model.element(element).key else {
+        if old_model.element(element).key.is_none() {
+            continue;
+        }
+        let Some(key) = old_model.full_key(element) else {
             continue;
         };
-        // DECISION: an identifier is unique across a phase-1 file (DSL-5),
-        // so `find` by the bare key is the match; two old elements cannot
-        // map to one new id, and the first box of an element wins as in
-        // `Keep::from_previous`.
-        if let Some(id) = new_model.find(&key.value) {
+        // DECISION: a canonical key is unique across a file (DSL-5, P2-6),
+        // so `find` by it is the match; two old elements cannot map to one
+        // new id, and the first box of an element wins as in
+        // `Keep::from_previous`. The full key, not the declaration id:
+        // under `!identifiers hierarchical` a nested element's bare id
+        // does not resolve (P2-142).
+        if let Some(id) = new_model.find(&key) {
             keep.previous.entry(id).or_insert(centre);
         }
     }
@@ -714,7 +719,8 @@ pub fn keep_across_reparse(
 }
 
 /// The EDIT-15 default view of `scope`: a `kind` view keyed
-/// `<scope id>-<kind>` (`<kind>` is `ViewKind::keyword`, as `edit`'s
+/// `<scope id>-<kind>` (`<scope id>` is `Model::full_key`, dotted under
+/// `!identifiers hierarchical`; `<kind>` is `ViewKind::keyword`, as `edit`'s
 /// `AddDefaultView` writes it), with `include *`, no title line (the
 /// description is the scope's name, so it has a drawn title), no
 /// options, no `at` or `size` line (every box auto-placed). It is not
@@ -767,7 +773,12 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
     }
     // DECISION: an element with no identifier (none in phase 1) has no
     // default view key, so no default view.
-    let id = &element.key.as_ref()?.value;
+    element.key.as_ref()?;
+    // DECISION: the key starts with the scope's full id (`shop.web` under
+    // `!identifiers hierarchical`), the id `edit`'s `AddDefaultView` and the
+    // editor name the scope by; the bare id would key the unwritten view
+    // apart from the one the first write declares.
+    let id = model.full_key(scope)?;
     let key = format!("{id}-{}", kind.keyword());
     if model.view(&key).is_some() {
         return None;
@@ -801,6 +812,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
         max_crossings: None,
         labels: None,
         crossings: None,
+        line_colours: None,
         positions: Vec::new(),
         sizes: Vec::new(),
         span: none,
@@ -820,6 +832,7 @@ pub fn default_view(model: &Model, scope: ElementId, kind: ViewKind) -> Option<V
 
 #[cfg(test)]
 mod tests {
+    use crate::model::ElementKey;
     use std::collections::BTreeMap;
     use std::sync::atomic::AtomicBool;
 
@@ -1016,7 +1029,7 @@ mod tests {
     }
 
     fn element_box(b: &ViewBuild, m: &Model, key: &str) -> BoxId {
-        let e = m.find(key).expect("element");
+        let e = m.find_written(key).expect("element");
         b.plan.boxes_of(e)[0]
     }
 
@@ -1275,7 +1288,7 @@ mod tests {
         let new_model = model(AUTO_INSERTED);
         // The insertion shifts every old id.
         for key in ["operator", "shop", "bank"] {
-            assert_ne!(old_model.find(key), new_model.find(key), "{key}");
+            assert_ne!(old_model.find_written(key), new_model.find_written(key), "{key}");
         }
         let keep = keep_across_reparse(&old_model, &old.plan, &old.scene.centres, &new_model);
         assert!(keep.moved.is_empty());
@@ -1290,9 +1303,26 @@ mod tests {
         // Keyed by the new ids.
         let shop_old = old.scene.centres[element_box(&old, &old_model, "shop").0 as usize];
         assert_eq!(
-            keep.previous.get(&new_model.find("shop").expect("shop")),
+            keep.previous.get(&new_model.find_written("shop").expect("shop")),
             Some(&shop_old)
         );
+    }
+
+    /// CORE-29, P2-142: under `!identifiers hierarchical` nested boxes
+    /// keep their centres across a reparse, matched by full id.
+    #[test]
+    fn core_29_previous_kept_across_reparse_hierarchical_ids() {
+        let text = "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\"\n            db = container \"Db\"\n        }\n        shop.web -> shop.db \"Reads\"\n    }\n    views {\n        container shop \"c2\" {\n            include *\n        }\n    }\n}\n";
+        let old_model = model(text);
+        let old = build(&old_model, "c2");
+        let new_model = model(&text.replace("        shop = softwareSystem", "        user = person \"User\"\n        shop = softwareSystem"));
+        let keep = keep_across_reparse(&old_model, &old.plan, &old.scene.centres, &new_model);
+        assert_eq!(keep.previous.len(), 2, "both nested boxes matched");
+        for key in ["shop.web", "shop.db"] {
+            let key = ElementKey::from_written(key);
+            let was = old.scene.centres[element_box(&old, &old_model, key.as_str()).0 as usize];
+            assert_eq!(keep.previous.get(&new_model.find(&key).expect("element")), Some(&was), "{key}");
+        }
     }
 
     #[test]
@@ -1308,7 +1338,7 @@ mod tests {
     #[test]
     fn edit_15_default_view_key_scope_and_kind() {
         let m = model(TWO_VIEWS);
-        let store = m.find("store").expect("store");
+        let store = m.find_written("store").expect("store");
         let spec = default_view(&m, store, ViewKind::Component).expect("store has none");
         assert_eq!(spec.key, "store-component");
         assert_eq!(spec.kind, ViewKind::Component);
@@ -1333,17 +1363,30 @@ mod tests {
         // for a component view, a person for anything.
         assert!(default_view(&m, store, ViewKind::SystemContext).is_none());
         assert!(default_view(&m, store, ViewKind::Container).is_none());
-        let bank = m.find("bank").expect("bank");
+        let bank = m.find_written("bank").expect("bank");
         assert!(default_view(&m, bank, ViewKind::Component).is_none());
-        let operator = m.find("operator").expect("operator");
+        let operator = m.find_written("operator").expect("operator");
         assert_eq!(m.element(operator).kind, ElementKind::Person);
         assert!(default_view(&m, operator, ViewKind::SystemContext).is_none());
+    }
+
+    /// EDIT-15, P2-142: under `!identifiers hierarchical` the default view
+    /// of a nested container is keyed by its full id, the key `edit`'s
+    /// `AddDefaultView` writes for it.
+    #[test]
+    fn edit_15_default_view_key_hierarchical_ids() {
+        let m = model(
+            "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            web = container \"Web\" {\n                cart = component \"Cart\"\n            }\n        }\n    }\n}\n",
+        );
+        let web = m.find_written("shop.web").expect("web");
+        let spec = default_view(&m, web, ViewKind::Component).expect("web has none");
+        assert_eq!(spec.key, "shop.web-component");
     }
 
     #[test]
     fn edit_15_default_view_system_context_key() {
         let m = model(TWO_VIEWS);
-        let bank = m.find("bank").expect("bank");
+        let bank = m.find_written("bank").expect("bank");
         let spec = default_view(&m, bank, ViewKind::SystemContext).expect("bank has none");
         assert_eq!(spec.key, "bank-systemContext");
         assert_eq!(spec.kind, ViewKind::SystemContext);
@@ -1357,8 +1400,8 @@ mod tests {
         let m = model(TWO_VIEWS);
         // `a` is shop's container view, `b` front's component view: both
         // under keys other than `<scope id>-<kind>`.
-        let shop = m.find("shop").expect("shop");
-        let front = m.find("front").expect("front");
+        let shop = m.find_written("shop").expect("shop");
+        let front = m.find_written("front").expect("front");
         assert!(default_view(&m, shop, ViewKind::Container).is_none());
         assert!(default_view(&m, front, ViewKind::Component).is_none());
         assert!(default_view(&m, shop, ViewKind::SystemContext).is_some());
@@ -1368,11 +1411,11 @@ mod tests {
     fn edit_15_default_view_none_when_key_taken() {
         let src = TWO_VIEWS.replace(r#"container shop "a""#, r#"container shop "store-component""#);
         let m = model(&src);
-        let store = m.find("store").expect("store");
+        let store = m.find_written("store").expect("store");
         assert!(default_view(&m, store, ViewKind::Component).is_none());
         let src = TWO_VIEWS.replace(r#"container shop "a""#, r#"container shop "shop-systemContext""#);
         let m = model(&src);
-        let shop = m.find("shop").expect("shop");
+        let shop = m.find_written("shop").expect("shop");
         assert!(default_view(&m, shop, ViewKind::SystemContext).is_none());
     }
 

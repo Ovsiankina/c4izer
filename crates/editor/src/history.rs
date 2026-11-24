@@ -114,6 +114,7 @@ impl History {
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use super::{History, MAX_STEPS, Step};
     use c4rizer_core::edit::Edit;
 
@@ -121,7 +122,7 @@ mod tests {
         Step {
             edits: vec![Edit::Move {
                 view: "v".to_owned(),
-                element: "box".to_owned(),
+                element: ElementKey::from_written("box"),
                 centre: Some((i32::try_from(i).unwrap_or(0) * 10, 0)),
             }],
         }

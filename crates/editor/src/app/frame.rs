@@ -10,6 +10,7 @@ use super::{App, crumb_label, problem_text, view_label};
 use crate::icons::{self, Icon};
 use crate::kit::{self, Button, Look, Segment};
 use crate::state::{Command, Event, MenuEntry, NavLevel, Overlay, Problem};
+use crate::worker::ExportFormat;
 use crate::theme::{
     self, ACCENT, BG_CANVAS, BG_OVERLAY, BG_RAISED, DANGER, INK, INK_2, INK_3, INK_DISABLED, LINE, LINE_2, OK, PAD,
     SIZE_BAR, SIZE_CONTROL, SIZE_ROW, WARN,
@@ -49,7 +50,7 @@ fn cell<R>(ui: &mut egui::Ui, bar: Rect, rtl: bool, add: impl FnOnce(&mut egui::
 }
 
 impl App {
-    /// The top bar: Views toggle · file · Back, Forward · breadcrumb ·
+    /// The top bar: Views toggle · File, Settings menus · file · Back, Forward · breadcrumb ·
     /// Undo, Redo · `Diagram / Explore` · Details toggle.
     pub(super) fn top_bar(&self, ui: &mut egui::Ui, narrow: bool, mut bar: BarState, events: &mut Vec<Event>) -> BarState {
         let rect = ui.max_rect();
@@ -60,6 +61,10 @@ impl App {
                 if kit::tip(r, "Views panel", Some("N")).clicked() {
                     bar.left = !bar.left;
                 }
+            });
+            cell(ui, rect, false, |ui| {
+                file_menu(ui, &self.state, events);
+                settings_menu(ui, &self.state, events);
             });
             cell(ui, rect, false, |ui| {
                 let name = self
@@ -445,31 +450,7 @@ impl App {
             kit_rule(&mut ui, LINE_2);
         }
         for path in recent {
-            let (r, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
-            if response.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::ZERO, BG_RAISED);
-            }
-            let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-            // DECISION: a path opened by bare name has an empty parent;
-            // show it as `./`, not as the root `/`.
-            let folder = path.parent().map_or_else(String::new, |p| {
-                if p.as_os_str().is_empty() { "./".to_owned() } else { format!("{}/", p.display()) }
-            });
-            let name_font = egui::FontId::new(12.0, egui::FontFamily::Name(theme::MEDIUM.into()));
-            let g = ui.painter().layout_no_wrap(name, name_font, INK);
-            let nx = r.min.x + 8.0;
-            let name_w = g.size().x;
-            ui.painter().galley(egui::pos2(nx, r.center().y - g.size().y / 2.0), g, INK);
-            let code = theme::code_font();
-            let room = r.max.x - 8.0 - (nx + name_w + 12.0);
-            ui.painter().text(
-                egui::pos2(nx + name_w + 12.0, r.center().y),
-                Align2::LEFT_CENTER,
-                kit::elide(&ui, &folder, &code, room),
-                code,
-                INK_3,
-            );
-            if response.on_hover_text(path.display().to_string()).clicked() {
+            if recent_row(&mut ui, path).clicked() {
                 out.push(Event::Command(Command::Open(path.clone())));
             }
             kit_rule(&mut ui, LINE_2);
@@ -633,8 +614,14 @@ impl App {
             }
             // Drawn over the canvas at the pointer (`App::canvas`).
             Overlay::ContextMenu { .. } => {}
+            // P5-205, P5-107: the add-tag and group-name popups, beside
+            // the Details control that opened them.
+            Overlay::AddTag { .. } | Overlay::GroupName { .. } => {
+                let anchor = self.popup_anchors.get().anchor(Some(&overlay));
+                detail_popup(ctx, &self.state, window_pos(canvas, anchor), &mut out);
+            }
             Overlay::TagFilter => {
-                small_window(ctx, canvas, "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Filter by tag", &mut out, &Command::TagFilterPanel, |ui, out| {
                     let chosen = &self.state.aids.tags;
                     let choices = self.state.tag_choices();
                     if choices.is_empty() {
@@ -654,7 +641,7 @@ impl App {
                 });
             }
             Overlay::Perspectives => {
-                small_window(ctx, canvas, "Perspectives", &mut out, &Command::PerspectivePanel, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Perspectives", &mut out, &Command::PerspectivePanel, |ui, out| {
                     let current = self.state.aids.perspective.clone();
                     if kit::menu_row(ui, None, "none", current.is_none(), true).clicked() {
                         out.push(Event::Command(Command::Perspective(None)));
@@ -669,7 +656,7 @@ impl App {
                 });
             }
             Overlay::Navigator => {
-                small_window(ctx, canvas, "Diagram navigator", &mut out, &Command::Navigator, |ui, out| {
+                small_window(ctx, window_pos(canvas, None), "Diagram navigator", &mut out, &Command::Navigator, |ui, out| {
                     // P2-729: the search field filters all three groups.
                     // DECISION: it takes focus like quick navigation's, so
                     // typing searches at once; Escape still closes.
@@ -762,7 +749,9 @@ pub(super) fn menu_rows(entries: &[MenuEntry], relationship: bool) -> Vec<MenuRo
             vec![url],
         ]
     } else {
-        vec![vec![enter], vec![url]]
+        // P5-108: the group entries, one slot group after "Enter".
+        let group = vec![("Group…", "Group…", Icon::Layers), ("Remove from group", "Remove from group", Icon::Minus)];
+        vec![vec![enter], group, vec![url]]
     };
     let mut rows = Vec::new();
     let mut used = vec![false; entries.len()];
@@ -788,22 +777,155 @@ pub(super) fn menu_rows(entries: &[MenuEntry], relationship: bool) -> Vec<MenuRo
     rows
 }
 
-/// A small window over the canvas, top right, 12 px in (`components/
+/// The group-name popup's field (P5-107): focused at once, its prefilled
+/// name selected so the first typed character replaces it; each change
+/// goes out as the whole text (`Event::Text`).
+// DECISION: select the prefill on focus rather than drop it: Enter on the
+// prefill still writes "Group" as P5-107 states, and the state keeps
+// taking the whole buffer, so nothing changes outside this field.
+pub(crate) fn group_name_field(ui: &mut egui::Ui, name: &str, out: &mut Vec<Event>) {
+    use egui::text::{CCursor, CCursorRange};
+    let mut buffer = name.to_owned();
+    let mut field = ui
+        .scope(|ui| {
+            kit::field_style(ui);
+            egui::TextEdit::singleline(&mut buffer)
+                .hint_text(egui::RichText::new("group name").color(INK_3))
+                .desired_width(f32::INFINITY)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(Vec2::new(0.0, SIZE_CONTROL))
+                .show(ui)
+        })
+        .inner;
+    // `request_focus` takes effect at once, so `gained_focus` never fires
+    // here: the selection is set where the focus is given.
+    if !field.response.has_focus() {
+        field.response.request_focus();
+        let all = CCursorRange::two(CCursor::new(0), CCursor::new(buffer.chars().count()));
+        field.state.cursor.set_char_range(Some(all));
+        field.state.store(ui.ctx(), field.response.id);
+    }
+    if buffer != name {
+        out.push(Event::Text(buffer));
+    }
+}
+
+/// A popup a Details panel control opens beside itself (P5-107, P5-205).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Anchored {
+    /// The add-tag popup, from the `+` chip of the Tags row.
+    Tags,
+    /// The group-name popup, from the Group select's "New group…".
+    Group,
+}
+
+/// The Details panel controls that open a popup, as drawn this frame, and
+/// which popup one of them opened (P5-107, P5-205).
+// DECISION: kept in the shell (`App`), not in `State`: the rects are
+// egui's, and where a popup sits changes nothing the state machine does.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PopupAnchors {
+    /// The Tags row's value (its chips and `+`), screen px.
+    pub(crate) tags: Option<Rect>,
+    /// The Group row's select, screen px.
+    pub(crate) group: Option<Rect>,
+    /// The popup a panel control opened, until that popup closes.
+    pub(crate) opened: Option<Anchored>,
+}
+
+impl PopupAnchors {
+    /// The control the popup `overlay` opens beside: the one that opened
+    /// it, when a Details control did and was drawn this frame; `None`
+    /// (the canvas's top right) when the keyboard (Ctrl+G) or the
+    /// context menu opened it.
+    pub(crate) fn anchor(&self, overlay: Option<&Overlay>) -> Option<Rect> {
+        match (overlay, self.opened) {
+            (Some(Overlay::AddTag { .. }), Some(Anchored::Tags)) => self.tags,
+            (Some(Overlay::GroupName { .. }), Some(Anchored::Group)) => self.group,
+            _ => None,
+        }
+    }
+
+    /// Forgets which control opened a popup once `overlay` is no longer
+    /// that popup (closed, or replaced by another).
+    pub(crate) fn settle(&mut self, overlay: Option<&Overlay>) {
+        let open = match overlay {
+            Some(Overlay::AddTag { .. }) => Some(Anchored::Tags),
+            Some(Overlay::GroupName { .. }) => Some(Anchored::Group),
+            _ => None,
+        };
+        if self.opened != open {
+            self.opened = None;
+        }
+    }
+}
+
+/// The add-tag (P5-205) or group-name (P5-107) popup of `state`'s
+/// overlay, at `at`.
+pub(crate) fn detail_popup(ctx: &egui::Context, state: &crate::state::State, at: Pos2, out: &mut Vec<Event>) {
+    match state.overlay.clone() {
+        Some(Overlay::AddTag { query, .. }) => {
+            small_window(ctx, at, "Add tag", out, &Command::TagPopup, |ui, out| {
+                let rows = state.tag_popup_rows();
+                let pick = kit::tag_picker(ui, &query, &rows);
+                if let Some(typed) = pick.typed {
+                    out.push(Event::Text(typed));
+                }
+                if let Some(tag) = pick.picked {
+                    out.push(Event::Command(Command::AddTag(tag)));
+                }
+                (!query.trim().is_empty()).then(|| ("Add", Command::AddTag(query.clone())))
+            });
+        }
+        Some(Overlay::GroupName { name }) => {
+            small_window(ctx, at, "Group", out, &Command::GroupPopup, |ui, out| {
+                group_name_field(ui, &name, out);
+                ui.label(egui::RichText::new("Enter groups the selected boxes, Esc cancels").color(INK_3));
+                Some(("Group", Command::SetGroup(Some(name.clone()))))
+            });
+        }
+        _ => {}
+    }
+}
+
+/// The width of a small window, px (`components/Window`).
+const WINDOW_W: f32 = 280.0;
+
+/// Where a small window opens: beside `anchor`, a Details panel control
+/// (its right edge `PAD` left of the canvas's right edge, which is the
+/// right panel's left; its top at the control's top, P5-107, P5-205);
+/// without one, the canvas's top right, `PAD` in. The window's `Area`
+/// keeps it inside the screen.
+pub(crate) fn window_pos(canvas: Rect, anchor: Option<Rect>) -> Pos2 {
+    match anchor {
+        Some(a) => egui::pos2(canvas.max.x.min(a.min.x) - PAD - WINDOW_W, a.min.y),
+        None => egui::pos2(canvas.max.x - PAD - WINDOW_W, canvas.min.y + PAD),
+    }
+}
+
+/// The id of the small window titled `title`, for its `Area`.
+pub(crate) fn window_id(title: &str) -> egui::Id {
+    egui::Id::unique(("c4rizer-window", title))
+}
+
+/// A small window over the canvas at `at` (`window_pos`; `components/
 /// Window`): a 28 px title bar with a close button, the body, and an
 /// optional footer button.
 #[expect(clippy::too_many_arguments, reason = "where, title, the close command, then the body")]
 fn small_window(
     ctx: &egui::Context,
-    canvas: Rect,
+    at: Pos2,
     title: &str,
     out: &mut Vec<Event>,
     close: &Command,
     body: impl FnOnce(&mut egui::Ui, &mut Vec<Event>) -> Option<(&'static str, Command)>,
 ) {
-    let width = 280.0;
-    let pos = egui::pos2(canvas.max.x - 12.0 - width, canvas.min.y + 12.0);
-    egui::Area::new(egui::Id::unique(("c4rizer-window", title)))
-        .fixed_pos(pos)
+    let width = WINDOW_W;
+    // DECISION: constrained to the whole window (egui's content rect), so
+    // a popup anchored low in the Details panel moves up to stay on screen.
+    egui::Area::new(window_id(title))
+        .fixed_pos(at)
+        .constrain_to(ctx.content_rect())
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             kit::overlay_frame(ui).inner_margin(egui::Margin::ZERO).show(ui, |ui| {
@@ -844,6 +966,238 @@ fn small_window(
 
 /// A breadcrumb item: level label then name; hover lifts it unless it is
 /// where you are.
+/// The `File` button and its menu (owner request 2026-11-23): Export ▸
+/// (the current view or the whole workspace, as SVG, PNG or PDF),
+/// Print (not yet), Save, Save as…, Open…, Open recent ▸ (the start
+/// screen's recent-file rows).
+pub(super) fn file_menu(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    let r = Button::new("File").look(Look::Ghost).show(ui);
+    let r = kit::tip(r, "File menu", None);
+    kit::focus_ring(ui, &r);
+    let doc = state.doc.is_some();
+    let view = doc && state.view.is_some() && state.doc.as_ref().is_some_and(|d| d.parsed.is_some());
+    let parsed = state.doc.as_ref().is_some_and(|d| d.parsed.is_some());
+    let svg = super::panels::svg_choice(ui.ctx());
+    egui::Popup::menu(&r).show(|ui| {
+        ui.set_min_width(240.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let export = file_row(ui, "Export", None, true, parsed);
+        // Nothing to export without a parsed file: the row is greyed and
+        // opens nothing.
+        if parsed {
+            egui::containers::menu::SubMenu::new().show(ui, &export, |ui| {
+                ui.set_min_width(240.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                menu_label(ui, "Current view");
+                for (text, format) in [("SVG", svg), ("PNG", ExportFormat::Png), ("PDF", ExportFormat::Pdf)] {
+                    if file_row(ui, text, None, false, view).clicked() {
+                        events.push(Event::Command(Command::ExportView(format)));
+                    }
+                }
+                menu_separator(ui);
+                menu_label(ui, "Whole workspace");
+                for (text, format) in [
+                    ("SVG, one file per view", svg),
+                    ("PNG, one file per view", ExportFormat::Png),
+                    ("PDF, one page per view", ExportFormat::Pdf),
+                ] {
+                    if file_row(ui, text, None, false, parsed).clicked() {
+                        events.push(Event::Command(Command::ExportAll(format)));
+                    }
+                }
+            });
+        }
+        // Not built yet: shown so the menu has its final shape.
+        file_row(ui, "Print… (coming soon)", None, false, false);
+        menu_separator(ui);
+        if file_row(ui, "Save", Some("Ctrl+S"), false, doc).clicked() {
+            events.push(Event::Command(Command::Save));
+        }
+        if file_row(ui, "Save as…", Some("Ctrl+Shift+S"), false, doc).clicked() {
+            events.push(Event::Command(Command::ShowSaveAsDialog));
+        }
+        menu_separator(ui);
+        if file_row(ui, "Open…", Some("Ctrl+O"), false, true).clicked() {
+            events.push(Event::Command(Command::ShowOpenDialog));
+        }
+        let recent = &state.ui.recent;
+        let open_recent = file_row(ui, "Open recent", None, true, true);
+        egui::containers::menu::SubMenu::new().show(ui, &open_recent, |ui| {
+            ui.set_min_width(320.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if recent.is_empty() {
+                file_row(ui, "none yet", None, false, false);
+            }
+            for path in recent {
+                if recent_row(ui, path).clicked() {
+                    events.push(Event::Command(Command::Open(path.clone())));
+                    ui.close();
+                }
+            }
+        });
+    });
+}
+
+/// The Settings menu's content width.
+// DECISION: fixed at 320 px: the segmented controls fill their row, so a
+// free width let them stretch the popup to ~590 px; 320 holds the 96 px
+// label column and "Plain | From box" with room to spare.
+const SETTINGS_MENU_W: f32 = 320.0;
+
+/// The `Settings` button beside `File` and its menu (owner request
+/// 2026-11-23): the open view's settings: its crossing budget
+/// (`maxCrossings`, CORE-17) with the count the view draws, then its line
+/// colours (`lineColours`, P5-309).
+// DECISION: per view, as the DSL writes the budget (owner, 2026-11-23:
+// a budget shared by the file makes no sense across views). The popup
+// stays open on clicks inside, so the budget can be stepped and its
+// effect read off the count below.
+pub(super) fn settings_menu(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    let r = Button::new("Settings").look(Look::Ghost).show(ui);
+    let r = kit::tip(r, "Settings of the open view", None);
+    kit::focus_ring(ui, &r);
+    let budget = state.max_crossings();
+    let drawn = state.scene().map(|s| s.crossings);
+    let line_colours = state.line_colours();
+    egui::Popup::menu(&r)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_width(SETTINGS_MENU_W);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let Some(budget) = budget else {
+                menu_label(ui, "View settings");
+                file_row(ui, "Open a view to change its settings", None, false, false);
+                editor_settings(ui, state, events);
+                return;
+            };
+            menu_label(ui, "View settings");
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                kit::menu_form_row(ui, "Max crossings", |ui| {
+                    let value = budget.to_string();
+                    let items = [
+                        Segment::icon(Icon::Minus, "One crossing fewer (one undo step)"),
+                        Segment::text(&value, "Back to the default, 0 (one undo step)"),
+                        Segment::icon(Icon::Plus, "One crossing more (one undo step)"),
+                    ];
+                    let next = match kit::segmented(ui, &items, true) {
+                        Some(0) => budget.saturating_sub(1),
+                        Some(1) => 0,
+                        Some(_) => budget.saturating_add(1),
+                        None => budget,
+                    };
+                    if next != budget {
+                        events.push(Event::Command(Command::SetMaxCrossings(next)));
+                    }
+                });
+            });
+            if let Some(drawn) = drawn {
+                let (text, ink) = if drawn > budget {
+                    (format!("This view draws {drawn}: above the limit (L4)"), DANGER)
+                } else {
+                    (format!("This view draws {drawn}"), INK_3)
+                };
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).color(ink));
+                });
+            }
+            // P5-309: under "Max crossings" and its count (design section 8).
+            if let Some(mode) = line_colours {
+                use c4rizer_core::model::LineColours;
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    kit::menu_form_row(ui, "Line colours", |ui| {
+                        let choices = [LineColours::Plain, LineColours::Box];
+                        let items = [
+                            Segment::text("Plain", "Every line in the plain line colour (one undo step)")
+                                .on(mode == LineColours::Plain),
+                            Segment::text("From box", "Each line in the colour of the box it points to (one undo step)")
+                                .on(mode == LineColours::Box),
+                        ];
+                        if let Some(i) = kit::segmented(ui, &items, true)
+                            && choices[i] != mode
+                        {
+                            events.push(Event::Command(Command::SetLineColours(choices[i])));
+                        }
+                    });
+                });
+            }
+            editor_settings(ui, state, events);
+        });
+}
+
+/// The Settings menu's "Editor" block, under the view settings (P5-505):
+/// the app's own behaviour, saved in the UI state, never in the file.
+fn editor_settings(ui: &mut egui::Ui, state: &crate::state::State, events: &mut Vec<Event>) {
+    kit::hairline(ui);
+    menu_label(ui, "Editor");
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        let mut on = !state.ui.snap_guides_off;
+        let r = kit::checkbox(ui, &mut on, "Snap to alignment guides");
+        let r = kit::tip(r, "Pull a dragged box onto the lines of other boxes", None);
+        if r.changed() {
+            events.push(Event::Command(Command::SetSnapGuides(on)));
+        }
+    });
+}
+
+/// One recent file (EDIT-13, behaviour change 10): its name in Geist
+/// Medium, then its folder in mono, the full path as tooltip. The start
+/// screen and File > Open recent draw it.
+fn recent_row(ui: &mut egui::Ui, path: &std::path::Path) -> egui::Response {
+    let (r, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::ZERO, BG_RAISED);
+    }
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    // DECISION: a path opened by bare name has an empty parent;
+    // show it as `./`, not as the root `/`.
+    let folder = path.parent().map_or_else(String::new, |p| {
+        if p.as_os_str().is_empty() { "./".to_owned() } else { format!("{}/", p.display()) }
+    });
+    let name_font = egui::FontId::new(12.0, egui::FontFamily::Name(theme::MEDIUM.into()));
+    let g = ui.painter().layout_no_wrap(name, name_font, INK);
+    let nx = r.min.x + 8.0;
+    let name_w = g.size().x;
+    ui.painter().galley(egui::pos2(nx, r.center().y - g.size().y / 2.0), g, INK);
+    let code = theme::code_font();
+    let room = r.max.x - 8.0 - (nx + name_w + 12.0);
+    ui.painter().text(
+        egui::pos2(nx + name_w + 12.0, r.center().y),
+        Align2::LEFT_CENTER,
+        kit::elide(ui, &folder, &code, room),
+        code,
+        INK_3,
+    );
+    response.on_hover_text(path.display().to_string())
+}
+
+/// A File menu row: `kit::menu_row`, then the shortcut in mono at the
+/// right, or a chevron when it opens a submenu.
+fn file_row(ui: &mut egui::Ui, text: &str, key: Option<&str>, submenu: bool, enabled: bool) -> egui::Response {
+    let r = kit::menu_row(ui, None, text, false, enabled);
+    let ink = if enabled { INK_3 } else { INK_DISABLED };
+    if submenu {
+        let at = Rect::from_min_size(egui::pos2(r.rect.max.x - 8.0 - 16.0, r.rect.center().y - 8.0), Vec2::splat(16.0));
+        icons::paint(ui.painter(), Icon::ChevronRight, at, ink);
+    } else if let Some(key) = key {
+        ui.painter().text(egui::pos2(r.rect.max.x - 8.0, r.rect.center().y), Align2::RIGHT_CENTER, key, theme::code_font(), ink);
+    }
+    r
+}
+
+/// A small label heading a group of menu rows.
+fn menu_label(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.label(theme::label(text));
+    });
+}
+
+/// A hairline between groups of menu rows.
+fn menu_separator(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    kit_rule(ui, LINE_2);
+    ui.add_space(4.0);
+}
+
 fn crumb(ui: &mut egui::Ui, level: Option<&str>, name: &str, here: bool) -> egui::Response {
     let font = theme::ui_font();
     let level_job = level.map(|l| {
@@ -950,6 +1304,308 @@ mod tests {
     use super::menu_rows;
     use crate::state::{MenuAction, MenuEntry};
 
+    /// Owner request 2026-11-23: the File menu opens on a click and shows
+    /// every entry; Open recent lists the recent files as the start
+    /// screen does; Open… asks the Open dialog. Without a file, Save,
+    /// Save as and Export are greyed and do nothing.
+    #[test]
+    fn file_menu_opens_with_every_entry() {
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+
+        fn texts(shape: &Shape, out: &mut Vec<(String, Rect)>) {
+            match shape {
+                Shape::Text(t) => out.push((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let ui_state = crate::files::UiState {
+            recent: vec![std::path::PathBuf::from("/d/shop.dsl")],
+            ..Default::default()
+        };
+        let state = crate::state::State::new(ui_state);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::file_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            output.shapes.iter().for_each(|c| texts(&c.shape, &mut shown));
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Pos2 {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| r.center())
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        let file = at(&shown, "File");
+        assert!(!shown.iter().any(|(t, _)| t == "Save as…"), "closed until clicked");
+        frame(click(file));
+        let (shown, _) = frame(Vec::new());
+        for text in ["Export", "Print… (coming soon)", "Save", "Save as…", "Open…", "Open recent", "Ctrl+S", "Ctrl+Shift+S", "Ctrl+O"] {
+            at(&shown, text);
+        }
+        // Greyed without a file: a click on Save does nothing.
+        let (_, events) = frame(click(at(&shown, "Save")));
+        assert!(events.is_empty(), "{events:?}");
+        // Open recent: the start screen's rows.
+        let (mut shown, _) = frame(Vec::new());
+        if !shown.iter().any(|(t, _)| t == "Open recent") {
+            frame(click(file));
+            shown = frame(Vec::new()).0;
+        }
+        frame(vec![E::PointerMoved(at(&shown, "Open recent"))]);
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "shop.dsl");
+        at(&shown, "/d/");
+        // Open… asks the Open dialog.
+        let (_, events) = frame(click(at(&shown, "Open…")));
+        assert!(matches!(events.as_slice(), [Event::Command(Command::ShowOpenDialog)]), "{events:?}");
+    }
+
+    /// Owner request 2026-11-23: the Settings button opens the open
+    /// view's settings; the budget shows as written, a click on it resets
+    /// it to the default, and the popup stays open for the next step.
+    #[test]
+    fn settings_menu_shows_the_view_budget() {
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+        fn texts(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                // A cut label reads with its ellipsis, so a lookup of the
+                // full text fails when it is cut.
+                Shape::Text(t) if t.galley.elided => out.push(format!("{}…", t.galley.text())),
+                Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, mut h) = crate::file_menu_tests::shop("settings-popup");
+        let effects = h.s.handle(Event::Command(Command::SetMaxCrossings(2)));
+        h.run(effects);
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                let mut t = Vec::new();
+                texts(&c.shape, &mut t);
+                shown.extend(t.into_iter().map(|t| (t, c.shape.visual_bounding_rect())));
+            }
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Pos2 {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| r.center())
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        assert!(!shown.iter().any(|(t, _)| t == "MAX CROSSINGS"), "closed until clicked");
+        frame(click(at(&shown, "Settings")));
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "VIEW SETTINGS");
+        // In full: "MAX CROS…" at 1280x800 before (owner report 2026-11-23).
+        at(&shown, "MAX CROSSINGS");
+        assert!(!shown.iter().any(|(t, _)| t.ends_with('…')), "a label is cut: {shown:?}");
+        assert!(shown.iter().any(|(t, _)| t.starts_with("This view draws ")), "{shown:?}");
+        let (_, events) = frame(click(at(&shown, "2")));
+        assert!(matches!(events.as_slice(), [Event::Command(Command::SetMaxCrossings(0))]), "{events:?}");
+        let (shown, _) = frame(Vec::new());
+        at(&shown, "MAX CROSSINGS");
+    }
+
+    /// P5-309: "Line colours" sits in the Settings menu's view settings
+    /// under "Max crossings", shows the view's mode, and a click on the
+    /// other choice asks for it.
+    #[test]
+    fn p5_309_settings_menu_shows_line_colours() {
+        use c4rizer_core::model::LineColours;
+        use eframe::egui::{self, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        use crate::state::{Command, Event};
+        fn texts(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                // A cut label reads with its ellipsis, so a lookup of the
+                // full text fails when it is cut.
+                Shape::Text(t) if t.galley.elided => out.push(format!("{}…", t.galley.text())),
+                Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, h) = crate::file_menu_tests::shop("settings-line-colours-popup");
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> (Vec<(String, Rect)>, Vec<Event>) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                let mut t = Vec::new();
+                texts(&c.shape, &mut t);
+                shown.extend(t.into_iter().map(|t| (t, c.shape.visual_bounding_rect())));
+            }
+            (shown, out)
+        };
+        let at = |shown: &[(String, Rect)], text: &str| -> Rect {
+            shown.iter().find(|(t, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r)| *r)
+        };
+        let click = |p: Pos2| {
+            vec![
+                E::PointerMoved(p),
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                E::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        let (shown, _) = frame(Vec::new());
+        frame(click(at(&shown, "Settings").center()));
+        let (shown, _) = frame(Vec::new());
+        // Both labels in full ("LINE COL…" before), the controls not
+        // stretched past the menu's width.
+        let budget = at(&shown, "MAX CROSSINGS");
+        let colours = at(&shown, "LINE COLOURS");
+        assert!(!shown.iter().any(|(t, _)| t.ends_with('…')), "a label is cut: {shown:?}");
+        assert!(colours.min.y > budget.max.y, "under Max crossings: {colours:?} {budget:?}");
+        let from_box = at(&shown, "From box");
+        assert!(from_box.max.x - colours.min.x <= super::SETTINGS_MENU_W, "{from_box:?} {colours:?}");
+        // Plain is the mode: a click on it asks nothing.
+        let (_, events) = frame(click(at(&shown, "Plain").center()));
+        assert!(events.is_empty(), "{events:?}");
+        let (shown, _) = frame(Vec::new());
+        let (_, events) = frame(click(at(&shown, "From box").center()));
+        assert!(
+            matches!(events.as_slice(), [Event::Command(Command::SetLineColours(LineColours::Box))]),
+            "{events:?}"
+        );
+    }
+
+    /// The Settings menu reads as one menu: "View settings" then, under a
+    /// hairline, "Editor" with its checkbox; both labels in one style at
+    /// one x, the rows' labels and the checkbox at one x (P5-309, P5-505).
+    #[test]
+    fn settings_menu_blocks_read_as_one_menu() {
+        use eframe::egui::{self, Color32, Event as E, PointerButton, Pos2, RawInput, Rect, Shape, Vec2};
+
+        fn walk(shape: &Shape, out: &mut Vec<(String, Rect, Color32)>) {
+            match shape {
+                Shape::Text(t) => {
+                    // A cut label reads with its ellipsis (see above).
+                    let text = if t.galley.elided { format!("{}…", t.galley.text()) } else { t.galley.text().to_owned() };
+                    out.push((text, shape.visual_bounding_rect(), t.fallback_color));
+                }
+                Shape::Rect(r) if r.rect.height() <= 1.0 && r.rect.width() > 100.0 => out.push(("<rule>".to_owned(), r.rect, r.fill)),
+                Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let (_dir, _path, h) = crate::file_menu_tests::shop("settings-blocks");
+        let state = h.s;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let frame = |events: Vec<E>| -> Vec<(String, Rect, Color32)> {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.horizontal(|ui| super::settings_menu(ui, &state, &mut out));
+            });
+            output.textures_delta.clear();
+            let mut shown = Vec::new();
+            for c in &output.shapes {
+                walk(&c.shape, &mut shown);
+            }
+            shown
+        };
+        let at = |shown: &[(String, Rect, Color32)], text: &str| -> (Rect, Color32) {
+            shown.iter().find(|(t, _, _)| t == text).map_or_else(|| panic!("{text:?} not in {shown:?}"), |(_, r, c)| (*r, *c))
+        };
+        let settings = at(&frame(Vec::new()), "Settings").0.center();
+        frame(vec![
+            E::PointerMoved(settings),
+            E::PointerButton { pos: settings, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            E::PointerButton { pos: settings, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+        ]);
+        let shown = frame(Vec::new());
+        let (view, view_ink) = at(&shown, "VIEW SETTINGS");
+        let (budget, _) = at(&shown, "MAX CROSSINGS");
+        let (colours, _) = at(&shown, "LINE COLOURS");
+        let (editor, editor_ink) = at(&shown, "EDITOR");
+        let (snap, _) = at(&shown, "Snap to alignment guides");
+        let rule = shown
+            .iter()
+            .find(|(t, r, _)| t == "<rule>" && r.min.y >= colours.max.y && r.max.y <= editor.min.y)
+            .map_or_else(|| panic!("no hairline between the blocks: {shown:?}"), |(_, r, _)| *r);
+        // Labels in full, the menu no wider than its width (the hairline
+        // spans it).
+        assert!(!shown.iter().any(|(t, _, _)| t.ends_with('…')), "a label is cut: {shown:?}");
+        assert!(rule.width() <= super::SETTINGS_MENU_W + 0.5, "menu {} px wide", rule.width());
+        assert!(rule.width() >= super::SETTINGS_MENU_W - 0.5, "menu {} px wide", rule.width());
+        // Order, top to bottom.
+        assert!(view.max.y <= budget.min.y && budget.max.y <= colours.min.y, "{shown:?}");
+        assert!(colours.max.y <= rule.min.y && rule.max.y <= editor.min.y && editor.max.y <= snap.min.y, "{shown:?}");
+        // One label style, one x for the labels and for the rows.
+        assert_eq!(view_ink, editor_ink, "both block labels in one ink");
+        assert!((view.height() - editor.height()).abs() < 0.5, "one label size: {view:?} {editor:?}");
+        assert!((view.min.x - editor.min.x).abs() < 0.5, "labels aligned: {view:?} {editor:?}");
+        assert!((budget.min.x - colours.min.x).abs() < 0.5, "row labels aligned: {budget:?} {colours:?}");
+        // The checkbox (its 14 px box, 8 px gap, then the text) starts at
+        // the rows' label x.
+        assert!((snap.min.x - 22.0 - colours.min.x).abs() < 1.0, "checkbox aligned: {snap:?} {colours:?}");
+        // Room on both sides of the hairline.
+        let (above, below) = (rule.min.y - colours.max.y, editor.min.y - rule.max.y);
+        assert!(above > 0.0 && below > 0.0, "{above} {below}");
+        // The menu keeps its width from frame to frame.
+        let again = frame(Vec::new());
+        // (Rects only: the popup fades in, so inks change between frames.)
+        assert_eq!(at(&again, "EDITOR").0, editor);
+        assert!(again.iter().any(|(t, r, _)| t == "<rule>" && *r == rule), "{again:?}");
+    }
+
     fn entry(label: &str) -> MenuEntry {
         MenuEntry {
             label: label.to_owned(),
@@ -962,16 +1618,42 @@ mod tests {
     }
 
     /// Behaviour change 5: a box with a URL but no deeper view shows
-    /// `Enter` disabled above the URL entry, split by a rule.
+    /// `Enter` disabled above the URL entry, split by a rule. P5-108
+    /// (owner request 2026-11-23) adds the group pair between them.
     #[test]
     fn box_menu_keeps_its_shape() {
         let url = entry("Open URL https://x.org");
         let rows = menu_rows(std::slice::from_ref(&url), false);
         assert_eq!(
             texts(&rows),
-            [("Enter a view".to_owned(), false, false), ("Open URL https://x.org".to_owned(), true, true)]
+            [
+                ("Enter a view".to_owned(), false, false),
+                ("Group…".to_owned(), false, true),
+                ("Remove from group".to_owned(), false, false),
+                ("Open URL https://x.org".to_owned(), true, true)
+            ]
         );
-        assert_eq!(rows[1].entry, Some(&url));
+        assert_eq!(rows[3].entry, Some(&url));
+    }
+
+    /// P5-108: "Group…" and "Remove from group" are one slot group right
+    /// after "Enter", enabled when offered.
+    #[test]
+    fn p5_108_box_menu_group_slot_after_enter() {
+        let entries = [entry("Enter Containers"), entry("Group…"), entry("Remove from group")];
+        let rows = menu_rows(&entries, false);
+        assert_eq!(
+            texts(&rows),
+            [
+                ("Enter Containers".to_owned(), true, false),
+                ("Group…".to_owned(), true, true),
+                ("Remove from group".to_owned(), true, false),
+                ("Open URL".to_owned(), false, true)
+            ]
+        );
+        let rows = menu_rows(&entries[..2], false);
+        assert_eq!(rows[2].text, "Remove from group");
+        assert!(rows[2].entry.is_none(), "greyed when no selected box is in a group");
     }
 
     /// Behaviour change 5: a bundled line without pins or URL shows the
@@ -1009,9 +1691,15 @@ mod tests {
     #[test]
     fn menu_with_no_entry_is_all_disabled() {
         let box_rows = menu_rows(&[], false);
+        // P5-108 (owner request 2026-11-23) adds the group pair.
         assert_eq!(
             texts(&box_rows),
-            [("Enter a view".to_owned(), false, false), ("Open URL".to_owned(), false, true)]
+            [
+                ("Enter a view".to_owned(), false, false),
+                ("Group…".to_owned(), false, true),
+                ("Remove from group".to_owned(), false, false),
+                ("Open URL".to_owned(), false, true)
+            ]
         );
         let line_rows = menu_rows(&[], true);
         assert!(!line_rows.is_empty());

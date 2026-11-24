@@ -8,6 +8,7 @@
 //! (docs/plans/phase2-decisions.md Part B, editor-breadth rows 5 and 6).
 //! Test data uses roles, never personal names.
 
+use c4rizer_core::model::ElementKey;
 use c4rizer_core::edit::{Edit, RelationshipRef, apply};
 use c4rizer_core::model::{self, Model, ModelErrorKind, PaperSize, Parsed, Routing};
 use c4rizer_core::view;
@@ -75,7 +76,7 @@ fn apply_and_undo(src: &str, edits: &[Edit]) -> (String, String) {
 }
 
 fn rel(source: &str, destination: &str, ordinal: u32) -> RelationshipRef {
-    RelationshipRef::new(source, destination, ordinal)
+    RelationshipRef::new(ElementKey::from_written(source), ElementKey::from_written(destination), ordinal)
 }
 
 /// The view's line for the relationship `r` resolves to, in `src`.
@@ -198,8 +199,8 @@ fn p2_708_set_line_position_edit() {
     // O9: the plan folds the view's line over the relationship style.
     let m = model_of(&text);
     let plan = view::plan(&m, m.view("containers").expect("view"));
-    let clerk = m.find("clerk").expect("clerk");
-    let web = m.find("web").expect("web");
+    let clerk = m.find_written("clerk").expect("clerk");
+    let web = m.find_written("web").expect("web");
     let id = m.find_relationship(clerk, web)[0];
     let edge = plan.edges.iter().find(|e| e.winner() == id).expect("edge");
     assert_eq!(edge.style.position, Some(70));
@@ -247,7 +248,7 @@ fn p2_709_set_line_routing_edit() {
     let edge = plan
         .edges
         .iter()
-        .find(|e| m.relationship(e.winner()).destination.value == m.find("db").expect("db"))
+        .find(|e| m.relationship(e.winner()).destination.value == m.find_written("db").expect("db"))
         .expect("edge");
     assert_eq!(edge.style.routing, Some(Routing::Curved));
     // Case is ignored when parsing.

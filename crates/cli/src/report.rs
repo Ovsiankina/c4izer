@@ -228,7 +228,7 @@ pub(crate) fn violations(out: &mut impl Write, model: &Model, shown: &[Violation
     let element = |id| {
         model
             .full_key(id)
-            .unwrap_or_else(|| Quoted(&model.element(id).name.value).to_string())
+            .map_or_else(|| Quoted(&model.element(id).name.value).to_string(), c4rizer_core::model::ElementKey::into_string)
     };
     for v in shown {
         write!(out, "{} {}", v.severity.keyword(), v.inspection.key())?;

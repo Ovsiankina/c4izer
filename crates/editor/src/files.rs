@@ -49,7 +49,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use c4rizer_core::model::ViewKind;
+use c4rizer_core::model::{ElementKey, ViewKind};
 
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM, ScenePoint};
 use crate::worker::{ExportFormat, ViewRef, Wake};
@@ -441,6 +441,14 @@ pub struct UiState {
     pub recent: Vec<PathBuf>,
     /// Per file, by the path as opened.
     pub files: BTreeMap<PathBuf, FileMemory>,
+    /// Settings > Editor > "Snap to alignment guides" is off (P5-505);
+    /// `false`, the default, is on. Saved as `pref\tsnap-guides\toff`.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    pub snap_guides_off: bool,
+    /// Per file, by the path as opened, the view-list folders folded
+    /// (P5-604); a file with none folded has no entry. PENDING SIGN-OFF:
+    /// new pub field (owner request 2026-11-23, issue #11).
+    pub folded: BTreeMap<PathBuf, std::collections::BTreeSet<crate::view_folders::ViewFolder>>,
 }
 
 /// The most recent files kept (EDIT-13).
@@ -483,6 +491,15 @@ impl UiState {
                     };
                     state.files.insert(PathBuf::from(path), FileMemory { view, camera });
                 }
+                [key, name, value] if key == "pref" && name == "snap-guides" => {
+                    state.snap_guides_off = value == "off";
+                }
+                // P5-604: `fold\t<folder>\t<path>`, an unknown folder skipped.
+                [key, folder, path] if key == "fold" => {
+                    if let Some(folder) = crate::view_folders::ViewFolder::from_key(folder) {
+                        state.folded.entry(PathBuf::from(path)).or_default().insert(folder);
+                    }
+                }
                 _ => {}
             }
         }
@@ -516,6 +533,17 @@ impl UiState {
                 c.zoom,
                 escape(p)
             );
+        }
+        // DECISION: only the non-default "off" is written, so a state file
+        // without preferences reads and writes back byte for byte.
+        if self.snap_guides_off {
+            out.push_str("pref\tsnap-guides\toff\n");
+        }
+        for (path, folded) in &self.folded {
+            let Some(p) = path.to_str() else { continue };
+            for folder in folded {
+                let _ = writeln!(out, "fold\t{}\t{}", folder.key(), escape(p));
+            }
         }
         out
     }
@@ -577,6 +605,7 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
     let label = match format {
         ExportFormat::Svg | ExportFormat::SvgEmbedded | ExportFormat::SvgOutlined => "SVG image",
         ExportFormat::Png => "PNG image",
+        ExportFormat::Pdf => "PDF document",
         ExportFormat::PlantUml | ExportFormat::C4PlantUml => "PlantUML",
         ExportFormat::Mermaid => "Mermaid",
         ExportFormat::WebSequenceDiagrams => "WebSequenceDiagrams",
@@ -590,6 +619,33 @@ pub fn save_dialog(dir: &Path, name: &str, format: ExportFormat) -> Option<PathB
         .set_directory(dir)
         .set_file_name(name)
         .add_filter(label, &[format.extension()])
+        .save_file()
+}
+
+/// The save dialog for "every view as one PDF" (File > Export, owner
+/// request 2026-11-23): starts in `dir` with the file name `name`;
+/// `None` on cancel.
+#[must_use]
+pub(crate) fn export_document_dialog(dir: &Path, name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export every view as one PDF")
+        .set_directory(dir)
+        .set_file_name(name)
+        .add_filter("PDF document", &["pdf"])
+        .save_file()
+}
+
+/// The save dialog for File > Save as… (owner request 2026-11-23):
+/// starts in `dir` with the file name `name`, filtered to `.dsl` files
+/// with an "all files" fallback; `None` on cancel.
+#[must_use]
+pub(crate) fn save_as_dialog(dir: &Path, name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Save diagram file as")
+        .set_directory(dir)
+        .set_file_name(name)
+        .add_filter("c4rizer diagram", &["dsl"])
+        .add_filter("All files", &["*"])
         .save_file()
 }
 
@@ -784,13 +840,17 @@ fn view_from_text(s: &str) -> Option<ViewRef> {
         .into_iter()
         .find(|k| k.keyword() == kind)?;
     Some(ViewRef::Default {
-        scope: scope.to_owned(),
+        // DECISION: the state file holds the canonical key the editor
+        // wrote (`view_to_text`), read back as is; a stale one simply
+        // finds no element and the view falls back (EDIT-13).
+        scope: ElementKey::from_written(scope),
         kind,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use c4rizer_core::model::ElementKey;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver};
@@ -872,7 +932,7 @@ mod tests {
             dir.join("other\tname.dsl"),
             FileMemory {
                 view: ViewRef::Default {
-                    scope: "shop".to_owned(),
+                    scope: ElementKey::from_written("shop"),
                     kind: ViewKind::Container,
                 },
                 camera: Camera::default(),
@@ -886,6 +946,33 @@ mod tests {
         assert!(!text.contains("Operator") && !text.contains("secret"), "{text}");
         assert_eq!(UiState::load(&dir.join("missing")), UiState::default());
         assert_eq!(UiState::parse("garbage\nfile\tx\n"), UiState::default());
+    }
+
+    /// P5-505 and P5-604 together: a state with the `pref\tsnap-guides\toff`
+    /// line and `fold` lines writes both and parses back to itself, in
+    /// either line order (guards the merge of the two branches).
+    #[test]
+    fn p5_505_p5_604_pref_and_fold_lines_round_trip() {
+        use crate::view_folders::ViewFolder;
+        let mut state = UiState {
+            snap_guides_off: true,
+            ..UiState::default()
+        };
+        state.opened(Path::new("/d/shop.dsl"));
+        state
+            .folded
+            .insert(PathBuf::from("/d/shop.dsl"), [ViewFolder::C2, ViewFolder::Other].into());
+        state.folded.insert(PathBuf::from("/d/a\tb.dsl"), [ViewFolder::C1].into());
+        let text = state.to_text();
+        assert!(text.contains("pref\tsnap-guides\toff\n"), "{text}");
+        assert_eq!(text.matches("fold\t").count(), 3, "{text}");
+        assert_eq!(UiState::parse(&text), state);
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines.reverse();
+        let reversed = lines.join("\n") + "\n";
+        let back = UiState::parse(&reversed);
+        assert!(back.snap_guides_off);
+        assert_eq!(back.folded, state.folded);
     }
 
     /// EDIT-13: re-opening a path moves it to the front; the list stops

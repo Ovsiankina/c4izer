@@ -314,7 +314,7 @@ fn element_json(ws: &Workspace<'_>, e: &Element) -> Value {
     }
     let mut props = Obj::default();
     if let Some(k) = model.full_key(e.id) {
-        props.put("structurizr.dsl.identifier", Value::str(k));
+        props.put("structurizr.dsl.identifier", Value::str(k.into_string()));
     }
     for (k, v) in props_obj(&e.properties).0 {
         props.put(&k, v);

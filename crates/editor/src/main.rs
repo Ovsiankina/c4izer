@@ -32,25 +32,40 @@ mod explore;
 mod explore_tests;
 #[cfg(test)]
 mod exporters_tests;
+#[cfg(test)]
+mod file_menu_tests;
 // The CLI's export files and output guards, one source for both (P3-431).
 #[path = "../../cli/src/export_files.rs"]
 mod export_files;
 mod files;
+#[cfg(test)]
+mod guides_tests;
 mod history;
 mod icons;
 mod kit;
 #[cfg(test)]
 mod label_drag_tests;
 #[cfg(test)]
+mod map_tree_tests;
+#[cfg(test)]
 mod landscape_filtered_tests;
+#[cfg(test)]
+mod lint_resolve_tests;
 mod state;
 #[cfg(test)]
 mod styles_themes_tests;
+#[cfg(test)]
+mod line_style_tests;
+#[cfg(test)]
+mod tags_groups_tests;
 #[cfg(test)]
 mod testutil;
 mod theme;
 #[cfg(test)]
 mod vertices_tests;
+mod view_folders;
+#[cfg(test)]
+mod view_folders_tests;
 mod view_map;
 #[cfg(test)]
 mod view_map_tests;

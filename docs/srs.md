@@ -533,8 +533,10 @@ Views and rendering
   description 11px Inter Regular on a 14px pitch, with 10px padding;
   lines are 2px wide, arrowheads 10px, chevrons 6px, and join dots
   have a 4px radius.
-- **CORE-3** Every line takes the colour of the box it points to,
-  unless a relationship style sets its colour (P2-12).
+- **CORE-3** Every line is drawn in the plain line colour (`dg-line`,
+  redesign 2026-11-19), unless a relationship style sets its colour
+  (P2-12); a view opts in to the colour of the box a line points to
+  with `lineColours box` (P5-300).
 - **CORE-4** With `technology off`, no technology appears on any line
   of that view.
 - **CORE-5** A relationship between two elements not both in the view
@@ -897,7 +899,11 @@ Editing
   (EDIT-28) move together, and can be aligned (left, centre, right,
   top, middle, bottom) and distributed evenly.
 - **EDIT-21** The app never creates or deletes elements or
-  relationships; it changes text, layout and style only (section 2).
+  relationships; it changes text, layout, style, tags and groups only
+  (section 2). A tag and a group are neither elements nor
+  relationships: adding or removing a tag (P5-200) and moving a
+  declaration into or out of a group, writing or removing the group
+  block (P5-100), are allowed.
 - **EDIT-26** The first write in a view (move or resize) writes an `at`
   line for every box of that view at its current position, as one undo
   step; after that a move changes only the moved box's line (DSL-9).
@@ -2471,8 +2477,9 @@ Note after it is not part of the sentence.
 
 **Viewing aids (split from P2-24)**
 
-- **P2-713** Up or Right opens the previous view of the view list
-  (`State::views`, EDIT-8, ordered per P2-716), and Down or Left opens
+- **P2-713** Up or Right opens the previous view of the view list as
+  displayed (in its folders, folded ones skipped: P5-605 supersedes the
+  plain `State::views` order), and Down or Left opens
   the next, unless P2-712 gives the key elsewhere. The reference reads:
   "`Up arrow` Navigate to the previous diagram", "`Down arrow` … next",
   "`Left arrow` … next", "`Right arrow` … previous". TODO(srs): the
@@ -2612,7 +2619,8 @@ Note after it is not part of the sentence.
 - **P2-736** The style panel's shape choice is a single drop-down, never
   wrapped over lines.
 - **P2-737** The view list shows each view on one line (title truncated
-  with an ellipsis, then the key); the full title is a tooltip.
+  with an ellipsis, then the key), under its folder's header (P5-602);
+  the full title is a tooltip.
 - **P2-738** A fitted view keeps box and label text at least 9px high on
   screen: when fitting would go smaller, the fit stops at that zoom and
   the view can be panned. `TODO(srs)`: confirm 9px after measuring.
@@ -3451,9 +3459,11 @@ view-map
 - **P4-110** Hovering a node shows the view's full title.
 - **P4-111** When a row is wider than the section, node widths shrink
   evenly to fit it, down to the widest tag (keys are cut with "…", tags
-  stay whole, the full name is the hover text); a map still larger than
-  its section scrolls in both directions with visible scroll bars, and
-  its text keeps the view list's font size.
+  stay whole, the full name is the hover text); a map still wider than
+  its section is drawn as the tree list of P5-700 (owner request
+  2026-11-23, superseding the sideways scroll), a map taller than its
+  section scrolls vertically, and its text keeps the view list's font
+  size.
 - **P4-112** The map is built once per parse of the file and reused by
   every frame until the next parse.
 
@@ -4030,6 +4040,360 @@ included; lines still cross a boundary square or at 45°.
 - **P4-602** On every view of `example.dsl` and `example/workspace.dsl`
   the length P4-600 and P4-601 measure is 0, and the four goldens
   (CLI-5) are unchanged.
+
+### 4.9 Phase 5
+
+Owner requests of 2026-11-23 (GitHub issues #1 to #11, OR-11 to OR-21):
+groups and tags from the editor, line colour, lint resolve, alignment
+guides, C-level folders in the view list, a tree fallback for the view
+map. One testable sentence each; ids are allocated per row:
+editor-groups P5-100.., editor-tags P5-200.., line-colour P5-300..,
+lint-resolve P5-400.., align-guides P5-500.., view-folders P5-600..,
+map-tree P5-700.., benchmarks P5-900..
+
+editor-groups
+
+- **P5-100** `Edit::SetGroup` with a group name moves the named
+  declarations (persons, software systems, containers, components that
+  share one parent scope: the model, one software system or one
+  container), in source order, each whole with its block and
+  re-indented, to the end of the body of the group of that name
+  declared directly in that scope; when there is none it first writes
+  `group "<name>" {` and `}` where the first moved declaration, or the
+  scope-level group holding it, stood.
+- **P5-101** `Edit::SetGroup` with no name moves each named declaration
+  that sits in a group out to its scope, right after the scope-level
+  group holding it; a declaration in no group is left as it is.
+- **P5-102** A group block that a `SetGroup` leaves with no statement
+  and no comment, and that has no identifier, is removed; a group is
+  never nested by `SetGroup`.
+- **P5-103** `SetGroup` changes no element key, relationship, view,
+  `at`, `size` or `via` line: the parse after it has the same elements
+  under the same canonical keys and the same relationships.
+- **P5-104** `SetGroup` is refused (`InvalidValue`) and writes nothing
+  when the list is empty, the name is blank or holds a line break, an
+  element is of another kind, the elements do not share one parent
+  scope, or a declaration is in another file than its scope's block; a
+  one-line block holding a moved declaration is first split onto lines
+  (DSL-9).
+- **P5-105** The inverse of a `SetGroup` restores the file byte for
+  byte; it is refused, writing nothing, when the scope's body changed
+  since.
+- **P5-106** With one or more boxes of one parent scope selected, the
+  Details section shows a "Group" select with "None", the groups
+  declared directly in that scope and "New group…"; picking "None" or a
+  group writes one `SetGroup` for every selected box, one undo step,
+  and keeps the selection.
+- **P5-107** "New group…", the context menu's "Group…" and Ctrl+G open
+  a name popup prefilled "Group", the prefill selected so the first
+  typed character replaces it: Enter writes the `SetGroup` with the
+  trimmed name, Escape closes it writing nothing, and an empty name is
+  refused with a notice. Opened from "New group…" the popup sits beside
+  the Group select, left of the right panel, its top at the select's
+  top, moved up only as far as needed to stay inside the window; opened
+  by Ctrl+G or the context menu it sits at the canvas's top right.
+- **P5-108** The context menu of a box selection has, in one group
+  after "Enter", "Group…" and, when a selected box is in a group,
+  "Remove from group" (Ctrl+Shift+G), which writes `SetGroup` with no
+  name for the selected boxes.
+- **P5-109** When the selected boxes do not share a parent scope the
+  Group select is disabled with the hint "Boxes must share a parent",
+  the menu's group entries are greyed and Ctrl+G does nothing.
+
+editor-tags
+
+- **P5-200** `Edit::AddTag` on an element or a relationship writes
+  `tags "<tag>"` as the last line of its block, creating the `{ }`
+  block when it has none; a tag the target already carries (implicit
+  tags included) writes nothing and has an empty inverse, and the
+  inverse of a write gives the bytes back.
+- **P5-201** `Edit::RemoveTag` removes every declared occurrence of the
+  tag on its target, wherever written (positional string, `tags` line,
+  `tag` line, comma list), and the literal, line or block that then
+  holds nothing; a tag the target does not declare (`Element`, its kind
+  tag, `Relationship`, an archetype's tags) is refused
+  (`InvalidValue`).
+- **P5-202** The inverse of a `RemoveTag` restores the file byte for
+  byte, tag order included; it is refused, writing nothing, when the
+  target's statement changed since.
+- **P5-203** A tag is trimmed; an empty tag or one holding `"`, `,` or
+  a line break is refused (`InvalidValue`).
+- **P5-204** The Details section's Tags row shows a box's or a line's
+  tags as chips: a tag every selected item declares has a remove mark
+  on hover that writes `RemoveTag`, the others are plain, and a last
+  "+" chip opens the add-tag popup; a read-only file shows plain chips
+  only.
+- **P5-205** The add-tag popup has a text field and, below it, the
+  existing tags of the selection's kind (declared on any element, resp.
+  relationship, or named by an `element`, resp. `relationship`, style)
+  that contain the typed text (any case), minus the tags every selected
+  item carries; Enter adds the typed text, a click on a row adds that
+  tag, Escape closes. Opened from the Tags row's `+` it sits beside that
+  row as P5-107's popup sits beside the Group select.
+- **P5-206** With several boxes, or several lines, selected the Tags
+  row shows the tags they all carry and "+" and the remove mark apply
+  to every selected item as one undo step; a selection of boxes and
+  lines together shows no Tags row.
+
+line-colour
+
+- **P5-300** A view body line `lineColours box` (also spelt
+  `lineColors`, keyword and value in any case) draws every line of
+  that view that no relationship style colours in the fill of the box
+  it points to; `lineColours plain`, or no such line, draws them in
+  the plain line colour (CORE-3).
+- **P5-301** A `lineColours` line with a value other than `plain` or
+  `box`, with no value or with more than one is a parse error naming
+  `lineColours`; a second `lineColours` line in one view wins over the
+  first, with a notice naming the earlier line.
+- **P5-302** `lineColours` is accepted in every view kind that draws
+  lines (system landscape, system context, container, component,
+  dynamic, deployment, custom) and refused in an image view.
+- **P5-303** In a `lineColours box` view a colour from a relationship
+  style still wins over the end box's fill.
+- **P5-304** In a `lineColours box` view a line whose end box's fill
+  has a contrast ratio under 1.3 against the page is drawn in the plain
+  line colour.
+- **P5-305** In a `lineColours box` view, when the lines A->B and B->A
+  are both drawn, both take the fill of the more connected of A and B:
+  the one more drawn lines of the view touch (in plus out); on a tie
+  the one more lines end at; then the one whose element is declared
+  first.
+- **P5-306** A line's colour does not depend on box positions: moving
+  a box (`Scene::move_box`, the drag preview's rebuild after a move, a
+  full build) leaves every line's colour as it was.
+- **P5-307** In a `lineColours box` view label texts keep their colour
+  rule, a callout's leader and shelf take their line's colour, and the
+  key keeps one `Relationship` entry per line look, its swatch in the
+  plain line colour when the lines of that entry differ in colour.
+- **P5-308** `Edit::SetLineColours` rewrites the value of the view's
+  `lineColours` line in place (keeping the keyword's spelling), adds a
+  `lineColours <mode>` line after the view's last `labelWidth`, `bus`,
+  `technology`, `maxCrossings`, `labels` or `crossings` line, else its
+  last `include` line, else before the closing brace, or removes the
+  line for `None`; its inverse gives the text back byte for byte when
+  the line was where an added line goes.
+- **P5-309** The editor's Settings menu shows, under "Max crossings"
+  and its count, a "Line colours" row with the choices `Plain` and
+  `From box` for the open view; choosing the other mode writes it as
+  one undo step (`From box` adds `lineColours box`, `Plain` removes
+  the line), choosing the current one writes nothing.
+- **P5-310** A view whose `lineColours` is `plain` or absent draws
+  exactly as before this row: the four goldens (CLI-5) are unchanged
+  with `lineColours plain` written in every view.
+- **P5-311** The text exporters (PlantUML, Mermaid,
+  WebSequenceDiagrams, DOT, Ilograph, theme JSON) give the same output
+  for a model with `lineColours box` in every view as without it, and
+  the workspace JSON export runs on it.
+- **P5-312** The end-box colour pass runs once per scene build, only in
+  a `lineColours box` view, in O(n log n) time for n drawn lines; its
+  benchmarks (P5-900) time the scene build of `C3-serving` of
+  `example.dsl` plain and `box`, and the pass alone on generated views
+  of 40 boxes / 60 lines and 1000 boxes / 3000 lines.
+- **P5-350** `Edit::SetLineStyle` with `LineStyleTarget::ThisLine` and
+  a colour gives the relationship a per-line tag, `<source>-><destination>`
+  (the ends' full dotted ids) suffixed `-2`, `-3`... when another
+  relationship already carries it, as a `tags` line at the end of its
+  block (the block created when it has none), and writes `color
+  #rrggbb` in a `relationship "<tag>"` block added at the end of
+  `styles` (`styles` and `views` created when missing, as DSL-13); a
+  later change rewrites that value in place.
+- **P5-351** `Edit::SetLineStyle` with `LineStyleTarget::Tag(t)` writes
+  the colour in the file's last top-level `relationship "t"` block that
+  sets it, else as a new line of the last such block, else in a new
+  block at the end of `styles`; a tag the relationship does not carry,
+  a relationship copied between instances, or a relationship that no
+  longer resolves is refused and nothing is written.
+- **P5-352** A `None` colour removes the `color` line, then the
+  `relationship "<tag>"` block, `styles` and `views` when they hold
+  nothing else; for `ThisLine` the per-line tag goes too once no block
+  of it is left.
+- **P5-353** `Edit::ResetLineStyle` removes the properties of the
+  relationship's per-line `relationship "<tag>"` blocks (each whole
+  block unless it holds a comment) and the per-line tag; a relationship
+  with no per-line tag writes nothing.
+- **P5-354** The inverse of `SetLineStyle`, and of a `ResetLineStyle`
+  of a per-line style `SetLineStyle` wrote, gives the text back byte for
+  byte.
+- **P5-355** A line's colour is, first to last: its per-line colour,
+  the colour of the later declared of its tags' `relationship` styles,
+  the `Relationship` style, the end box's fill in a `lineColours box`
+  view (P5-300), the plain line colour.
+- **P5-356** A drawn line that stands for several relationships takes
+  the style of its winner (`PlanEdge.relationships[0]`, the
+  relationship a click on the line selects), and styling the winner
+  recolours that line.
+- **P5-357** With lines and no box selected, the right panel shows
+  "Style · N line(s)" with the rows "Apply to" (`this line only`, then
+  `all <tag>` for each tag every selected line carries), "Colour" (a
+  swatch of the colour the lines are drawn in when they agree) and
+  "Reset to tag style"; a colour pick or a reset applies to every
+  selected line as one undo step.
+- **P5-358** The Details Tags row (P5-204..P5-206) adds and removes
+  tags on the selected lines, several lines as one undo step.
+- **P5-359** DSL with no per-line tag parses, draws and exports as
+  before: a `SetLineStyle` and its undo leave the text, and so the four
+  goldens (CLI-5), unchanged.
+- **P5-360** Its benchmark (P5-900) times `SetLineStyle` this line,
+  apply, on `tests/data/example/workspace.dsl`.
+
+lint-resolve
+
+- **P5-400** `resolve::resolve` of an L6 finding moves its two boxes
+  apart, centres on the 10px grid, so that once the moves are written
+  and the view rebuilt the two boxes are at least 60px apart edge to
+  edge; label "Move apart".
+- **P5-401** The L6 move is the first of these candidates that brings
+  no other box closer than 60px to a moved box than it was, else the
+  first: both boxes half each along the axis needing the smaller push
+  (x on a tie), both half each along the other axis, only the second
+  box, only the first box (the last two along the smaller-push axis).
+- **P5-402** `resolve` of an L5 finding snaps the line it points at:
+  the `at` line to the centre the scene draws (10px grid), or the
+  `size` line to the size the scene draws (20px steps); label "Snap to
+  grid"; rebuilt, that L5 finding is gone.
+- **P5-403** `resolve` of an L25 finding on a box sets its size to the
+  smallest-area size in 20px steps, no side smaller than now, at which
+  `scene::texts_fit` holds; label "Fit text"; rebuilt, the box has no
+  L25 finding.
+- **P5-404** `resolve` of a finding of any other rule, of an L25
+  finding on a label or boundary, or of an L25 box no size up to 1200px
+  fits, gives `None`; `resolve_all` gives `None` when no finding has a
+  resolution.
+- **P5-405** `resolve_all` gives one resolution ("Resolve all") for
+  every finding of a report: the L5 snaps, the L25 boxes grown, then
+  every box moved by at most 32 relaxation passes until no two boxes
+  are closer than 60px; on a crowded 40-box view, written and rebuilt,
+  no L5 or L6 finding is left.
+- **P5-406** The editor knows which findings of the shown build have a
+  resolution as soon as the build is shown (not per frame); a Lint row
+  of such a finding has a ghost "Resolve" button at its right whose tip
+  is the resolution's label, and a click on the rest of the row still
+  selects the finding's items.
+- **P5-407** Resolve writes through the move and resize write path
+  (EDIT-26 first write included) as one undo step; Undo restores the
+  file byte for byte.
+- **P5-408** With two or more resolvable findings the Lint section's
+  header shows a ghost "Resolve all" button, right-aligned before the
+  count (tip "Resolves N of M findings"; left out when the header has no
+  room beside its title), which writes `resolve_all` as one undo step
+  and does not fold the section; Undo restores the file byte for byte.
+- **P5-409** A resolve the write path refuses (file read-only, a write
+  still in flight, workspace JSON) writes nothing and shows that path's
+  usual notice.
+
+align-guides
+
+- **P5-500** When a box drag starts, the editor builds once an index of
+  the left, centre and right (x) and top, centre and bottom (y) lines of
+  every box not being dragged, sorted per axis, with the dragged boxes'
+  bounding rect; a drag of several boxes uses that bounding rect.
+- **P5-501** On each pointer move, after the 10px grid snap, the dragged
+  rect is pulled onto the nearest index line within 6 screen px (divided
+  by the zoom) of one of its three lines per axis; the release writes
+  the pulled centres.
+- **P5-502** A pull is taken only when it is a whole number of 10px
+  steps, so every dragged centre stays on the grid (no L5); a nearer
+  line off that step is skipped for a farther one on it.
+- **P5-503** While dragging, for each axis, every index line equal to a
+  line of the dragged rect at its final position draws one guide
+  segment, spanning the dragged rect and every box on that line, plus
+  12px at each end.
+- **P5-504** A drag of several boxes is pulled and guided by their
+  bounding rect.
+- **P5-505** Settings > Editor > "Snap to alignment guides" (a
+  checkbox, on by default) turns the pull off: guides still show on
+  exact alignment; the choice is saved in the UI state file as
+  `pref\tsnap-guides\toff` (absent: on) and read back.
+- **P5-506** Guides clear on pointer up and when the drag is cancelled
+  (view switch, reload dropping it).
+- **P5-507** Guides are painted as marks (`Source::Guide`): 1px solid
+  paths in the mark colour, after the selection marks and the resize
+  outline, before the rubber band (EDIT-12).
+
+view-folders
+
+- **P5-600** One function (`view_folders::folder_of`, built on the view
+  map's levels) puts every view of the view list in one folder: C1
+  "Context" (system landscape and system context views), C2
+  "Containers" (container views), C3 "Components" (component views), C4
+  "Code" (image views scoped to a component), Other "Other" (dynamic,
+  deployment, custom and every other image view); a filtered view goes
+  in its base's folder, an unwritten default view (EDIT-15) by its kind.
+- **P5-601** The view list shows only non-empty folders, in the order
+  C1, C2, C3, C4, Other; inside a folder the views keep the view-list
+  order (declaration, or `structurizr.sort`, P2-716).
+- **P5-602** A folder header is one `SIZE_ROW` row: a chevron, the
+  folder key in the key column's font and colour, the label, and the
+  folder's view count right-aligned in `INK_3`; its view rows keep their
+  key column, indented by one chevron width; at panel widths of 100, 120
+  and 220 px every header and view row is one line and no text is
+  painted past the panel's right edge. The key column, at most 104 px,
+  is as wide as the widest folder key or key of a view with a title; a
+  view with no title of its own shows its key alone across its whole
+  row, cut with an ellipsis only at the row's edge, so twelve keys
+  `Components-service-0` .. `-11` read apart at 220 px.
+- **P5-603** A click on a folder header, or Enter or Space while it has
+  keyboard focus, folds or unfolds the folder; a folded folder shows its
+  header only; a folded folder holding the view on screen shows an
+  `ACCENT` dot on its header.
+- **P5-604** Fold state is kept in `State` per file (by the path as
+  opened) and saved in the UI state file as `fold\t<folder>\t<path>`
+  lines, so reopening the file restores it; unknown folders are skipped.
+- **P5-605** Previous/Next view (P2-713) walk the view list as
+  displayed, folder by folder, and skip the views of folded folders; the
+  view on screen keeps its place in the walk even when its folder is
+  folded.
+- **P5-606** The folder list (and the key column's width) is built once
+  per parse and view change, not per frame; the list draws only the rows
+  in sight, and one frame of a 500-view list stays well under 16 ms
+  (release, `perf_p5_606_*`).
+- **P5-607** Hovering a folder header shows, after the tooltip delay, a
+  card at most 260 px wide: the title in `strong_font` ("C1 · System
+  context", "C2 · Container", "C3 · Component", "C4 · Code", "Other"),
+  then the sentence of issue #10, verbatim: C1 "The starting point; how
+  the software system in scope fits into the world around it.", C2
+  "Zooms into the system; the applications and data stores inside it.",
+  C3 "Zooms into one container; the components inside it.", C4 "Zooms
+  into one component; how it is implemented at the code level (e.g. UML
+  class diagram).", Other "Supplementary diagrams: dynamic, deployment,
+  custom and image views."
+
+map-tree
+
+- **P5-700** When the view map cannot fit its section's width even with
+  every node at its floor width (P4-111's minimum), the section draws a
+  tree list instead of the node graph; when the graph fits, the graph is
+  drawn as before, and it comes back as soon as the section is wide
+  enough again.
+- **P5-701** The tree list shows one view per line, 20 px high, in the
+  map's mono font: the `├─ `, `└─ ` and `│  ` prefixes of `tree` in
+  `INK_3`, then the view's key, then its title cut with an ellipsis to
+  the room left.
+- **P5-702** A view's parent in the tree is the node it is entered from
+  in the map's drawn (reduced) links; with several, the one of the
+  lowest level, then the first in map order (the view-list order of
+  P4-101); views with no parent are roots, and roots and siblings are in
+  map order.
+- **P5-703** The current view's tree row has an `ACCENT_SOFT` fill and
+  its key in `ACCENT`, and is scrolled into sight when the view changes;
+  a hovered row has a `BG_ACTIVE` fill and the node's hover text
+  (P4-110); a click on a row opens its view as a node click does
+  (P4-109).
+- **P5-704** The tree list is never wider than its section and scrolls
+  vertically only; it never shows a horizontal scroll bar.
+- **P5-705** The tree rows are computed in `ViewMap::build`, with the
+  map, once per parse (P4-112), never per frame; the panel lays out only
+  the rows in sight (release, `perf_p5_705_*`).
+
+benchmarks
+
+- **P5-900** Every row of this phase has timing tests named
+  `perf_p5_*`, `#[ignore]`d and skipped in debug, each printing one
+  tab-separated `BENCH` line (id, feature, what, input, median, min,
+  max, runs, budget, in microseconds) and failing when its median is
+  over its budget; `docs/benchmarks.md` is the datasheet of the last
+  run.
 
 ## 5. Cross-cutting
 

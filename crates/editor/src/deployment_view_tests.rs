@@ -2,6 +2,7 @@
 //! headlessly like `state`'s own tests: effects run synchronously with
 //! `files` and `worker::serve`.
 
+use c4rizer_core::model::ElementKey;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
@@ -75,14 +76,14 @@ impl Shell {
     }
 
     fn box_centre(&self, key: &str) -> ScreenPoint {
-        let id = self.model().find(key).expect("element");
+        let id = self.model().find_written(key).expect("element");
         let b = self.scene().boxes_of(id)[0];
         self.s.camera.to_screen(self.scene().boxes[b.0 as usize].rect.centre())
     }
 
     /// A point on the tag of deployment node `key`'s boundary.
     fn node_tag(&self, key: &str) -> ScreenPoint {
-        let id = self.model().find(key).expect("node");
+        let id = self.model().find_written(key).expect("node");
         let b = self
             .scene()
             .boundaries
@@ -154,8 +155,8 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
         .unwrap_or_else(|| panic!("{text}"));
     assert_eq!(at.split_whitespace().count(), 4, "{at}");
     // Its node's boundary follows on the next build (EDIT-25).
-    let provider = sh.model().find("provider").expect("node");
-    let mail = sh.model().find("mailInstance").expect("instance");
+    let provider = sh.model().find_written("provider").expect("node");
+    let mail = sh.model().find_written("mailInstance").expect("instance");
     let scene = sh.scene();
     let boundary = scene
         .boundaries
@@ -169,7 +170,7 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
     sh.click_at(tag);
     assert_eq!(
         sh.s.selection.iter().cloned().collect::<Vec<_>>(),
-        [Selected::Element("webHost".to_owned())]
+        [Selected::Element(ElementKey::from_written("webHost"))]
     );
     let d = sh.s.details().expect("details");
     assert_eq!(d.name, "Web host");
@@ -178,7 +179,7 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
     assert_eq!(d.instances.as_deref(), Some("2"));
     assert_eq!(d.environment.as_deref(), Some("Live"));
     // Never enterable (EDIT-15): a double click on it opens no view (it edits in place).
-    let web_host = sh.model().find("webHost").expect("node");
+    let web_host = sh.model().find_written("webHost").expect("node");
     assert!(!enterable(sh.model(), web_host));
     sh.click_at(tag);
     sh.event(Event::Input(Input::DoubleClick {
@@ -187,4 +188,27 @@ fn p3_131_drag_writes_at_click_selects_node_never_enters() {
     }));
     assert_eq!(sh.s.view, Some(declared("live")));
     assert!(!enterable(sh.model(), mail));
+}
+
+/// P3-131 under `!identifiers hierarchical` (P2-142): an instance inside
+/// nested nodes is dragged and its `at` line names it by its full id; a
+/// click on a nested node's boundary selects the node by its full id.
+#[test]
+fn p3_131_drag_and_select_nested_deployment_hierarchical_ids() {
+    let text = "workspace {\n    !identifiers hierarchical\n    model {\n        shop = softwareSystem \"Shop\" {\n            a = container \"A\"\n        }\n        live = deploymentEnvironment \"Live\" {\n            aws = deploymentNode \"AWS\" {\n                ec2 = deploymentNode \"EC2\" {\n                    webi = containerInstance shop.a\n                    lb = infrastructureNode \"LB\"\n                    lb -> webi \"Forwards\"\n                }\n            }\n        }\n    }\n    views {\n        deployment shop \"Live\" \"live\" {\n            include *\n        }\n    }\n}\n";
+    let mut sh = Shell::with(text);
+    sh.event(Event::Command(Command::ShowView(declared("live"))));
+    assert_eq!(sh.scene().key, "live");
+    assert!(sh.model().find_written("webi").is_none(), "a bare nested id does not resolve");
+    let from = sh.box_centre("live.aws.ec2.webi");
+    sh.drag(from, 200.0, 0.0);
+    let text = sh.text();
+    assert!(text.lines().any(|l| l.trim_start().starts_with("at live.aws.ec2.webi ")), "{text}");
+    let tag = sh.node_tag("live.aws.ec2");
+    sh.click_at(tag);
+    assert_eq!(
+        sh.s.selection.iter().cloned().collect::<Vec<_>>(),
+        [Selected::Element(ElementKey::from_written("live.aws.ec2"))]
+    );
+    assert_eq!(sh.s.details().expect("details").name, "EC2");
 }

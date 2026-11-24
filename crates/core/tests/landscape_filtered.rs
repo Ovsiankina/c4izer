@@ -194,7 +194,7 @@ fn filtered_ws(filtered: &str) -> String {
 
 /// The centre in px of the box drawing element `k` in `b`.
 fn centre_px(m: &Model, b: &ViewBuild, k: &str) -> (i32, i32) {
-    let id = m.find(k).expect("element");
+    let id = m.find_written(k).expect("element");
     let bx = b.plan.boxes_of(id)[0];
     let c = b.scene.centres[bx.0 as usize];
     (c.x * 10, c.y * 10)
@@ -496,7 +496,7 @@ fn p2_9_filtered_draws_base_subset_at_base_positions() {
     assert_eq!(lines(&m, &b), ["operator->shop"]);
     // Every box at the base view's `at` and `size` lines.
     assert_eq!(centre_px(&m, &b, "shop"), (400, 300));
-    let shop = &b.scene.boxes[b.plan.boxes_of(m.find("shop").unwrap())[0].0 as usize];
+    let shop = &b.scene.boxes[b.plan.boxes_of(m.find_written("shop").unwrap())[0].0 as usize];
     assert_eq!((shop.rect.width(), shop.rect.height()), (280, 160));
     // The auto-placed operator sits where the base view placed it.
     assert_eq!(centre_px(&m, &b, "operator"), centre_px(&m, &base, "operator"));
@@ -857,16 +857,16 @@ fn p2_319_custom_element_box_size_and_type_line() {
     let m = parse(&ws(BOARD, "        custom \"all\" {\n            include *\n        }\n        systemLandscape \"land\" {\n            include *\n        }"));
     let b = build(&m, "all");
     let land = build(&m, "land");
-    let shop = &land.scene.boxes[land.plan.boxes_of(m.find("shop").unwrap())[0].0 as usize];
+    let shop = &land.scene.boxes[land.plan.boxes_of(m.find_written("shop").unwrap())[0].0 as usize];
     for k in ["board", "pin"] {
-        let bx = &b.scene.boxes[b.plan.boxes_of(m.find(k).unwrap())[0].0 as usize];
+        let bx = &b.scene.boxes[b.plan.boxes_of(m.find_written(k).unwrap())[0].0 as usize];
         // The software system's CORE-2 size.
         assert_eq!((bx.rect.width(), bx.rect.height()), (shop.rect.width(), shop.rect.height()), "{k}");
     }
-    let board = &b.scene.boxes[b.plan.boxes_of(m.find("board").unwrap())[0].0 as usize];
+    let board = &b.scene.boxes[b.plan.boxes_of(m.find_written("board").unwrap())[0].0 as usize];
     assert_eq!(board.type_line.lines, ["[Whiteboard]"]);
     // No metadata: no type line at all (Structurizr's renderer).
-    let pin = &b.scene.boxes[b.plan.boxes_of(m.find("pin").unwrap())[0].0 as usize];
+    let pin = &b.scene.boxes[b.plan.boxes_of(m.find_written("pin").unwrap())[0].0 as usize];
     assert!(pin.type_line.lines.is_empty(), "{:?}", pin.type_line.lines);
 }
 
@@ -1008,7 +1008,7 @@ fn p2_322_image_view_paths_errors_size_scope() {
     // (e) `*` has no scope, an element scopes it.
     let m = parse(&ws(BOARD, "        image * \"a\" {\n            plantuml x.puml\n        }\n        image shop \"b\" {\n            plantuml x.puml\n        }"));
     assert!(matches!(m.view("a").unwrap().scope, ViewScope::Wildcard(_)));
-    assert_eq!(m.view("b").unwrap().scope.element(), m.find("shop"));
+    assert_eq!(m.view("b").unwrap().scope.element(), m.find_written("shop"));
     // Parsed with no file path: kept as written, a placeholder.
     let m = parse(&image_ws("pic", "image pic.svg"));
     let b = build(&m, "pic");

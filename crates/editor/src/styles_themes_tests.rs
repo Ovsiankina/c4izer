@@ -272,6 +272,7 @@ fn p2_436_draw_list_matches_svg() {
             faded: Vec::new(),
             tooltip: None,
             written_thickness: crate::canvas::thickness_written(&parsed.model, scene),
+            guides: &[],
         };
         let items = paint_items(&list);
         let boxes = svg_groups(&svg, "box");

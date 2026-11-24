@@ -113,7 +113,7 @@ impl Shell {
     }
 
     fn screen(&self, key: &str) -> ScreenPoint {
-        let id = self.model().find(key).expect("element");
+        let id = self.model().find_written(key).expect("element");
         let b = self.scene().boxes_of(id)[0];
         self.s.camera.to_screen(self.scene().boxes[b.0 as usize].rect.centre())
     }
@@ -185,7 +185,7 @@ fn at_line(text: &str, view: &str, element: &str) -> Option<(i32, i32)> {
     let parsed = c4rizer_core::model::parse(text).expect("parses");
     let m = &parsed.model;
     let v = m.view(view)?;
-    let id = m.find(element)?;
+    let id = m.find_written(element)?;
     v.position_of(id).map(|a| (a.x.value, a.y.value))
 }
 
@@ -231,7 +231,7 @@ fn p2_313_filtered_move_writes_base_view_line() {
     sh.show("front");
     assert_eq!(sh.scene().kind, ViewKind::Filtered);
     // Boxes sit where the base view's `at` lines put them.
-    let web = sh.model().find("web").expect("web");
+    let web = sh.model().find_written("web").expect("web");
     let b = sh.scene().boxes_of(web)[0];
     assert_eq!(sh.scene().centres[b.0 as usize].x * 10, 200);
     sh.drag("web", 100.0, 0.0);
@@ -371,7 +371,7 @@ fn p2_322_image_view_makes_element_enterable() {
     };
     sh.event(Event::Command(Command::Open(path)));
     sh.show("estate");
-    let ledger = sh.model().find("ledger").expect("ledger");
+    let ledger = sh.model().find_written("ledger").expect("ledger");
     assert!(crate::state::enterable(sh.model(), ledger));
     sh.enter("ledger");
     assert_eq!(sh.s.view, Some(declared("books")));

@@ -106,7 +106,7 @@ fn lineage(model: &Model, element: ElementId) -> Vec<ElementId> {
 /// key, else its index.
 #[must_use]
 fn element_id_text(model: &Model, element: &Element) -> String {
-    model.full_key(element.id).unwrap_or_else(|| element.id.0.to_string())
+    model.full_key(element.id).map_or_else(|| element.id.0.to_string(), crate::model::ElementKey::into_string)
 }
 
 /// The id the tables show and search matches for `relationship`: its

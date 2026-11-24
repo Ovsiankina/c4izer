@@ -93,7 +93,7 @@ use c4rizer_core::edit::{
 use c4rizer_core::geom::{GRID_PX, Point, Rect, snap_px_to_grid};
 use c4rizer_core::lint::Finding;
 use c4rizer_core::model::{
-    Colour, ElementId, ElementKind, LabelMode, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
+    Colour, ElementId, ElementKey, ElementKind, LabelMode, Mode, Model, ModelError, PaperSize, Parsed, RelationshipId, Routing, Shape,
     ViewKind, parse_with,
 };
 use c4rizer_core::pipeline::{ViewBuild, default_view, keep_across_reparse};
@@ -109,11 +109,17 @@ use crate::worker::{ExportFormat, ExportTarget, Generation, Job, Reply, Request,
 mod anchors;
 mod bridges;
 mod bundles;
+pub(crate) mod guides;
 pub(crate) mod inplace;
 mod label_drag;
+mod line_style;
+mod lint_resolve;
 mod steps;
+mod tags_groups;
 mod vertices;
 pub use anchors::SnapMark;
+// PENDING SIGN-OFF: new pub re-export (owner request 2026-11-23, OR-15 / issue #5)
+pub use line_style::LineStylePanel;
 pub use steps::StepDetails;
 
 /// Pointer travel below which a press and release is a click, in screen
@@ -353,6 +359,15 @@ pub enum Command {
     Open(PathBuf),
     /// Show the Open dialog (EDIT-13).
     ShowOpenDialog,
+    /// File > Save (owner request 2026-11-23): every change is already
+    /// written to the file as it is made (EDIT-22), so Save writes
+    /// nothing and says so in the status bar.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    Save,
+    /// File > Save as… (owner request 2026-11-23): the save dialog for a
+    /// copy of the open file, which then opens in its place.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    ShowSaveAsDialog,
     /// Show a view from the view list (EDIT-8).
     ShowView(ViewRef),
     /// Pick an entry of the context menu (editor-ux-02).
@@ -371,8 +386,18 @@ pub enum Command {
         /// The property and value.
         property: StyleProperty,
     },
-    /// "Reset to tag style" on every selected box (DSL-13).
+    /// "Reset to tag style" on every selected box (DSL-13), or with lines
+    /// and no box selected on every selected line (P5-357).
     ResetStyle,
+    /// Set a line style property on every selected line, one undo step
+    /// (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// `all <tag>` or `this line only`.
+        target: c4rizer_core::edit::LineStyleTarget,
+        /// The property and value.
+        property: c4rizer_core::edit::LineStyleProperty,
+    },
     /// Align the selected boxes, one undo step (EDIT-20).
     Align(Alignment),
     /// Distribute the selected boxes evenly, one undo step (EDIT-20).
@@ -396,6 +421,14 @@ pub enum Command {
     /// Select the items of the `n`-th finding of `State::findings`
     /// (EDIT-6).
     PickFinding(usize),
+    /// Write the resolution of the `n`-th finding of `State::findings`,
+    /// one undo step (P5-407).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Resolve(usize),
+    /// Write the resolution of every resolvable finding at once, one undo
+    /// step (P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    ResolveAll,
     /// "Auto-place view": every box placed afresh and written, one undo
     /// step (P2-700).
     AutoPlace,
@@ -418,6 +451,32 @@ pub enum Command {
     /// choice), one undo step (P4-521).
     // APPROVER: new pub item
     SetCrossingStyle(c4rizer_core::model::CrossingStyle),
+    /// Set the open view's crossing budget (the Settings menu's "Max
+    /// crossings"), one undo step (CORE-17).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings(u32),
+    /// Set the open view's line colours (the Settings menu's "Line
+    /// colours": `Plain | From box`), one undo step (P5-309).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours(c4rizer_core::model::LineColours),
+    /// Add a tag to every selected box, or every selected line, one undo
+    /// step; closes the add-tag popup (P5-204..P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag(String),
+    /// Remove a declared tag from every selected box, or every selected
+    /// line, one undo step (P5-204, P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RemoveTag(String),
+    /// Open the add-tag popup, or close it when open (P5-204, P5-205).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    TagPopup,
+    /// Put every selected box in the group of that name of their scope,
+    /// or in no group with `None`, one undo step (P5-106..P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup(Option<String>),
+    /// Open the group-name popup, or close it when open (P5-107).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    GroupPopup,
     /// "Centre": the selection, else every box, centred on the canvas,
     /// one undo step (P2-704).
     Centre,
@@ -425,6 +484,11 @@ pub enum Command {
     Fit(Fit),
     /// Toggle fullscreen (P2-706).
     Fullscreen,
+    /// Settings > Editor > "Snap to alignment guides": on pulls a dragged
+    /// box onto a guide, off only shows guides (P5-505); saved in the UI
+    /// state.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    SetSnapGuides(bool),
     /// Open the previous view of the view list (P2-713).
     PreviousView,
     /// Open the next view of the view list (P2-713).
@@ -470,6 +534,10 @@ pub enum Command {
         /// Up (towards the first step) or down.
         up: bool,
     },
+    /// Fold or unfold a folder of the view list in the open file
+    /// (P5-603, P5-604). PENDING SIGN-OFF: new pub item (owner request
+    /// 2026-11-23, issue #11).
+    ToggleFolder(crate::view_folders::ViewFolder),
 }
 
 /// Everything that goes into the state machine.
@@ -517,6 +585,27 @@ pub enum Dialog {
         /// SVG or PNG.
         format: ExportFormat,
     },
+    /// Save every declared view as one PDF (File > Export, owner request
+    /// 2026-11-23): answered by `Command::Export` in `ExportFormat::Pdf`
+    /// with every view's target the chosen file.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    ExportDocument {
+        /// The diagram file's folder.
+        dir: PathBuf,
+        /// `<diagram file stem>.pdf`.
+        name: String,
+    },
+    /// File > Save as… (owner request 2026-11-23): the shell writes
+    /// `text` to the chosen file and answers `Command::Open` with it.
+    // PENDING SIGN-OFF: new pub item, not yet approved; see docs/deferred.md.
+    SaveAs {
+        /// The diagram file's folder.
+        dir: PathBuf,
+        /// The diagram file's name.
+        name: String,
+        /// The open file's text as last read or written.
+        text: String,
+    },
 }
 
 /// Everything that comes out of the state machine, executed by the shell
@@ -549,7 +638,7 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Selected {
     /// A box, by its element's canonical key.
-    Element(String),
+    Element(ElementKey),
     /// A line or its label, by its winning relationship.
     Relationship(RelationshipRef),
     /// The view title (EDIT-5).
@@ -737,22 +826,37 @@ pub enum Action {
         /// The view the boxes were moved in.
         view: ViewRef,
         /// Canonical element key to centre `(x, y)` px.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// Every box of `view` at its centre, px, as shown when the
         /// gesture ended: the `at` lines of an EDIT-26 first write.
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Resize one box, px `(width, height)` (EDIT-18).
     Resize {
         /// The view the box was resized in.
         view: ViewRef,
         /// Canonical element key.
-        element: String,
+        element: ElementKey,
         /// New size, px, multiples of 20.
         size: (i32, i32),
         /// Every box of `view` at its centre, px, as shown when the
         /// gesture ended: the `at` lines of an EDIT-26 first write.
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
+    },
+    /// Move and resize boxes, one batch: a lint resolve with sizes
+    /// (P5-407, P5-408).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-17, #7).
+    Arrange {
+        /// The view the boxes were changed in.
+        view: ViewRef,
+        /// Canonical element key to new centre `(x, y)` px.
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Canonical element key to new size `(width, height)` px,
+        /// multiples of 20.
+        sizes: BTreeMap<ElementKey, (i32, i32)>,
+        /// Every box of `view` at its centre, px, as shown: the `at` lines
+        /// of an EDIT-26 first write.
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Write text fields, one batch (EDIT-5).
     SetText {
@@ -765,7 +869,7 @@ pub enum Action {
         /// written first).
         view: ViewRef,
         /// Canonical element keys.
-        elements: Vec<String>,
+        elements: Vec<ElementKey>,
         /// `all <tag>` or `this box only`.
         target: StyleTarget,
         /// Property and value.
@@ -776,7 +880,28 @@ pub enum Action {
         /// The view the change was made in (EDIT-15).
         view: ViewRef,
         /// Canonical element keys.
-        elements: Vec<String>,
+        elements: Vec<ElementKey>,
+    },
+    /// Line style change on several lines, one batch (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// The view the change was made in (EDIT-15: a default view is
+        /// written first).
+        view: ViewRef,
+        /// The selected lines' relationships.
+        relationships: Vec<RelationshipRef>,
+        /// `all <tag>` or `this line only`.
+        target: c4rizer_core::edit::LineStyleTarget,
+        /// Property and value.
+        property: c4rizer_core::edit::LineStyleProperty,
+    },
+    /// Reset to tag style on several lines (P5-357).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    ResetLineStyle {
+        /// The view the change was made in (EDIT-15).
+        view: ViewRef,
+        /// The selected lines' relationships.
+        relationships: Vec<RelationshipRef>,
     },
     /// Set the canvas size, moving boxes to keep the drawing centred, one
     /// batch (P2-701, P2-702).
@@ -786,9 +911,9 @@ pub enum Action {
         /// The size, `None` for auto.
         size: Option<PaperSize>,
         /// Boxes moved, canonical key to centre px.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set one per-view line setting (P2-708..P2-710).
     SetLine {
@@ -815,6 +940,22 @@ pub enum Action {
         /// The mode written, `None` for no line (`labels line`).
         mode: Option<LabelMode>,
     },
+    /// Set the view's `maxCrossings` line, `None` to remove it (CORE-17).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings {
+        /// The view.
+        view: ViewRef,
+        /// The budget written, `None` for no line (budget 0).
+        budget: Option<u32>,
+    },
+    /// Set the view's `lineColours` line, `None` to remove it (P5-309).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours {
+        /// The view.
+        view: ViewRef,
+        /// The mode written, `None` for no line (`lineColours plain`).
+        mode: Option<c4rizer_core::model::LineColours>,
+    },
     /// Set the view's `crossings` line, `None` to remove it (P4-521).
     // APPROVER: new pub item
     SetCrossingStyle {
@@ -822,6 +963,26 @@ pub enum Action {
         view: ViewRef,
         /// The style written, `None` for no line (`crossings gap`).
         style: Option<c4rizer_core::model::CrossingStyle>,
+    },
+    /// Add or remove one tag on several boxes or lines, one batch
+    /// (P5-204..P5-206).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    Tags {
+        /// The selected boxes or lines.
+        targets: Vec<c4rizer_core::edit::TagTarget>,
+        /// The tag.
+        tag: String,
+        /// True to add, false to remove.
+        add: bool,
+    },
+    /// Move boxes into a group of their scope, or out of every group,
+    /// one batch (P5-106..P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup {
+        /// Canonical element keys.
+        elements: Vec<ElementKey>,
+        /// The group's name, `None` for no group.
+        group: Option<String>,
     },
     /// Set every `bridge` line of the view (P4-522).
     // APPROVER: new pub item
@@ -831,7 +992,7 @@ pub enum Action {
         /// The bridges, each `(carrier, other)`.
         bridges: Vec<(c4rizer_core::edit::LineRef, c4rizer_core::edit::LineRef)>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set, move or remove line vertices, with the boxes moved by the
     /// same gesture, one batch (P3-310..P3-315).
@@ -841,11 +1002,11 @@ pub enum Action {
         view: ViewRef,
         /// Boxes moved by the gesture, canonical key to centre px; empty
         /// for a vertex-only edit.
-        boxes: BTreeMap<String, (i32, i32)>,
+        boxes: BTreeMap<ElementKey, (i32, i32)>,
         /// The `via` lines to write, each one line's whole vertex list.
         vias: Vec<ViaChange>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Pin or release the ends of one line (P4-215..P4-218).
     // APPROVER: new pub item
@@ -855,7 +1016,7 @@ pub enum Action {
         /// The line's whole `anchor` line.
         change: AnchorChange,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Set every bus of the view: one `bundle` line each (P4-424..P4-427).
     // APPROVER: new pub item
@@ -865,7 +1026,7 @@ pub enum Action {
         /// The bundles, each its members.
         bundles: Vec<Vec<c4rizer_core::edit::LineRef>>,
         /// Every box of `view` at its centre, px (EDIT-26 first write).
-        layout: BTreeMap<String, (i32, i32)>,
+        layout: BTreeMap<ElementKey, (i32, i32)>,
     },
     /// Apply an undo step (EDIT-19).
     Undo(Step),
@@ -879,9 +1040,9 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorChange {
     /// The line's source, canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// The dynamic step number, `None` in other views.
     pub order: Option<String>,
     /// The source end's point, `None` for the router's.
@@ -896,9 +1057,9 @@ pub struct AnchorChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViaChange {
     /// The line's source, canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// The dynamic step number, `None` in other views.
     pub order: Option<String>,
     /// The vertices, px, on the 10 px grid; `None` removes the `via`
@@ -1013,6 +1174,10 @@ pub struct DrawList<'a> {
     // the crate), so no pub item is added; empty paints every 2px line
     // 1.5px, the default look.
     pub(crate) written_thickness: Vec<c4rizer_core::view::EdgeId>,
+    /// While a box drag is under way, the alignment guides, scene px
+    /// (P5-503): marks, never scene items.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-18, #8).
+    pub guides: &'a [guides::Guide],
 }
 
 /// The tooltip overlay (P2-723): the hovered item's details, at the
@@ -1097,6 +1262,21 @@ pub enum Overlay {
         /// The entries, in the order shown.
         entries: Vec<MenuEntry>,
     },
+    /// The add-tag popup (P5-205): the typed text and the existing tags
+    /// of the selection's kind, gathered when it opened.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag {
+        /// The typed text.
+        query: String,
+        /// Every tag it may offer, before filtering by `query`.
+        choices: Vec<String>,
+    },
+    /// The group-name popup (P5-107): the typed name.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    GroupName {
+        /// The typed name, prefilled "Group".
+        name: String,
+    },
 }
 
 /// What a context menu entry does (editor-ux-02).
@@ -1144,6 +1324,14 @@ pub enum MenuAction {
         /// The crossing's passing line.
         passing: c4rizer_core::view::EdgeId,
     },
+    /// "Group…": open the group-name popup for the selected boxes
+    /// (P5-107, P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    Group,
+    /// "Remove from group": the selected boxes leave their groups
+    /// (P5-108).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    RemoveFromGroup,
 }
 
 /// One entry of the context menu (editor-ux-02).
@@ -1186,7 +1374,7 @@ pub struct Crumb {
     /// The workspace name, or the element's name.
     pub label: String,
     /// The element's canonical key; `None` for the workspace.
-    pub scope: Option<String>,
+    pub scope: Option<ElementKey>,
 }
 
 /// The model details of the single selected item (EDIT-10, EDIT-5).
@@ -1384,6 +1572,15 @@ pub struct State {
     // rather than cleared at every place `shown` changes: any new shown
     // build, view switch or reload makes the moves void by itself.
     unbuilt: Option<(Arc<ViewBuild>, BTreeMap<BoxId, Point>)>,
+    /// The resolutions of the shown build's findings, computed when it
+    /// is shown (P5-406).
+    resolutions: Option<lint_resolve::Resolutions>,
+    /// The alignment guide index of the box drag under way, built when
+    /// it starts (P5-500).
+    guide_index: Option<guides::GuideIndex>,
+    /// The guides of the box drag under way, refilled per pointer move
+    /// (P5-503); drawn only while dragging.
+    guides: Vec<guides::Guide>,
 }
 
 impl State {
@@ -1434,6 +1631,9 @@ impl State {
             nav_query: String::new(),
             after_place: AfterPlace::Nothing,
             unbuilt: None,
+            resolutions: None,
+            guide_index: None,
+            guides: Vec::new(),
         }
     }
 
@@ -1652,12 +1852,12 @@ impl State {
     // DECISION: an element with no key (nothing to select by) opens the
     // view with nothing selected; the selection is replaced, as a click
     // on the box would replace it.
-    pub(crate) fn reveal(&mut self, view: ViewRef, element: String) -> Vec<Effect> {
+    pub(crate) fn reveal(&mut self, view: ViewRef, element: Option<ElementKey>) -> Vec<Effect> {
         self.overlay = None;
         let effects = self.show(view);
         self.selection.clear();
         self.selection_order.clear();
-        if !element.is_empty() {
+        if let Some(element) = element {
             let picked = Selected::Element(element);
             self.selection.insert(picked.clone());
             self.selection_order.push(picked);
@@ -1857,6 +2057,9 @@ impl State {
                     self.nav_query = text;
                     return Vec::new();
                 }
+                if self.popup_text(&text) {
+                    return Vec::new();
+                }
                 if let Some(edit) = self.text_edit.as_mut()
                     && let Some(field) = edit.fields.get_mut(edit.current)
                 {
@@ -1971,6 +2174,7 @@ impl State {
                 (Some(scene), Some(model)) => crate::canvas::thickness_written(model, scene),
                 _ => Vec::new(),
             },
+            guides: if matches!(self.gesture, Gesture::Dragging { .. }) { &self.guides } else { &[] },
         }
     }
 
@@ -2052,7 +2256,7 @@ impl State {
         }
         self.breadcrumb()
             .get(n)
-            .and_then(|c| c.scope.as_deref())
+            .and_then(|c| c.scope.as_ref())
             .and_then(|k| model.find(k))
             .and_then(|id| view_into(model, id))
     }
@@ -2446,6 +2650,28 @@ impl State {
                 }];
                 layout_batch(model, view, layout, None, own)
             }
+            Action::Arrange {
+                view,
+                boxes,
+                sizes,
+                layout,
+            } => {
+                let view = &layout_view(model, view);
+                let mut own: Vec<Edit> = boxes
+                    .iter()
+                    .map(|(element, &centre)| Edit::Move {
+                        view: view.key(),
+                        element: element.clone(),
+                        centre: Some(centre),
+                    })
+                    .collect();
+                own.extend(sizes.iter().map(|(element, &size)| Edit::Resize {
+                    view: view.key(),
+                    element: element.clone(),
+                    size: Some(size),
+                }));
+                layout_batch(model, view, layout, Some(boxes), own)
+            }
             Action::SetText { fields } => {
                 let mut out = Vec::new();
                 for (target, value, expected) in fields {
@@ -2485,6 +2711,25 @@ impl State {
             Action::ResetStyle { view, elements } => {
                 let mut out = add_default(model, view);
                 out.extend(elements.iter().map(|e| Edit::ResetStyle { element: e.clone() }));
+                out
+            }
+            Action::SetLineStyle {
+                view,
+                relationships,
+                target,
+                property,
+            } => {
+                let mut out = add_default(model, view);
+                out.extend(relationships.iter().map(|r| Edit::SetLineStyle {
+                    relationship: r.clone(),
+                    target: target.clone(),
+                    property: *property,
+                }));
+                out
+            }
+            Action::ResetLineStyle { view, relationships } => {
+                let mut out = add_default(model, view);
+                out.extend(relationships.iter().map(|r| Edit::ResetLineStyle { relationship: r.clone() }));
                 out
             }
             Action::Vertices {
@@ -2545,6 +2790,24 @@ impl State {
                 });
                 out
             }
+            Action::SetMaxCrossings { view, budget } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetMaxCrossings {
+                    view: view.key(),
+                    budget: *budget,
+                });
+                out
+            }
+            Action::SetLineColours { view, mode } => {
+                let view = &layout_view(model, view);
+                let mut out = add_default(model, view);
+                out.push(Edit::SetLineColours {
+                    view: view.key(),
+                    mode: *mode,
+                });
+                out
+            }
             Action::SetCrossingStyle { view, style } => {
                 let view = &layout_view(model, view);
                 let mut out = add_default(model, view);
@@ -2554,6 +2817,25 @@ impl State {
                 });
                 out
             }
+            // P5-206: a tag change and a group change name no view, so
+            // no default view is written for them.
+            Action::Tags { targets, tag, add } => targets
+                .iter()
+                .map(|target| match add {
+                    true => Edit::AddTag {
+                        target: target.clone(),
+                        tag: tag.clone(),
+                    },
+                    false => Edit::RemoveTag {
+                        target: target.clone(),
+                        tag: tag.clone(),
+                    },
+                })
+                .collect(),
+            Action::SetGroup { elements, group } => vec![Edit::SetGroup {
+                elements: elements.clone(),
+                group: group.clone(),
+            }],
             Action::Bridges { view, bridges, layout } => {
                 let view = &layout_view(model, view);
                 let own = vec![Edit::SetBridges {
@@ -3236,7 +3518,7 @@ impl State {
     }
 
     /// The element keys of the selection, in selection order.
-    fn selected_elements(&self) -> Vec<String> {
+    fn selected_elements(&self) -> Vec<ElementKey> {
         self.selection
             .iter()
             .filter_map(|s| match s {
@@ -3286,6 +3568,7 @@ impl State {
         ) {
             self.gesture = Gesture::Idle;
         }
+        self.drop_guides();
         self.dragged = None;
         self.preview = None;
         self.awaited_drag = None;
@@ -3321,6 +3604,8 @@ impl State {
             self.notice = Some("move dropped: the dragged element is no longer in the file".to_owned());
             return;
         }
+        // P5-500: the index again, against the new build's boxes.
+        self.guide_index = self.shown.as_ref().and_then(|(_, b)| guides::GuideIndex::build(&b.scene, &new_boxes));
         self.gesture = Gesture::Dragging {
             from,
             boxes: new_boxes,
@@ -3422,6 +3707,7 @@ impl State {
         let mut effects = vec![Effect::SaveUiState(self.ui.clone())];
         if let (Some(build), Some(parsed)) = (cached, self.parsed()) {
             self.shown = Some((parsed, build));
+            self.refresh_resolutions();
             // A build in flight for the previous view is now stale.
             self.awaited_build = Some(self.next_generation());
         } else {
@@ -3568,7 +3854,7 @@ impl State {
 
     /// Every box of the scene on screen at its centre in px, by element
     /// key: the `layout` of a move or resize (EDIT-26).
-    fn layout(&self) -> BTreeMap<String, (i32, i32)> {
+    fn layout(&self) -> BTreeMap<ElementKey, (i32, i32)> {
         let (Some(scene), Some(model)) = (self.scene(), self.scene_model()) else {
             return BTreeMap::new();
         };
@@ -3858,6 +4144,8 @@ impl State {
                         _ => None,
                     })
                     .collect();
+                // P5-500: the guide index, once per drag.
+                self.guide_index = guides::GuideIndex::build(scene, &boxes);
                 self.text_edit = None;
                 self.gesture = Gesture::Dragging {
                     from,
@@ -3893,7 +4181,7 @@ impl State {
         at: ScreenPoint,
     ) -> Vec<Effect> {
         let (dx, dy) = ((at.x - from.x) / self.camera.zoom, (at.y - from.y) / self.camera.zoom);
-        let next: BTreeMap<BoxId, Point> = boxes
+        let mut next: BTreeMap<BoxId, Point> = boxes
             .iter()
             .map(|(&id, &c)| {
                 #[expect(clippy::cast_precision_loss, reason = "scene px fit f32 exactly")]
@@ -3901,6 +4189,7 @@ impl State {
                 (id, snap_centre(ScenePoint { x, y }))
             })
             .collect();
+        self.pull_to_guides(boxes, &mut next);
         self.gesture = Gesture::Dragging {
             from,
             boxes: boxes.clone(),
@@ -4094,6 +4383,7 @@ impl State {
                 effects
             }
             Gesture::Dragging { boxes, to, .. } => {
+                self.drop_guides();
                 self.dragged = None;
                 self.awaited_drag = None;
                 let earlier = self.unbuilt_moves();
@@ -4253,6 +4543,24 @@ impl State {
         // P2-712 (1): an open quick-navigation list takes every key.
         if let Some(Overlay::QuickNavigation { .. }) = self.overlay {
             return self.quick_nav_key(key);
+        }
+        // P5-205, P5-107: an open add-tag or group-name popup takes every
+        // key: Enter confirms, Escape closes.
+        if let Some(effects) = self.popup_key(key) {
+            return effects;
+        }
+        match key {
+            // P5-107, P5-108: Ctrl+G groups the selected boxes, Ctrl+Shift+G
+            // takes them out of their groups.
+            Key::G if mods.ctrl && mods.shift => {
+                return if self.group_row().is_some_and(|r| r.enabled && r.grouped) {
+                    self.write_group(None)
+                } else {
+                    Vec::new()
+                };
+            }
+            Key::G if mods.ctrl => return self.toggle_group_popup(),
+            _ => {}
         }
         match key {
             // DECISION: the context menu has no keyboard highlight, so
@@ -4643,6 +4951,8 @@ impl State {
                     let label = format!("Enter {}", self.entry_of(model, view.clone()).label);
                     entries.push(MenuEntry { label, action: MenuAction::Show(view) });
                 }
+                // P5-108: "Group…" and "Remove from group".
+                entries.extend(self.group_entries());
                 let el = model.element(e);
                 el.url.as_ref().map(|u| (el.name.value.clone(), u.value.clone()))
             }
@@ -4747,9 +5057,34 @@ impl State {
             Command::RemoveAllVertices => self.remove_all_vertices(),
             Command::SelectStep(step) => self.select_step(step),
             Command::MoveStep { step, up } => self.move_step(step, up),
+            Command::ToggleFolder(folder) => self.toggle_folder(folder),
             Command::Open(path) => {
                 self.remember();
                 vec![Effect::Read(path)]
+            }
+            Command::Save => {
+                let Some(doc) = &self.doc else { return Vec::new() };
+                let name = doc.path.file_name().map_or_else(|| doc.path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                // DECISION: Save writes nothing: the editor has no unsaved
+                // state, every edit is written as it is made (EDIT-22). It
+                // says so, or why the file cannot be written.
+                self.notice = Some(if self.json_doc() {
+                    "nothing to save: a workspace JSON is read-only".to_owned()
+                } else if doc.missing {
+                    format!("{name} is gone from disk; use Save as… to write it elsewhere")
+                } else {
+                    format!("saved: every change is written to {name} as you make it")
+                });
+                Vec::new()
+            }
+            Command::ShowSaveAsDialog => {
+                let (Some(doc), Some(text)) = (&self.doc, &self.root_text) else { return Vec::new() };
+                let name = doc.path.file_name().map_or_else(|| "workspace.dsl".to_owned(), |n| n.to_string_lossy().into_owned());
+                vec![Effect::Dialog(Dialog::SaveAs {
+                    dir: export_dir(&doc.path),
+                    name,
+                    text: text.clone(),
+                })]
             }
             Command::ShowOpenDialog => vec![Effect::Dialog(Dialog::Open {
                 dir: self.doc.as_ref().map(|d| export_dir(&d.path)),
@@ -4764,8 +5099,15 @@ impl State {
                     MenuAction::UngroupBus { edge } => self.ungroup_bus(edge),
                     MenuAction::RemoveFromBus { edge } => self.remove_from_bus(edge),
                     MenuAction::FlipBridge { carrier, passing } => self.flip_bridge(carrier, passing),
+                    MenuAction::Group => self.toggle_group_popup(),
+                    MenuAction::RemoveFromGroup => self.write_group(None),
                 }
             }
+            Command::AddTag(tag) => self.write_tag(&tag, true),
+            Command::RemoveTag(tag) => self.write_tag(&tag, false),
+            Command::TagPopup => self.toggle_tag_popup(),
+            Command::SetGroup(group) => self.write_group(group),
+            Command::GroupPopup => self.toggle_group_popup(),
             Command::ShowView(view) => {
                 // P2-715, P2-729: picking a view in quick navigation or the
                 // navigator closes it.
@@ -4792,10 +5134,11 @@ impl State {
                 let elements = self.selected_elements();
                 let Some(view) = self.view.clone() else { return Vec::new() };
                 if elements.is_empty() {
-                    return Vec::new();
+                    return self.reset_line_style(view);
                 }
                 self.write(Action::ResetStyle { view, elements })
             }
+            Command::SetLineStyle { target, property } => self.set_line_style(target, property),
             Command::Align(how) => {
                 let rects = self.selected_rects();
                 let to = align_to(&rects, how, self.first_selected_box());
@@ -4857,6 +5200,16 @@ impl State {
                     format,
                 })]
             }
+            // File > Export: every view as one PDF is one file, not a
+            // folder of files.
+            Command::ExportAll(ExportFormat::Pdf) => {
+                let Some(doc) = &self.doc else { return Vec::new() };
+                let stem = doc.path.file_stem().map_or_else(|| "workspace".to_owned(), |s| s.to_string_lossy().into_owned());
+                vec![Effect::Dialog(Dialog::ExportDocument {
+                    dir: export_dir(&doc.path),
+                    name: format!("{stem}.pdf"),
+                })]
+            }
             Command::ExportAll(format) => {
                 let Some(doc) = &self.doc else { return Vec::new() };
                 vec![Effect::Dialog(Dialog::ExportAll {
@@ -4903,6 +5256,8 @@ impl State {
                     },
                 })]
             }
+            Command::Resolve(n) => self.resolve_finding(n),
+            Command::ResolveAll => self.resolve_every_finding(),
             Command::PickFinding(n) => {
                 let (Some(scene), Some(model)) = (self.scene(), self.model()) else { return Vec::new() };
                 let Some(finding) = self.findings().get(n) else { return Vec::new() };
@@ -4929,6 +5284,10 @@ impl State {
                 self.nav_query.clear();
                 Vec::new()
             }
+            Command::SetSnapGuides(on) => {
+                self.ui.snap_guides_off = !on;
+                vec![Effect::SaveUiState(self.ui.clone())]
+            }
             Command::Fullscreen => {
                 // P2-706: the view, camera and selection are untouched.
                 self.aids.fullscreen = !self.aids.fullscreen;
@@ -4939,7 +5298,8 @@ impl State {
                 // Structurizr 6.2.4 diagrams.jsp (`navigateToPreviousDiagram`
                 // and `navigateToNextDiagram` stop at the ends); B
                 // editor-breadth 9 proposed wrapping, Structurizr wins.
-                let list = self.views();
+                // P5-605: the list as displayed, folded folders skipped.
+                let list = self.walk_views();
                 let Some(at) = list.iter().position(|e| e.current) else {
                     return list.first().map_or_else(Vec::new, |e| self.show(e.view.clone()));
                 };
@@ -5037,6 +5397,8 @@ impl State {
             Command::Centre => self.centre(),
             Command::SetLabelMode(mode) => self.set_label_mode(mode),
             Command::SetCrossingStyle(style) => self.set_crossing_style(style),
+            Command::SetMaxCrossings(budget) => self.set_max_crossings(budget),
+            Command::SetLineColours(mode) => self.set_line_colours(mode),
         }
     }
 
@@ -5073,7 +5435,7 @@ impl State {
             b.centre = None;
         }
         let centres = c4rizer_core::place::place(&plan, &Keep::default());
-        let boxes: BTreeMap<String, (i32, i32)> = plan
+        let boxes: BTreeMap<ElementKey, (i32, i32)> = plan
             .boxes
             .iter()
             .filter_map(|b| {
@@ -5215,6 +5577,46 @@ impl State {
         }
         let mode = (mode != LabelMode::Line).then_some(mode);
         self.write(Action::SetLabelMode { view, mode })
+    }
+
+    /// The crossing budget of the open view (CORE-17), `None` when it has
+    /// no layout to edit.
+    pub(crate) fn max_crossings(&self) -> Option<u32> {
+        self.layout_spec().map(|(_, spec)| spec.options().max_crossings)
+    }
+
+    /// The Settings menu's "Max crossings": `maxCrossings <n>` written, or
+    /// the line removed for 0; nothing when the view already has that
+    /// budget.
+    // DECISION: 0 removes the line, as `crossings gap` and `labels line`
+    // do: the default needs no line.
+    fn set_max_crossings(&mut self, budget: u32) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        if spec.options().max_crossings == budget || self.refuse_json() || self.read_only() {
+            return Vec::new();
+        }
+        let budget = (budget != c4rizer_core::model::ViewOptions::DEFAULT.max_crossings).then_some(budget);
+        self.write(Action::SetMaxCrossings { view, budget })
+    }
+
+    /// The line colours of the open view (P5-309), `None` when it has no
+    /// layout to edit.
+    pub(crate) fn line_colours(&self) -> Option<c4rizer_core::model::LineColours> {
+        self.layout_spec().map(|(_, spec)| spec.options().line_colours)
+    }
+
+    /// The Settings menu's "Line colours": `lineColours box` written, or
+    /// the line removed for plain; nothing when the view already has that
+    /// mode.
+    // DECISION: plain removes the line, as 0 does for `maxCrossings`: the
+    // default needs no line.
+    fn set_line_colours(&mut self, mode: c4rizer_core::model::LineColours) -> Vec<Effect> {
+        let Some((view, spec)) = self.layout_spec() else { return Vec::new() };
+        if spec.options().line_colours == mode || self.refuse_json() || self.read_only() {
+            return Vec::new();
+        }
+        let mode = (mode != c4rizer_core::model::ViewOptions::DEFAULT.line_colours).then_some(mode);
+        self.write(Action::SetLineColours { view, mode })
     }
 
     fn bring_onto_canvas(&mut self) -> Vec<Effect> {
@@ -5551,6 +5953,7 @@ impl State {
                     let Some(parsed) = self.parsed() else { return Vec::new() };
                     self.cache.insert(view, Arc::clone(&build));
                     let old = self.shown.replace((Arc::clone(&parsed), build));
+                    self.refresh_resolutions();
                     // The moves of `unbuilt` are relative to the old build.
                     self.unbuilt = None;
                     // P2-731: a reload of the same view drops stale aids.
@@ -5649,14 +6052,15 @@ fn distance(a: ScreenPoint, b: ScreenPoint) -> f32 {
     (a.x - b.x).hypot(a.y - b.y)
 }
 
-/// The key the editor names `id` by in selections and edits: the one
-/// `Model::find` gives `id` back for (the dotted full id under
-/// `!identifiers hierarchical`); `None` for an element declared without
-/// an id, which the editor never selects or moves (P2-145).
-// DECISION: `full_key`, not `Element::key`: the bare id of a nested
-// element does not resolve under hierarchical ids, so its box could be
-// neither selected nor dragged.
-fn edit_key(model: &Model, id: ElementId) -> Option<String> {
+/// The key the editor names `id` by in selections and edits: its
+/// `Model::full_key`, or `None` for an element declared without an id,
+/// which the editor never selects or moves (P2-145), an instance without
+/// an id (`<key>_<n>`, P3-117) included.
+// DECISION: a thin wrapper kept over `full_key` for the P2-145 rule
+// alone: `full_key` names an instance without an id, the editor must not
+// select it. The key type (`ElementKey`) is what keeps a bare declaration
+// id out of selections and edits.
+fn edit_key(model: &Model, id: ElementId) -> Option<ElementKey> {
     model.element(id).key.as_ref()?;
     model.full_key(id)
 }
@@ -5780,9 +6184,11 @@ fn default_from_key(model: &Model, key: &str) -> Option<ViewRef> {
     let kind = [ViewKind::SystemContext, ViewKind::Container, ViewKind::Component]
         .into_iter()
         .find(|k| k.keyword() == kind)?;
-    model.find(scope)?;
+    // The key's scope is text from the file: resolved, then named by its
+    // canonical key.
+    let id = model.find_written(scope)?;
     Some(ViewRef::Default {
-        scope: scope.to_owned(),
+        scope: model.full_key(id)?,
         kind,
     })
 }
@@ -5821,8 +6227,8 @@ fn layout_view(model: &Model, view: &ViewRef) -> ViewRef {
 fn layout_batch(
     model: &Model,
     view: &ViewRef,
-    layout: &BTreeMap<String, (i32, i32)>,
-    moved: Option<&BTreeMap<String, (i32, i32)>>,
+    layout: &BTreeMap<ElementKey, (i32, i32)>,
+    moved: Option<&BTreeMap<ElementKey, (i32, i32)>>,
     own: Vec<Edit>,
 ) -> Vec<Edit> {
     let mut out = add_default(model, view);
@@ -5835,7 +6241,7 @@ fn layout_batch(
         .view(&view.key())
         .map(|v| v.positions.iter().map(|a| a.element.value).collect())
         .unwrap_or_default();
-    let mut entries: Vec<(ElementId, &String, (i32, i32))> = layout
+    let mut entries: Vec<(ElementId, &ElementKey, (i32, i32))> = layout
         .iter()
         .filter_map(|(k, &c)| {
             let c = moved.and_then(|m| m.get(k)).copied().unwrap_or(c);
@@ -5903,7 +6309,7 @@ fn rebuild_first_write(parsed: &Parsed, edits: &[Edit]) -> Vec<Edit> {
             continue;
         }
         let centres = c4rizer_core::place::place(&plan, &Keep::default());
-        let mut entries: BTreeMap<ElementId, (String, (i32, i32))> = BTreeMap::new();
+        let mut entries: BTreeMap<ElementId, (ElementKey, (i32, i32))> = BTreeMap::new();
         for b in &plan.boxes {
             if placed.contains(&b.element) || moved.contains(&b.element) {
                 continue;
@@ -6021,6 +6427,7 @@ mod tests {
     // the plan gives one). Each drives `State::handle` with a temp-dir
     // file, `files` and `worker::serve`, no window (HLD §6).
 
+    use c4rizer_core::model::ElementKey;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -6041,7 +6448,7 @@ mod tests {
     };
     use crate::camera::{Camera, ScreenPoint, ZOOM_STEP};
     use crate::files::{self, FileEvent, UiState, WriteRequest};
-    use crate::testutil::{SHOP, TempDir};
+    use crate::testutil::{Ids, SHOP, TempDir};
     use crate::worker::{self, ExportFormat, Job, Request, ViewRef};
 
     const NONE: Modifiers = Modifiers {
@@ -6245,7 +6652,7 @@ mod tests {
         }
 
         fn box_id(&self, key: &str) -> BoxId {
-            let id = self.model().find(key).expect("element");
+            let id = self.model().find_written(key).expect("element");
             *self.scene().boxes_of(id).first().expect("box on screen")
         }
 
@@ -6336,7 +6743,8 @@ mod tests {
             }));
         }
 
-        /// The `at` lines of `view` in the file on disk, by element key.
+        /// The `at` lines of `view` in the file on disk, by full element
+        /// key (the bare one under flat ids).
         fn at_lines(&self, view: &str) -> BTreeMap<String, (i32, i32)> {
             let parsed = self.on_disk();
             let model = &parsed.model;
@@ -6346,7 +6754,7 @@ mod tests {
                 .positions
                 .iter()
                 .map(|a| {
-                    let key = model.element(a.element.value).key.as_ref().expect("key").value.clone();
+                    let key = model.full_key(a.element.value).expect("key").into_string();
                     (key, (a.x.value, a.y.value))
                 })
                 .collect()
@@ -6377,7 +6785,7 @@ mod tests {
     }
 
     fn el(key: &str) -> Selected {
-        Selected::Element(key.to_owned())
+        Selected::Element(ElementKey::from_written(key))
     }
 
     /// Lines of `b` not in `a`, and of `a` not in `b`.
@@ -6466,10 +6874,208 @@ mod tests {
             Gesture::Dragging { to, .. } => assert_eq!(to.get(&id), Some(&want), "the nested box is in the drag"),
             g => panic!("not dragging: {g:?}"),
         }
-        assert!(h.s.selection.contains(&Selected::Element("shop.web".to_owned())));
+        assert!(h.s.selection.contains(&Selected::Element(ElementKey::from_written("shop.web"))));
         h.up(pt(from.x + 40.0, from.y + 20.0), Button::Left);
         let text = h.text();
         assert!(text.contains(&format!("at shop.web {} {}", cx + 40, cy + 20)), "{text}");
+    }
+
+    /// `SHOP` under `!identifiers hierarchical` (relationships written with
+    /// dotted ids), its container view open: every box but the person and
+    /// the bank is nested, so its bare id does not resolve.
+    fn nested_shop() -> H {
+        let mut h = H::with_file(&Ids::Hierarchical.workspace(SHOP));
+        h.cmd(Command::ShowView(declared("containers")));
+        assert!(h.model().find_written("web").is_none(), "the fixture's bare nested ids do not resolve");
+        h
+    }
+
+    /// EDIT-10, EDIT-20, P2-142: under hierarchical ids a click selects a
+    /// nested box by its full id, Shift adds one, and the details and
+    /// style panels read the selection.
+    #[test]
+    fn edit_10_click_selects_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, NONE);
+        assert_eq!(h.selection(), vec![el("shop.web")]);
+        assert_eq!(h.s.details().expect("details of the nested box").name, "Web app");
+        h.click("shop.db", Button::Left, SHIFT);
+        assert_eq!(h.selection(), vec![el("shop.db"), el("shop.web")]);
+        assert_eq!(h.s.style_panel().map(|p| p.boxes), Some(2));
+    }
+
+    /// EDIT-20, EDIT-26, P2-142: under hierarchical ids a rubber band
+    /// selects the nested boxes, they move together in one write (every
+    /// box's `at` line by its full id), and align as one step.
+    #[test]
+    fn edit_20_band_selects_and_moves_nested_boxes_hierarchical_ids() {
+        let mut h = nested_shop();
+        let b = h.scene().bounds;
+        let (from, to) = (h.s.camera.to_screen(b.min), h.s.camera.to_screen(b.max));
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(f32::midpoint(from.x, to.x), f32::midpoint(from.y, to.y)));
+        h.move_to(to);
+        h.up(to, Button::Left);
+        let selected = h.selection();
+        for key in ["customer", "shop.web", "shop.db"] {
+            assert!(selected.contains(&el(key)), "{key} in the band: {selected:?}");
+        }
+        let keys: Vec<String> = selected
+            .iter()
+            .map(|s| match s {
+                Selected::Element(k) => k.to_string(),
+                other => panic!("only boxes: {other:?}"),
+            })
+            .collect();
+        let before: Vec<(i32, i32)> = keys.iter().map(|k| h.centre_px(k)).collect();
+        h.drag_box("shop.db", 0.0, 50.0);
+        assert_eq!(h.writes.len(), 1, "one write");
+        let text = h.text();
+        for (k, (x, y)) in keys.iter().zip(&before) {
+            assert!(text.contains(&format!("at {k} {x} {}", y + 50)), "{k} moved with the rest: {text}");
+        }
+
+        h.cmd(Command::Align(Alignment::Top));
+        assert_eq!(h.writes.len(), 2);
+        let tops: Vec<i32> = keys.iter().map(|k| h.rect(k).min.y).collect();
+        assert!(tops.iter().all(|&t| t == tops[0]), "{tops:?}");
+        assert_eq!(h.s.history.undo.len(), 2, "each one step");
+    }
+
+    /// EDIT-18, P2-142: under hierarchical ids a nested box resizes and
+    /// its `size` line names it by its full id.
+    #[test]
+    fn edit_18_resize_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, NONE);
+        let start = h.rect("shop.web");
+        let (end, size) = resize_drag(&mut h, "shop.web", 63.0, 47.0);
+        assert!(size.0 > start.width() && size.1 > start.height(), "{size:?} vs {start:?}");
+        h.up(end, Button::Left);
+        let text = h.text();
+        assert!(text.contains(&format!("            size shop.web {} {}\n", size.0, size.1)), "{text}");
+        assert_eq!((h.rect("shop.web").width(), h.rect("shop.web").height()), size);
+        assert_eq!(h.rect("shop.web").centre(), start.centre());
+    }
+
+    /// EDIT-15, EDIT-16, P2-142: under hierarchical ids entering a nested
+    /// container opens its default component view, scoped by the full
+    /// id; the breadcrumb names the nesting; the first move writes the
+    /// view and the component's `at` line by full ids; undo removes the
+    /// view again; Backspace goes up.
+    #[test]
+    fn edit_15_enter_nested_container_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.enter("shop.web");
+        let default = ViewRef::Default {
+            scope: ElementKey::from_written("shop.web"),
+            kind: ViewKind::Component,
+        };
+        assert_eq!(h.s.view, Some(default.clone()));
+        assert_eq!(h.scene().key, default.key(), "the scene is the view the editor names");
+        let crumbs: Vec<Option<String>> = h.s.breadcrumb().into_iter().map(|c| c.scope.map(ElementKey::into_string)).collect();
+        assert_eq!(crumbs, [None, Some("shop".to_owned()), Some("shop.web".to_owned())]);
+
+        let (cx, cy) = h.centre_px("shop.web.cart");
+        h.drag_box("shop.web.cart", 100.0, 0.0);
+        assert_eq!(h.writes.len(), 1, "one write");
+        let text = h.text();
+        assert!(text.contains(&format!("component shop.web \"{}\" {{", default.key())), "{text}");
+        assert!(text.contains(&format!("at shop.web.cart {} {cy}", cx + 100)), "{text}");
+        assert_eq!(h.s.view, Some(declared(&default.key())));
+        assert_eq!(h.centre_px("shop.web.cart"), (cx + 100, cy));
+
+        h.cmd(Command::Undo);
+        assert!(h.on_disk().model.view(&default.key()).is_none(), "undo removes the view again");
+        assert_eq!(h.s.view, Some(default));
+        h.key(Key::Backspace, NONE);
+        assert_eq!(h.s.view, Some(declared("containers")));
+    }
+
+    /// EDIT-26, EDIT-19, P2-142: under hierarchical ids the first write
+    /// in a view writes every nested box's `at` line by its full id, and
+    /// an undo re-applied to a view where a nested box lost its line
+    /// writes it back in the same step.
+    #[test]
+    fn edit_26_first_write_writes_every_nested_box_hierarchical_ids() {
+        let mut h = nested_shop();
+        let keys: Vec<String> = h.scene().boxes.iter().filter_map(|b| h.model().full_key(b.element).map(ElementKey::into_string)).collect();
+        assert!(keys.contains(&"shop.db".to_owned()), "{keys:?}");
+        let mut want: BTreeMap<String, (i32, i32)> = keys.iter().map(|k| (k.clone(), h.centre_px(k))).collect();
+        h.drag_box("shop.web", 100.0, 0.0);
+        if let Some(web) = want.get_mut("shop.web") {
+            web.0 += 100;
+        }
+        assert_eq!(h.at_lines("containers"), want);
+        assert_eq!(h.s.history.undo.len(), 1, "one step");
+
+        h.drag_box("shop.web", 0.0, 100.0);
+        let without_db: String = h.text().lines().filter(|l| !l.contains("at shop.db")).flat_map(|l| [l, "\n"]).collect();
+        h.external(&without_db);
+        assert!(!h.at_lines("containers").contains_key("shop.db"));
+        h.cmd(Command::Undo);
+        let at = h.at_lines("containers");
+        assert_eq!(at.len(), want.len(), "every box has an `at` line: {at:?}");
+        assert!(at.contains_key("shop.db"), "{at:?}");
+    }
+
+    /// EDIT-24, P2-142: under hierarchical ids an external save in the
+    /// middle of a nested box's drag keeps the drag; release writes it.
+    #[test]
+    fn edit_24_external_save_mid_drag_keeps_nested_drag_hierarchical_ids() {
+        let mut h = nested_shop();
+        let (cx, cy) = h.centre_px("shop.web");
+        let from = h.screen("shop.web");
+        h.press(from, Button::Left, NONE);
+        h.move_to(pt(from.x + 50.0, from.y));
+        h.move_to(pt(from.x + 100.0, from.y));
+        let external = h.text().replace("Moves money.", "Moves lots of money.");
+        h.external(&external);
+        assert!(matches!(h.s.gesture, Gesture::Dragging { .. }), "the drag survives: {:?}", h.s.gesture);
+        h.move_to(pt(from.x + 100.0, from.y));
+        h.up(pt(from.x + 100.0, from.y), Button::Left);
+        assert_eq!(h.writes.len(), 1, "the move is written");
+        assert!(h.text().contains("Moves lots of money."));
+        assert_eq!(h.at_lines("containers").get("shop.web"), Some(&(cx + 100, cy)));
+    }
+
+    /// EDIT-5, P2-142: under hierarchical ids the text of a selected
+    /// nested box is edited in place.
+    #[test]
+    fn edit_5_edits_nested_box_text_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, CTRL);
+        h.key(Key::Enter, NONE);
+        assert_eq!(h.s.text_edit.as_ref().expect("editor open").fields[0].buffer, "Web app");
+        h.event(Event::Text("Storefront".to_owned()));
+        h.key(Key::Enter, NONE);
+        assert_eq!(h.writes.len(), 1);
+        assert!(h.text().contains("web = container \"Storefront\" \"Serves pages.\""), "{}", h.text());
+    }
+
+    /// EDIT-17, P2-142: under hierarchical ids a style change on nested
+    /// boxes is written for each, one step, and reset again.
+    #[test]
+    fn edit_17_style_nested_boxes_hierarchical_ids() {
+        let mut h = nested_shop();
+        h.click("shop.web", Button::Left, CTRL);
+        h.click("shop.db", Button::Left, SHIFT);
+        let fill = colour(0x12, 0x34, 0x56);
+        h.cmd(Command::SetStyle {
+            target: StyleTarget::ThisBox,
+            property: StyleProperty::Background(Some(fill)),
+        });
+        assert_eq!(h.writes.len(), 1);
+        assert_eq!(h.s.history.undo.len(), 1, "one step for both boxes");
+        let style = |h: &H, key: &str| {
+            let parsed = h.on_disk();
+            let id = parsed.model.find_written(key).expect("element");
+            parsed.model.style_of(id)
+        };
+        assert_eq!(style(&h, "shop.web").background, fill);
+        assert_eq!(style(&h, "shop.db").background, fill);
+        h.cmd(Command::ResetStyle);
+        assert_ne!(style(&h, "shop.web").background, fill, "reset to tag style");
     }
 
     /// EDIT-3 (plan editor-04): release writes the box's `at` line
@@ -6544,7 +7150,7 @@ mod tests {
         // A lifted line edits the relationship it was lifted from.
         h.cmd(Command::ShowView(declared("context")));
         let model = h.model();
-        let (shop, bank) = (model.find("shop").expect("shop"), model.find("bank").expect("bank"));
+        let (shop, bank) = (model.find_written("shop").expect("shop"), model.find_written("bank").expect("bank"));
         let scene = h.scene();
         let line = scene
             .lines
@@ -6717,7 +7323,7 @@ mod tests {
     fn edit_5_lifted_line_details_name_relationship() {
         let mut h = H::with_file(SHOP);
         let model = h.model();
-        let (shop, bank) = (model.find("shop").expect("shop"), model.find("bank").expect("bank"));
+        let (shop, bank) = (model.find_written("shop").expect("shop"), model.find_written("bank").expect("bank"));
         let scene = h.scene();
         let line = scene
             .lines
@@ -6736,7 +7342,7 @@ mod tests {
         let lifted = name(line.relationship);
         let other: Vec<String> = line.relationships.iter().filter(|&&r| r != line.relationship).map(|&r| name(r)).collect();
         let lifted_ref = RelationshipRef::of(model, line.relationship);
-        let customer = model.find("customer").expect("customer");
+        let customer = model.find_written("customer").expect("customer");
         let direct = RelationshipRef::of(model, model.find_relationship(customer, shop)[0]);
         h.s.selection.insert(Selected::Relationship(lifted_ref));
 
@@ -6912,7 +7518,7 @@ mod tests {
         assert!(d.tags.contains(&"External".to_owned()));
         let panel = h.s.style_panel().expect("style panel");
         assert_eq!(panel.boxes, 1);
-        assert_eq!(panel.background, Some(h.model().style_of(h.model().find("bank").expect("bank")).background));
+        assert_eq!(panel.background, Some(h.model().style_of(h.model().find_written("bank").expect("bank")).background));
     }
 
     /// EDIT-11 (plan editor-06): a parse error keeps the last good scene,
@@ -7099,7 +7705,7 @@ mod tests {
         h.cmd(Command::ShowView(declared("containers")));
         h.enter("web");
         let default = ViewRef::Default {
-            scope: "web".to_owned(),
+            scope: ElementKey::from_written("web"),
             kind: ViewKind::Component,
         };
         assert_eq!(h.s.view, Some(default.clone()));
@@ -7111,7 +7717,7 @@ mod tests {
         let batch = h.s.edits_for(
             &Action::Move {
                 view: default.clone(),
-                boxes: BTreeMap::from([("cart".to_owned(), (cx + 100, cy))]),
+                boxes: BTreeMap::from([(ElementKey::from_written("cart"), (cx + 100, cy))]),
                 layout: BTreeMap::new(),
             },
             &parsed,
@@ -7119,7 +7725,7 @@ mod tests {
         assert_eq!(
             batch.first(),
             Some(&c4rizer_core::edit::Edit::AddDefaultView {
-                scope: "web".to_owned(),
+                scope: ElementKey::from_written("web"),
                 kind: ViewKind::Component
             })
         );
@@ -7152,9 +7758,9 @@ mod tests {
         assert_eq!(h.s.view, Some(declared("containers")));
         let listed: Vec<ViewRef> = h.s.views().into_iter().map(|v| v.view).collect();
         assert_eq!(listed, [declared("context"), declared("containers"), declared("again"), declared("lonely")]);
-        let lone = h.model().find("lone").expect("lone");
+        let lone = h.model().find_written("lone").expect("lone");
         assert!(!enterable(h.model(), lone));
-        let shop = h.model().find("shop").expect("shop");
+        let shop = h.model().find_written("shop").expect("shop");
         assert!(enterable(h.model(), shop));
     }
 
@@ -7206,7 +7812,7 @@ mod tests {
             },
             &parsed,
         );
-        assert!(matches!(batch.first(), Some(c4rizer_core::edit::Edit::AddDefaultView { scope, .. }) if scope == "web"));
+        assert!(matches!(batch.first(), Some(c4rizer_core::edit::Edit::AddDefaultView { scope, .. }) if scope.as_str() == "web"));
         assert!(matches!(batch.get(1), Some(c4rizer_core::edit::Edit::SetText { .. })));
 
         let bounds = h.scene().item_bounds(ItemKey::Title).expect("title bounds");
@@ -7235,7 +7841,7 @@ mod tests {
         assert_eq!(
             h.s.view,
             Some(ViewRef::Default {
-                scope: "shop".to_owned(),
+                scope: ElementKey::from_written("shop"),
                 kind: ViewKind::SystemContext
             })
         );
@@ -7249,7 +7855,7 @@ mod tests {
     #[test]
     fn edit_16_back_goes_up() {
         let mut h = H::with_file(SHOP);
-        let crumbs = |h: &H| -> Vec<Option<String>> { h.s.breadcrumb().into_iter().map(|c| c.scope).collect() };
+        let crumbs = |h: &H| -> Vec<Option<String>> { h.s.breadcrumb().into_iter().map(|c| c.scope.map(ElementKey::into_string)).collect() };
         assert_eq!(crumbs(&h), [None, Some("shop".to_owned())]);
         assert_eq!(h.s.breadcrumb()[0].label, "Shop");
         h.enter("shop");
@@ -7304,7 +7910,7 @@ mod tests {
         assert_eq!(h.s.history.undo.len(), 1, "one step for both boxes");
         let style = |h: &H, key: &str| {
             let parsed = h.on_disk();
-            let id = parsed.model.find(key).expect("element");
+            let id = parsed.model.find_written(key).expect("element");
             parsed.model.style_of(id)
         };
         assert_eq!(style(&h, "web").background, fill);
@@ -7549,7 +8155,7 @@ mod tests {
         // 100 steps through an external reload.
         h.click("customer", Button::Left, CTRL);
         let fill = |i: u8| colour(i, 0x40, 0x80);
-        let bg = |h: &H| h.model().style_of(h.model().find("customer").expect("customer")).background;
+        let bg = |h: &H| h.model().style_of(h.model().find_written("customer").expect("customer")).background;
         let original = bg(&h);
         h.s.history = crate::history::History::default();
         for i in 0..100_u8 {
@@ -7805,7 +8411,7 @@ mod tests {
         }
         // A default view is added by a move and removed only by its undo.
         step(&mut h, Event::Command(Command::ShowView(declared("containers"))));
-        step(&mut h, Event::Command(Command::ShowView(ViewRef::Default { scope: "web".to_owned(), kind: ViewKind::Component })));
+        step(&mut h, Event::Command(Command::ShowView(ViewRef::Default { scope: ElementKey::from_written("web"), kind: ViewKind::Component })));
         let at = h.screen("cart");
         step(&mut h, Event::Input(Input::PointerDown { at, button: Button::Left, mods: NONE }));
         step(&mut h, Event::Input(Input::PointerMove { at: pt(at.x + 60.0, at.y) }));
@@ -7890,7 +8496,7 @@ mod tests {
         assert_eq!(h.text(), without_bank);
         assert!(h.s.status().notice.is_some(), "the drop is reported");
         assert_eq!(h.s.history.undo.len(), 1);
-        assert!(h.model().find("bank").is_none(), "the new text is shown");
+        assert!(h.model().find_written("bank").is_none(), "the new text is shown");
     }
 
     /// EDIT-3, EDIT-24: an external save during a drag does not drop the

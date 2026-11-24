@@ -10,6 +10,7 @@
 //! against Structurizr 6.2.4's `diagrams.jsp` and `structurizr-diagram.js`
 //! where noted). Test data uses roles, never personal names.
 
+use c4rizer_core::model::ElementKey;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -202,7 +203,7 @@ impl Shell {
     }
 
     fn rect(&self, key: &str) -> Rect {
-        let id = self.model().find(key).expect("element");
+        let id = self.model().find_written(key).expect("element");
         let b = self.scene().boxes_of(id)[0];
         self.scene().boxes[b.0 as usize].rect
     }
@@ -243,7 +244,7 @@ impl Shell {
     /// `source` to `destination`, away from its label.
     fn line_point(&self, source: &str, destination: &str) -> ScreenPoint {
         let model = self.model();
-        let (from, to) = (model.find(source).expect("source"), model.find(destination).expect("destination"));
+        let (from, to) = (model.find_written(source).expect("source"), model.find_written(destination).expect("destination"));
         let id = model.find_relationship(from, to)[0];
         let line = self
             .scene()
@@ -301,7 +302,7 @@ fn declared(key: &str) -> ViewRef {
 }
 
 fn el(key: &str) -> Selected {
-    Selected::Element(key.to_owned())
+    Selected::Element(ElementKey::from_written(key))
 }
 
 fn close(a: f32, b: f32) -> bool {
@@ -427,7 +428,9 @@ fn p2_712_pointer_off_canvas_hovers_nothing() {
     sh.key(Key::J, NONE);
     assert_eq!(sh.writes.len(), 1, "j did not touch the line");
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")), "Down opened the next view");
+    // P5-605: the next view of the list as displayed, C1's `estate`
+    // before C2's `containers`.
+    assert_eq!(sh.s.view, Some(declared("estate")), "Down opened the next view");
     assert_eq!(sh.writes.len(), 1);
 }
 
@@ -445,7 +448,8 @@ fn p2_712_pointer_left_survives_a_rebuild() {
     sh.external(&text);
     assert_eq!(sh.s.hover, None);
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    // P5-605: the list as displayed, `estate` (C1) next.
+    assert_eq!(sh.s.view, Some(declared("estate")));
 }
 
 /// With one box selected, `l c r t m b h v` keep their viewer meaning
@@ -616,15 +620,17 @@ fn p2_713_previous_next_follow_view_list() {
     let mut sh = Shell::with(SHOP);
     assert_eq!(sh.s.view, Some(declared("context")));
     // Fix round: the SRS sentence as written, Up or Right previous, Down
-    // or Left next.
+    // or Left next. P5-605 (owner request 2026-11-23) supersedes the
+    // order: the list as displayed in its C-level folders, so C1's
+    // `context` and `estate` come before C2's `containers`.
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    assert_eq!(sh.s.view, Some(declared("estate")));
     sh.key(Key::ArrowLeft, NONE);
-    assert_eq!(sh.s.view, Some(declared("estate")), "Left opens the next view");
+    assert_eq!(sh.s.view, Some(declared("containers")), "Left opens the next view");
     sh.key(Key::ArrowDown, NONE);
-    assert_eq!(sh.s.view, Some(declared("estate")), "stops at the end");
+    assert_eq!(sh.s.view, Some(declared("containers")), "stops at the end");
     sh.key(Key::ArrowRight, NONE);
-    assert_eq!(sh.s.view, Some(declared("containers")), "Right opens the previous view");
+    assert_eq!(sh.s.view, Some(declared("estate")), "Right opens the previous view");
     sh.key(Key::ArrowUp, NONE);
     assert_eq!(sh.s.view, Some(declared("context")));
     sh.cmd(Command::NextView);
@@ -633,7 +639,7 @@ fn p2_713_previous_next_follow_view_list() {
     sh.cmd(Command::PreviousView);
     assert_eq!(sh.s.view, Some(declared("context")), "stops at the start");
     sh.cmd(Command::NextView);
-    assert_eq!(sh.s.view, Some(declared("containers")));
+    assert_eq!(sh.s.view, Some(declared("estate")));
     assert!(sh.writes.is_empty());
 }
 
@@ -836,7 +842,7 @@ fn p2_700_auto_place_twice_is_byte_identical() {
 fn p2_700_auto_place_in_default_view_writes_view_first() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::ShowView(ViewRef::Default {
-        scope: "web".to_owned(),
+        scope: ElementKey::from_written("web"),
         kind: ViewKind::Component,
     }));
     sh.cmd(Command::AutoPlace);
@@ -1012,7 +1018,7 @@ fn p2_702_canvas_step_keeps_drawing_on_screen() {
     let mut sh = Shell::with(SHOP);
     let screen_of_shop = |sh: &Shell| {
         let model = parse(&sh.text()).expect("parses").model;
-        let id = model.find("shop").expect("shop");
+        let id = model.find_written("shop").expect("shop");
         let b = sh.scene().boxes.iter().find(|b| b.element == id).expect("drawn").rect;
         sh.s.camera.to_screen(b.min)
     };
@@ -1324,7 +1330,7 @@ fn p2_725_tag_filter_lists_user_defined_tags_only() {
     // Bank box's `External` is listed (as Structurizr 6.2.4 lists it).
     assert_eq!(sh.s.tag_choices(), ["Buyer", "External", "Web"]);
     sh.cmd(Command::TagFilter(vec!["External".to_owned()]));
-    let bank = sh.model().find("bank").expect("bank");
+    let bank = sh.model().find_written("bank").expect("bank");
     let bank_box = ItemKey::Box(sh.scene().boxes_of(bank)[0]);
     assert!(!sh.s.draw_list().faded.contains(&bank_box), "External picks the external box");
 }
@@ -1338,10 +1344,10 @@ fn p2_725_tag_filter_marks_untagged_items() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::TagFilter(vec!["Buyer".to_owned()]));
     let faded = sh.s.draw_list().faded;
-    let customer = sh.model().find("customer").expect("customer");
+    let customer = sh.model().find_written("customer").expect("customer");
     let box_of = |sh: &Shell, id| ItemKey::Box(sh.scene().boxes_of(id)[0]);
     assert!(!faded.contains(&box_of(&sh, customer)));
-    let clerk = sh.model().find("clerk").expect("clerk");
+    let clerk = sh.model().find_written("clerk").expect("clerk");
     assert!(faded.contains(&box_of(&sh, clerk)));
     assert!(faded.iter().any(|k| matches!(k, ItemKey::Line(_))));
     sh.cmd(Command::TagFilter(Vec::new()));
@@ -1361,9 +1367,9 @@ fn p2_726_perspective_list_and_marks() {
     assert_eq!(sh.s.perspective_choices(), ["Security"]);
     sh.cmd(Command::Perspective(Some("Security".to_owned())));
     let faded = sh.s.draw_list().faded;
-    let clerk = sh.model().find("clerk").expect("clerk");
+    let clerk = sh.model().find_written("clerk").expect("clerk");
     assert!(faded.contains(&ItemKey::Box(sh.scene().boxes_of(clerk)[0])));
-    let customer = sh.model().find("customer").expect("customer");
+    let customer = sh.model().find_written("customer").expect("customer");
     assert!(!faded.contains(&ItemKey::Box(sh.scene().boxes_of(customer)[0])));
     sh.cmd(Command::Perspective(None));
     assert!(sh.s.draw_list().faded.is_empty());
@@ -1534,7 +1540,7 @@ fn edit_5_double_click_edits_label_and_title() {
     use c4rizer_core::scene::ItemKey;
     let mut sh = Shell::with(SHOP);
     let model = sh.model();
-    let (from, to) = (model.find("customer").expect("customer"), model.find("shop").expect("shop"));
+    let (from, to) = (model.find_written("customer").expect("customer"), model.find_written("shop").expect("shop"));
     let rel = model.find_relationship(from, to)[0];
     let edge = sh.scene().lines.iter().find(|l| l.relationships.contains(&rel)).expect("line").edge;
     let at = sh.s.camera.to_screen(sh.scene().item_bounds(ItemKey::Label(edge)).expect("label").centre());
@@ -1566,18 +1572,19 @@ fn p2_305_context_menu_lists_every_reachable_view_and_url() {
     let at = sh.screen("shop");
     sh.click_button(at, Button::Right, NONE);
     let labels: Vec<String> = sh.menu().into_iter().map(|e| e.label).collect();
-    assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop"]);
+    // P5-108 (owner request 2026-11-23) adds "Group…" after the views.
+    assert_eq!(labels, ["Enter Inside the shop", "Enter More of the shop", "Group…"]);
     // owner decision 2026-11-19: behaviour change 5
     // A box with neither views nor URL opens a menu with no entry (all
-    // rows greyed).
+    // rows greyed) but "Group…" (P5-108).
     let at = sh.screen("clerk");
     sh.click_button(at, Button::Right, NONE);
-    assert_eq!(sh.s.overlay, Some(Overlay::ContextMenu { entries: Vec::new() }));
+    assert_eq!(sh.s.overlay, Some(Overlay::ContextMenu { entries: group_only() }));
     sh.key(Key::Escape, NONE);
     // URL entries on a box and on a line.
     let at = sh.screen("customer");
     sh.click_button(at, Button::Right, NONE);
-    let entries = sh.menu();
+    let entries: Vec<_> = sh.menu().into_iter().filter(|e| e.label != "Group…").collect();
     assert_eq!(entries.len(), 1);
     sh.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(sh.urls, ["https://example.com/customer"]);
@@ -1589,7 +1596,7 @@ fn p2_305_context_menu_lists_every_reachable_view_and_url() {
     assert_eq!(sh.urls[1], "https://example.com/visits");
     let at = sh.screen("bank");
     sh.click_button(at, Button::Right, NONE);
-    let entries = sh.menu();
+    let entries: Vec<_> = sh.menu().into_iter().filter(|e| e.label != "Group…").collect();
     sh.cmd(Command::ContextAction(entries[0].action.clone()));
     assert_eq!(sh.urls.len(), 2, "ftp is not opened");
     assert!(sh.s.status().notice.expect("a notice").contains("ftp://bank.example/"));
@@ -1638,7 +1645,8 @@ fn edit_28_right_click_under_slop_opens_menu() {
     let near = ScreenPoint { x: at.x + 3.0, y: at.y };
     sh.input(Input::PointerMove { at: near });
     sh.input(Input::PointerUp { at: near, button: Button::Right });
-    assert_eq!(sh.menu().len(), 1);
+    // "Enter" and, P5-108 (owner request 2026-11-23), "Group…".
+    assert_eq!(sh.menu().len(), 2);
     assert_eq!(sh.s.camera.pan, pan, "no pan");
     assert_eq!(sh.selection(), vec![el("shop")]);
 }
@@ -1668,8 +1676,10 @@ fn p2_305_menu_without_entries_opens_disabled_and_harmless() {
     let mut sh = Shell::with(SHOP);
     let at = sh.screen("clerk");
     sh.click_button(at, Button::Right, NONE);
-    let empty = Some(Overlay::ContextMenu { entries: Vec::new() });
-    assert_eq!(sh.s.overlay, empty, "the menu opens with every entry disabled");
+    // P5-108 (owner request 2026-11-23): "Group…" is the one entry a
+    // person always has; every other row is disabled.
+    let empty = Some(Overlay::ContextMenu { entries: group_only() });
+    assert_eq!(sh.s.overlay, empty, "the menu opens with every other entry disabled");
     assert_eq!(sh.selection(), [el("clerk")]);
     sh.key(Key::Enter, NONE);
     assert_eq!(sh.s.overlay, empty, "Enter leaves the menu");
@@ -1684,6 +1694,15 @@ fn p2_305_menu_without_entries_opens_disabled_and_harmless() {
     assert_eq!(sh.selection(), [el("clerk")], "and keeps the selection");
     assert_eq!(sh.s.view, Some(declared("context")));
     assert!(sh.writes.is_empty() && sh.urls.is_empty());
+}
+
+/// The entries of a box menu with no view and no URL: "Group…" alone
+/// (P5-108).
+fn group_only() -> Vec<crate::state::MenuEntry> {
+    vec![crate::state::MenuEntry {
+        label: "Group…".to_owned(),
+        action: crate::state::MenuAction::Group,
+    }]
 }
 
 // ------------------------------------------------------------ task 12
@@ -1820,7 +1839,7 @@ fn p2_732_draw_list_extras_are_only_overlays_and_marks() {
     for item in paint_items(&list) {
         match item.source {
             Source::Scene(k) => assert!(sh.scene().item_bounds(k).is_some(), "{k:?} is a scene item"),
-            Source::Mark(..) | Source::RubberBand | Source::ResizeOutline => {}
+            Source::Mark(..) | Source::RubberBand | Source::ResizeOutline | Source::Guide => {}
         }
     }
     // The scene (what the export draws) is untouched by the aids.
@@ -1929,7 +1948,7 @@ fn p2_665_svg_text_choice_writes_nothing() {
 fn p2_734_breadcrumb_names_c4_level() {
     let mut sh = Shell::with(SHOP);
     sh.cmd(Command::ShowView(ViewRef::Default {
-        scope: "web".to_owned(),
+        scope: ElementKey::from_written("web"),
         kind: ViewKind::Component,
     }));
     // Amended at step 5: a crumb names the level of the view it opens
@@ -2034,7 +2053,10 @@ fn p2_737_rendered_view_list_one_row_per_view() {
         let sh = Shell::with(text);
         for width in [100.0_f32, 120.0, 220.0] {
             let drawn = crate::app::draw_view_list(&sh.s, width, 6);
-            assert_eq!(drawn.rows.len(), sh.s.views().len(), "{name} {width}");
+            // P5-602 supersedes "one row per view": one row per view plus
+            // one header per C-level folder.
+            assert_eq!(drawn.rows.len(), sh.s.views().len() + drawn.headers, "{name} {width}");
+            assert_eq!(drawn.headers, sh.s.view_folders().len(), "{name} {width}");
             for (line, height) in &drawn.rows {
                 assert!(*height <= drawn.row_height + 0.5, "{name} {width}: {line:?} is {height}px high");
             }

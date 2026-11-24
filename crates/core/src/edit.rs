@@ -34,6 +34,8 @@
 // - the c4rizer view extension lines `paperSize` and `line` (P2-701,
 //   P2-708..P2-710, P2-733);
 // - `title` and `subtitle` lines in a view;
+// - the c4rizer view option line `lineColours` (P5-308): added, its
+//   value rewritten, or removed;
 // - a default view block (EDIT-15, `Edit::AddDefaultView`): a view, not
 //   an element, appended as the last view in `views`, and removed again
 //   by `Edit::RemoveDefaultView` (inverse only, EDIT-19) while it holds
@@ -56,6 +58,20 @@
 // - a per-box tag (DSL-13) on an existing element: the tag in a `tags`
 //   line, the `tags` line itself, and the element's `{ }` block when the
 //   element had none.
+// - a tag on an element or a relationship (P5-200, P5-201, owner request
+//   2026-11-23): a tag is neither an element nor a relationship. Added
+//   as a `tags "<tag>"` line, the `{ }` block created when the item had
+//   none; removed from a tags literal wherever it is declared, with the
+//   literal, line or block that then holds nothing. `Edit::RestoreTags`
+//   (inverse only) puts back the statement's bytes exactly as they were.
+// - a group (P5-100..P5-102): a group is not an element. `group "<name>"
+//   {` and `}` lines in the model, a software system or a container; a
+//   declaration moved whole into or out of a group block (its bytes
+//   move, re-indented; none are added); a group block removed when a
+//   move leaves it with no statement, no comment and no identifier.
+//   `Edit::RestoreGroups` (inverse only) puts back the scope's body
+//   exactly as it was, and is refused when that would change the set of
+//   elements or relationships.
 // Removal exists only so an inverse gives the bytes back (EDIT-19), and
 // a block (`{ }` of an element, `element "<tag>"`, `styles`) or a `tags`
 // line is removed only when it holds nothing but what `edit` wrote there;
@@ -140,7 +156,7 @@ use std::fmt;
 use std::ops::Range;
 
 use crate::model::{
-    self, Colour, ElementId, ElementKind, ElementStyle, LabelMode, CrossingStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
+    self, Colour, ElementId, ElementKey, ElementKind, ElementStyle, LabelMode, CrossingStyle, PaperSize, Parsed, RelationshipId, Routing, Shape, ViewKind, ViewSpec,
 };
 use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 
@@ -150,11 +166,11 @@ use crate::text::{self, Block, FileId, Span, Statement, SyntaxTree, TokenKind};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelationshipRef {
-    /// Source element key: the canonical element key (the bare
-    /// `model::Element::key` in phase 1).
-    pub source: String,
+    /// Source element key: the canonical element key
+    /// (`model::Model::full_key`).
+    pub source: ElementKey,
     /// Destination element key, canonical like `source`.
-    pub destination: String,
+    pub destination: ElementKey,
     /// Index among the `source -> destination` relationships, in source
     /// order, from 0.
     pub ordinal: u32,
@@ -163,10 +179,10 @@ pub struct RelationshipRef {
 impl RelationshipRef {
     /// The `ordinal`-th relationship from `source` to `destination`.
     /// Serves DSL-10, EDIT-24.
-    pub fn new(source: impl Into<String>, destination: impl Into<String>, ordinal: u32) -> Self {
+    pub fn new(source: ElementKey, destination: ElementKey, ordinal: u32) -> Self {
         RelationshipRef {
-            source: source.into(),
-            destination: destination.into(),
+            source,
+            destination,
             ordinal,
         }
     }
@@ -234,9 +250,8 @@ pub enum ViewField {
 pub enum TextTarget {
     /// A field of the element with this key.
     Element {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// Which field.
         field: ElementField,
     },
@@ -291,6 +306,18 @@ pub enum StyleTarget {
     ThisBox,
 }
 
+/// What a tag edit names: an element or a relationship, by keys (P5-200,
+/// P5-201).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TagTarget {
+    /// The element with this canonical key (`model::Model::full_key`).
+    Element(ElementKey),
+    /// A relationship, from `RelationshipRef::of`.
+    Relationship(RelationshipRef),
+}
+
 /// One style property and its new value. `None` removes the property
 /// line from the block, so the cascade falls through to earlier tags or
 /// the default (DSL-15); the `element "<tag>"` block and the `styles`
@@ -306,6 +333,34 @@ pub enum StyleProperty {
     Color(Option<Colour>),
     /// `shape Person|Cylinder|Box`.
     Shape(Option<Shape>),
+}
+
+/// Where a line style change is written (P5-350, P5-351): the line
+/// counterpart of `StyleTarget`.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LineStyleTarget {
+    /// `all <tag>`: the `relationship "<tag>"` block, added at the end of
+    /// `styles` when there is none (`styles` and `views` created as for
+    /// `StyleTarget::Tag`). The relationship must carry `tag`, else
+    /// `EditErrorKind::InvalidValue`; every line carrying it changes.
+    Tag(String),
+    /// `this line only`: a per-line tag `<source>-><destination>` (the
+    /// ends' full dotted ids), suffixed `-2`, `-3`... when another
+    /// relationship already carries it, added as the relationship's last
+    /// `tags` line, and a `relationship "<tag>"` block at the end of
+    /// `styles` (P5-350).
+    ThisLine,
+}
+
+/// One line style property and its new value; `None` removes the
+/// property line, and an emptied block with it (P5-352).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LineStyleProperty {
+    /// `color #rrggbb`: line, chevrons, tip and label text (P2-419).
+    Color(Option<Colour>),
 }
 
 /// One semantic edit. Targets are named by the keys written in the file,
@@ -327,9 +382,8 @@ pub enum Edit {
     Move {
         /// View key (`model::ViewSpec::key`).
         view: String,
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// New centre in pixels, in the order `(x, y)`, or `None` for no
         /// `at` line. Written as given; grid snapping is the editor's job
         /// (EDIT-2).
@@ -342,9 +396,8 @@ pub enum Edit {
     Resize {
         /// View key (`model::ViewSpec::key`).
         view: String,
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// New size in pixels, in the order `(width, height)`, each
         /// `> 0`, or `None` for no `size` line. Off-grid values (DSL-7:
         /// multiples of 20) are written as given and flagged by lint L5,
@@ -377,9 +430,8 @@ pub enum Edit {
     /// says (DSL-13, EDIT-17). A multi-box change is one batch, one undo
     /// step (EDIT-17, EDIT-19).
     SetStyle {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
         /// `all <tag>` or `this box only`.
         target: StyleTarget,
         /// The property and its value.
@@ -391,9 +443,8 @@ pub enum Edit {
     /// removed only when they hold nothing but what `edit` wrote there;
     /// otherwise only the tag, or the per-box properties, go (EDIT-21).
     ResetStyle {
-        /// The canonical element key (the bare `model::Element::key` in
-        /// phase 1).
-        element: String,
+        /// The canonical element key (`model::Model::full_key`).
+        element: ElementKey,
     },
     /// Write the default view of `scope` (EDIT-15): a `kind` view with key
     /// `<scope id>-<kind>` (`<kind>` is `ViewKind::keyword`), appended as
@@ -408,9 +459,8 @@ pub enum Edit {
     /// block, and the `views` block too when it holds nothing but what
     /// `edit` wrote there.
     AddDefaultView {
-        /// The scope element key (the bare `model::Element::key` in phase
-        /// 1).
-        scope: String,
+        /// The scope's canonical element key (`model::Model::full_key`).
+        scope: ElementKey,
         /// `ViewKind::Container`: container view of a software system;
         /// `ViewKind::Component`: component view of a container;
         /// `ViewKind::SystemContext`: system context view of a software
@@ -438,9 +488,8 @@ pub enum Edit {
     /// created it. The inverse adds the view back with its `at` and
     /// `size` lines.
     RemoveDefaultView {
-        /// The scope element key (the bare `model::Element::key` in phase
-        /// 1).
-        scope: String,
+        /// The scope's canonical element key (`model::Model::full_key`).
+        scope: ElementKey,
         /// The view kind, as in `AddDefaultView`; a view with the key
         /// `<scope id>-<kind>` of another kind or scope is
         /// `EditErrorKind::InvalidValue`, no view with that key is
@@ -522,9 +571,9 @@ pub enum Edit {
         /// View key (`model::ViewSpec::key`).
         view: String,
         /// The line's source, a canonical element key.
-        source: String,
+        source: ElementKey,
         /// The line's destination, a canonical element key.
-        destination: String,
+        destination: ElementKey,
         /// In a dynamic view, the step's number (`via <n>: ...`);
         /// `None` names the lowest-numbered step between those ends, and
         /// is the only form in other views.
@@ -544,9 +593,9 @@ pub enum Edit {
         /// View key (`model::ViewSpec::key`).
         view: String,
         /// The line's source, a canonical element key.
-        source: String,
+        source: ElementKey,
         /// The line's destination, a canonical element key.
-        destination: String,
+        destination: ElementKey,
         /// In a dynamic view, the step's number (`anchor <n>: ...`), as
         /// for `SetVia`.
         order: Option<String>,
@@ -580,6 +629,27 @@ pub enum Edit {
         /// The style, `None` for no line.
         style: Option<CrossingStyle>,
     },
+    /// Set the crossing budget of `view`: rewrite or add its
+    /// `maxCrossings` line, or remove it with `None` (budget 0, the
+    /// default), placed as `SetLabelMode` places `labels`. Serves CORE-17.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, Settings menu)
+    SetMaxCrossings {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The budget, `None` for no line.
+        budget: Option<u32>,
+    },
+    /// Set what colour `view` gives its unstyled lines: rewrite the value
+    /// of its `lineColours` (or `lineColors`) line in place, add a
+    /// `lineColours` line, or remove it with `None` (`plain`, the
+    /// default), placed as `SetLabelMode` places `labels`. Serves P5-308.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-13)
+    SetLineColours {
+        /// View key (`model::ViewSpec::key`).
+        view: String,
+        /// The mode, `None` for no line.
+        mode: Option<model::LineColours>,
+    },
     /// Set every `bridge` line of `view`: one per entry of `bridges`,
     /// `(carrier, other)`, in order. Existing lines are rewritten in
     /// place, extra ones removed, new ones added after the view's last
@@ -594,6 +664,112 @@ pub enum Edit {
         /// The bridges, each `(carrier, other)`.
         bridges: Vec<(LineRef, LineRef)>,
     },
+    /// Add `tag` to an element or a relationship: a `tags "<tag>"` line
+    /// as the last line of its block, the `{ }` block created when it has
+    /// none, in the file declaring it. A tag the target already carries
+    /// (implicit tags included) writes nothing and has no inverse. The
+    /// tag is trimmed; an empty tag or one holding `"`, `,` or a line
+    /// break is `EditErrorKind::InvalidValue`. The inverse is a
+    /// `RemoveTag`. Serves P5-200, P5-203.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    AddTag {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The tag, as typed.
+        tag: String,
+    },
+    /// Remove `tag` from an element or a relationship wherever its
+    /// statement declares it (positional string, `tags` line, `tag` line,
+    /// comma list), with the literal, line or `{ }` block that then holds
+    /// nothing. A tag the target does not declare (`Element`, its kind
+    /// tag, `Relationship`, an archetype's tags) is
+    /// `EditErrorKind::InvalidValue`. The inverse is a `RestoreTags`.
+    /// Serves P5-201, P5-203.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RemoveTag {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The tag, as typed.
+        tag: String,
+    },
+    /// Put back the bytes of the target's statement as they were before a
+    /// `RemoveTag` (EDIT-19), so tag order and layout come back exactly.
+    /// Inverse only: the editor never builds it from a gesture. Refused
+    /// (`EditErrorKind::InvalidValue`), writing nothing, when the
+    /// statement does not hold `expected` now, or when the result would
+    /// change the set of elements or relationships (EDIT-21). Its inverse
+    /// is a `RestoreTags` the other way. Serves P5-202.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+    RestoreTags {
+        /// The element or relationship.
+        target: TagTarget,
+        /// The statement's bytes to write back.
+        text: String,
+        /// The statement's bytes now.
+        expected: String,
+    },
+    /// Move the declarations of `elements` into the group `group` of
+    /// their scope, or out of every group with `None`. The elements are
+    /// persons, software systems, containers or components sharing one
+    /// parent scope (the model, a software system or a container), each
+    /// declared on its own lines in the file holding the scope's block;
+    /// else `EditErrorKind::InvalidValue`.
+    ///
+    /// `Some(name)`: the declarations move, in source order, whole and
+    /// re-indented, to the end of the body of the group named `name`
+    /// declared directly in the scope; when there is none, `group
+    /// "<name>" {` and `}` are first written where the first moved
+    /// declaration (or the scope-level group holding it) stood. `None`:
+    /// each declaration in a group moves right after the scope-level
+    /// group holding it. A group block left with no statement, no comment
+    /// and no identifier is removed. Groups are never nested (P2-129).
+    /// Keys do not change (groups add no id segment, P2-131). The inverse
+    /// is a `RestoreGroups`. Serves P5-100..P5-104.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    SetGroup {
+        /// Canonical element keys (`model::Model::full_key`).
+        elements: Vec<ElementKey>,
+        /// The group's name, `None` for no group.
+        group: Option<String>,
+    },
+    /// Put back the body of a scope's block (between its braces) as it
+    /// was before a `SetGroup` (EDIT-19), byte for byte. Inverse only.
+    /// Refused (`EditErrorKind::InvalidValue`), writing nothing, when the
+    /// body does not hold `expected` now, or when the result would change
+    /// the set of elements or relationships (EDIT-21). Its inverse is a
+    /// `RestoreGroups` the other way. Serves P5-105.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-11 / issue #1)
+    RestoreGroups {
+        /// The scope element's canonical key; `None` for the model.
+        scope: Option<ElementKey>,
+        /// The body's bytes to write back.
+        text: String,
+        /// The body's bytes now.
+        expected: String,
+    },
+    /// Change one style property of a relationship's line, written where
+    /// `target` says: the line counterpart of `SetStyle` (P5-350..P5-352).
+    /// A line standing for several relationships is styled through its
+    /// winner (P5-356). The inverse is a `SetLineStyle` with the previous
+    /// value; undo gives the bytes back (P5-354).
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    SetLineStyle {
+        /// The relationship, from `RelationshipRef::of`.
+        relationship: RelationshipRef,
+        /// `all <tag>` or `this line only`.
+        target: LineStyleTarget,
+        /// The property and its value.
+        property: LineStyleProperty,
+    },
+    /// "Reset to tag style" for a line: remove the relationship's per-line
+    /// tag and its `relationship "<tag>"` blocks, under the same rules as
+    /// `ResetStyle` (P5-353). Nothing is written when it has no per-line
+    /// tag.
+    // PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-15 / issue #5)
+    ResetLineStyle {
+        /// The relationship, from `RelationshipRef::of`.
+        relationship: RelationshipRef,
+    },
 }
 
 /// A drawn line of a view named by its ends' canonical element keys and,
@@ -604,9 +780,9 @@ pub enum Edit {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LineRef {
     /// The line's source, a canonical element key.
-    pub source: String,
+    pub source: ElementKey,
     /// The line's destination, a canonical element key.
-    pub destination: String,
+    pub destination: ElementKey,
     /// In a dynamic view, the step's number.
     pub order: Option<String>,
 }
@@ -614,10 +790,10 @@ pub struct LineRef {
 impl LineRef {
     /// The line from `source` to `destination` (step `order`). Serves
     /// P4-424.
-    pub fn new(source: impl Into<String>, destination: impl Into<String>, order: Option<String>) -> Self {
+    pub fn new(source: ElementKey, destination: ElementKey, order: Option<String>) -> Self {
         LineRef {
-            source: source.into(),
-            destination: destination.into(),
+            source,
+            destination,
             order,
         }
     }
@@ -689,11 +865,15 @@ pub struct Applied {
 /// (`EditErrorKind::InvalidValue`: size not `> 0`, an absent element
 /// name, a technology on a person or software system, another control
 /// character in a text value, `StyleTarget::Tag` with a tag the element
-/// does not carry, an `AddDefaultView` scope whose kind does not fit, an
+/// does not carry, `LineStyleTarget::Tag` with a tag the relationship
+/// does not carry, a `SetLineStyle` on a relationship copied between
+/// instances (P5-351), an `AddDefaultView` scope whose kind does not fit, an
 /// `AddDefaultView` or `RemoveDefaultView` whose key `<scope>-<kind>`
 /// names a view of another scope or kind, a `RemoveDefaultView` whose
 /// view holds more than `edit` wrote; the same view already written is
-/// not an error for `AddDefaultView`).
+/// not an error for `AddDefaultView`; a tag refused by P5-203 or not
+/// declared on a `RemoveTag` target; a `SetGroup` refused by P5-104; a
+/// `RestoreTags` or `RestoreGroups` whose bytes changed since).
 pub fn apply(parsed: &Parsed, edits: &[Edit]) -> Result<Applied, EditError> {
     // DECISION: each edit is applied to the text left by the previous one,
     // re-parsed in between, so every edit finds its target by key in the
@@ -876,6 +1056,8 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::RemoveDefaultView { scope, kind } => remove_default_view(current, scope, *kind),
         Edit::SetCanvasSize { view, size } => set_canvas_size(current, view, *size),
         Edit::SetLabelMode { view, mode } => set_label_mode(current, view, *mode),
+        Edit::SetMaxCrossings { view, budget } => set_max_crossings(current, view, *budget),
+        Edit::SetLineColours { view, mode } => set_line_colours(current, view, *mode),
         Edit::SetLinePosition {
             view,
             relationship,
@@ -910,6 +1092,17 @@ fn apply_one(current: &mut Parsed, edit: &Edit) -> Res<Vec<Edit>> {
         Edit::SetBundles { view, bundles } => set_bundles(current, view, bundles),
         Edit::SetCrossingStyle { view, style } => set_crossing_style(current, view, *style),
         Edit::SetBridges { view, bridges } => set_bridges(current, view, bridges),
+        Edit::AddTag { target, tag } => add_tag(current, target, tag),
+        Edit::RemoveTag { target, tag } => remove_tag(current, target, tag),
+        Edit::RestoreTags { target, text, expected } => restore_tags(current, target, text, expected),
+        Edit::SetGroup { elements, group } => set_group(current, elements, group.as_deref()),
+        Edit::RestoreGroups { scope, text, expected } => restore_groups(current, scope.as_ref(), text, expected),
+        Edit::SetLineStyle {
+            relationship,
+            target,
+            property,
+        } => set_line_style(current, relationship, target, *property),
+        Edit::ResetLineStyle { relationship } => reset_line_style(current, relationship),
     }
 }
 
@@ -1537,7 +1730,7 @@ fn no_workspace() -> EditErrorKind {
 /// The bare key of `id` (phase 1: always written).
 /// The canonical element key: `Model::full_key`, the dotted full id
 /// under hierarchical ids (P2-142).
-fn element_key(model: &model::Model, id: ElementId) -> String {
+fn element_key(model: &model::Model, id: ElementId) -> ElementKey {
     model.full_key(id).unwrap_or_default()
 }
 
@@ -1557,8 +1750,8 @@ fn gone(target: &str) -> EditErrorKind {
     }
 }
 
-fn find_element(model: &model::Model, key: &str) -> Res<ElementId> {
-    model.find(key).ok_or_else(|| gone(key))
+fn find_element(model: &model::Model, key: &ElementKey) -> Res<ElementId> {
+    model.find(key).ok_or_else(|| gone(key.as_str()))
 }
 
 // ----------------------------------------------------- at and size lines
@@ -1577,7 +1770,7 @@ impl LineKind {
         }
     }
 
-    fn edit(self, view: &str, element: &str, value: Option<(i32, i32)>) -> Edit {
+    fn edit(self, view: &str, element: &ElementKey, value: Option<(i32, i32)>) -> Edit {
         match self {
             LineKind::At => Edit::Move {
                 view: view.to_owned(),
@@ -1613,7 +1806,7 @@ impl LineKind {
 
 /// The view and element of a box edit: the view exists and the element
 /// is in it (EDIT-24).
-fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m ViewSpec, ElementId)> {
+fn find_box<'m>(model: &'m model::Model, view: &str, element: &ElementKey) -> Res<(&'m ViewSpec, ElementId)> {
     let spec = model.view(view).ok_or_else(|| gone(view))?;
     // P3-117: an instance without an id is `<element key>_<n>` in its
     // view's environment; another environment may use the same key.
@@ -1621,7 +1814,7 @@ fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m 
     let local = included
         .iter()
         .copied()
-        .find(|&e| model.element(e).key.is_none() && model.full_key(e).is_some_and(|k| k.eq_ignore_ascii_case(element)));
+        .find(|&e| model.element(e).key.is_none() && model.full_key(e).is_some_and(|k| k.as_str().eq_ignore_ascii_case(element.as_str())));
     let id = match local {
         Some(id) => id,
         None => find_element(model, element)?,
@@ -1629,14 +1822,14 @@ fn find_box<'m>(model: &'m model::Model, view: &str, element: &str) -> Res<(&'m 
     let drawn = included.contains(&id)
         || spec.position_of(id).is_some()
         || spec.size_of(id).is_some();
-    if drawn { Ok((spec, id)) } else { Err(gone(element)) }
+    if drawn { Ok((spec, id)) } else { Err(gone(element.as_str())) }
 }
 
 /// `Move` and `Resize` (DSL-7, DSL-9, EDIT-18).
 fn box_line(
     current: &mut Parsed,
     view: &str,
-    element: &str,
+    element: &ElementKey,
     value: Option<(i32, i32)>,
     kind: LineKind,
 ) -> Res<Vec<Edit>> {
@@ -1947,8 +2140,8 @@ fn via_points(points: &[(i32, i32)]) -> String {
 fn set_via(
     current: &mut Parsed,
     view: &str,
-    source: &str,
-    destination: &str,
+    source: &ElementKey,
+    destination: &ElementKey,
     order: Option<&str>,
     points: Option<&[(i32, i32)]>,
 ) -> Res<Vec<Edit>> {
@@ -2033,8 +2226,8 @@ fn anchor_ends(from: Option<crate::anchor::Anchor>, to: Option<crate::anchor::An
 fn set_anchor(
     current: &mut Parsed,
     view: &str,
-    source: &str,
-    destination: &str,
+    source: &ElementKey,
+    destination: &ElementKey,
     order: Option<&str>,
     (from, to): (Option<crate::anchor::Anchor>, Option<crate::anchor::Anchor>),
 ) -> Res<Vec<Edit>> {
@@ -2206,6 +2399,94 @@ fn set_crossing_style(current: &mut Parsed, view: &str, style: Option<CrossingSt
     Ok(inverse)
 }
 
+/// `SetMaxCrossings` (CORE-17): the `maxCrossings` line, placed as
+/// `set_crossing_style` places `crossings`.
+fn set_max_crossings(current: &mut Parsed, view: &str, budget: Option<u32>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetMaxCrossings {
+        view: view.to_owned(),
+        budget: spec.max_crossings.map(|c| c.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.max_crossings, budget) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.to_string(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("maxCrossings {new}"));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.labels.map(|v| v.span),
+                    spec.crossings.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
+/// `SetLineColours` (P5-308): the `lineColours` line, placed as
+/// `set_max_crossings` places `maxCrossings`.
+// DECISION: a new line is spelt `lineColours` (the British spelling the
+// design names first); a rewrite replaces only the value, so a written
+// `lineColors` keeps its spelling.
+fn set_line_colours(current: &mut Parsed, view: &str, mode: Option<model::LineColours>) -> Res<Vec<Edit>> {
+    let spec = current.model.view(view).ok_or_else(|| gone(view))?;
+    let inverse = vec![Edit::SetLineColours {
+        view: view.to_owned(),
+        mode: spec.line_colours.map(|c| c.value),
+    }];
+    let file = spec.span.file;
+    run_in(current, file, |cx| {
+        let spec = cx.model.view(view).ok_or_else(|| gone(view))?;
+        let (owner, block) = view_block(cx, spec, view)?;
+        Ok(match (spec.line_colours, mode) {
+            (None, None) => Plan::Patches(Vec::new()),
+            (Some(old), None) => {
+                let line = Ctx::child_holding(block, old.span).ok_or_else(|| gone(view))?;
+                Plan::Patches(vec![cx.remove_line(line.span)])
+            }
+            (Some(old), Some(new)) => Plan::Patches(vec![Patch {
+                range: old.span.range(),
+                text: new.keyword().to_owned(),
+            }]),
+            (None, Some(new)) => {
+                let line = one_line(format!("lineColours {}", new.keyword()));
+                let last_option = [
+                    spec.label_width.map(|v| v.span),
+                    spec.bus.map(|v| v.span),
+                    spec.technology.map(|v| v.span),
+                    spec.max_crossings.map(|v| v.span),
+                    spec.labels.map(|v| v.span),
+                    spec.crossings.map(|v| v.span),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|s| s.range().start);
+                let anchors = [last_option, spec.include.last().map(|i| i.span)];
+                insert_after_first(cx, owner, block, &anchors, &line)
+            }
+        })
+    })?;
+    Ok(inverse)
+}
+
 /// The text of a `bridge` line.
 fn bridge_text(carrier: &LineRef, other: &LineRef) -> String {
     format!("bridge {} {}", carrier.written(), other.written())
@@ -2338,7 +2619,7 @@ fn target_file(model: &model::Model, target: &TextTarget) -> Res<FileId> {
 
 /// The file declaring the element keyed `element`: a per-box `tags` line
 /// goes there (B dsl-breadth 8).
-fn element_file(model: &model::Model, element: &str) -> Res<FileId> {
+fn element_file(model: &model::Model, element: &ElementKey) -> Res<FileId> {
     Ok(model.element(find_element(model, element)?).span.file)
 }
 
@@ -2418,7 +2699,7 @@ impl<'a> TextField<'a> {
                     RelationshipField::Description => (r.description.clone(), 0),
                     RelationshipField::Technology => (r.technology.clone(), 1),
                 };
-                let owner = cx.statement(r.span).ok_or_else(|| gone(&relationship.source))?;
+                let owner = cx.statement(r.span).ok_or_else(|| gone(relationship.source.as_str()))?;
                 let arrow = cx
                     .head(owner)
                     .iter()
@@ -2538,7 +2819,7 @@ fn resolve_relationship(model: &model::Model, r: &RelationshipRef) -> Res<Relati
 
 fn set_style(
     current: &mut Parsed,
-    element: &str,
+    element: &ElementKey,
     target: &StyleTarget,
     property: StyleProperty,
 ) -> Res<Vec<Edit>> {
@@ -2592,7 +2873,7 @@ fn set_style(
     }
 }
 
-fn reset_style(current: &mut Parsed, element: &str) -> Res<Vec<Edit>> {
+fn reset_style(current: &mut Parsed, element: &ElementKey) -> Res<Vec<Edit>> {
     let model = &current.model;
     let id = find_element(model, element)?;
     let Some(tag) = per_box_tag(model, id) else {
@@ -2698,16 +2979,40 @@ fn tag_value(model: &model::Model, tag: &str, property: StyleProperty) -> StyleP
 }
 
 /// Writes `property` into the `element "<tag>"` block (DSL-13).
+fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan> {
+    let (keyword, value) = prop_parts(property);
+    let blocks: Vec<StyleBlock> = file_blocks(cx.model, tag)
+        .map(|s| StyleBlock {
+            span: s.span,
+            value: prop_in(s, property).0,
+        })
+        .collect();
+    plan_block_property(cx, ("element", tag), &blocks, keyword, value)
+}
+
+/// A file's own top-level style block for one tag, as `edit` reads it:
+/// the statement, and the value of the property being written when the
+/// block sets it.
+struct StyleBlock {
+    span: Span,
+    value: Option<Span>,
+}
+
+/// Writes `keyword value` into the `<head> "<tag>"` blocks `blocks` (in
+/// file order), or removes it for `None` (DSL-13, P5-350..P5-352).
 // DECISION: with several blocks for one tag, the value is rewritten in
 // the last block that sets it (the one that takes effect, DSL-15), and a
 // new property line goes into the last block.
-fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan> {
-    let (keyword, value) = prop_parts(property);
-    let blocks: Vec<&ElementStyle> = file_blocks(cx.model, tag).collect();
-    let setting = blocks
-        .iter()
-        .rev()
-        .find_map(|s| prop_in(s, property).0.map(|span| (*s, span)));
+// DECISION: shared by element and relationship styles (P5-350): one
+// writer, so a line style lands exactly where a box style would.
+fn plan_block_property(
+    cx: &Ctx<'_>,
+    (head, tag): (&str, &str),
+    blocks: &[StyleBlock],
+    keyword: &str,
+    value: Option<String>,
+) -> Res<Plan> {
+    let setting = blocks.iter().rev().find_map(|b| b.value.map(|span| (b.span, span)));
     let missing = || EditErrorKind::InvalidValue {
         value: tag.to_owned(),
         reason: "its style block was not found",
@@ -2718,10 +3023,10 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
             text: v,
         }]),
         (Some((style, span)), None) => {
-            let owner = cx.statement(style.span).ok_or_else(missing)?;
+            let owner = cx.statement(style).ok_or_else(missing)?;
             let block = owner.block.as_ref().ok_or_else(missing)?;
             let line = Ctx::child_holding(block, span).ok_or_else(missing)?;
-            let parents = [Some(style.span), cx.model.styles_span, cx.model.views_span];
+            let parents = [Some(style), cx.model.styles_span, cx.model.views_span];
             Plan::Patches(vec![cx.remove_nested(line, &parents)])
         }
         (None, None) => Plan::Patches(Vec::new()),
@@ -2733,7 +3038,7 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
                 cx.insert_last(owner, block, &one_line(line))
             } else {
                 let lines = vec![
-                    (0, format!("element {} {{", text::quote(tag))),
+                    (0, format!("{head} {} {{", text::quote(tag))),
                     (1, line),
                     (0, "}".to_owned()),
                 ];
@@ -2747,8 +3052,14 @@ fn plan_tag_style(cx: &Ctx<'_>, tag: &str, property: StyleProperty) -> Res<Plan>
 /// any: the whole block (and `styles`, `views` when they hold nothing
 /// else) when it holds no comment, else only the property lines.
 fn plan_clear_block(cx: &Ctx<'_>, tag: &str) -> Plan {
-    for style in file_blocks(cx.model, tag).rev() {
-        let Some(owner) = cx.statement(style.span) else {
+    let spans: Vec<Span> = file_blocks(cx.model, tag).map(|s| s.span).collect();
+    plan_clear_blocks(cx, &spans)
+}
+
+/// `plan_clear_block` on the style blocks at `spans`, in file order.
+fn plan_clear_blocks(cx: &Ctx<'_>, spans: &[Span]) -> Plan {
+    for &span in spans.iter().rev() {
+        let Some(owner) = cx.statement(span) else {
             continue;
         };
         let Some(block) = &owner.block else {
@@ -2829,9 +3140,15 @@ fn new_per_box_tag(model: &model::Model, id: ElementId) -> String {
 
 /// Adds `tags "<tag>"` as the last line of the element's block, creating
 /// the block when it has none (DSL-13).
-fn plan_add_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
+fn plan_add_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element))?;
+    plan_add_tag_at(cx, e.span, tag, element.as_str())
+}
+
+/// `plan_add_tag` on the statement at `span` (an element or a
+/// relationship, P5-200); `name` names it in an error.
+fn plan_add_tag_at(cx: &Ctx<'_>, span: Span, tag: &str, name: &str) -> Res<Plan> {
+    let owner = cx.statement(span).ok_or_else(|| gone(name))?;
     let line = format!("tags {}", text::quote(tag));
     if let Some(block) = &owner.block {
         return Ok(cx.insert_last(owner, block, &one_line(line)));
@@ -2855,11 +3172,16 @@ fn plan_add_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
 /// Removes `tag` from the element: from its tags literal, the literal
 /// when it holds only that tag, the `tags` line when it holds only that
 /// literal, and the element's block when it holds only that line.
-fn plan_remove_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
+fn plan_remove_tag(cx: &Ctx<'_>, element: &ElementKey, tag: &str) -> Res<Plan> {
     let e = cx.model.element(find_element(cx.model, element)?);
-    let owner = cx.statement(e.span).ok_or_else(|| gone(element))?;
-    let Some(literal) = e
-        .declared_tags
+    plan_remove_tag_at(cx, e.span, &e.declared_tags, tag, element.as_str())
+}
+
+/// `plan_remove_tag` on the statement at `span` declaring `declared`
+/// (an element or a relationship, P5-201); `name` names it in an error.
+fn plan_remove_tag_at(cx: &Ctx<'_>, span: Span, declared: &[model::Literal], tag: &str, name: &str) -> Res<Plan> {
+    let owner = cx.statement(span).ok_or_else(|| gone(name))?;
+    let Some(literal) = declared
         .iter()
         .find(|l| l.value.split(',').any(|t| t.trim() == tag))
     else {
@@ -2915,9 +3237,754 @@ fn plan_remove_tag(cx: &Ctx<'_>, element: &str, tag: &str) -> Res<Plan> {
     Ok(Plan::Patches(vec![cx.remove_line(line.span)]))
 }
 
+// ------------------------------------------------------ line style edits
+
+/// The file's own top-level `relationship "<tag>"` blocks, in file order
+/// (the line counterpart of `file_blocks`).
+fn line_blocks<'m>(
+    model: &'m model::Model,
+    tag: &'m str,
+) -> impl DoubleEndedIterator<Item = &'m model::RelationshipStyle> {
+    model
+        .relationship_styles
+        .iter()
+        .filter(move |s| s.theme.is_none() && s.mode.is_none() && s.tag.value == tag)
+}
+
+/// The colour the file's `relationship "<tag>"` blocks set, later blocks
+/// winning (DSL-15).
+fn line_tag_colour(model: &model::Model, tag: &str) -> Option<Colour> {
+    line_blocks(model, tag).rev().find_map(|s| s.color.map(|c| c.value))
+}
+
+/// Writes `colour` into the `relationship "<tag>"` block (P5-350..P5-352).
+fn plan_line_style(cx: &Ctx<'_>, tag: &str, colour: Option<Colour>) -> Res<Plan> {
+    let blocks: Vec<StyleBlock> = line_blocks(cx.model, tag)
+        .map(|s| StyleBlock {
+            span: s.span,
+            value: s.color.map(|c| c.span),
+        })
+        .collect();
+    plan_block_property(cx, ("relationship", tag), &blocks, "color", colour.map(|c| c.to_string()))
+}
+
+/// True when a written relationship other than `id` carries `tag`.
+// DECISION: a relationship copied between instances (P3-106) carries
+// its original's tags; it is not written, so it never makes a per-line
+// tag "taken" (else the original's own tag would stop counting as its).
+fn line_tag_taken(model: &model::Model, id: Option<RelationshipId>, tag: &str) -> bool {
+    model
+        .relationships
+        .iter()
+        .any(|r| Some(r.id) != id && r.copied_from.is_none() && r.tags.iter().any(|t| t == tag))
+}
+
+/// The per-line tag's stem: `<source>-><destination>`, the ends' full
+/// dotted ids (P5-350).
+// DECISION: the ends' dotted ids, as DSL-13 names a box's tag, so the
+// tag reads as the line in both identifier modes and is stable across
+// edits that do not rename an end.
+fn line_tag_stem(model: &model::Model, id: RelationshipId) -> String {
+    let r = model.relationship(id);
+    format!("{}->{}", dotted_id(model, r.source.value), dotted_id(model, r.destination.value))
+}
+
+/// The relationship's per-line tag, if it declares one: the stem, or the
+/// stem suffixed `-N` (N >= 2), carried by no other written relationship.
+fn per_line_tag(model: &model::Model, id: RelationshipId) -> Option<String> {
+    let stem = line_tag_stem(model, id);
+    model
+        .relationship(id)
+        .declared_tags
+        .iter()
+        .flat_map(|l| l.value.split(','))
+        .map(str::trim)
+        .rev()
+        .filter(|t| !line_tag_taken(model, Some(id), t))
+        .find(|t| {
+            *t == stem
+                || t.strip_prefix(stem.as_str())
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| n >= 2)
+        })
+        .map(str::to_owned)
+}
+
+/// A new per-line tag: the stem, suffixed `-2`, `-3`... when a written
+/// relationship already carries it (P5-350).
+fn new_per_line_tag(model: &model::Model, id: RelationshipId) -> String {
+    let stem = line_tag_stem(model, id);
+    if !line_tag_taken(model, None, &stem) {
+        return stem;
+    }
+    (2..=u32::MAX)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|t| !line_tag_taken(model, None, t))
+        .unwrap_or(stem)
+}
+
+/// Adds (`add`) or removes `tag` on the relationship `r` in its file.
+fn line_tag(current: &mut Parsed, r: &RelationshipRef, tag: &str, add: bool) -> Res<()> {
+    let file = current.model.relationship(resolve_relationship(&current.model, r)?).span.file;
+    let name = format!("{} -> {}", r.source, r.destination);
+    run_in(current, file, |cx| {
+        let rel = cx.model.relationship(resolve_relationship(cx.model, r)?);
+        if add {
+            plan_add_tag_at(cx, rel.span, tag, &name)
+        } else {
+            plan_remove_tag_at(cx, rel.span, &rel.declared_tags, tag, &name)
+        }
+    })
+}
+
+/// `Edit::SetLineStyle` (P5-350..P5-352).
+fn set_line_style(
+    current: &mut Parsed,
+    relationship: &RelationshipRef,
+    target: &LineStyleTarget,
+    property: LineStyleProperty,
+) -> Res<Vec<Edit>> {
+    let LineStyleProperty::Color(colour) = property;
+    let model = &current.model;
+    let id = resolve_relationship(model, relationship)?;
+    let rel = model.relationship(id);
+    if rel.copied_from.is_some() {
+        return Err(EditErrorKind::InvalidValue {
+            value: format!("{} -> {}", relationship.source, relationship.destination),
+            reason: "this relationship is copied between instances; style the one it copies",
+        });
+    }
+    let undo = |colour| {
+        vec![Edit::SetLineStyle {
+            relationship: relationship.clone(),
+            target: target.clone(),
+            property: LineStyleProperty::Color(colour),
+        }]
+    };
+    match target {
+        LineStyleTarget::Tag(tag) => {
+            if !rel.tags.iter().any(|t| t == tag) {
+                return Err(EditErrorKind::InvalidValue {
+                    value: tag.clone(),
+                    reason: "the relationship does not carry this tag",
+                });
+            }
+            let inverse = undo(line_tag_colour(model, tag));
+            run(current, |cx| plan_line_style(cx, tag, colour))?;
+            Ok(inverse)
+        }
+        LineStyleTarget::ThisLine => match per_line_tag(model, id) {
+            Some(tag) => {
+                let inverse = undo(line_tag_colour(model, &tag));
+                run(current, |cx| plan_line_style(cx, &tag, colour))?;
+                // As `set_style`: the tag goes with its last block, so
+                // undoing a first "this line only" change gives the bytes
+                // back.
+                if colour.is_none() && line_blocks(&current.model, &tag).next().is_none() {
+                    line_tag(current, relationship, &tag, false)?;
+                }
+                Ok(inverse)
+            }
+            None if colour.is_none() => Ok(Vec::new()),
+            None => {
+                let tag = new_per_line_tag(model, id);
+                let inverse = undo(None);
+                line_tag(current, relationship, &tag, true)?;
+                run(current, |cx| plan_line_style(cx, &tag, colour))?;
+                Ok(inverse)
+            }
+        },
+    }
+}
+
+/// `Edit::ResetLineStyle` (P5-353): as `reset_style`.
+fn reset_line_style(current: &mut Parsed, relationship: &RelationshipRef) -> Res<Vec<Edit>> {
+    let model = &current.model;
+    let id = resolve_relationship(model, relationship)?;
+    let Some(tag) = per_line_tag(model, id) else {
+        return Ok(Vec::new());
+    };
+    let inverse = line_tag_colour(model, &tag)
+        .map(|c| Edit::SetLineStyle {
+            relationship: relationship.clone(),
+            target: LineStyleTarget::ThisLine,
+            property: LineStyleProperty::Color(Some(c)),
+        })
+        .into_iter()
+        .collect();
+    // One block (or its properties) per pass; each pass removes bytes,
+    // so the loop ends.
+    loop {
+        let before = root(current).source().len();
+        run(current, |cx| {
+            let spans: Vec<Span> = line_blocks(cx.model, &tag).map(|s| s.span).collect();
+            Ok(plan_clear_blocks(cx, &spans))
+        })?;
+        if root(current).source().len() == before {
+            break;
+        }
+    }
+    line_tag(current, relationship, &tag, false)?;
+    Ok(inverse)
+}
+
+// ------------------------------------------------------------ tag edits
+
+/// A tag target as found in one parse: its statement, declared literals
+/// and effective tags.
+struct Tagged {
+    span: Span,
+    declared: Vec<model::Literal>,
+    tags: Vec<String>,
+    name: String,
+}
+
+/// Resolves a tag target (P5-200, P5-201).
+fn tagged(model: &model::Model, target: &TagTarget) -> Res<Tagged> {
+    match target {
+        TagTarget::Element(key) => {
+            let e = model.element(find_element(model, key)?);
+            Ok(Tagged {
+                span: e.span,
+                declared: e.declared_tags.clone(),
+                tags: e.tags.clone(),
+                name: key.to_string(),
+            })
+        }
+        TagTarget::Relationship(r) => {
+            let rel = model.relationship(resolve_relationship(model, r)?);
+            let name = format!("{} -> {}", r.source, r.destination);
+            if rel.copied_from.is_some() {
+                return Err(EditErrorKind::InvalidValue {
+                    value: name,
+                    reason: "this relationship is copied between instances; tag the one it copies",
+                });
+            }
+            Ok(Tagged {
+                span: rel.span,
+                declared: rel.declared_tags.clone(),
+                tags: rel.tags.clone(),
+                name,
+            })
+        }
+    }
+}
+
+/// P5-203: the tag trimmed; empty, `"`, `,` or a line break refused.
+fn check_tag(tag: &str) -> Res<String> {
+    let refused = |reason| {
+        Err(EditErrorKind::InvalidValue {
+            value: tag.to_owned(),
+            reason,
+        })
+    };
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        return refused("a tag cannot be empty");
+    }
+    if trimmed.contains(['\n', '\r']) {
+        return refused("a tag holds one line");
+    }
+    if trimmed.contains('"') {
+        return refused("a tag cannot hold a double quote");
+    }
+    if trimmed.contains(',') {
+        return refused("a tag cannot hold a comma: commas separate tags");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return refused("a tag cannot hold a control character");
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// True when `literal` declares `tag` (a comma list counts each part).
+fn declares(literal: &model::Literal, tag: &str) -> bool {
+    literal.value.split(',').any(|t| t.trim() == tag)
+}
+
+/// `Edit::AddTag` (P5-200).
+fn add_tag(current: &mut Parsed, target: &TagTarget, tag: &str) -> Res<Vec<Edit>> {
+    let tag = check_tag(tag)?;
+    let found = tagged(&current.model, target)?;
+    if found.tags.contains(&tag) {
+        return Ok(Vec::new());
+    }
+    run_in(current, found.span.file, |cx| {
+        let found = tagged(cx.model, target)?;
+        plan_add_tag_at(cx, found.span, &tag, &found.name)
+    })?;
+    Ok(vec![Edit::RemoveTag {
+        target: target.clone(),
+        tag,
+    }])
+}
+
+/// `Edit::RemoveTag` (P5-201): one declaring literal per pass, until
+/// none is left; the inverse restores the statement's bytes (P5-202).
+fn remove_tag(current: &mut Parsed, target: &TagTarget, tag: &str) -> Res<Vec<Edit>> {
+    let tag = check_tag(tag)?;
+    let found = tagged(&current.model, target)?;
+    let declaring: Vec<&model::Literal> = found.declared.iter().filter(|l| declares(l, &tag)).collect();
+    if declaring.is_empty() {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the item does not declare this tag (implicit and archetype tags cannot be removed)",
+        });
+    }
+    let inside = |l: &model::Literal| {
+        l.span.file == found.span.file && found.span.start <= l.span.start && l.span.end <= found.span.end
+    };
+    if !declaring.iter().all(|l| inside(l)) {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the tag is declared outside the item's statement (an `!element` block); remove it there",
+        });
+    }
+    let file = found.span.file;
+    let before = tree_of(current, file).source()[found.span.range()].to_owned();
+    // Each pass removes one literal's occurrence; the bound guards a
+    // planning bug from looping.
+    for _ in 0..=declaring.len() {
+        let now = tagged(&current.model, target)?;
+        if !now.declared.iter().any(|l| declares(l, &tag)) {
+            break;
+        }
+        run_in(current, file, |cx| {
+            let now = tagged(cx.model, target)?;
+            plan_remove_tag_at(cx, now.span, &now.declared, &tag, &now.name)
+        })?;
+    }
+    let after = tagged(&current.model, target)?;
+    if after.declared.iter().any(|l| declares(l, &tag)) {
+        return Err(EditErrorKind::InvalidValue {
+            value: tag,
+            reason: "the tag could not be removed from where it is written",
+        });
+    }
+    let expected = tree_of(current, file).source()[after.span.range()].to_owned();
+    Ok(vec![Edit::RestoreTags {
+        target: target.clone(),
+        text: before,
+        expected,
+    }])
+}
+
+/// The canonical element keys and relationship ends of `model`: what
+/// EDIT-21 keeps, compared by the `Restore*` inverses.
+// DECISION: compared as sorted lists of keys, since a group move changes
+// declaration order (and so `ElementId`s) but not identity.
+fn identity(model: &model::Model) -> (Vec<ElementKey>, Vec<(ElementKey, ElementKey)>) {
+    let mut elements: Vec<ElementKey> = model.elements.iter().map(|e| element_key(model, e.id)).collect();
+    let mut relationships: Vec<(ElementKey, ElementKey)> = model
+        .relationships
+        .iter()
+        .map(|r| (element_key(model, r.source.value), element_key(model, r.destination.value)))
+        .collect();
+    elements.sort_unstable();
+    relationships.sort_unstable();
+    (elements, relationships)
+}
+
+/// Replaces `range` of `file` with `text` when it holds `expected`,
+/// refusing a result that adds or drops an element or a relationship
+/// (EDIT-21). Shared by `RestoreTags` and `RestoreGroups`.
+fn restore(current: &mut Parsed, file: FileId, range: Range<usize>, (text, expected): (&str, &str), what: &str) -> Res<String> {
+    let now = tree_of(current, file).source()[range.clone()].to_owned();
+    if now != expected {
+        return Err(EditErrorKind::InvalidValue {
+            value: what.to_owned(),
+            reason: "it changed since; this step cannot be undone, change it by hand",
+        });
+    }
+    let before = identity(&current.model);
+    commit(current, file, vec![Patch { range, text: text.to_owned() }])?;
+    if identity(&current.model) != before {
+        return Err(EditErrorKind::InvalidValue {
+            value: what.to_owned(),
+            reason: "restoring it would create or delete an element or relationship",
+        });
+    }
+    Ok(now)
+}
+
+/// `Edit::RestoreTags` (P5-202).
+fn restore_tags(current: &mut Parsed, target: &TagTarget, text: &str, expected: &str) -> Res<Vec<Edit>> {
+    let found = tagged(&current.model, target)?;
+    let now = restore(current, found.span.file, found.span.range(), (text, expected), &found.name)?;
+    Ok(vec![Edit::RestoreTags {
+        target: target.clone(),
+        text: now,
+        expected: text.to_owned(),
+    }])
+}
+
+// ---------------------------------------------------------- group edits
+
+/// The kinds a group holds (P5-100): its scope's own children.
+const fn groupable(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Person | ElementKind::SoftwareSystem | ElementKind::Container | ElementKind::Component
+    )
+}
+
+fn group_refused(value: &str, reason: &'static str) -> EditErrorKind {
+    EditErrorKind::InvalidValue {
+        value: value.to_owned(),
+        reason,
+    }
+}
+
+/// The checked elements of a `SetGroup`: their ids (deduplicated), the
+/// shared scope and the file declaring them (P5-104).
+fn group_members(model: &model::Model, elements: &[ElementKey]) -> Res<(Vec<ElementId>, Option<ElementId>, FileId)> {
+    let Some(first) = elements.first() else {
+        return Err(group_refused("", "no element to group"));
+    };
+    let mut ids = Vec::with_capacity(elements.len());
+    for key in elements {
+        let id = find_element(model, key)?;
+        if !groupable(model.element(id).kind) {
+            return Err(group_refused(key.as_str(), "only persons, software systems, containers and components go in a group"));
+        }
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let scope = model.element(ids[0]).parent;
+    let file = model.element(ids[0]).span.file;
+    for &id in &ids {
+        let e = model.element(id);
+        if e.parent != scope {
+            return Err(group_refused(first.as_str(), "the elements must share one parent to share a group"));
+        }
+        if e.span.file != file {
+            return Err(group_refused(first.as_str(), "the elements are declared in different files"));
+        }
+    }
+    Ok((ids, scope, file))
+}
+
+/// The block holding the declarations of `scope`'s children: the scope
+/// element's block, or the `model` block.
+fn scope_block<'a>(cx: &Ctx<'a>, scope: Option<ElementId>) -> Res<(&'a Statement, &'a Block)> {
+    let owner = match scope {
+        Some(id) => cx.statement(cx.model.element(id).span),
+        None => cx
+            .workspace()
+            .and_then(|w| w.block.as_ref())
+            .and_then(|b| b.statements.iter().find(|s| cx.keyword(s).is_some_and(|k| k.eq_ignore_ascii_case("model")))),
+    };
+    let owner = owner.ok_or_else(|| group_refused("", "the elements are not declared in the block of their parent in this file"))?;
+    let block = owner
+        .block
+        .as_ref()
+        .ok_or_else(|| group_refused("", "the parent has no block"))?;
+    Ok((owner, block))
+}
+
+/// The byte range between `block`'s braces.
+fn body_range(cx: &Ctx<'_>, block: &Block) -> Range<usize> {
+    cx.token(block.open).end as usize..cx.token(block.close).start as usize
+}
+
+/// The model's group declared at `span`, if `statement` is one.
+fn group_at<'m>(model: &'m model::Model, statement: &Statement) -> Option<&'m model::Group> {
+    statement.block.as_ref()?;
+    model.groups.iter().find(|g| g.span == statement.span)
+}
+
+/// The statements from `block` down to the one at `span`, outermost
+/// first, through group blocks only; `None` when `span` is not a
+/// statement of `block` or of a group in it.
+fn path_to<'a>(cx: &Ctx<'a>, block: &'a Block, span: Span) -> Option<Vec<&'a Statement>> {
+    let s = Ctx::child_holding(block, span)?;
+    if s.span == span {
+        return Some(vec![s]);
+    }
+    group_at(cx.model, s)?;
+    let mut rest = path_to(cx, s.block.as_ref()?, span)?;
+    rest.insert(0, s);
+    Some(rest)
+}
+
+/// The bytes of `statement`'s lines, line ending included, when it has
+/// its lines to itself (nothing but blank space before it, nothing but
+/// blank space or a line comment after it).
+fn own_lines(cx: &Ctx<'_>, statement: &Statement) -> Option<Range<usize>> {
+    let (start, end) = (statement.span.start as usize, statement.span.end as usize);
+    if !starts_line(cx.src, start) {
+        return None;
+    }
+    let last = line_end(cx.src, end);
+    let tokens = cx.tree.tokens();
+    let mut i = tokens.partition_point(|t| (t.start as usize) < end);
+    while let Some(t) = tokens.get(i).filter(|t| (t.start as usize) < last) {
+        if !matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment) {
+            return None;
+        }
+        i += 1;
+    }
+    let rest = &cx.src[last..];
+    let stop = if rest.starts_with("\r\n") {
+        last + 2
+    } else if rest.starts_with('\n') {
+        last + 1
+    } else {
+        return None;
+    };
+    Some(line_start(cx.src, start)..stop)
+}
+
+/// `text` with every line that starts with `from` starting with `to`
+/// instead (P5-100: a moved declaration is re-indented).
+fn reindent(text: &str, from: &str, to: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.strip_prefix(from) {
+            Some(rest) if !rest.trim().is_empty() => format!("{to}{rest}"),
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+/// The group named `name` declared directly in `scope`'s block.
+fn scope_group<'a>(cx: &Ctx<'a>, block: &'a Block, scope: Option<ElementId>, name: &str) -> Option<&'a Statement> {
+    let group = cx
+        .model
+        .groups
+        .iter()
+        .find(|g| g.owner == scope && g.parent.is_none() && g.name.value == name)?;
+    block.statements.iter().find(|s| s.span == group.span)
+}
+
+/// `Edit::SetGroup` (P5-100..P5-104).
+// DECISION: the inverse is the scope body's bytes (`RestoreGroups`), not
+// a list of semantic moves: comments and blank lines between
+// declarations make "where it stood" ambiguous for a semantic move, and
+// P5-105 asks for the bytes back. It is refused when the body changed
+// since and when it would add or drop an element (EDIT-21 guard).
+fn set_group(current: &mut Parsed, elements: &[ElementKey], group: Option<&str>) -> Res<Vec<Edit>> {
+    let name = match group {
+        Some(g) => {
+            let trimmed = g.trim();
+            if trimmed.is_empty() {
+                return Err(group_refused(g, "a group needs a name"));
+            }
+            if trimmed.contains(['\n', '\r']) {
+                return Err(group_refused(g, "a group name holds one line"));
+            }
+            check_value(trimmed)?;
+            Some(trimmed.to_owned())
+        }
+        None => None,
+    };
+    let (_, scope, file) = group_members(&current.model, elements)?;
+    let scope_key = scope.map(|id| element_key(&current.model, id));
+    let body = |parsed: &Parsed| -> Res<String> {
+        let cx = Ctx::in_file(parsed, file);
+        let scope = scope_key.as_ref().map(|k| find_element(cx.model, k)).transpose()?;
+        let (_, block) = scope_block(&cx, scope)?;
+        Ok(cx.src[body_range(&cx, block)].to_owned())
+    };
+    let before = body(current)?;
+    // Re-resolved by key in each plan: every commit re-parses.
+    let members = |cx: &Ctx<'_>| -> Res<(Vec<ElementId>, Option<ElementId>)> {
+        let (ids, scope, _) = group_members(cx.model, elements)?;
+        Ok((ids, scope))
+    };
+    if let Some(name) = &name {
+        run_in(current, file, |cx| {
+            let (ids, scope) = members(cx)?;
+            let (owner, block) = scope_block(cx, scope)?;
+            if scope_group(cx, block, scope, name).is_some() {
+                return Ok(Plan::Patches(Vec::new()));
+            }
+            // DECISION: the new group goes before the scope-level
+            // statement holding the first declaration (the declaration
+            // itself or its outermost group), so a group is never nested.
+            let first = ids
+                .iter()
+                .map(|&id| cx.model.element(id).span)
+                .min_by_key(|s| s.start)
+                .ok_or_else(|| group_refused(name, "no element to group"))?;
+            let path = path_to(cx, block, first)
+                .ok_or_else(|| group_refused(name, "a declaration is not directly in its parent's block or a group of it"))?;
+            let lines = vec![(0, format!("group {} {{", text::quote(name))), (0, "}".to_owned())];
+            Ok(cx.insert_before(owner, block, path[0], &lines))
+        })?;
+    }
+    run_in(current, file, |cx| {
+        let (ids, scope) = members(cx)?;
+        let (owner, block) = scope_block(cx, scope)?;
+        plan_regroup(cx, (owner, block), scope, &ids, name.as_deref())
+    })?;
+    let after = body(current)?;
+    if after == before {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Edit::RestoreGroups {
+        scope: scope_key,
+        text: before,
+        expected: after,
+    }])
+}
+
+/// The patches of one `SetGroup` once the target group (if any) exists:
+/// removals first, then insertions, so `commit`'s stable sort applies a
+/// removal starting where an insertion lands before that insertion.
+fn plan_regroup(cx: &Ctx<'_>, scope_block: (&Statement, &Block), scope: Option<ElementId>, ids: &[ElementId], name: Option<&str>) -> Res<Plan> {
+    let (owner, block) = scope_block;
+    let mut moving: Vec<Vec<&Statement>> = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let span = cx.model.element(id).span;
+        let path = path_to(cx, block, span)
+            .ok_or_else(|| group_refused(&bare_key(cx.model, id), "a declaration is not directly in its parent's block or a group of it"))?;
+        // DSL-9: a statement on the line of its block's brace is first
+        // split onto lines, then the step is planned again.
+        for (i, s) in path.iter().enumerate() {
+            let (parent, parent_block) = match i {
+                0 => (owner, block),
+                _ => match &path[i - 1].block {
+                    Some(b) => (path[i - 1], b),
+                    None => continue,
+                },
+            };
+            let open = cx.token(parent_block.open).start as usize;
+            let close = cx.token(parent_block.close).start as usize;
+            let (start, end) = (s.span.start as usize, s.span.end as usize);
+            if line_start(cx.src, open) == line_start(cx.src, start) || line_start(cx.src, close) == line_start(cx.src, end) {
+                return Ok(Plan::Split(cx.split(parent, parent_block)));
+            }
+        }
+        moving.push(path);
+    }
+    moving.sort_by_key(|p| p.last().map_or(0, |s| s.span.start));
+    let target = match name {
+        Some(name) => Some(
+            scope_group(cx, block, scope, name)
+                .ok_or_else(|| group_refused(name, "the group was not found in the parent's block"))?,
+        ),
+        None => None,
+    };
+    // Who moves: with a target, every declaration not directly in it;
+    // without, every declaration in a group.
+    moving.retain(|path| match target {
+        Some(t) => !(path.len() == 2 && path[0].span == t.span),
+        None => path.len() >= 2,
+    });
+    if moving.is_empty() {
+        return Ok(Plan::Patches(Vec::new()));
+    }
+    let lines = |s: &Statement| {
+        own_lines(cx, s).ok_or_else(|| {
+            group_refused(
+                cx.src[s.span.range()].lines().next().unwrap_or_default(),
+                "the declaration shares its line with another statement; put it on its own line first",
+            )
+        })
+    };
+    let moved = |path: &[&Statement], to: &str| -> Res<String> {
+        let decl = path[path.len() - 1];
+        let range = lines(decl)?;
+        let from = indent_at(cx.src, decl.span.start as usize);
+        Ok(reindent(&cx.src[range], from, to))
+    };
+    let mut patches = removals(cx, &moving, target.map(|t| t.span), &lines)?;
+    if let Some(t) = target {
+        let Some(tblock) = &t.block else {
+            return Err(group_refused(name.unwrap_or_default(), "the group has no block"));
+        };
+        let close = cx.token(tblock.close).start as usize;
+        if !starts_line(cx.src, close) {
+            return Ok(Plan::Split(cx.split(t, tblock)));
+        }
+        let indent = cx.body_indent(t, tblock);
+        let mut text = String::new();
+        for path in &moving {
+            text.push_str(&moved(path, &indent)?);
+        }
+        patches.push(Patch::insert(line_start(cx.src, close), text));
+    } else {
+        // One insertion after each scope-level group, its members in
+        // source order.
+        let mut outer: Vec<Span> = moving.iter().map(|p| p[0].span).collect();
+        outer.dedup();
+        for span in outer {
+            let g = moving.iter().find(|p| p[0].span == span).map(|p| p[0]).ok_or_else(|| gone("group"))?;
+            let end = lines(g)?.end;
+            let indent = indent_at(cx.src, g.span.start as usize).to_owned();
+            let mut text = String::new();
+            for path in moving.iter().filter(|p| p[0].span == span) {
+                text.push_str(&moved(path, &indent)?);
+            }
+            patches.push(Patch::insert(end, text));
+        }
+    }
+    Ok(Plan::Patches(patches))
+}
+
+/// The removal patches of the moving declarations: for each, its
+/// outermost group that the move empties (no other statement, no
+/// comment, no identifier, not `keep`), else the declaration's own lines
+/// (P5-102).
+fn removals(
+    cx: &Ctx<'_>,
+    moving: &[Vec<&Statement>],
+    keep: Option<Span>,
+    lines: &dyn Fn(&Statement) -> Res<Range<usize>>,
+) -> Res<Vec<Patch>> {
+    fn emptied(cx: &Ctx<'_>, s: &Statement, gone_decls: &[Span], keep: Option<Span>) -> bool {
+        if Some(s.span) == keep {
+            return false;
+        }
+        let (Some(group), Some(block)) = (group_at(cx.model, s), &s.block) else {
+            return false;
+        };
+        group.key.is_none()
+            && cx.only_statements(block)
+            && own_lines(cx, s).is_some()
+            && block
+                .statements
+                .iter()
+                .all(|inner| gone_decls.contains(&inner.span) || emptied(cx, inner, gone_decls, keep))
+    }
+    let gone_decls: Vec<Span> = moving.iter().filter_map(|p| p.last().map(|s| s.span)).collect();
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for path in moving {
+        let decl = path[path.len() - 1];
+        let range = match path[..path.len() - 1].iter().find(|g| emptied(cx, g, &gone_decls, keep)) {
+            Some(g) => lines(g)?,
+            None => lines(decl)?,
+        };
+        if !ranges.contains(&range) {
+            ranges.push(range);
+        }
+    }
+    Ok(ranges.into_iter().map(Patch::remove).collect())
+}
+
+/// `Edit::RestoreGroups` (P5-105).
+fn restore_groups(current: &mut Parsed, scope: Option<&ElementKey>, text: &str, expected: &str) -> Res<Vec<Edit>> {
+    let id = scope.map(|k| find_element(&current.model, k)).transpose()?;
+    let file = id.map_or(FileId::ROOT, |id| current.model.element(id).span.file);
+    let range = {
+        let cx = Ctx::in_file(current, file);
+        let (_, block) = scope_block(&cx, id)?;
+        body_range(&cx, block)
+    };
+    let what = scope.map_or("model", ElementKey::as_str).to_owned();
+    let now = restore(current, file, range, (text, expected), &what)?;
+    Ok(vec![Edit::RestoreGroups {
+        scope: scope.cloned(),
+        text: now,
+        expected: text.to_owned(),
+    }])
+}
+
 // ---------------------------------------------------------- default view
 
-fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Vec<Edit>> {
+fn add_default_view(current: &mut Parsed, scope: &ElementKey, kind: ViewKind) -> Res<Vec<Edit>> {
     let model = &current.model;
     let id = find_element(model, scope)?;
     let fits = match kind {
@@ -2938,7 +4005,7 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
     };
     if !fits {
         return Err(EditErrorKind::InvalidValue {
-            value: scope.to_owned(),
+            value: scope.to_string(),
             reason: "this element cannot be the scope of that view kind",
         });
     }
@@ -2982,7 +4049,7 @@ fn add_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Ve
 // held, since the text does not say who created it; a file whose `views`
 // block was empty before `AddDefaultView` gets the same model back, not
 // the same bytes.
-fn remove_default_view(current: &mut Parsed, scope: &str, kind: ViewKind) -> Res<Vec<Edit>> {
+fn remove_default_view(current: &mut Parsed, scope: &ElementKey, kind: ViewKind) -> Res<Vec<Edit>> {
     let key = format!("{scope}-{}", kind.keyword());
     let model = &current.model;
     let view = model.view(&key).ok_or_else(|| gone(&key))?;
@@ -3128,7 +4195,7 @@ workspace {
     fn mv(view: &str, element: &str, x: i32, y: i32) -> Edit {
         Edit::Move {
             view: view.into(),
-            element: element.into(),
+            element: ElementKey::from_written(element),
             centre: Some((x, y)),
         }
     }
@@ -3136,7 +4203,7 @@ workspace {
     fn resize(view: &str, element: &str, w: i32, h: i32) -> Edit {
         Edit::Resize {
             view: view.into(),
-            element: element.into(),
+            element: ElementKey::from_written(element),
             size: Some((w, h)),
         }
     }
@@ -3159,14 +4226,14 @@ workspace {
 
     fn el_field(element: &str, field: ElementField) -> TextTarget {
         TextTarget::Element {
-            element: element.into(),
+            element: ElementKey::from_written(element),
             field,
         }
     }
 
     fn rel_field(source: &str, destination: &str, ordinal: u32, field: RelationshipField) -> TextTarget {
         TextTarget::Relationship {
-            relationship: RelationshipRef::new(source, destination, ordinal),
+            relationship: RelationshipRef::new(ElementKey::from_written(source), ElementKey::from_written(destination), ordinal),
             field,
         }
     }
@@ -3209,7 +4276,7 @@ workspace {
 
     fn style(element: &str, target: StyleTarget, property: StyleProperty) -> Edit {
         Edit::SetStyle {
-            element: element.into(),
+            element: ElementKey::from_written(element),
             target,
             property,
         }
@@ -3221,7 +4288,7 @@ workspace {
 
     fn style_of(source: &str, element: &str) -> model::ResolvedStyle {
         let model = parse(source).model;
-        model.style_of(model.find(element).unwrap())
+        model.style_of(model.find_written(element).unwrap())
     }
 
     const RED: Colour = Colour { r: 0xaa, g: 0, b: 0 };
@@ -3262,7 +4329,7 @@ workspace {
             applied.inverse,
             vec![Edit::Move {
                 view: "c2".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 centre: Some((100, 100)),
             }]
         );
@@ -3301,7 +4368,7 @@ workspace {
             round_trip(&line, &[clear_text(el_field("db", ElementField::Description))]);
         assert!(!cleared.contains("Keeps rows"));
         let model = parse(&back).model;
-        let db = model.find("db").unwrap();
+        let db = model.find_written("db").unwrap();
         assert_eq!(model.element(db).description.as_ref().unwrap().value, "Keeps rows");
     }
 
@@ -3494,7 +4561,7 @@ workspace {
                 },
                 Edit::Move {
                     view: "c2".into(),
-                    element: "user".into(),
+                    element: ElementKey::from_written("user"),
                     centre: Some((100, 100)),
                 },
             ]
@@ -3535,7 +4602,7 @@ workspace {
             resize("c2", "api", 240, 160),
             Edit::Move {
                 view: "c2".into(),
-                element: "user".into(),
+                element: ElementKey::from_written("user"),
                 centre: None,
             },
             set_text(el_field("db", ElementField::Technology), "SQL"),
@@ -3543,9 +4610,9 @@ workspace {
             set_text(view_field("c2", ViewField::Title), "Containers"),
             style("api", tag("Service"), StyleProperty::Color(Some(BLUE))),
             style("db", StyleTarget::ThisBox, StyleProperty::Shape(Some(Shape::Cylinder))),
-            Edit::ResetStyle { element: "db".into() },
+            Edit::ResetStyle { element: ElementKey::from_written("db") },
             Edit::AddDefaultView {
-                scope: "api".into(),
+                scope: ElementKey::from_written("api"),
                 kind: ViewKind::Component,
             },
         ];
@@ -3594,13 +4661,13 @@ workspace {
             "ext = softwareSystem \"External\" {\n            tags \"ext\"\n            worker = container \"Worker\"\n            worker -> api \"Calls\"\n        }"
         ));
         assert_eq!(style_of(&undone.text, "ext").shape, Shape::Cylinder);
-        let reset = ok(&undone.text, &[Edit::ResetStyle { element: "ext".into() }]);
+        let reset = ok(&undone.text, &[Edit::ResetStyle { element: ElementKey::from_written("ext") }]);
         assert!(reset.text.contains(
             "ext = softwareSystem \"External\" {\n            worker = container \"Worker\"\n            worker -> api \"Calls\"\n        }"
         ));
         assert!(!reset.text.contains("\"ext\""));
         let model = parse(&reset.text).model;
-        assert!(model.find("ext.worker").is_some());
+        assert!(model.find_written("ext.worker").is_some());
         assert_eq!(model.relationships.len(), 2);
     }
 
@@ -3633,7 +4700,7 @@ workspace {
         assert_eq!(original.inverse.len(), applied.inverse.len());
         assert!(applied.inverse.contains(&Edit::Move {
             view: "c2".into(),
-            element: "user".into(),
+            element: ElementKey::from_written("user"),
             centre: Some((120, 140)),
         }));
     }
@@ -3668,7 +4735,7 @@ workspace {
             .unwrap();
         assert_eq!(
             RelationshipRef::of(model, pays.id),
-            RelationshipRef::new("user", "api", 2)
+            RelationshipRef::new(ElementKey::from_written("user"), ElementKey::from_written("api"), 2)
         );
     }
 
@@ -3789,7 +4856,7 @@ workspace {
         // writes `""`; the technology stays in its slot.
         let applied = ok(BASE, &[clear_text(el_field("api", ElementField::Description))]);
         assert!(applied.text.contains("api = container \"API\" \"\" \"Rust\"\n"));
-        let api = parse(&applied.text).model.find("api").unwrap();
+        let api = parse(&applied.text).model.find_written("api").unwrap();
         let model = parse(&applied.text).model;
         assert_eq!(model.element(api).technology.as_ref().unwrap().value, "Rust");
         assert_eq!(ok(&applied.text, &applied.inverse).text, BASE);
@@ -3898,12 +4965,12 @@ workspace {
         let moved = [
             Edit::Move {
                 view: "c2".into(),
-                element: "api".into(),
+                element: ElementKey::from_written("api"),
                 centre: None,
             },
             Edit::Resize {
                 view: "c2".into(),
-                element: "api".into(),
+                element: ElementKey::from_written("api"),
                 size: None,
             },
         ];
@@ -3915,7 +4982,7 @@ workspace {
         let (_, back) = round_trip(&source, &[mv("c2", "api", 0, 0)]);
         assert_eq!(back, source);
         let boxed = ok(&source, &[style("db", StyleTarget::ThisBox, StyleProperty::Shape(Some(Shape::Cylinder)))]);
-        let (_, back) = round_trip(&boxed.text, &[Edit::ResetStyle { element: "db".into() }]);
+        let (_, back) = round_trip(&boxed.text, &[Edit::ResetStyle { element: ElementKey::from_written("db") }]);
         same_model(&back, &boxed.text);
     }
 
@@ -3928,7 +4995,7 @@ workspace {
             (mv("c2", "user", 0, 0), "c2"),
             (set_text(el_field("db", ElementField::Name), "x"), "db"),
             (style("db", tag("Container"), StyleProperty::Background(Some(RED))), "db"),
-            (Edit::ResetStyle { element: "db".into() }, "db"),
+            (Edit::ResetStyle { element: ElementKey::from_written("db") }, "db"),
             (
                 set_text(rel_field("user", "db", 0, RelationshipField::Description), "x"),
                 "db",
@@ -4126,7 +5193,7 @@ workspace {
             &source,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "db", 200, 200),
@@ -4142,7 +5209,7 @@ workspace {
         let again = ok(
             &applied.text,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4156,7 +5223,7 @@ workspace {
         let e = fail(
             &clash,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4165,7 +5232,7 @@ workspace {
         let applied = ok(
             BASE,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::SystemContext,
             }],
         );
@@ -4185,7 +5252,7 @@ workspace {
         ] {
             let batch = [
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::SystemContext,
                 },
                 second,
@@ -4208,7 +5275,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4255,7 +5322,7 @@ workspace {
         let applied = ok(
             MODEL_ONLY,
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4279,7 +5346,7 @@ workspace {
             &source,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "db", 200, 200),
@@ -4290,7 +5357,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4301,7 +5368,7 @@ workspace {
 
     fn remove_default(scope: &str, kind: ViewKind) -> Edit {
         Edit::RemoveDefaultView {
-            scope: scope.into(),
+            scope: ElementKey::from_written(scope),
             kind,
         }
     }
@@ -4312,7 +5379,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::Container,
                 },
                 mv("sys-container", "api", 200, 100),
@@ -4332,7 +5399,7 @@ workspace {
         let added = ok(
             &styled(),
             &[Edit::AddDefaultView {
-                scope: "sys".into(),
+                scope: ElementKey::from_written("sys"),
                 kind: ViewKind::Container,
             }],
         )
@@ -4399,7 +5466,7 @@ workspace {
             MODEL_ONLY,
             &[
                 Edit::AddDefaultView {
-                    scope: "sys".into(),
+                    scope: ElementKey::from_written("sys"),
                     kind: ViewKind::SystemContext,
                 },
                 mv("sys-systemContext", "user", 100, 100),
@@ -4419,7 +5486,7 @@ workspace {
             let e = fail(
                 MODEL_ONLY,
                 &[Edit::AddDefaultView {
-                    scope: scope.into(),
+                    scope: ElementKey::from_written(scope),
                     kind,
                 }],
             );
@@ -4428,7 +5495,7 @@ workspace {
         let e = fail(
             MODEL_ONLY,
             &[Edit::AddDefaultView {
-                scope: "nobody".into(),
+                scope: ElementKey::from_written("nobody"),
                 kind: ViewKind::Container,
             }],
         );
@@ -4446,7 +5513,7 @@ workspace {
                 style("api", StyleTarget::ThisBox, StyleProperty::Color(Some(GREEN))),
             ],
         );
-        let reset = ok(&boxed.text, &[Edit::ResetStyle { element: "api".into() }]);
+        let reset = ok(&boxed.text, &[Edit::ResetStyle { element: ElementKey::from_written("api") }]);
         assert_eq!(reset.text, source);
         assert_eq!(style_of(&reset.text, "api").background, RED);
         // Its inverse gives the per-box style back.
@@ -4454,7 +5521,7 @@ workspace {
         assert_eq!(style_of(&back.text, "api").background, BLUE);
         assert_eq!(style_of(&back.text, "api").color, GREEN);
         // No per-box tag: nothing to do.
-        let none = ok(&source, &[Edit::ResetStyle { element: "db".into() }]);
+        let none = ok(&source, &[Edit::ResetStyle { element: ElementKey::from_written("db") }]);
         assert_eq!(none.text, source);
         assert!(none.inverse.is_empty());
         // A block holding a comment keeps it; the properties and the tag go.
@@ -4462,7 +5529,7 @@ workspace {
             "element \"sys.api\" {\n",
             "element \"sys.api\" {\n                // kept\n",
         );
-        let reset = ok(&commented, &[Edit::ResetStyle { element: "api".into() }]);
+        let reset = ok(&commented, &[Edit::ResetStyle { element: ElementKey::from_written("api") }]);
         assert!(reset.text.contains("element \"sys.api\" {\n                // kept\n            }"));
         assert!(!reset.text.contains("tags \"sys.api\""));
         assert_eq!(style_of(&reset.text, "api").background, RED);

@@ -248,6 +248,12 @@ impl<'a> Button<'a> {
     }
 }
 
+/// The width `Button::new(text)` takes at rest (its natural width), so
+/// a row can keep room for it (P5-406).
+pub fn button_width(ui: &Ui, text: &str) -> f32 {
+    text_width(ui, text, &crate::theme::ui_font()) + 16.0
+}
+
 /// A tooltip naming the action, then its key as a key cap (behaviour
 /// change 14).
 pub fn tip(response: Response, action: &str, key: Option<&str>) -> Response {
@@ -426,28 +432,62 @@ pub fn section<R>(
     default_open: bool,
     body: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    section_with_action(ui, id, title, count, default_open, None, body).0
+}
+
+/// A `section` whose header also holds `action`, `(label, tip)`: a ghost
+/// `Button` right-aligned in the header row, before the count (P5-408).
+/// A click on it does not fold the section. Returns the body's result
+/// and whether the action was clicked.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, UI coherence: Lint "Resolve all" in the header)
+// DECISION: a sibling of `section`, which keeps its signature and its six
+// callers; `section` is this with no action.
+#[expect(clippy::too_many_arguments, reason = "a section's id, title, count, fold and header action, then its body")]
+pub fn section_with_action<R>(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    count: Option<(String, bool)>,
+    default_open: bool,
+    action: Option<(&str, &str)>,
+    body: impl FnOnce(&mut Ui) -> R,
+) -> (Option<R>, bool) {
     let key = egui::Id::unique(("c4rizer-section", id));
     let mut open = ui.ctx().data(|d| d.get_temp::<bool>(key)).unwrap_or(default_open);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), SIZE_ROW), Sense::click());
-    if response.clicked() {
+    let icon_rect = Rect::from_min_size(egui::pos2(rect.min.x + PAD, rect.center().y - 6.0), Vec2::splat(12.0));
+    let label = crate::theme::label(title);
+    let galley = egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
+    let title_x = icon_rect.max.x + 8.0;
+    let title_right = title_x + galley.size().x;
+    let count_font = FontId::monospace(10.0);
+    let count_room = count.as_ref().map_or(0.0, |(text, _)| text_width(ui, text, &count_font) + 8.0);
+    // DECISION: a header too narrow for the title and the action (a
+    // panel near its 120 px minimum) leaves the action out rather than
+    // drawing it over the title.
+    let action_rect = action.and_then(|(text, _)| {
+        let right = rect.max.x - 8.0 - count_room;
+        let left = right - button_width(ui, text);
+        (left >= title_right + 8.0).then(|| {
+            Rect::from_min_max(egui::pos2(left, rect.center().y - SIZE_CONTROL / 2.0), egui::pos2(right, rect.center().y + SIZE_CONTROL / 2.0))
+        })
+    });
+    let on_action = action_rect.is_some_and(|r| response.interact_pointer_pos().is_some_and(|at| r.contains(at)));
+    if response.clicked() && !on_action {
         open = !open;
         ui.ctx().data_mut(|d| d.insert_temp(key, open));
     }
     let p = ui.painter();
     let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
-    let icon_rect = Rect::from_min_size(egui::pos2(rect.min.x + PAD, rect.center().y - 6.0), Vec2::splat(12.0));
     icons::paint(p, chevron, icon_rect, INK_3);
-    let label = crate::theme::label(title);
-    let galley = egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Small);
-    p.galley(egui::pos2(icon_rect.max.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, INK_3);
+    p.galley(egui::pos2(title_x, rect.center().y - galley.size().y / 2.0), galley, INK_3);
     if let Some((text, warn)) = count {
-        p.text(
-            egui::pos2(rect.max.x - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            text,
-            FontId::monospace(10.0),
-            if warn { WARN } else { INK_3 },
-        );
+        p.text(egui::pos2(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, text, count_font, if warn { WARN } else { INK_3 });
+    }
+    let mut clicked = false;
+    if let (Some((text, action_tip)), Some(r)) = (action, action_rect) {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        clicked = tip(Button::new(text).look(Look::Ghost).show(&mut child), action_tip, None).clicked();
     }
     let inner = if open {
         let inner = egui::Frame::new()
@@ -468,7 +508,7 @@ pub fn section<R>(
         None
     };
     hairline(ui);
-    inner
+    (inner, clicked)
 }
 
 /// A full-width 1 px `line` rule.
@@ -500,13 +540,29 @@ pub fn head_label(ui: &mut Ui, text: &str, dot: Option<Color32>) {
 
 /// A form row: a 64 px label column, then `control` filling the rest.
 pub fn form_row<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    form_row_with(ui, 64.0, label, control)
+}
+
+/// The label column of [`menu_form_row`]: room for "MAX CROSSINGS".
+// DECISION: 96 px, the longest menu label ("MAX CROSSINGS", about 86 px
+// in the tracked mono label) plus slack; the panel keeps its 64 px.
+const MENU_LABEL_W: f32 = 96.0;
+
+/// A form row in a menu: like [`form_row`], with a label column wide
+/// enough for the Settings menu's labels (they are longer than the
+/// panel's and must not be cut).
+pub fn menu_form_row<R>(ui: &mut Ui, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    form_row_with(ui, MENU_LABEL_W, label, control)
+}
+
+fn form_row_with<R>(ui: &mut Ui, label_w: f32, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, ui.spacing().interact_size.y), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(label_w, ui.spacing().interact_size.y), Sense::hover());
         let galley = egui::WidgetText::from(crate::theme::label(label)).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            64.0,
+            label_w,
             egui::TextStyle::Small,
         );
         ui.painter()
@@ -705,6 +761,110 @@ pub fn chip(ui: &mut Ui, text: &str, kind: ChipKind) -> Response {
     p.rect_stroke(rect, r1(), Stroke::new(1.0, border), StrokeKind::Inside);
     p.text(rect.center(), Align2::CENTER_CENTER, text, font, ink);
     response
+}
+
+/// What a tag row did this frame (P5-204).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagRowAction {
+    /// The remove mark of this tag was clicked.
+    Remove(String),
+    /// The "+" chip was clicked.
+    Add,
+}
+
+/// The editable tag row of boxes and lines (P5-204): one chip per tag of
+/// `tags`, those in `removable` with a remove mark on hover, then a "+"
+/// chip when `add`. Chips wrap. Returns what was clicked.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+// DECISION: a removable chip keeps the room of its mark when not hovered,
+// so the row does not reflow under the pointer.
+pub fn tag_row(ui: &mut Ui, tags: &[String], removable: &[String], add: bool) -> Option<TagRowAction> {
+    let mut action = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(4.0);
+        let font = FontId::proportional(11.0);
+        for tag in tags {
+            if !removable.contains(tag) {
+                chip(ui, tag, ChipKind::Plain);
+                continue;
+            }
+            let w = text_width(ui, tag, &font) + 12.0 + SIZE_ICON;
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(w, 18.0), Sense::click());
+            let p = ui.painter();
+            p.rect_filled(rect, r1(), BG_RAISED);
+            p.rect_stroke(rect, r1(), Stroke::new(1.0, LINE_2), StrokeKind::Inside);
+            p.text(egui::pos2(rect.min.x + 6.0, rect.center().y), Align2::LEFT_CENTER, tag, font.clone(), INK_2);
+            let mark = Rect::from_center_size(egui::pos2(rect.max.x - 2.0 - SIZE_ICON / 2.0, rect.center().y), Vec2::splat(10.0));
+            let over_mark = response.hover_pos().is_some_and(|at| mark.expand(2.0).contains(at));
+            if response.hovered() {
+                icons::paint(p, Icon::Close, mark, if over_mark { INK } else { INK_3 });
+            }
+            let response = response.on_hover_text(format!("Remove the tag {tag} (one undo step)"));
+            if response.clicked() && over_mark {
+                action = Some(TagRowAction::Remove(tag.clone()));
+            }
+        }
+        if add {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::click());
+            let p = ui.painter();
+            let border = if response.hovered() { INK_3 } else { LINE_2 };
+            p.rect_filled(rect, r1(), BG_RAISED);
+            p.rect_stroke(rect, r1(), Stroke::new(1.0, border), StrokeKind::Inside);
+            icons::paint(p, Icon::Plus, Rect::from_center_size(rect.center(), Vec2::splat(12.0)), INK_2);
+            let response = tip(response, "Add a tag", None);
+            focus_ring(ui, &response);
+            if response.clicked() {
+                action = Some(TagRowAction::Add);
+            }
+        }
+    });
+    action
+}
+
+/// What the add-tag popup's body did this frame (P5-205).
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagPick {
+    /// The field's new text, when it changed.
+    pub typed: Option<String>,
+    /// The row clicked.
+    pub picked: Option<String>,
+}
+
+/// The add-tag popup's body (P5-205): a text field holding `query`, with
+/// focus, then one row per entry of `rows`. Enter and Escape are the
+/// state's keys.
+// PENDING SIGN-OFF: new pub item (owner request 2026-11-23, OR-12 / issue #2)
+pub fn tag_picker(ui: &mut Ui, query: &str, rows: &[String]) -> TagPick {
+    let mut pick = TagPick::default();
+    let mut buffer = query.to_owned();
+    let field = ui.scope(|ui| {
+        field_style(ui);
+        ui.add(
+            egui::TextEdit::singleline(&mut buffer)
+                .hint_text(egui::RichText::new("new or existing tag").color(INK_3))
+                .desired_width(f32::INFINITY)
+                .align(Align2::LEFT_CENTER)
+                .min_size(Vec2::new(0.0, SIZE_CONTROL)),
+        )
+    });
+    if !field.inner.has_focus() {
+        field.inner.request_focus();
+    }
+    if buffer != query {
+        pick.typed = Some(buffer);
+    }
+    ui.add_space(4.0);
+    if rows.is_empty() {
+        ui.label(egui::RichText::new("no existing tag matches; Enter adds it").color(INK_3));
+    }
+    for row in rows {
+        if menu_row(ui, Some(Icon::Tag), row, false, true).clicked() {
+            pick.picked = Some(row.clone());
+        }
+    }
+    pick
 }
 
 /// A key cap (`components/Kbd`).

@@ -13,7 +13,7 @@ use c4rizer_core::view::EdgeId;
 use crate::canvas::{Primitive, Source};
 use crate::files::{self, FileEvent, UiState};
 use crate::state::{Button, Command, Effect, Event, Input, MenuAction, Modifiers, Overlay, State};
-use crate::testutil::TempDir;
+use crate::testutil::{Ids, S_NESTED, TempDir};
 use crate::worker;
 
 /// Two lines pinned inside a ring of four touching boxes, crossing square
@@ -58,14 +58,14 @@ const NONE: Modifiers = Modifiers {
     alt: false,
 };
 
-fn ring(lines: &[&str]) -> String {
+fn ring(ids: Ids, lines: &[&str]) -> String {
     let text = lines.iter().fold(String::new(), |mut out, l| {
         out.push_str("            ");
         out.push_str(l);
         out.push('\n');
         out
     });
-    RING.replace("{lines}\n", &text)
+    ids.workspace_in(&RING.replace("{lines}\n", &text), S_NESTED)
 }
 
 /// The shell without a window: every effect at once.
@@ -151,7 +151,7 @@ const FLIP: &str = "Bridge on the other line";
 
 #[test]
 fn p4_521_crossings_choice_writes_the_setting() {
-    let original = ring(&[]);
+    let original = ring(Ids::Flat, &[]);
     let mut sh = Shell::open(&original);
     assert_eq!(sh.s.crossing_style(), Some(CrossingStyle::Gap));
     sh.event(Event::Command(Command::SetCrossingStyle(CrossingStyle::Jump)));
@@ -174,7 +174,19 @@ fn p4_521_crossings_choice_writes_the_setting() {
 
 #[test]
 fn p4_522_bridge_on_the_other_line() {
-    let original = ring(&[]);
+    body_p4_522_bridge_on_the_other_line(Ids::Flat);
+}
+
+/// As `p4_522_bridge_on_the_other_line`, on nested containers under
+/// `!identifiers hierarchical` (P2-142): the bridge names its lines by their
+/// ends' full ids.
+#[test]
+fn p4_522_bridge_on_the_other_line_hierarchical_ids() {
+    body_p4_522_bridge_on_the_other_line(Ids::Hierarchical);
+}
+
+fn body_p4_522_bridge_on_the_other_line(ids: Ids) {
+    let original = ring(ids, &[]);
     let mut sh = Shell::open(&original);
     assert_eq!(sh.carrier(), EdgeId(0));
     // Off the crossing, on a line: not offered.
@@ -183,7 +195,7 @@ fn p4_522_bridge_on_the_other_line() {
     let menu = sh.menu_at(CROSSING);
     sh.pick(&menu, FLIP);
     let flipped = sh.text();
-    assert!(flipped.contains("            anchor a -> b from right 40 to left 40\n            bridge c -> d a -> b\n"), "{flipped}");
+    assert!(flipped.contains(&ids.refs_in("            anchor a -> b from right 40 to left 40\n            bridge c -> d a -> b\n", S_NESTED)), "{flipped}");
     assert_eq!(sh.carrier(), EdgeId(1));
     assert_eq!(sh.undo_steps(), 1);
     // Back: the line goes.
@@ -202,13 +214,13 @@ fn p4_522_bridge_on_the_other_line() {
     let menu = sh.menu_at(CROSSING);
     sh.pick(&menu, FLIP);
     let text = sh.text();
-    assert!(text.contains("West, renamed.") && text.contains("bridge c -> d a -> b"), "{text}");
+    assert!(text.contains("West, renamed.") && text.contains(&ids.refs_in("bridge c -> d a -> b", S_NESTED)), "{text}");
 }
 
 #[test]
 fn p4_523_canvas_paints_the_scene_runs_and_bars() {
     for lines in [&[][..], &["crossings jump"][..]] {
-        let sh = Shell::open(&ring(lines));
+        let sh = Shell::open(&ring(Ids::Flat, lines));
         let scene = sh.scene();
         let carrier = scene.lines.iter().find(|l| l.edge == sh.carrier()).expect("carrier");
         let list = sh.s.draw_list();
